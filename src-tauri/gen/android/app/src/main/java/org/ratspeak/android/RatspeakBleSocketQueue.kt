@@ -19,12 +19,15 @@ object RatspeakBleSocketQueue {
         listener: ServerSocket,
         shouldContinue: () -> Boolean,
         staleProbeMs: Int = STALE_CLIENT_PROBE_MS,
+        acceptPollMs: Int = ACCEPT_POLL_MS,
+        returnOnAcceptTimeout: Boolean = false,
     ): AcceptedClient? {
-        listener.soTimeout = ACCEPT_POLL_MS
+        listener.soTimeout = acceptPollMs.coerceAtLeast(1)
         while (shouldContinue()) {
             val socket = try {
                 listener.accept()
             } catch (_: SocketTimeoutException) {
+                if (returnOnAcceptTimeout) return null
                 continue
             }
             val input = try {

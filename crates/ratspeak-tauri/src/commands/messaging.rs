@@ -119,6 +119,11 @@ fn emit_prequeue_lxmf_cancellation(state: &AppState, client_msg_id: &str) -> Val
         json!({
             "step": "cancelled",
             "client_msg_id": client_msg_id,
+            "stop_scope": "preparation",
+            "preparation_stopped": true,
+            "live_owner_stopped": false,
+            "row_marked_stopped": false,
+            "stopped_retrying": false,
             "may_have_left_device": false,
         }),
     );
@@ -126,6 +131,11 @@ fn emit_prequeue_lxmf_cancellation(state: &AppState, client_msg_id: &str) -> Val
         "ok": true,
         "cancelled": true,
         "client_msg_id": client_msg_id,
+        "stop_scope": "preparation",
+        "preparation_stopped": true,
+        "live_owner_stopped": false,
+        "row_marked_stopped": false,
+        "stopped_retrying": false,
         "may_have_left_device": false,
     })
 }
@@ -2018,11 +2028,33 @@ fn resolve_lxmf_message_id_for_cancel(
     })
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CanonicalLxmfStopResult {
+    live_owner_stopped: bool,
+    row_marked_stopped: bool,
+}
+
+impl CanonicalLxmfStopResult {
+    fn stopped(self) -> bool {
+        self.live_owner_stopped || self.row_marked_stopped
+    }
+
+    fn scope(self) -> &'static str {
+        if self.live_owner_stopped {
+            "active_and_retries"
+        } else if self.row_marked_stopped {
+            "local_record_only"
+        } else {
+            "none"
+        }
+    }
+}
+
 async fn cancel_canonical_lxmf_message(
     state: &Arc<AppState>,
     msg_id: &str,
     client_msg_id: Option<&str>,
-) -> AppResult<bool> {
+) -> AppResult<CanonicalLxmfStopResult> {
     let activity_fence = state.activity_request_fence();
     let st = Arc::clone(state);
     let msg_id_for_cancel = msg_id.to_string();
@@ -2049,8 +2081,11 @@ async fn cancel_canonical_lxmf_message(
     .await
     .map_err(|_| AppError::internal("cancel_lxmf_message db task panicked"))?;
 
-    let cancelled = transport_cancelled || db_cancelled;
-    if cancelled {
+    let result = CanonicalLxmfStopResult {
+        live_owner_stopped: transport_cancelled,
+        row_marked_stopped: db_cancelled,
+    };
+    if result.stopped() {
         state.release_attachment_delivery_lease(msg_id);
         if let Ok(mut times) = state.message_send_times.lock() {
             times.remove(msg_id);
@@ -2065,6 +2100,11 @@ async fn cancel_canonical_lxmf_message(
                 "msg_id": msg_id,
                 "client_msg_id": client_msg_id,
                 "method": method.clone(),
+                "stop_scope": result.scope(),
+                "preparation_stopped": false,
+                "live_owner_stopped": result.live_owner_stopped,
+                "row_marked_stopped": result.row_marked_stopped,
+                "stopped_retrying": result.live_owner_stopped,
                 "may_have_left_device": true,
             }),
         );
@@ -2089,7 +2129,7 @@ async fn cancel_canonical_lxmf_message(
         broadcast_conversations(Arc::clone(state));
         state.lxmf_notify.notify_one();
     }
-    Ok(cancelled)
+    Ok(result)
 }
 
 async fn finalize_lxmf_client_send(
@@ -2110,9 +2150,9 @@ async fn finalize_lxmf_client_send(
         return Ok(false);
     }
 
-    let cancelled =
+    let stopped =
         cancel_canonical_lxmf_message(state, canonical_msg_id, Some(guard.client_msg_id())).await?;
-    if !cancelled {
+    if !stopped.stopped() {
         return Err(AppError::internal(
             "Queued message could not be cancelled before delivery",
         ));
@@ -2144,21 +2184,33 @@ pub async fn cancel_lxmf_message(
                     "ok": true,
                     "cancelled": false,
                     "msg_id": requested_msg_id,
+                    "stop_scope": "none",
+                    "preparation_stopped": false,
+                    "live_owner_stopped": false,
+                    "row_marked_stopped": false,
+                    "stopped_retrying": false,
                     "may_have_left_device": false,
                 }));
             };
             resolved
         }
     };
-    let cancelled =
-        cancel_canonical_lxmf_message(&state, &msg_id, client_msg_id.as_deref()).await?;
+    let stopped = cancel_canonical_lxmf_message(&state, &msg_id, client_msg_id.as_deref()).await?;
 
     Ok(json!({
         "ok": true,
-        "cancelled": cancelled,
+        "cancelled": stopped.stopped(),
         "msg_id": msg_id,
         "client_msg_id": client_msg_id,
-        "may_have_left_device": cancelled,
+        "stop_scope": stopped.scope(),
+        "preparation_stopped": false,
+        "live_owner_stopped": stopped.live_owner_stopped,
+        "row_marked_stopped": stopped.row_marked_stopped,
+        "stopped_retrying": stopped.live_owner_stopped,
+        // A canonical hash means the message crossed the preparation boundary.
+        // Stopping our remaining owners and retries cannot recall bytes already
+        // admitted to Reticulum or a device interface.
+        "may_have_left_device": true,
     }))
 }
 
@@ -2702,6 +2754,30 @@ mod tests {
         ] {
             assert!(normalize_lxmf_client_msg_id(Some(invalid)).is_err());
         }
+    }
+
+    #[test]
+    fn canonical_stop_result_distinguishes_live_owner_from_local_record() {
+        let active = CanonicalLxmfStopResult {
+            live_owner_stopped: true,
+            row_marked_stopped: true,
+        };
+        assert!(active.stopped());
+        assert_eq!(active.scope(), "active_and_retries");
+
+        let record_only = CanonicalLxmfStopResult {
+            live_owner_stopped: false,
+            row_marked_stopped: true,
+        };
+        assert!(record_only.stopped());
+        assert_eq!(record_only.scope(), "local_record_only");
+
+        let too_late = CanonicalLxmfStopResult {
+            live_owner_stopped: false,
+            row_marked_stopped: false,
+        };
+        assert!(!too_late.stopped());
+        assert_eq!(too_late.scope(), "none");
     }
 
     /// Catches column-name drift between inline SQL and schema in `db.rs`.

@@ -22,7 +22,6 @@ import android.os.Handler
 import android.os.Looper
 import androidx.core.content.ContextCompat
 import java.io.InputStream
-import java.io.OutputStream
 import java.net.ServerSocket
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -62,9 +61,18 @@ class RatspeakBleGatt(
         private const val BONDED_GATT_CONNECT_ATTEMPTS = 3
         private const val BONDED_GATT_RETRY_DELAY_MS = 1200L
         private const val BLE_WRITE_REJECT_RETRY_MS = 20L
-        private const val BLE_WRITE_REJECT_TIMEOUT_MS = 1200L
-        private const val BLE_WRITE_PACING_MS = 12L
         private const val RNODE_DETACH_SETTLE_MS = 80L
+        private const val PENDING_INBOUND_MAX_RECORDS = 256
+        private const val PENDING_INBOUND_MAX_BYTES = 64 * 1024
+        private const val PENDING_CONTROL_MAX_RECORDS = 256
+        private const val PENDING_CONTROL_MAX_BYTES = 64 * 1024
+        private const val PENDING_ACK_MAX_RECORDS = 8
+        // RNode command echoes are immediate; 200 ms is deliberately twice the
+        // existing 100 ms pre-init quiet boundary. Two seconds bounds a radio
+        // that never stops producing ambiguous old-generation controls.
+        private const val CONTROL_QUIET_INTERVAL_MS = 200L
+        private const val CONTROL_QUIET_HARD_MAX_MS = 2_000L
+        private const val FENCED_ACCEPT_POLL_MS = 50
 
         // TCP read buffer. Large because one write from Rust can be up to 4KB;
         // the per-chunk BLE write uses negotiatedMtu separately.
@@ -96,10 +104,14 @@ class RatspeakBleGatt(
     private var negotiatedMtu = MTU_FALLBACK_PAYLOAD
     private val running = AtomicBoolean(false)
 
-    private var clientSocket: java.net.Socket? = null
-    private var tcpOut: OutputStream? = null
     private var forwardThread: Thread? = null
-    private val bridgeClientLock = Object()
+    @Volatile
+    private var tcpWriter: RatspeakMobilePolicy.NativeBridgeTcpWriter<java.net.Socket>? = null
+    private val inboundKissAssembler = RatspeakMobilePolicy.NativeBridgeInboundKissAssembler()
+    private val controlQuiescence = RatspeakMobilePolicy.NativeBridgeControlQuiescence(
+        quietIntervalNanos = TimeUnit.MILLISECONDS.toNanos(CONTROL_QUIET_INTERVAL_MS),
+        hardMaxNanos = TimeUnit.MILLISECONDS.toNanos(CONTROL_QUIET_HARD_MAX_MS),
+    )
 
     private var connectLatch: CountDownLatch? = null
     private var servicesLatch: CountDownLatch? = null
@@ -146,6 +158,9 @@ class RatspeakBleGatt(
             rustDetachObserved.set(false)
             detachFrameMatch = 0
             adapterUnavailable.set(false)
+            tcpWriter?.shutdown()
+            tcpWriter = null
+            synchronized(inboundKissAssembler) { inboundKissAssembler.reset() }
             registerAdapterReceiver()
             emitProgress("starting")
 
@@ -217,6 +232,18 @@ class RatspeakBleGatt(
             val attempts = if (alreadyBonded) BONDED_GATT_CONNECT_ATTEMPTS else 1
             var gattError: String? = null
             for (attempt in 1..attempts) {
+                // Complete inbound records survive Rust TCP replacement, but
+                // never cross a true physical GATT generation.
+                tcpWriter?.shutdown()
+                synchronized(inboundKissAssembler) { inboundKissAssembler.reset() }
+                tcpWriter = RatspeakMobilePolicy.NativeBridgeTcpWriter(
+                    maxInboundRecords = PENDING_INBOUND_MAX_RECORDS,
+                    maxInboundBytes = PENDING_INBOUND_MAX_BYTES,
+                    maxControlRecords = PENDING_CONTROL_MAX_RECORDS,
+                    maxControlBytes = PENDING_CONTROL_MAX_BYTES,
+                    maxAckRecords = PENDING_ACK_MAX_RECORDS,
+                    closeSocket = { socket -> try { socket.close() } catch (_: Throwable) {} },
+                )
                 gattError = openGattBridge(device, attempt, attempts)
                 if (gattError == null) break
 
@@ -413,12 +440,33 @@ class RatspeakBleGatt(
     }
 
     private fun forwardClientGenerations(listener: ServerSocket) {
+        var boundary: RatspeakMobilePolicy.NativeBridgeControlQuiescence.Boundary? = null
         try {
             while (running.get()) {
+                if (boundary != null) {
+                    when (boundary.awaitQuiet { running.get() }) {
+                        RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.READY -> {}
+                        RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.HARD_FAILURE -> {
+                            Log.e(TAG, "RNode controls did not quiesce between Rust TCP generations")
+                            running.set(false)
+                            break
+                        }
+                        RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.STOPPED -> break
+                        RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.ACTION_FAILED -> {
+                            throw IllegalStateException("quiet-only boundary returned action failure")
+                        }
+                    }
+                }
                 val accepted = RatspeakBleSocketQueue.acceptUsable(
                     listener,
                     shouldContinue = { running.get() },
-                ) ?: break
+                    acceptPollMs = if (boundary == null) 1_000 else FENCED_ACCEPT_POLL_MS,
+                    returnOnAcceptTimeout = boundary != null,
+                )
+                if (accepted == null) {
+                    if (running.get()) continue
+                    break
+                }
                 if (!running.get()) {
                     try { accepted.socket.close() } catch (_: Throwable) {}
                     break
@@ -426,14 +474,25 @@ class RatspeakBleGatt(
                 // Detach evidence belongs to one Rust TCP generation only.
                 rustDetachObserved.set(false)
                 detachFrameMatch = 0
-                synchronized(bridgeClientLock) {
-                    clientSocket = accepted.socket
-                    tcpOut = accepted.socket.getOutputStream()
+                when (installBridgeClient(accepted.socket, boundary)) {
+                    RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.READY -> {
+                        boundary = null
+                    }
+                    RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.ACTION_FAILED -> {
+                        continue
+                    }
+                    RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.STOPPED -> break
+                    RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.HARD_FAILURE -> {
+                        Log.e(TAG, "Late RNode controls prevented safe Rust TCP installation")
+                        running.set(false)
+                        break
+                    }
                 }
                 Log.i(TAG, "Rust TCP generation connected — forwarding active")
-                forwardTcpToBle(accepted.input)
+                forwardTcpToBle(accepted.input, accepted.socket)
                 closeBridgeClient(accepted.socket)
                 if (running.get()) {
+                    boundary = controlQuiescence.beginAfterClosure()
                     Log.i(TAG, "Rust TCP generation closed — retaining GATT and stable listener")
                 }
             }
@@ -447,6 +506,34 @@ class RatspeakBleGatt(
         }
     }
 
+    private fun installBridgeClient(
+        socket: java.net.Socket,
+        boundary: RatspeakMobilePolicy.NativeBridgeControlQuiescence.Boundary?,
+    ): RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome {
+        val output = try {
+            socket.getOutputStream()
+        } catch (_: Throwable) {
+            try { socket.close() } catch (_: Throwable) {}
+            return RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.ACTION_FAILED
+        }
+        val outcome = if (boundary == null) {
+            if (tcpWriter?.install(socket, output) == true) {
+                RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.READY
+            } else {
+                RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.ACTION_FAILED
+            }
+        } else {
+            boundary.awaitQuietAndCommit(
+                shouldContinue = { running.get() },
+                action = { tcpWriter?.installVacant(socket, output) == true },
+            )
+        }
+        if (outcome != RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.READY) {
+            try { socket.close() } catch (_: Throwable) {}
+        }
+        return outcome
+    }
+
     fun awaitStopped() {
         val active = forwardThread ?: return
         if (active !== Thread.currentThread()) {
@@ -455,33 +542,48 @@ class RatspeakBleGatt(
     }
 
     @SuppressLint("MissingPermission")
-    private fun forwardTcpToBle(tcpIn: InputStream) {
+    private fun forwardTcpToBle(tcpIn: InputStream, expectedSocket: java.net.Socket) {
         // Large read buffer so one tcpIn.read() can absorb a full RNS packet;
         // BLE writes are chunked below at negotiatedMtu (device-specific payload).
         val readBuf = ByteArray(TCP_READ_BUFFER)
+        val coalescer = RatspeakMobilePolicy.NativeBridgeOutboundKissCoalescer(
+            chunkBytes = negotiatedMtu.coerceAtLeast(2),
+        )
+        var acknowledgedDataFrames = 0L
         try {
             while (running.get()) {
                 val n = tcpIn.read(readBuf)
                 if (n <= 0) break
                 val rxC = rxChar ?: break
-                var off = 0
-                val chunkSize = negotiatedMtu.coerceAtLeast(1)
-                while (off < n && running.get()) {
-                    val end = minOf(off + chunkSize, n)
+                val offered = coalescer.offer(readBuf, 0, n)
+                if (offered.overflow) {
+                    Log.e(TAG, "Rust TCP bridge emitted an oversized KISS record")
+                    running.set(false)
+                    break
+                }
+                for (chunk in offered.chunks) {
+                    if (!running.get()) break
                     val activeGatt = gatt ?: break
                     if (!writeBleChunk(
                             activeGatt,
                             rxC,
-                            readBuf.copyOfRange(off, end),
+                            chunk.wire,
                             "TCP->BLE"
                         )
                     ) {
                         running.set(false)
                         break
                     }
-                    observeRustDetachBytes(readBuf, off, end)
-                    off = end
-                    if (running.get()) Thread.sleep(BLE_WRITE_PACING_MS)
+                    observeRustDetachBytes(chunk.wire, 0, chunk.wire.size)
+                    repeat(chunk.completedDataFrames) {
+                        acknowledgedDataFrames++
+                        if (!publishNativeBridgeAck(expectedSocket, acknowledgedDataFrames)) {
+                            return
+                        }
+                    }
+                    if (running.get()) {
+                        Thread.sleep(RatspeakMobilePolicy.RNODE_GATT_WRITE_PACING_MS)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -490,14 +592,21 @@ class RatspeakBleGatt(
         Log.i(TAG, "TCP→BLE generation stopped")
     }
 
+    /**
+     * Acknowledge one complete KISS data frame only after every containing GATT
+     * chunk completed. The counter and socket both reset with the Rust TCP
+     * generation, so a delayed acknowledgement cannot release its replacement.
+     */
+    private fun publishNativeBridgeAck(
+        expectedSocket: java.net.Socket,
+        acknowledgedDataFrames: Long,
+    ): Boolean {
+        val frame = RatspeakMobilePolicy.nativeBridgeAckFrame(acknowledgedDataFrames)
+        return tcpWriter?.enqueueAck(expectedSocket, frame) == true
+    }
+
     private fun closeBridgeClient(expected: java.net.Socket? = null) {
-        synchronized(bridgeClientLock) {
-            val active = clientSocket
-            if (expected != null && active !== expected) return
-            try { active?.close() } catch (_: Throwable) {}
-            clientSocket = null
-            tcpOut = null
-        }
+        tcpWriter?.close(expected)
     }
 
     @SuppressLint("MissingPermission")
@@ -541,13 +650,16 @@ class RatspeakBleGatt(
                             rxC,
                             chunk,
                             BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE,
-                            "fallback detach"
+                            "fallback detach",
+                            requireCallback = false,
                         )
                     ) {
                         return
                     }
                     off = end
-                    if (off < RNODE_DETACH_FRAME.size) Thread.sleep(BLE_WRITE_PACING_MS)
+                    if (off < RNODE_DETACH_FRAME.size) {
+                        Thread.sleep(RatspeakMobilePolicy.RNODE_GATT_WRITE_PACING_MS)
+                    }
                 }
             }
             Thread.sleep(RNODE_DETACH_SETTLE_MS)
@@ -563,7 +675,9 @@ class RatspeakBleGatt(
             running.set(false)
             unregisterBondReceiver()
             unregisterAdapterReceiver()
-            closeBridgeClient()
+            tcpWriter?.shutdown()
+            tcpWriter = null
+            synchronized(inboundKissAssembler) { inboundKissAssembler.reset() }
             val fwd = forwardThread
             if (fwd != null && fwd !== Thread.currentThread()) {
                 fwd.interrupt()
@@ -807,13 +921,16 @@ class RatspeakBleGatt(
         characteristic: BluetoothGattCharacteristic,
         value: ByteArray,
         writeType: Int,
-        reason: String
+        reason: String,
+        requireCallback: Boolean,
     ): Boolean {
-        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(BLE_WRITE_REJECT_TIMEOUT_MS)
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(
+            RatspeakMobilePolicy.RNODE_GATT_ENQUEUE_TIMEOUT_MS,
+        )
         var attempts = 0
         while (true) {
             attempts++
-            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) {
+            if (requireCallback) {
                 writeLatch = CountDownLatch(1)
                 writeStatus.set(false)
             }
@@ -826,7 +943,7 @@ class RatspeakBleGatt(
                 return true
             }
 
-            if (writeType == BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) {
+            if (requireCallback) {
                 writeLatch = null
             }
 
@@ -853,23 +970,36 @@ class RatspeakBleGatt(
         value: ByteArray,
         reason: String
     ): Boolean {
-        val writeType =
-            if ((characteristic.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
-                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-            } else {
+        val mode = RatspeakMobilePolicy.rnodeWriteMode(
+            hasWrite =
+                (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0,
+        )
+        val writeType = when (mode) {
+            RatspeakMobilePolicy.RnodeWriteMode.WITH_RESPONSE ->
                 BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            RatspeakMobilePolicy.RnodeWriteMode.UNSUPPORTED -> {
+                Log.e(TAG, "$reason NUS RX characteristic lacks acknowledged PROPERTY_WRITE")
+                return false
             }
+        }
 
         synchronized(bleWriteLock) {
-            if (!enqueueBleWriteLocked(activeGatt, characteristic, value, writeType, reason)) {
+            if (!enqueueBleWriteLocked(
+                    activeGatt,
+                    characteristic,
+                    value,
+                    writeType,
+                    reason,
+                    requireCallback = true,
+                )
+            ) {
                 return false
             }
 
-            if (writeType != BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) {
-                return true
-            }
-
-            val completed = writeLatch?.await(5, TimeUnit.SECONDS) ?: false
+            val completed = writeLatch?.await(
+                RatspeakMobilePolicy.RNODE_GATT_CALLBACK_TIMEOUT_MS,
+                TimeUnit.MILLISECONDS,
+            ) ?: false
             val ok = completed && writeStatus.get()
             writeLatch = null
             if (!ok) {
@@ -906,17 +1036,33 @@ class RatspeakBleGatt(
     }
 
     private fun handleCharacteristicChanged(ch: BluetoothGattCharacteristic, data: ByteArray) {
-        if (ch.uuid == BleUuids.NUS_TX_CHAR) {
-            val output = synchronized(bridgeClientLock) { tcpOut }
-            try { output?.write(data); output?.flush() }
-            catch (e: Exception) {
-                if (running.get()) {
-                    Log.e(TAG, "BLE→TCP: ${e.javaClass.simpleName}: ${e.message}")
-                    synchronized(bridgeClientLock) {
-                        if (tcpOut === output) closeBridgeClient()
-                    }
+        if (ch.uuid != BleUuids.NUS_TX_CHAR) return
+
+        val assembly = synchronized(inboundKissAssembler) {
+            inboundKissAssembler.offer(data)
+        }
+        var overflow = assembly.overflow
+        val writer = tcpWriter
+        if (!overflow) {
+            for (record in assembly.records) {
+                controlQuiescence.observeCompleteRecord(record.isData)
+                val accepted = if (record.isData) {
+                    writer?.enqueueInbound(record.wire)
+                } else {
+                    // No active Rust socket is an expected replacement seam;
+                    // enqueueControl discards there rather than binding later.
+                    writer?.enqueueControl(record.wire) ?: true
+                }
+                if (accepted != true) {
+                    overflow = true
+                    break
                 }
             }
+        }
+        if (overflow) {
+            Log.e(TAG, "BLE notification record bridge overflow — failing physical generation")
+            running.set(false)
+            closeBridgeClient()
         }
     }
 

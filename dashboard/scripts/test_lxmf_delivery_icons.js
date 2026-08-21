@@ -65,11 +65,13 @@ assert(failed.includes('msg-state-failed'));
 assert(failed.includes('aria-label="Failed"'));
 
 var stopped = icon('cancelled', 'direct');
-assert(stopped.includes('aria-label="Delivery cancelled"'));
-assert(source.includes('aria-label="Cancel message delivery">Cancel</button>'));
-assert(source.includes("message: 'Cancel this message?'"));
-assert(!source.includes('A copy already handed to the network may still arrive.'));
-assert(source.includes("title: 'Cancel delivery?'"));
+assert(stopped.includes('aria-label="Sending stopped"'));
+assert(source.includes('aria-label="Stop sending message">Stop</button>'));
+assert(source.includes("message: 'Stop preparing and retrying this message?'"));
+assert(source.includes('Stopped retrying. A copy already handed to the network may still arrive.'));
+assert(source.includes('No live send remained. The local message was marked stopped, but a copy may still arrive.'));
+assert(source.includes('Stopped before the message left this device.'));
+assert(source.includes("title: 'Stop sending?'"));
 
 var css = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '09-messaging.css'), 'utf8');
 assert(/\.msg-state-sent svg\s*\{[^}]*var\(--text-muted\)/s.test(css),

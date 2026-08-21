@@ -1,10 +1,14 @@
 package org.ratspeak.android
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayOutputStream
+import java.io.IOException
+import java.io.OutputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -19,6 +23,355 @@ class RatspeakMobilePolicyTest {
         assertEquals(20, RatspeakMobilePolicy.attPayload(23, true))
         assertEquals(244, RatspeakMobilePolicy.attPayload(247, true))
         assertEquals(514, RatspeakMobilePolicy.attPayload(517, true))
+    }
+
+    @Test
+    fun rnodeWritesRequireAcknowledgedGattProperty() {
+        assertEquals(
+            RatspeakMobilePolicy.RnodeWriteMode.WITH_RESPONSE,
+            RatspeakMobilePolicy.rnodeWriteMode(hasWrite = true),
+        )
+        assertEquals(
+            "WRITE_NO_RESPONSE-only RNodes fail closed because enqueue is not completion",
+            RatspeakMobilePolicy.RnodeWriteMode.UNSUPPORTED,
+            RatspeakMobilePolicy.rnodeWriteMode(hasWrite = false),
+        )
+    }
+
+    @Test
+    fun nativeBridgeWorstCaseWriteBoundIncludesDefaultAttPayload() {
+        val escapedFrameBytes = 508 * 2 + 3
+        val chunks = (escapedFrameBytes + RatspeakMobilePolicy.DEFAULT_ATT_PAYLOAD - 1) /
+            RatspeakMobilePolicy.DEFAULT_ATT_PAYLOAD
+        val writeBoundMs = chunks * (
+            RatspeakMobilePolicy.RNODE_GATT_ENQUEUE_TIMEOUT_MS +
+                RatspeakMobilePolicy.RNODE_GATT_CALLBACK_TIMEOUT_MS
+            ) + (chunks - 1) * RatspeakMobilePolicy.RNODE_GATT_WRITE_PACING_MS
+        assertEquals(51, chunks)
+        assertEquals(316_800L, writeBoundMs)
+    }
+
+    @Test
+    fun nativeBridgeOneByteTcpReadsStillUseAtMostFiftyOneGattWrites() {
+        val payload = ByteArray(508) { if (it % 2 == 0) 0xC0.toByte() else 0xDB.toByte() }
+        val wire = kissDataFrame(payload)
+        assertEquals(RatspeakMobilePolicy.RNODE_MAX_ESCAPED_FRAME_BYTES, wire.size)
+        val coalescer = RatspeakMobilePolicy.NativeBridgeOutboundKissCoalescer(
+            chunkBytes = RatspeakMobilePolicy.DEFAULT_ATT_PAYLOAD,
+        )
+        val chunks = wire.flatMap { byte ->
+            val offered = coalescer.offer(byteArrayOf(byte))
+            assertFalse(offered.overflow)
+            offered.chunks
+        }
+
+        assertEquals(51, chunks.size)
+        assertTrue(chunks.dropLast(1).all { it.wire.size == 20 })
+        assertEquals(19, chunks.last().wire.size)
+        assertEquals(1, chunks.sumOf { it.completedDataFrames })
+        assertArrayEquals(wire, chunks.flatMap { it.wire.asIterable() }.toByteArray())
+    }
+
+    @Test
+    fun nativeBridgeInboundAssemblerKeepsSplitRecordAcrossSocketReplacement() {
+        val assembler = RatspeakMobilePolicy.NativeBridgeInboundKissAssembler()
+        val wire = kissDataFrame(byteArrayOf(0x41, 0xC0.toByte(), 0x42))
+        val split = wire.size / 2
+        val beforeReplacement = assembler.offer(wire, 0, split)
+        assertFalse(beforeReplacement.overflow)
+        assertTrue(beforeReplacement.records.isEmpty())
+
+        // TCP socket ownership changes here; the assembler is deliberately
+        // physical-GATT-generation state and is not reset.
+        val afterReplacement = assembler.offer(wire, split, wire.size)
+        assertFalse(afterReplacement.overflow)
+        assertEquals(1, afterReplacement.records.size)
+        assertArrayEquals(wire, afterReplacement.records.single().wire)
+        assertEquals(0, afterReplacement.records.single().command)
+    }
+
+    @Test
+    fun nativeBridgeWriterReplaysWholeInboundRecordAfterPartialWrite() {
+        val failed = CountDownLatch(1)
+        val delivered = CountDownLatch(1)
+        val firstOutput = object : OutputStream() {
+            val prefix = ByteArrayOutputStream()
+            override fun write(value: Int) = throw IOException("single-byte write not expected")
+            override fun write(bytes: ByteArray, offset: Int, length: Int) {
+                prefix.write(bytes, offset, minOf(3, length))
+                failed.countDown()
+                throw IOException("partial socket write")
+            }
+        }
+        val secondBytes = ByteArrayOutputStream()
+        val secondOutput = object : OutputStream() {
+            override fun write(value: Int) { secondBytes.write(value) }
+            override fun write(bytes: ByteArray, offset: Int, length: Int) {
+                secondBytes.write(bytes, offset, length)
+                delivered.countDown()
+            }
+        }
+        data class TestSocket(val output: OutputStream)
+        val writer = RatspeakMobilePolicy.NativeBridgeTcpWriter<TestSocket>(
+            maxInboundRecords = 4,
+            maxInboundBytes = 1024,
+            maxAckRecords = 2,
+            closeSocket = {},
+            threadName = "partial-write-test",
+        )
+        val record = kissDataFrame("complete-record".encodeToByteArray())
+        try {
+            val first = TestSocket(firstOutput)
+            assertTrue(writer.install(first, first.output))
+            assertTrue(writer.enqueueInbound(record))
+            assertTrue(failed.await(1, TimeUnit.SECONDS))
+
+            val second = TestSocket(secondOutput)
+            assertTrue(writer.install(second, second.output))
+            assertTrue(delivered.await(1, TimeUnit.SECONDS))
+            assertArrayEquals(record, secondBytes.toByteArray())
+            assertTrue(waitUntil { writer.queuedInboundRecords() == 0 })
+        } finally {
+            writer.shutdown()
+        }
+    }
+
+    @Test
+    fun nativeBridgeWriterReplacementReplaysDataButDropsStaleControlAndAck() {
+        class BlockingOutput : OutputStream() {
+            val entered = CountDownLatch(1)
+            val released = CountDownLatch(1)
+            override fun write(value: Int) = throw IOException("single-byte write not expected")
+            override fun write(bytes: ByteArray, offset: Int, length: Int) {
+                entered.countDown()
+                released.await(2, TimeUnit.SECONDS)
+                throw IOException("closed while blocked")
+            }
+            override fun close() { released.countDown() }
+        }
+        data class TestSocket(val output: OutputStream)
+        val firstOutput = BlockingOutput()
+        val delivered = CountDownLatch(1)
+        val secondBytes = ByteArrayOutputStream()
+        val secondOutput = object : OutputStream() {
+            override fun write(value: Int) { secondBytes.write(value) }
+            override fun write(bytes: ByteArray, offset: Int, length: Int) {
+                secondBytes.write(bytes, offset, length)
+                delivered.countDown()
+            }
+        }
+        val writer = RatspeakMobilePolicy.NativeBridgeTcpWriter<TestSocket>(
+            maxInboundRecords = 4,
+            maxInboundBytes = 1024,
+            maxAckRecords = 2,
+            closeSocket = { it.output.close() },
+            threadName = "blocked-write-test",
+        )
+        val record = kissDataFrame("blocked-record".encodeToByteArray())
+        try {
+            val first = TestSocket(firstOutput)
+            assertTrue(writer.install(first, first.output))
+            assertTrue(writer.enqueueInbound(record))
+            assertTrue(firstOutput.entered.await(1, TimeUnit.SECONDS))
+            assertTrue(
+                writer.enqueueControl(
+                    byteArrayOf(0xC0.toByte(), 0x06, 0x01, 0xC0.toByte()),
+                ),
+            )
+            assertTrue(
+                writer.enqueueAck(first, RatspeakMobilePolicy.nativeBridgeAckFrame(1)),
+            )
+
+            val second = TestSocket(secondOutput)
+            assertTrue(writer.install(second, second.output))
+            assertTrue(delivered.await(1, TimeUnit.SECONDS))
+            assertTrue(waitUntil { writer.queuedControlRecords() == 0 })
+            assertTrue(waitUntil { writer.queuedAckRecords() == 0 })
+            // Neither the old generation's Ready-like control nor its ACK may
+            // be replayed onto the replacement socket.
+            assertArrayEquals(record, secondBytes.toByteArray())
+        } finally {
+            writer.shutdown()
+        }
+    }
+
+    @Test
+    fun nativeBridgeAckIsClosedKissAndEscapesCounterBytes() {
+        assertArrayEquals(
+            byteArrayOf(
+                0xC0.toByte(), 0xA0.toByte(),
+                0x52, 0x53, 0x42, 0x41, 0x01,
+                0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+                0xC0.toByte(),
+            ),
+            RatspeakMobilePolicy.nativeBridgeAckFrame(1),
+        )
+
+        val counter = 0x000000000000C0DBL
+        val frame = RatspeakMobilePolicy.nativeBridgeAckFrame(counter)
+        assertEquals(0xC0.toByte(), frame.first())
+        assertEquals(RatspeakMobilePolicy.NATIVE_BRIDGE_ACK_COMMAND.toByte(), frame[1])
+        assertEquals(0xC0.toByte(), frame.last())
+        assertTrue(
+            frame.toList().windowed(2).any { it == listOf(0xDB.toByte(), 0xDC.toByte()) },
+        )
+        assertTrue(
+            frame.toList().windowed(2).any { it == listOf(0xDB.toByte(), 0xDD.toByte()) },
+        )
+    }
+
+    @Test
+    fun nativeBridgeInboundBoundsAndWriterQueueFailClosed() {
+        val assembler = RatspeakMobilePolicy.NativeBridgeInboundKissAssembler(maxFrameBytes = 5)
+        val oversized = assembler.offer(
+            byteArrayOf(
+                0xC0.toByte(), 0x00, 0x01, 0x02, 0x03, 0xC0.toByte(),
+            ),
+        )
+        assertTrue(oversized.overflow)
+
+        data class TestSocket(val output: OutputStream)
+        val writer = RatspeakMobilePolicy.NativeBridgeTcpWriter<TestSocket>(
+            maxInboundRecords = 1,
+            maxInboundBytes = 4,
+            maxAckRecords = 1,
+            closeSocket = {},
+            threadName = "bridge-bound-test",
+        )
+        try {
+            assertTrue(
+                "control without an active socket is an intentional discard",
+                writer.enqueueControl(
+                    byteArrayOf(0xC0.toByte(), 0x06, 0x01, 0xC0.toByte()),
+                ),
+            )
+            assertEquals(0, writer.queuedControlRecords())
+            assertTrue(writer.enqueueInbound(byteArrayOf(1, 2, 3, 4)))
+            assertFalse(writer.enqueueInbound(byteArrayOf(5)))
+        } finally {
+            writer.shutdown()
+        }
+    }
+
+    @Test
+    fun controlQuiescenceWaitsAfterCloseAndCommitsInstallOnlyAfterFence() {
+        val millisecond = 1_000_000L
+        var now = 0L
+        var installed = false
+        val gate = RatspeakMobilePolicy.NativeBridgeControlQuiescence(
+            quietIntervalNanos = 200 * millisecond,
+            hardMaxNanos = 2_000 * millisecond,
+            nowNanos = { now },
+            waitNanos = { delay ->
+                assertFalse("socket N+1 installed before quiet boundary", installed)
+                now += delay
+            },
+        )
+        val boundary = gate.beginAfterClosure()
+        val outcome = boundary.awaitQuietAndCommit(
+            shouldContinue = { true },
+            action = {
+                installed = true
+                true
+            },
+        )
+        assertEquals(RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.READY, outcome)
+        assertTrue(installed)
+        assertEquals(200 * millisecond, now)
+    }
+
+    @Test
+    fun lateControlExtendsQuiescenceButDataDoesNot() {
+        val millisecond = 1_000_000L
+
+        var controlNow = 0L
+        var injectControl = true
+        lateinit var controlGate: RatspeakMobilePolicy.NativeBridgeControlQuiescence
+        controlGate = RatspeakMobilePolicy.NativeBridgeControlQuiescence(
+            quietIntervalNanos = 200 * millisecond,
+            hardMaxNanos = 2_000 * millisecond,
+            nowNanos = { controlNow },
+            waitNanos = { delay ->
+                val step = minOf(delay, 100 * millisecond)
+                controlNow += step
+                if (injectControl) {
+                    injectControl = false
+                    controlGate.observeCompleteRecord(isData = false)
+                }
+            },
+        )
+        assertEquals(
+            RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.READY,
+            controlGate.beginAfterClosure().awaitQuiet { true },
+        )
+        assertEquals(300 * millisecond, controlNow)
+
+        var dataNow = 0L
+        var injectData = true
+        lateinit var dataGate: RatspeakMobilePolicy.NativeBridgeControlQuiescence
+        dataGate = RatspeakMobilePolicy.NativeBridgeControlQuiescence(
+            quietIntervalNanos = 200 * millisecond,
+            hardMaxNanos = 2_000 * millisecond,
+            nowNanos = { dataNow },
+            waitNanos = { delay ->
+                val step = minOf(delay, 100 * millisecond)
+                dataNow += step
+                if (injectData) {
+                    injectData = false
+                    dataGate.observeCompleteRecord(isData = true)
+                }
+            },
+        )
+        assertEquals(
+            RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.READY,
+            dataGate.beginAfterClosure().awaitQuiet { true },
+        )
+        assertEquals(200 * millisecond, dataNow)
+    }
+
+    @Test
+    fun endlessControlsHitQuiescenceHardFailure() {
+        val millisecond = 1_000_000L
+        var now = 0L
+        lateinit var gate: RatspeakMobilePolicy.NativeBridgeControlQuiescence
+        gate = RatspeakMobilePolicy.NativeBridgeControlQuiescence(
+            quietIntervalNanos = 200 * millisecond,
+            hardMaxNanos = 2_000 * millisecond,
+            nowNanos = { now },
+            waitNanos = { delay ->
+                now += minOf(delay, 50 * millisecond)
+                gate.observeCompleteRecord(isData = false)
+            },
+        )
+        assertEquals(
+            RatspeakMobilePolicy.NativeBridgeControlQuiescence.Outcome.HARD_FAILURE,
+            gate.beginAfterClosure().awaitQuiet { true },
+        )
+        assertEquals(2_000 * millisecond, now)
+    }
+
+    private fun kissDataFrame(payload: ByteArray): ByteArray {
+        val framed = ByteArrayOutputStream(payload.size * 2 + 3)
+        framed.write(0xC0)
+        framed.write(0x00)
+        payload.forEach { byte ->
+            when (byte.toInt() and 0xFF) {
+                0xC0 -> { framed.write(0xDB); framed.write(0xDC) }
+                0xDB -> { framed.write(0xDB); framed.write(0xDD) }
+                else -> framed.write(byte.toInt() and 0xFF)
+            }
+        }
+        framed.write(0xC0)
+        return framed.toByteArray()
+    }
+
+    private fun waitUntil(timeoutMs: Long = 1_000, condition: () -> Boolean): Boolean {
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
+        while (System.nanoTime() < deadline) {
+            if (condition()) return true
+            Thread.sleep(5)
+        }
+        return condition()
     }
 
     @Test

@@ -1601,7 +1601,7 @@ function _messageStateIconHtml(msg) {
 
     if (state === 'read') return wrap('msg-state-read', 'Read', ICON.read);
     if (state === 'failed' || state === 'timeout') return wrap('msg-state-failed', 'Failed', ICON.x);
-    if (state === 'cancelled') return wrap('msg-state-cancelled', 'Delivery cancelled', ICON.x);
+    if (state === 'cancelled') return wrap('msg-state-cancelled', 'Sending stopped', ICON.x);
     if (state === 'rejected') return wrap('msg-state-rejected', 'Rejected', ICON.rejected) + ' <span class="msg-state-label">Rejected</span>';
     if (state === 'propagated') return wrap('msg-state-propagated', 'Stored in Offline Inbox', ICON.envelope);
     if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.check);
@@ -1697,7 +1697,7 @@ function _messageSendCancelOverlayHtml(msg, percent) {
     var pct = percent === null ? 0 : percent;
     return '<button type="button" class="lxmf-send-cancel" ' +
         'data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
-        'style="--send-progress:' + pct + '%" aria-label="Cancel message delivery">' +
+        'style="--send-progress:' + pct + '%" aria-label="Stop sending message">' +
         '<span aria-hidden="true">&times;</span>' +
     '</button>';
 }
@@ -1705,7 +1705,7 @@ function _messageSendCancelOverlayHtml(msg, percent) {
 function _messageInlineCancelHtml(msg) {
     if (!_messageCanCancelSend(msg)) return '';
     return '<button type="button" class="msg-send-cancel-inline" ' +
-        'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Cancel message delivery">Cancel</button>';
+        'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Stop sending message">Stop</button>';
 }
 
 function _findLxmfMessageById(msgId) {
@@ -1732,6 +1732,25 @@ function _invokeLxmfCancel(msgId) {
     });
 }
 
+function _showLxmfStopResult(resp) {
+    if (!resp) return;
+    if (resp.live_owner_stopped) {
+        showToast('Stopped retrying. A copy already handed to the network may still arrive.', 'toast-info', 5200);
+        return;
+    }
+    if (resp.cancelled && resp.row_marked_stopped) {
+        showToast('No live send remained. The local message was marked stopped, but a copy may still arrive.', 'toast-info', 5200);
+        return;
+    }
+    if (resp.cancelled && !resp.may_have_left_device) {
+        showToast('Stopped before the message left this device.', 'toast-info', 3200);
+        return;
+    }
+    if (resp.may_have_left_device) {
+        showToast('No local send remained to stop. A copy may already have left this device.', 'toast-info', 5200);
+    }
+}
+
 function _flushPendingLxmfCancel(clientMsgId, serverMsgId) {
     if (!clientMsgId || !serverMsgId || !_pendingLxmfCancelByClientId[clientMsgId]) return;
     delete _pendingLxmfCancelByClientId[clientMsgId];
@@ -1739,8 +1758,9 @@ function _flushPendingLxmfCancel(clientMsgId, serverMsgId) {
         if (resp && resp.cancelled) {
             _markLxmfMessageCancelled(serverMsgId);
         }
+        _showLxmfStopResult(resp);
     }).catch(function(err) {
-        showToast('Could not cancel delivery: ' + ((err && err.message) || 'error'), 'toast-error', 3500);
+        showToast('Could not stop sending: ' + ((err && err.message) || 'error'), 'toast-error', 3500);
     });
 }
 
@@ -1748,20 +1768,22 @@ function _cancelLxmfSend(msgId) {
     msgId = String(msgId || '');
     if (!msgId) return;
     rsConfirm({
-        title: 'Cancel delivery?',
-        message: 'Cancel this message?',
-        confirmText: 'Cancel delivery'
+        title: 'Stop sending?',
+        message: 'Stop preparing and retrying this message?',
+        confirmText: 'Stop sending'
     }).then(function(confirmed) {
         if (!confirmed) return;
         if (!_isCanonicalLxmfMsgId(msgId)) {
             _pendingLxmfCancelByClientId[msgId] = true;
         }
         return _invokeLxmfCancel(msgId).then(function(resp) {
-            if (!resp || !resp.cancelled) return;
-            _markLxmfMessageCancelled(resp.msg_id || resp.client_msg_id || msgId);
+            if (resp && resp.cancelled) {
+                _markLxmfMessageCancelled(resp.msg_id || resp.client_msg_id || msgId);
+            }
+            _showLxmfStopResult(resp);
         });
     }).catch(function(err) {
-        showToast('Could not cancel delivery: ' + ((err && err.message) || 'error'), 'toast-error', 3500);
+        showToast('Could not stop sending: ' + ((err && err.message) || 'error'), 'toast-error', 3500);
     });
 }
 
