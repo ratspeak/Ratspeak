@@ -4,7 +4,7 @@
   "packages": [
     {
       "name": "ratspeak",
-      "version": "1.0.28",
+      "version": "1.0.29",
       "rustVersion": "1.87",
       "edition": "2021",
       "features": {
@@ -153,7 +153,7 @@
           "rename": null,
           "kind": null,
           "target": "cfg(any(target_os = \"android\", target_os = \"ios\"))",
-          "requirement": "^1.0.28",
+          "requirement": "^1.0.29",
           "optional": false,
           "defaultFeatures": false,
           "features": [
@@ -191,7 +191,7 @@
           "rename": null,
           "kind": null,
           "target": "cfg(not(any(target_os = \"android\", target_os = \"ios\")))",
-          "requirement": "^1.0.28",
+          "requirement": "^1.0.29",
           "optional": false,
           "defaultFeatures": true,
           "features": [
@@ -370,7 +370,7 @@
     },
     {
       "name": "ratspeak-core",
-      "version": "1.0.28",
+      "version": "1.0.29",
       "rustVersion": "1.87",
       "edition": "2024",
       "features": {},
@@ -437,7 +437,7 @@
     },
     {
       "name": "ratspeak-db",
-      "version": "1.0.28",
+      "version": "1.0.29",
       "rustVersion": "1.87",
       "edition": "2024",
       "features": {},
@@ -503,7 +503,7 @@
           "rename": null,
           "kind": null,
           "target": null,
-          "requirement": "^1.0.28",
+          "requirement": "^1.0.29",
           "optional": false,
           "defaultFeatures": true,
           "features": [],
@@ -596,7 +596,7 @@
     },
     {
       "name": "ratspeak-runtime",
-      "version": "1.0.28",
+      "version": "1.0.29",
       "rustVersion": "1.87",
       "edition": "2024",
       "features": {
@@ -837,7 +837,7 @@
           "rename": null,
           "kind": null,
           "target": null,
-          "requirement": "^1.0.28",
+          "requirement": "^1.0.29",
           "optional": false,
           "defaultFeatures": true,
           "features": [],
@@ -848,7 +848,7 @@
           "rename": null,
           "kind": null,
           "target": null,
-          "requirement": "^1.0.28",
+          "requirement": "^1.0.29",
           "optional": false,
           "defaultFeatures": true,
           "features": [],
@@ -1108,7 +1108,7 @@
     },
     {
       "name": "ratspeak-tauri",
-      "version": "1.0.28",
+      "version": "1.0.29",
       "rustVersion": "1.87",
       "edition": "2024",
       "features": {
@@ -1265,7 +1265,7 @@
           "rename": null,
           "kind": null,
           "target": null,
-          "requirement": "^1.0.28",
+          "requirement": "^1.0.29",
           "optional": false,
           "defaultFeatures": true,
           "features": [],
@@ -1276,7 +1276,7 @@
           "rename": null,
           "kind": null,
           "target": null,
-          "requirement": "^1.0.28",
+          "requirement": "^1.0.29",
           "optional": false,
           "defaultFeatures": true,
           "features": [],
@@ -1287,7 +1287,7 @@
           "rename": null,
           "kind": null,
           "target": null,
-          "requirement": "^1.0.28",
+          "requirement": "^1.0.29",
           "optional": false,
           "defaultFeatures": true,
           "features": [],

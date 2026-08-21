@@ -46,6 +46,9 @@ test("dependency-set schema rejects source and platform identity drift", () => {
 
   const letteredDisplay = structuredClone(set);
   letteredDisplay.product.displayVersion = `${letteredDisplay.product.marketingVersion}a`;
+  for (const component of letteredDisplay.components) {
+    component.integrationTag = `ratspeak-v${letteredDisplay.product.displayVersion}`;
+  }
   assert.doesNotThrow(() => validateDependencySet(letteredDisplay));
 
   const reusedBuild = structuredClone(set);
@@ -64,6 +67,9 @@ test("dependency-set schema rejects source and platform identity drift", () => {
   const futureRelease = structuredClone(set);
   futureRelease.product.displayVersion = "1.0.29";
   futureRelease.product.marketingVersion = "1.0.29";
+  for (const component of futureRelease.components) {
+    component.integrationTag = null;
+  }
   assert.throws(
     () => validateDependencySet(futureRelease),
     /integrationTag must be ratspeak-v1.0.29/,

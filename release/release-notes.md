@@ -1,5 +1,7 @@
-- Fixed RNode startup compatibility by treating optional EEPROM information as advisory instead of rejecting otherwise usable hardware, including the T114.
-- Restored reliable BLE transmission after an RNode connects.
-- Fixed Announce sometimes staying queued even while an external RNode was connected and ready to transmit.
-- Fixed Linux AppImage startup crashes caused by incompatible system AppIndicator and GLib libraries.
-- Simplified interface status messages so connection and hardware warnings are shown as plain yellow text instead of pill-shaped badges.
+- Qualified and fixed Bluetooth RNode support on iOS and Android for Heltec V3/V4 and LilyGO T114/T-Echo, including fresh pairing, adapter toggles, walking out of range, automatic reconnect, and queued-message recovery.
+- Made RNode readiness reflect the completed hardware handshake immediately, prevented traffic loss across reconnect generations, and used each device's advertised four-character identifier in its default interface name.
+- Made manual and interface-online announces coalesce into one prompt queue operation, report actual interface acceptance, and remain responsive during background maintenance.
+- Moved LXMF identity, ratchet, and router persistence off the protocol lock and made pruning incremental, durable, and safe under concurrent activity.
+- Aligned LXMF first-hop establishment timing with Reticulum so slower radio links are not failed prematurely.
+- Clarified pending-message cancellation as stopping local retries without promising that a copy already handed to the network can be recalled.
+- Added an exact dependency manifest and coordinated annotated sibling tags for reproducible v1.0.29 builds without date-based revision guessing.

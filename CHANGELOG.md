@@ -5,6 +5,31 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+## [1.0.29] - 2026-08-21
+
+### Fixed
+
+- Qualified and fixed Bluetooth RNode support on iOS and Android for Heltec
+  V3/V4 and LilyGO T114/T-Echo, including fresh pairing, adapter toggles,
+  walking out of range, automatic reconnect, and queued-message recovery.
+- Made RNode readiness reflect the completed hardware handshake immediately,
+  prevented traffic loss across reconnect generations, and used each device's
+  advertised four-character identifier in its default interface name.
+- Made manual and interface-online announces coalesce into one prompt queue
+  operation, report actual interface acceptance, and remain responsive during
+  background maintenance.
+- Moved LXMF identity, ratchet, and router persistence off the protocol lock
+  and made pruning incremental, durable, and safe under concurrent activity.
+- Aligned LXMF first-hop establishment timing with Reticulum so slower radio
+  links are not failed prematurely.
+- Clarified pending-message cancellation as stopping local retries without
+  promising that a copy already handed to the network can be recalled.
+
+### Changed
+
+- Added an exact dependency manifest and coordinated annotated sibling tags
+  for reproducible v1.0.29 builds without date-based revision guessing.
+
 ## [1.0.28] - 2026-08-18
 
 ### Fixed
@@ -45,6 +70,7 @@ changes that materially affect how an artifact is reproduced.
 - Declared every first-party Ratspeak package non-publishable and recorded
   compatible versions alongside all sibling path dependencies.
 
-[Unreleased]: https://github.com/ratspeak/Ratspeak/compare/v1.0.28...HEAD
+[Unreleased]: https://github.com/ratspeak/Ratspeak/compare/v1.0.29...HEAD
+[1.0.29]: https://github.com/ratspeak/Ratspeak/compare/v1.0.28...v1.0.29
 [1.0.28]: https://github.com/ratspeak/Ratspeak/compare/v1.0.27...v1.0.28
 [1.0.27]: https://github.com/ratspeak/Ratspeak/compare/v1.0.26o...v1.0.27

@@ -85,9 +85,8 @@ pub(crate) fn install(state: &Arc<AppState>) {
     #[cfg(target_os = "android")]
     {
         let bridge: Arc<dyn MobilePlatformBridge> = Arc::new(AndroidPlatformBridge);
-        let _ = bridge.set_android_ble_rnode_auto_resume(
-            state.android_ble_rnode_auto_resume_enabled(),
-        );
+        let _ =
+            bridge.set_android_ble_rnode_auto_resume(state.android_ble_rnode_auto_resume_enabled());
         state.install_mobile_platform_bridge(bridge);
         state.mobile_platform_bridge().replay_platform_state();
     }

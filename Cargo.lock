@@ -3999,7 +3999,7 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "ratspeak-core"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "serde",
  "serde_json",
@@ -4009,7 +4009,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-db"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "hex",
  "lrgp",
@@ -4027,7 +4027,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-runtime"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "argon2",
  "bytes",
@@ -4074,7 +4074,7 @@ dependencies = [
 
 [[package]]
 name = "ratspeak-tauri"
-version = "1.0.28"
+version = "1.0.29"
 dependencies = [
  "base64 0.22.1",
  "bytes",

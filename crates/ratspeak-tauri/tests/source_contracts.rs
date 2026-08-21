@@ -5510,11 +5510,13 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "Fixed RNode startup compatibility",
-        "Restored reliable BLE transmission",
-        "Fixed Announce sometimes staying queued",
-        "Fixed Linux AppImage startup crashes",
-        "plain yellow text instead of pill-shaped badges",
+        "Qualified and fixed Bluetooth RNode support",
+        "Made RNode readiness reflect the completed hardware handshake",
+        "Made manual and interface-online announces coalesce",
+        "Moved LXMF identity, ratchet, and router persistence off the protocol lock",
+        "Aligned LXMF first-hop establishment timing with Reticulum",
+        "Clarified pending-message cancellation",
+        "coordinated annotated sibling tags",
     ];
 
     for workflow_path in [
