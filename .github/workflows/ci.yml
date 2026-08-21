@@ -66,7 +66,7 @@ jobs:
       - name: Check manifest and feature contract
         run: python3 tools/check-api-manifest.py
         working-directory: Ratspeak
-      - name: Check additions-only compatibility floor
+      - name: Check reviewed compatibility floor
         run: python3 tools/check-api-compatibility.py
         working-directory: Ratspeak
 

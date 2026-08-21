@@ -19,8 +19,8 @@
     "sourceCommit": "fc78e4926c696a921f308d238ef1b620e0db0078"
   },
   "snapshotSource": {
-    "commit": "b39e08208d7efc2f9538d7b931a96e30fcbc2fe2",
-    "capturedOn": "2026-08-17",
+    "commit": "66bc3a48aed3a0a05d8c853945560c2c09674c54",
+    "capturedOn": "2026-08-20",
     "review": {
       "areas": [
         "application domain and configuration",
@@ -34,20 +34,20 @@
         "lxst_telephony::TelephonyService::registered",
         "lrgp::protocol"
       ],
-      "classification": "application-internal consumer migration",
+      "classification": "application-internal lifecycle, persistence, and mobile integration",
       "publicApiDiff": {
-        "added": 0,
-        "removed": 0
+        "added": 122,
+        "removed": 12
       },
       "semver": "no public-library consequence; application integration only",
       "deprecations": "none",
-      "wirePersistenceRuntimeImpact": "none",
+      "wirePersistenceRuntimeImpact": "no wire-format change; adds one persisted Android-only reconnect preference and reviews the announce, RNode readiness, and nonblocking LXMF persistence ownership surfaces",
       "platformEvidence": [
-        "workspace and standalone shell gates",
-        "macOS, Windows, and Linux compilation",
-        "Android arm64, ARMv7, and x86_64 compilation",
-        "iOS device and simulator compilation",
-        "unchanged IPC, database, JNI, and source contracts"
+        "rsReticulum and Ratspeak full Rust workspace gates",
+        "Android arm64 Kotlin policy and APK compilation",
+        "Apple BLE generation, pairing, and adapter-state lifecycle tests",
+        "dashboard behavior, JNI boundary, workflow pin, and source-contract gates",
+        "physical iOS RNode qualification on V3, V4, T114, and T-Echo before the adapter-state wake extension"
       ]
     }
   },
@@ -67,8 +67,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-db.txt",
-      "itemCount": 682,
-      "sha256": "81e03f2e8f7ef4093d34d51121cfe55fa5848a380c026c7c8b3c647e3242b54c"
+      "itemCount": 686,
+      "sha256": "f53dd3f0aef794bb279d6a5f77954bf4034eeabf2e28cccd67e3d67e4484586a"
     },
     {
       "name": "ratspeak-runtime",
@@ -76,8 +76,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-runtime.txt",
-      "itemCount": 2361,
-      "sha256": "2f797c9b2a8e7b81b06241b3503a3e4659f3f66557af02d2336f39ee7984f3d6"
+      "itemCount": 2464,
+      "sha256": "a8e51c5b14c4f65ff999e6278d165f2227f89984a89150b633859d6ccc5488e0"
     },
     {
       "name": "ratspeak-tauri",
@@ -85,8 +85,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-tauri.txt",
-      "itemCount": 790,
-      "sha256": "cfabd0baa11a2cd96fd0db2c1ac83d86407919975ce8824daca0f426b0c843ea"
+      "itemCount": 794,
+      "sha256": "e5c700da3c2adb819cb68ceb98dc00f41241d5819ba2ccb242e322f921093204"
     },
     {
       "name": "ratspeak",

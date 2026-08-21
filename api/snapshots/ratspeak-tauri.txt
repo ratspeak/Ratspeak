@@ -1,4 +1,6 @@
 pub mod ratspeak_tauri
+pub use ratspeak_tauri::AnnounceSendDisposition
+pub use ratspeak_tauri::announce
 pub use ratspeak_tauri::announce_handlers
 pub use ratspeak_tauri::any_interface_online_cached
 pub use ratspeak_tauri::apply_lxmf_settings_from_state
@@ -20,6 +22,7 @@ pub use ratspeak_tauri::send_announce_from_origin
 pub use ratspeak_tauri::send_announce_from_state
 pub use ratspeak_tauri::send_manual_announce_from_origin
 pub use ratspeak_tauri::send_manual_announce_from_state
+pub use ratspeak_tauri::send_typed_announce_from_origin
 pub use ratspeak_tauri::shutdown_ble_peer_for_exit
 pub use ratspeak_tauri::shutdown_rns_lxmf
 pub use ratspeak_tauri::start_channel_hub_service
@@ -470,6 +473,7 @@ pub async fn ratspeak_tauri::commands::interfaces::remove_tcp_server(tauri::stat
 pub async fn ratspeak_tauri::commands::interfaces::request_android_usb_permission(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::resume_interface(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::interfaces::InterfaceLifecycleArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_activity_identity_protection(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, bool) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::interfaces::set_android_ble_rnode_auto_resume(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, bool) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_announce_ratspeak_usage(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, bool) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_appearance(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_auto_announce(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, u64) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>

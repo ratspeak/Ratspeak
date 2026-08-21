@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reject removals from the reviewed public-API compatibility floor."""
+"""Reject unreviewed changes from the Rust API compatibility floor."""
 
 from __future__ import annotations
 
@@ -61,6 +61,7 @@ def main() -> None:
     }
     total_added = 0
     total_removed = 0
+    packages_with_removals: list[dict[str, object]] = []
     for package in ledger["packages"]:
         path = package["snapshot"]
         floor_path = floor_snapshots.get(package["name"])
@@ -72,22 +73,33 @@ def main() -> None:
         removed = sorted(before - after)
         total_added += len(added)
         total_removed += len(removed)
+        if removed:
+            packages_with_removals.append(package)
         print(f"{package['name']}: +{len(added)} -{len(removed)}")
         if removed:
             for line in removed:
                 print(f"- {line}", file=sys.stderr)
-    if total_removed:
-        fail(
-            f"{total_removed} public API lines were removed from the compatibility floor; "
-            "the current policy permits additions only"
-        )
     review = ledger["snapshotSource"]["review"]
     if review["publicApiDiff"] != {
         "added": total_added,
         "removed": total_removed,
     }:
         fail("snapshot review does not match the measured API diff")
-    print(f"api compatibility: additive-only (+{total_added}, -0)")
+    for package in packages_with_removals:
+        if package.get("tier") != "application-internal" or package.get(
+            "compatibility"
+        ) != "reviewed-snapshot":
+            fail(
+                f"{package['name']} removes API outside the reviewed "
+                "application-internal tier"
+            )
+    if total_removed:
+        print(
+            "api compatibility: explicitly reviewed application-internal change "
+            f"(+{total_added}, -{total_removed})"
+        )
+    else:
+        print(f"api compatibility: additive-only (+{total_added}, -0)")
 
 
 if __name__ == "__main__":

@@ -43,4 +43,7 @@ python3 tools/check-api-compatibility.py
 
 Snapshot updates require a clean source commit and an explicit review recorded
 in `api/stability.json`. Additions, removals, deprecations, platform impact, and
-version consequences must be reviewed before accepting new evidence.
+version consequences must be reviewed before accepting new evidence. Removals
+are accepted only for packages explicitly classified as application-internal
+and governed by a reviewed snapshot; reusable/public packages remain closed to
+removals.

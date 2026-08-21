@@ -214,6 +214,8 @@ pub fn ratspeak_db::db::delete_game_session(&ratspeak_db::DbPool, &str, &str) ->
 pub fn ratspeak_db::db::delete_identity(&ratspeak_db::DbPool, &str, bool) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::delete_identity_activity(&ratspeak_db::DbPool, &[alloc::string::String]) -> usize
 pub fn ratspeak_db::db::delete_message_for_identity(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<bool, alloc::string::String>
+pub fn ratspeak_db::db::delete_prunable_identity_activity(&ratspeak_db::DbPool, &[alloc::string::String], f64, &std::collections::hash::set::HashSet<alloc::string::String>) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String>
+pub fn ratspeak_db::db::delete_prunable_identity_activity_after<F>(&ratspeak_db::DbPool, &[alloc::string::String], f64, &std::collections::hash::set::HashSet<alloc::string::String>, F) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String> where F: core::ops::function::FnOnce(&[alloc::string::String]) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::enqueue_pending_blackhole(&ratspeak_db::DbPool, &str, &str, core::option::Option<&str>, core::option::Option<f64>) -> bool
 pub fn ratspeak_db::db::find_cap_eviction_candidates(&ratspeak_db::DbPool, f64, usize, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::db::find_prune_candidates(&ratspeak_db::DbPool, f64, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
@@ -559,6 +561,8 @@ pub fn ratspeak_db::delete_game_session(&ratspeak_db::DbPool, &str, &str) -> boo
 pub fn ratspeak_db::delete_identity(&ratspeak_db::DbPool, &str, bool) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::delete_identity_activity(&ratspeak_db::DbPool, &[alloc::string::String]) -> usize
 pub fn ratspeak_db::delete_message_for_identity(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<bool, alloc::string::String>
+pub fn ratspeak_db::delete_prunable_identity_activity(&ratspeak_db::DbPool, &[alloc::string::String], f64, &std::collections::hash::set::HashSet<alloc::string::String>) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String>
+pub fn ratspeak_db::delete_prunable_identity_activity_after<F>(&ratspeak_db::DbPool, &[alloc::string::String], f64, &std::collections::hash::set::HashSet<alloc::string::String>, F) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String> where F: core::ops::function::FnOnce(&[alloc::string::String]) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::enqueue_pending_blackhole(&ratspeak_db::DbPool, &str, &str, core::option::Option<&str>, core::option::Option<f64>) -> bool
 pub fn ratspeak_db::find_cap_eviction_candidates(&ratspeak_db::DbPool, f64, usize, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::find_prune_candidates(&ratspeak_db::DbPool, f64, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
