@@ -7,6 +7,14 @@ on:
         description: "Exact candidate commit to build; defaults to the selected dispatch ref."
         required: false
         type: string
+      qualification_run_id:
+        description: "Successful final pre-tag qualification run required for TestFlight."
+        required: false
+        type: string
+      integration_tag_run_id:
+        description: "Successful sibling-tag verification run required for TestFlight."
+        required: false
+        type: string
       build_mode:
         description: "Build mode"
         required: true
@@ -17,6 +25,7 @@ on:
           - testflight
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -89,6 +98,71 @@ jobs:
         shell: bash
         working-directory: Ratspeak
         run: node scripts/release/source-integrity.mjs verify-release-source
+
+      - name: Verify coordinated sibling tags for TestFlight
+        if: ${{ inputs.build_mode == 'testflight' }}
+        shell: bash
+        working-directory: Ratspeak
+        run: node scripts/release/source-integrity.mjs verify-tags
+
+      - name: Require exact successful qualification for TestFlight
+        if: ${{ inputs.build_mode == 'testflight' }}
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INTEGRATION_TAG_RUN_ID: ${{ inputs.integration_tag_run_id }}
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "TestFlight requires source_ref to be the exact qualified commit SHA" >&2
+            exit 1
+          fi
+          if [[ ! "$QUALIFICATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "TestFlight requires a successful qualification_run_id" >&2
+            exit 1
+          fi
+          if [[ ! "$INTEGRATION_TAG_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "TestFlight requires a successful integration_tag_run_id" >&2
+            exit 1
+          fi
+          source_sha="$(git rev-parse HEAD)"
+          if [[ "$source_sha" != "$SOURCE_REF" || "$source_sha" != "$WORKFLOW_SHA" ]]; then
+            echo "Dispatch TestFlight from the exact qualified source: workflow $WORKFLOW_SHA, input $SOURCE_REF, checkout $source_sha" >&2
+            exit 1
+          fi
+
+          expected_workflow_id="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/qualify-release.yml" \
+            --jq '.id')"
+          read -r workflow_id status conclusion event head_sha <<<"$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFICATION_RUN_ID" \
+            --jq '[.workflow_id, .status, .conclusion, .event, .head_sha] | @tsv')"
+          test "$workflow_id" = "$expected_workflow_id"
+          test "$status" = "completed"
+          test "$conclusion" = "success"
+          test "$event" = "workflow_dispatch"
+          test "$head_sha" = "$source_sha"
+
+          artifact_count="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFICATION_RUN_ID/artifacts" \
+            --jq '[.artifacts[] | select(.name == "ratspeak-release-qualification" and .expired == false)] | length')"
+          test "$artifact_count" = "1"
+
+          expected_tag_workflow_id="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/verify-integration-tags.yml" \
+            --jq '.id')"
+          read -r tag_workflow_id tag_status tag_conclusion tag_event tag_head_sha <<<"$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$INTEGRATION_TAG_RUN_ID" \
+            --jq '[.workflow_id, .status, .conclusion, .event, .head_sha] | @tsv')"
+          test "$tag_workflow_id" = "$expected_tag_workflow_id"
+          test "$tag_status" = "completed"
+          test "$tag_conclusion" = "success"
+          test "$tag_event" = "workflow_dispatch"
+          test "$tag_head_sha" = "$source_sha"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772

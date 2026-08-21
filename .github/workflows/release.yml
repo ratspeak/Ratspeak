@@ -16,6 +16,10 @@ on:
         description: "Successful final pre-tag qualification run to promote."
         required: true
         type: string
+      integration_tag_run_id:
+        description: "Successful post-qualification sibling-tag verification run."
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -88,15 +92,26 @@ jobs:
         shell: bash
         working-directory: Ratspeak
         env:
+          INTEGRATION_TAG_RUN_ID: ${{ inputs.integration_tag_run_id }}
           QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
           RELEASE_TAG: ${{ inputs.release_tag }}
+          WORKFLOW_REF: ${{ github.ref }}
         run: |
           set -euo pipefail
           node scripts/release/source-integrity.mjs verify-release-source
+          node scripts/release/source-integrity.mjs verify-tags
           node scripts/release/source-integrity.mjs verify-release-ref "$RELEASE_TAG"
+          if [[ "$WORKFLOW_REF" != "refs/tags/$RELEASE_TAG" ]]; then
+            echo "Dispatch Release from the exact product tag: workflow ref $WORKFLOW_REF, requested $RELEASE_TAG" >&2
+            exit 1
+          fi
           test -s release/release-notes.md
           if [[ ! "$QUALIFICATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
             echo "qualification_run_id must be a positive GitHub Actions run ID" >&2
+            exit 1
+          fi
+          if [[ ! "$INTEGRATION_TAG_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "integration_tag_run_id must be a positive GitHub Actions run ID" >&2
             exit 1
           fi
           echo "release_tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
@@ -107,23 +122,45 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
         run: |
           set -euo pipefail
           expected_workflow_id="$(gh api \
             "repos/$GITHUB_REPOSITORY/actions/workflows/qualify-release.yml" \
             --jq '.id')"
-          read -r workflow_id status conclusion event <<<"$(gh api \
+          read -r workflow_id status conclusion event head_sha <<<"$(gh api \
             "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFICATION_RUN_ID" \
-            --jq '[.workflow_id, .status, .conclusion, .event] | @tsv')"
+            --jq '[.workflow_id, .status, .conclusion, .event, .head_sha] | @tsv')"
           test "$workflow_id" = "$expected_workflow_id"
           test "$status" = "completed"
           test "$conclusion" = "success"
           test "$event" = "workflow_dispatch"
+          test "$head_sha" = "$SOURCE_SHA"
 
           artifact_count="$(gh api \
             "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFICATION_RUN_ID/artifacts" \
             --jq '[.artifacts[] | select(.name == "ratspeak-release-qualification" and .expired == false)] | length')"
           test "$artifact_count" = "1"
+
+      - name: Require successful pre-product-tag sibling verification
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INTEGRATION_TAG_RUN_ID: ${{ inputs.integration_tag_run_id }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          expected_workflow_id="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/verify-integration-tags.yml" \
+            --jq '.id')"
+          read -r workflow_id status conclusion event head_sha <<<"$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$INTEGRATION_TAG_RUN_ID" \
+            --jq '[.workflow_id, .status, .conclusion, .event, .head_sha] | @tsv')"
+          test "$workflow_id" = "$expected_workflow_id"
+          test "$status" = "completed"
+          test "$conclusion" = "success"
+          test "$event" = "workflow_dispatch"
+          test "$head_sha" = "$SOURCE_SHA"
 
       - name: Require successful ordinary CI on the exact source
         shell: bash

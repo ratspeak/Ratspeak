@@ -121,7 +121,7 @@ for (const [platform, expectedPlatformFiles] of platformFiles) {
 }
 
 const canonicalComponents = new Map(
-  dependencySet.components.map((component) => [component.id, component.commit]),
+  dependencySet.components.map((component) => [component.id, component]),
 );
 const bomFiles = actualFiles.filter((name) => name.endsWith("-source-bom.json"));
 if (bomFiles.length !== 5) fail(`expected five source BOMs, found ${bomFiles.length}`);
@@ -151,10 +151,16 @@ for (const bomName of bomFiles) {
   if (JSON.stringify(bom.toolchains?.declared) !== JSON.stringify(dependencySet.toolchains)) {
     fail(`${bomName}: declared toolchain drift`);
   }
-  const components = new Map((bom.components ?? []).map((component) => [component.id, component.commit]));
+  const components = new Map((bom.components ?? []).map((component) => [component.id, component]));
   if (components.size !== canonicalComponents.size) fail(`${bomName}: component count drift`);
-  for (const [id, commit] of canonicalComponents) {
-    if (components.get(id) !== commit) fail(`${bomName}: ${id} commit drift`);
+  for (const [id, canonical] of canonicalComponents) {
+    const component = components.get(id);
+    if (!component) fail(`${bomName}: missing ${id}`);
+    for (const field of ["name", "repository", "commit", "version", "integrationTag"]) {
+      if (component[field] !== canonical[field]) {
+        fail(`${bomName}: ${id} ${field} drift`);
+      }
+    }
   }
 }
 

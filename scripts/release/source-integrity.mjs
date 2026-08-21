@@ -236,6 +236,11 @@ export function validateDependencySet(set) {
   if (new Set(ids).size !== ids.length || expectedIds.some((id) => !ids.includes(id))) {
     fail(`components must contain each unique required id: ${expectedIds.join(", ")}`);
   }
+  const expectedIntegrationTag = `ratspeak-v${set.product.displayVersion}`;
+  const integrationTagsRequired = compareNumericVersions(
+    currentDisplay.marketing,
+    "1.0.29",
+  ) >= 0;
   for (const component of set.components) {
     requireString(component.id, "component.id");
     requireString(component.name, `${component.id}.name`);
@@ -252,8 +257,17 @@ export function validateDependencySet(set) {
     }
     requireCommit(component.commit, `${component.id}.commit`);
     requireVersion(component.version, `${component.id}.version`);
-    if (component.integrationTag !== null) {
+    if (component.integrationTag === null) {
+      if (integrationTagsRequired) {
+        fail(
+          `${component.id}.integrationTag must be ${expectedIntegrationTag} for Ratspeak v1.0.29 and later`,
+        );
+      }
+    } else {
       requireString(component.integrationTag, `${component.id}.integrationTag`);
+      if (component.integrationTag !== expectedIntegrationTag) {
+        fail(`${component.id}.integrationTag must be exactly ${expectedIntegrationTag}`);
+      }
     }
   }
 }
@@ -471,6 +485,11 @@ export function verifyProductSurfaces(set) {
     if (workflowName !== "release-ios.yml") {
       expectContains(
         workflow,
+        "source-integrity.mjs verify-tags",
+        `${workflowName} integration tag verification`,
+      );
+      expectContains(
+        workflow,
         "source-integrity.mjs verify-release-ref",
         `${workflowName} qualified ref verification`,
       );
@@ -482,11 +501,53 @@ export function verifyProductSurfaces(set) {
     }
   }
 
+  const iosWorkflow = readUtf8(join(workflowDirectory, "release-ios.yml"));
+  expectContains(
+    iosWorkflow,
+    'qualification_run_id:\n        description: "Successful final pre-tag qualification run required for TestFlight."',
+    "TestFlight qualification input",
+  );
+  expectContains(
+    iosWorkflow,
+    'integration_tag_run_id:\n        description: "Successful sibling-tag verification run required for TestFlight."',
+    "TestFlight sibling-tag verification input",
+  );
+  expectContains(
+    iosWorkflow,
+    "name: Require exact successful qualification for TestFlight",
+    "TestFlight qualification gate",
+  );
+  expectContains(
+    iosWorkflow,
+    "actions/workflows/qualify-release.yml",
+    "TestFlight exact qualification workflow",
+  );
+  expectContains(
+    iosWorkflow,
+    'test "$head_sha" = "$source_sha"',
+    "TestFlight exact qualification source",
+  );
+  expectContains(
+    iosWorkflow,
+    "source-integrity.mjs verify-tags",
+    "TestFlight coordinated sibling tag proof",
+  );
+  expectContains(
+    iosWorkflow,
+    "actions/workflows/verify-integration-tags.yml",
+    "TestFlight pre-product-tag verification run",
+  );
+
   const releaseWorkflow = readUtf8(join(workflowDirectory, "release.yml"));
   expectContains(
     releaseWorkflow,
     'qualification_run_id:\n        description: "Successful final pre-tag qualification run to promote."',
     "release orchestrator qualification promotion input",
+  );
+  expectContains(
+    releaseWorkflow,
+    'integration_tag_run_id:\n        description: "Successful post-qualification sibling-tag verification run."',
+    "release orchestrator sibling-tag verification input",
   );
   expectContains(
     releaseWorkflow,
@@ -502,6 +563,36 @@ export function verifyProductSurfaces(set) {
     releaseWorkflow,
     "scripts/release/verify-release-artifacts.mjs",
     "release orchestrator artifact gate",
+  );
+  expectContains(
+    releaseWorkflow,
+    "source-integrity.mjs verify-tags",
+    "release orchestrator sibling tag gate",
+  );
+  expectContains(
+    releaseWorkflow,
+    "name: Require successful pre-product-tag sibling verification",
+    "release orchestrator pre-product-tag run gate",
+  );
+  expectContains(
+    releaseWorkflow,
+    "actions/workflows/verify-integration-tags.yml",
+    "release orchestrator exact sibling-tag workflow",
+  );
+  expectContains(
+    releaseWorkflow,
+    'test "$head_sha" = "$SOURCE_SHA"',
+    "release orchestrator exact upstream run source",
+  );
+  expectContains(
+    releaseWorkflow,
+    'WORKFLOW_REF: ${{ github.ref }}',
+    "release orchestrator immutable workflow ref",
+  );
+  expectContains(
+    releaseWorkflow,
+    'refs/tags/$RELEASE_TAG',
+    "release orchestrator tag-selected workflow",
   );
   expectContains(
     releaseWorkflow,
@@ -541,11 +632,39 @@ export function verifyProductSurfaces(set) {
   );
   expectContains(
     qualificationWorkflow,
+    'WORKFLOW_SHA: ${{ github.sha }}',
+    "pre-tag qualification workflow source identity",
+  );
+  expectContains(
+    qualificationWorkflow,
+    'git ls-remote --exit-code --tags origin "refs/tags/$release_tag"',
+    "pre-tag qualification remote product-tag absence",
+  );
+  expectContains(
+    qualificationWorkflow,
     "upload_play: false",
     "pre-tag release qualification Play isolation",
   );
   if (qualificationWorkflow.includes("softprops/action-gh-release")) {
     fail("qualify-release.yml must not publish a GitHub Release");
+  }
+
+  const tagWorkflow = readUtf8(join(workflowDirectory, "verify-integration-tags.yml"));
+  for (const required of [
+    'description: "Exact qualified untagged candidate commit."',
+    'description: "Successful final pre-tag qualification run for this candidate."',
+    "source-integrity.mjs github-outputs",
+    "source-integrity.mjs verify-release-source",
+    "source-integrity.mjs verify-tags",
+    "actions/workflows/qualify-release.yml",
+    'WORKFLOW_SHA: ${{ github.sha }}',
+    'git ls-remote --exit-code --tags origin "refs/tags/$release_tag"',
+    'test "$head_sha" = "$source_sha"',
+  ]) {
+    expectContains(tagWorkflow, required, "pre-product-tag integration verification");
+  }
+  if (tagWorkflow.includes("contents: write") || tagWorkflow.includes("softprops/action-gh-release")) {
+    fail("verify-integration-tags.yml must remain a read-only pre-product-tag gate");
   }
 
   const androidWorkflow = readUtf8(join(workflowDirectory, "release-android.yml"));
@@ -578,21 +697,25 @@ export function verifyLocalComponents(set) {
     }
     expectEqual(git(["rev-parse", "HEAD"], componentRoot), component.commit, `${component.name} HEAD`);
     expectEqual(componentManifestVersion(componentRoot), component.version, `${component.name} Cargo version`);
-    if (component.integrationTag !== null) {
-      let tagType;
-      try {
-        tagType = git(["cat-file", "-t", component.integrationTag], componentRoot);
-      } catch {
-        fail(`${component.name} integration tag type: ${component.integrationTag} does not resolve`);
-      }
-      expectEqual(
-        tagType,
-        "tag",
-        `${component.name} integration tag type`,
-      );
-      const tagCommit = git(["rev-parse", `${component.integrationTag}^{commit}`], componentRoot);
-      expectEqual(tagCommit, component.commit, `${component.name} integration tag`);
-    }
+  }
+}
+
+export function verifyComponentIntegrationTag(component, componentRoot) {
+  if (component.integrationTag === null) return;
+  let tagType;
+  try {
+    tagType = git(["cat-file", "-t", component.integrationTag], componentRoot);
+  } catch {
+    fail(`${component.name} integration tag type: ${component.integrationTag} does not resolve`);
+  }
+  expectEqual(tagType, "tag", `${component.name} integration tag type`);
+  const tagCommit = git(["rev-parse", `${component.integrationTag}^{commit}`], componentRoot);
+  expectEqual(tagCommit, component.commit, `${component.name} integration tag`);
+}
+
+export function verifyIntegrationTags(set) {
+  for (const component of set.components) {
+    verifyComponentIntegrationTag(component, resolve(repoRoot, component.path));
   }
 }
 
@@ -723,6 +846,7 @@ function main(argv) {
   if (command === "verify-tags") {
     verifyProductSurfaces(set);
     verifyLocalComponents(set);
+    verifyIntegrationTags(set);
     console.log("source integrity: exact local dependency tags verified");
     return;
   }

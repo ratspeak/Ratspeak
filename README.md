@@ -99,6 +99,14 @@ cd src-tauri
 cargo tauri dev
 ```
 
+To reproduce a tagged Ratspeak release starting with `v1.0.29`, check out the
+Ratspeak `vX.Y.Z` tag and the matching annotated `ratspeak-vX.Y.Z` tag in each
+of `rsReticulum`, `rsLXMF`, `rsLXST`, and `lrgp-rs`. The exact commits in
+`Ratspeak/release/dependency-set.json` are authoritative; the coordinated tags
+are permanent readable aliases for that graph. From the sibling layout above,
+`node Ratspeak/scripts/release/source-integrity.mjs verify-tags` verifies every
+component version, annotated tag, and exact commit before a build.
+
 For a release bundle, run `cargo tauri build -- --locked` from
 `Ratspeak/src-tauri`.
 Desktop bundles land under `Ratspeak/src-tauri/target/release/bundle/`.

@@ -6,6 +6,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 canonical="$repo_root/.github/workflows/ci.yml"
 manual_build="$repo_root/.github/workflows/build-desktop.yml"
+integration_verifier="$repo_root/.github/workflows/verify-integration-tags.yml"
 release_workflows=(
   "$repo_root/.github/workflows/release-android.yml"
   "$repo_root/.github/workflows/release-desktop.yml"
@@ -14,8 +15,8 @@ release_workflows=(
   "$repo_root/.github/workflows/release-windows.yml"
 )
 
-if [[ ! -f "$canonical" || ! -f "$manual_build" ]]; then
-  echo "error: expected ci.yml and build-desktop.yml below $repo_root/.github/workflows" >&2
+if [[ ! -f "$canonical" || ! -f "$manual_build" || ! -f "$integration_verifier" ]]; then
+  echo "error: expected CI, desktop build, and integration-tag verification workflows below $repo_root/.github/workflows" >&2
   exit 1
 fi
 
@@ -88,6 +89,10 @@ for workflow in "${release_workflows[@]}"; do
     status=1
   fi
   if [[ "$(basename "$workflow")" != "release-ios.yml" ]]; then
+    if ! grep -q 'source-integrity.mjs verify-tags' "$workflow"; then
+      echo "error: $(basename "$workflow") does not verify coordinated integration tags" >&2
+      status=1
+    fi
     if ! grep -q 'source-integrity.mjs verify-release-ref' "$workflow"; then
       echo "error: $(basename "$workflow") does not verify the exact annotated publishing ref" >&2
       status=1
@@ -103,6 +108,31 @@ for workflow in "${release_workflows[@]}"; do
       status=1
     fi
   done
+done
+
+for required in \
+  'permissions:' \
+  'actions: read' \
+  'contents: read' \
+  'source-integrity.mjs github-outputs' \
+  'source-integrity.mjs verify-release-source' \
+  'source-integrity.mjs verify-tags' \
+  'actions/workflows/qualify-release.yml' \
+  'WORKFLOW_SHA: ${{ github.sha }}'; do
+  if ! grep -Fq "$required" "$integration_verifier"; then
+    echo "error: verify-integration-tags.yml is missing required contract: $required" >&2
+    status=1
+  fi
+done
+if grep -q 'contents: write' "$integration_verifier"; then
+  echo "error: verify-integration-tags.yml must remain read-only" >&2
+  status=1
+fi
+for output_key in "${output_keys[@]}"; do
+  if ! grep -q "steps.source-set.outputs.$output_key" "$integration_verifier"; then
+    echo "error: verify-integration-tags.yml does not consume $output_key" >&2
+    status=1
+  fi
 done
 
 if [[ "$status" -ne 0 ]]; then

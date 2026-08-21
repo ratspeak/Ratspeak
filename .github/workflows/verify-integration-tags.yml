@@ -1,0 +1,137 @@
+name: Verify integration tags
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: "Exact qualified untagged candidate commit."
+        required: true
+        type: string
+      qualification_run_id:
+        description: "Successful final pre-tag qualification run for this candidate."
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: integration-tags-${{ inputs.source_ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Verify public sibling tags
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact candidate
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          path: Ratspeak
+          fetch-depth: 0
+          ref: ${{ inputs.source_ref }}
+
+      - name: Setup source verification Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.0
+
+      - name: Load reviewed source set
+        id: source-set
+        working-directory: Ratspeak
+        run: node scripts/release/source-integrity.mjs github-outputs >> "$GITHUB_OUTPUT"
+
+      - name: Checkout rsReticulum
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ github.repository_owner }}/rsReticulum
+          ref: ${{ steps.source-set.outputs.rsreticulum_ref }}
+          path: rsReticulum
+          fetch-depth: 0
+
+      - name: Checkout rsLXMF
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ github.repository_owner }}/rsLXMF
+          ref: ${{ steps.source-set.outputs.rslxmf_ref }}
+          path: rsLXMF
+          fetch-depth: 0
+
+      - name: Checkout rsLXST
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ github.repository_owner }}/rsLXST
+          ref: ${{ steps.source-set.outputs.rslxst_ref }}
+          path: rsLXST
+          fetch-depth: 0
+
+      - name: Checkout lrgp-rs
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          repository: ${{ github.repository_owner }}/lrgp-rs
+          ref: ${{ steps.source-set.outputs.lrgp_ref }}
+          path: lrgp-rs
+          fetch-depth: 0
+
+      - name: Verify qualification and coordinated tags
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUALIFICATION_RUN_ID: ${{ inputs.qualification_run_id }}
+          SOURCE_REF: ${{ inputs.source_ref }}
+          WORKFLOW_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "source_ref must be the exact qualified commit SHA" >&2
+            exit 1
+          fi
+          if [[ ! "$QUALIFICATION_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "qualification_run_id must be a positive GitHub Actions run ID" >&2
+            exit 1
+          fi
+          source_sha="$(git rev-parse HEAD)"
+          if [[ "$source_sha" != "$SOURCE_REF" || "$source_sha" != "$WORKFLOW_SHA" ]]; then
+            echo "Dispatch integration-tag verification from the exact candidate: workflow $WORKFLOW_SHA, input $SOURCE_REF, checkout $source_sha" >&2
+            exit 1
+          fi
+
+          node scripts/release/source-integrity.mjs verify-release-source
+          node scripts/release/source-integrity.mjs verify-tags
+          release_tag="v$(node -p 'require("./release/dependency-set.json").product.displayVersion')"
+          set +e
+          git ls-remote --exit-code --tags origin "refs/tags/$release_tag" >/dev/null
+          product_tag_status=$?
+          set -e
+          case "$product_tag_status" in
+            0)
+              echo "Integration tags must be verified before creating product tag $release_tag" >&2
+              exit 1
+              ;;
+            2) ;;
+            *)
+              echo "Could not prove that product tag $release_tag is absent from the remote" >&2
+              exit 1
+              ;;
+          esac
+
+          expected_workflow_id="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/workflows/qualify-release.yml" \
+            --jq '.id')"
+          read -r workflow_id status conclusion event head_sha <<<"$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFICATION_RUN_ID" \
+            --jq '[.workflow_id, .status, .conclusion, .event, .head_sha] | @tsv')"
+          test "$workflow_id" = "$expected_workflow_id"
+          test "$status" = "completed"
+          test "$conclusion" = "success"
+          test "$event" = "workflow_dispatch"
+          test "$head_sha" = "$source_sha"
+
+          artifact_count="$(gh api \
+            "repos/$GITHUB_REPOSITORY/actions/runs/$QUALIFICATION_RUN_ID/artifacts" \
+            --jq '[.artifacts[] | select(.name == "ratspeak-release-qualification" and .expired == false)] | length')"
+          test "$artifact_count" = "1"
+          echo "Verified coordinated sibling tags for $release_tag at $source_sha"

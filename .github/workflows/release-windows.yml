@@ -110,6 +110,10 @@ jobs:
         env:
           RELEASE_REF: ${{ inputs.release_tag }}
         run: |
+          & node scripts/release/source-integrity.mjs verify-tags
+          if ($LASTEXITCODE -ne 0) {
+            throw "Integration tag verification failed."
+          }
           & node scripts/release/source-integrity.mjs verify-release-ref "$env:RELEASE_REF"
           if ($LASTEXITCODE -ne 0) {
             throw "Release ref verification failed."

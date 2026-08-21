@@ -125,7 +125,9 @@ jobs:
         working-directory: Ratspeak
         env:
           RELEASE_REF: ${{ inputs.release_tag }}
-        run: node scripts/release/source-integrity.mjs verify-release-ref "$RELEASE_REF"
+        run: |
+          node scripts/release/source-integrity.mjs verify-tags
+          node scripts/release/source-integrity.mjs verify-release-ref "$RELEASE_REF"
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772

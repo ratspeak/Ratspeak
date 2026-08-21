@@ -5549,6 +5549,7 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         assert!(!workflow.contains("cargo install tauri-cli --version"));
         if workflow_path != ".github/workflows/release-ios.yml" {
             assert!(workflow.contains("workflow_call:"));
+            assert!(workflow.contains("source-integrity.mjs verify-tags"));
             assert!(workflow.contains("source-integrity.mjs verify-release-ref"));
             assert!(workflow.contains("QUALIFY_RELEASE_REF"));
             assert!(
@@ -5616,6 +5617,9 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(orchestrator.contains(
         "qualification_run_id:\n        description: \"Successful final pre-tag qualification run to promote.\""
     ));
+    assert!(orchestrator.contains(
+        "integration_tag_run_id:\n        description: \"Successful post-qualification sibling-tag verification run.\""
+    ));
     assert_eq!(
         orchestrator
             .matches("uses: softprops/action-gh-release@")
@@ -5626,6 +5630,9 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(orchestrator.contains("scripts/release/verify-release-artifacts.mjs"));
     assert!(orchestrator.contains("name: Promote, verify, and publish complete release"));
     assert!(orchestrator.contains("name: Require successful final pre-tag qualification"));
+    assert!(orchestrator.contains("name: Require successful pre-product-tag sibling verification"));
+    assert!(orchestrator.contains("actions/workflows/verify-integration-tags.yml"));
+    assert!(orchestrator.contains("test \"$head_sha\" = \"$SOURCE_SHA\""));
     assert!(orchestrator.contains("name: ratspeak-release-qualification"));
     assert!(orchestrator.contains("run-id: ${{ inputs.qualification_run_id }}"));
     assert!(orchestrator.contains(
@@ -5635,6 +5642,9 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(orchestrator.contains(".product.ref = $release_tag"));
     assert!(orchestrator.contains("name: Require successful ordinary CI on the exact source"));
     assert!(orchestrator.contains("source-integrity.mjs verify-release-source"));
+    assert!(orchestrator.contains("source-integrity.mjs verify-tags"));
+    assert!(orchestrator.contains("WORKFLOW_REF: ${{ github.ref }}"));
+    assert!(orchestrator.contains("refs/tags/$RELEASE_TAG"));
     assert!(orchestrator.contains("actions/workflows/ci.yml/runs"));
     assert!(orchestrator.contains("-f head_sha=\"$SOURCE_SHA\""));
     assert!(orchestrator.contains("-f event=push"));
@@ -5664,6 +5674,11 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(qualifier.contains("description: \"Exact untagged candidate commit to qualify.\""));
     assert!(qualifier.contains("Pre-tag qualification requires $release_tag to be absent"));
     assert!(qualifier.contains("source-integrity.mjs verify-release-source"));
+    assert!(qualifier.contains("WORKFLOW_SHA: ${{ github.sha }}"));
+    assert!(qualifier.contains("workflow $WORKFLOW_SHA, candidate $source_sha"));
+    assert!(
+        qualifier.contains("git ls-remote --exit-code --tags origin \"refs/tags/$release_tag\"")
+    );
     assert!(qualifier.contains("name: Require successful ordinary CI on the exact source"));
     assert!(qualifier.contains("upload_play: false"));
     assert!(qualifier.contains("notarize: true"));
@@ -5684,12 +5699,45 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         );
     }
 
+    let integration_verifier =
+        read_source(root.join(".github/workflows/verify-integration-tags.yml"))
+            .expect("pre-product-tag integration verifier");
+    assert!(integration_verifier.contains("name: Verify integration tags"));
+    assert!(
+        integration_verifier
+            .contains("description: \"Exact qualified untagged candidate commit.\"")
+    );
+    assert!(integration_verifier.contains(
+        "description: \"Successful final pre-tag qualification run for this candidate.\""
+    ));
+    assert!(integration_verifier.contains("source-integrity.mjs verify-release-source"));
+    assert!(integration_verifier.contains("source-integrity.mjs verify-tags"));
+    assert!(integration_verifier.contains("actions/workflows/qualify-release.yml"));
+    assert!(integration_verifier.contains("WORKFLOW_SHA: ${{ github.sha }}"));
+    assert!(
+        integration_verifier
+            .contains("git ls-remote --exit-code --tags origin \"refs/tags/$release_tag\"")
+    );
+    assert!(integration_verifier.contains("test \"$head_sha\" = \"$source_sha\""));
+    assert!(!integration_verifier.contains("contents: write"));
+
     let ios =
         read_source(root.join(".github/workflows/release-ios.yml")).expect("iOS release workflow");
     assert!(ios.contains(
         "description: \"Exact candidate commit to build; defaults to the selected dispatch ref.\""
     ));
     assert!(ios.contains("ref: ${{ inputs.source_ref || github.sha }}"));
+    assert!(ios.contains(
+        "description: \"Successful final pre-tag qualification run required for TestFlight.\""
+    ));
+    assert!(ios.contains(
+        "description: \"Successful sibling-tag verification run required for TestFlight.\""
+    ));
+    assert!(ios.contains("name: Require exact successful qualification for TestFlight"));
+    assert!(ios.contains("actions/workflows/qualify-release.yml"));
+    assert!(ios.contains("actions/workflows/verify-integration-tags.yml"));
+    assert!(ios.contains("name: Verify coordinated sibling tags for TestFlight"));
+    assert!(ios.contains("test \"$head_sha\" = \"$source_sha\""));
 
     for workflow_path in [
         ".github/workflows/release-android.yml",
@@ -5711,6 +5759,7 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(macos.contains("NOTARY_WAIT_TIMEOUT: 30m"));
     assert!(macos.contains("ratspeak-macos-notarization-recovery"));
     assert!(macos.contains("recovery_run_id"));
+    assert!(macos.contains("name: Reject unsupported post-tag recovery"));
     assert!(macos.contains("unset APPLE_ID"));
     assert!(!macos.contains("--skip-stapling"));
     let notarization_gate = read_source(root.join("scripts/release/notarize-macos-dmgs.sh"))

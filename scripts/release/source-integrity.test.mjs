@@ -11,6 +11,7 @@ import {
   githubOutputs,
   loadDependencySet,
   validateDependencySet,
+  verifyComponentIntegrationTag,
   verifyImmutableActions,
   verifyLocalComponents,
   verifyProductSurfaces,
@@ -59,6 +60,23 @@ test("dependency-set schema rejects source and platform identity drift", () => {
   const unsupportedAndroidAbi = structuredClone(set);
   unsupportedAndroidAbi.product.androidArtifactTargets.push("i686");
   assert.throws(() => validateDependencySet(unsupportedAndroidAbi), /i686 is unsupported/);
+
+  const futureRelease = structuredClone(set);
+  futureRelease.product.displayVersion = "1.0.29";
+  futureRelease.product.marketingVersion = "1.0.29";
+  assert.throws(
+    () => validateDependencySet(futureRelease),
+    /integrationTag must be ratspeak-v1.0.29/,
+  );
+  for (const component of futureRelease.components) {
+    component.integrationTag = "ratspeak-v1.0.29";
+  }
+  assert.doesNotThrow(() => validateDependencySet(futureRelease));
+  futureRelease.components[0].integrationTag = "ratspeak-v1.0.29-wrong";
+  assert.throws(
+    () => validateDependencySet(futureRelease),
+    /integrationTag must be exactly ratspeak-v1.0.29/,
+  );
 });
 
 test("immutable-action guard scans named and anonymous workflow steps", () => {
@@ -80,10 +98,57 @@ test("dependency set aligns product and exact local component sources", () => {
   const set = loadDependencySet();
   verifyProductSurfaces(set);
   verifyLocalComponents(set);
+});
 
-  const invalidIntegrationTag = structuredClone(set);
-  invalidIntegrationTag.components[0].integrationTag = "main";
-  assert.throws(() => verifyLocalComponents(invalidIntegrationTag), /integration tag type/);
+test("integration aliases must be annotated tags at the exact component commit", () => {
+  withTemporaryDirectory((directory) => {
+    execFileSync("git", ["init", "--quiet"], { cwd: directory });
+    execFileSync("git", ["config", "user.name", "Ratspeak release test"], { cwd: directory });
+    execFileSync("git", ["config", "user.email", "release-test@ratspeak.invalid"], {
+      cwd: directory,
+    });
+    writeFileSync(join(directory, "source.txt"), "first\n");
+    execFileSync("git", ["add", "source.txt"], { cwd: directory });
+    execFileSync("git", ["commit", "--quiet", "-m", "first"], { cwd: directory });
+    const first = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: directory,
+      encoding: "utf8",
+    }).trim();
+    const component = {
+      name: "fixture",
+      commit: first,
+      integrationTag: "ratspeak-v1.0.29",
+    };
+
+    assert.throws(
+      () => verifyComponentIntegrationTag(component, directory),
+      /does not resolve/,
+    );
+
+    execFileSync("git", ["tag", "ratspeak-v1.0.29"], { cwd: directory });
+    assert.throws(
+      () => verifyComponentIntegrationTag(component, directory),
+      /integration tag type/,
+    );
+
+    execFileSync("git", ["tag", "-d", "ratspeak-v1.0.29"], { cwd: directory });
+    execFileSync("git", ["tag", "-a", "ratspeak-v1.0.29", "-m", "compatibility"], {
+      cwd: directory,
+    });
+    assert.doesNotThrow(() => verifyComponentIntegrationTag(component, directory));
+
+    writeFileSync(join(directory, "source.txt"), "second\n");
+    execFileSync("git", ["add", "source.txt"], { cwd: directory });
+    execFileSync("git", ["commit", "--quiet", "-m", "second"], { cwd: directory });
+    component.commit = execFileSync("git", ["rev-parse", "HEAD"], {
+      cwd: directory,
+      encoding: "utf8",
+    }).trim();
+    assert.throws(
+      () => verifyComponentIntegrationTag(component, directory),
+      /integration tag: expected/,
+    );
+  });
 });
 
 test("GitHub outputs contain exact commits instead of integration tags", () => {
@@ -171,9 +236,10 @@ test("final release artifact gate requires the exact complete checksummed source
   const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
   withTemporaryDirectory((directory) => {
-    const writeFixture = (bomRef) => {
+    const writeFixture = (bomRef, mutateBom = () => {}) => {
       const fixtureBom = structuredClone(bom);
       fixtureBom.product.ref = bomRef;
+      mutateBom(fixtureBom);
       const bomBytes = `${JSON.stringify(fixtureBom, null, 2)}\n`;
       for (const [platform, files] of platformFiles) {
         const checksums = [];
@@ -203,6 +269,15 @@ test("final release artifact gate requires the exact complete checksummed source
       execFileSync(process.execPath, [script, directory, releaseTag], { stdio: "pipe" }),
     );
 
+    writeFixture(releaseTag, (fixtureBom) => {
+      fixtureBom.components[0].integrationTag = "ratspeak-v0.0.0";
+    });
+    assert.throws(
+      () => execFileSync(process.execPath, [script, directory, releaseTag], { stdio: "pipe" }),
+      /Command failed/,
+    );
+
+    writeFixture(releaseTag);
     const corrupted = `Ratspeak-${releaseTag}-android-arm64.apk`;
     writeFileSync(join(directory, corrupted), "corrupted\n");
     assert.throws(

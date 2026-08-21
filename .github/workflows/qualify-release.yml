@@ -84,16 +84,32 @@ jobs:
         working-directory: Ratspeak
         env:
           RECOVERY_RUN_ID: ${{ inputs.recovery_run_id }}
+          WORKFLOW_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
           node scripts/release/source-integrity.mjs verify-release-source
           node scripts/release/source-integrity.mjs github-outputs >> "$GITHUB_OUTPUT"
           source_sha="$(git rev-parse HEAD)"
-          release_tag="v$(node -p 'require("./release/dependency-set.json").product.displayVersion')"
-          if git rev-parse --verify --quiet "$release_tag^{commit}" >/dev/null; then
-            echo "Pre-tag qualification requires $release_tag to be absent" >&2
+          if [[ "$source_sha" != "$WORKFLOW_SHA" ]]; then
+            echo "Dispatch Release qualification from the exact candidate ref: workflow $WORKFLOW_SHA, candidate $source_sha" >&2
             exit 1
           fi
+          release_tag="v$(node -p 'require("./release/dependency-set.json").product.displayVersion')"
+          set +e
+          git ls-remote --exit-code --tags origin "refs/tags/$release_tag" >/dev/null
+          product_tag_status=$?
+          set -e
+          case "$product_tag_status" in
+            0)
+              echo "Pre-tag qualification requires $release_tag to be absent" >&2
+              exit 1
+              ;;
+            2) ;;
+            *)
+              echo "Could not prove that $release_tag is absent from the remote" >&2
+              exit 1
+              ;;
+          esac
           if [[ -n "$RECOVERY_RUN_ID" && ! "$RECOVERY_RUN_ID" =~ ^[1-9][0-9]*$ ]]; then
             echo "recovery_run_id must be a positive GitHub Actions run ID" >&2
             exit 1
