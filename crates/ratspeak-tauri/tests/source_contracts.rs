@@ -4727,8 +4727,8 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     assert!(lxmf.contains("lxmfLimits.efficient_resource_bytes || 1048575"));
     assert!(lxmf.contains("if (!_messageShowsTransferPercent(msg)) return null;"));
     assert!(lxmf.contains("if (!_messageCanCancelSend(msg)) return '';"));
-    assert!(lxmf.contains("aria-label=\"Stop sending message\">Stop</button>"));
-    assert!(lxmf.contains("message: 'Stop preparing and retrying this message?'"));
+    assert!(lxmf.contains("aria-label=\"Cancel sending message\">Cancel</button>"));
+    assert!(lxmf.contains("message: 'Cancel preparation and retries for this message?'"));
     assert!(lxmf.contains("canCancelSend ? _messageInlineCancelHtml(msg) : '<span class=\"msg-time\">' + time + '</span>'"));
 
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
@@ -6876,12 +6876,12 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(lxmf.contains("container.querySelectorAll('.lxmf-send-cancel, .msg-send-cancel-inline').forEach(function(btn)"));
     assert!(lxmf.contains("_bindMessageFocusPreservingActivation(btn, function()"));
     assert!(lxmf.contains("_cancelLxmfSend(btn.getAttribute('data-msg-id'));"));
-    assert!(lxmf.contains("title: 'Stop sending?'"));
-    assert!(
-        lxmf.contains("Stopped retrying. A copy already handed to the network may still arrive.")
-    );
+    assert!(lxmf.contains("title: 'Cancel sending?'"));
     assert!(lxmf.contains(
-        "No live send remained. The local message was marked stopped, but a copy may still arrive."
+        "Cancelled local retries. A copy already handed to the network may still arrive."
+    ));
+    assert!(lxmf.contains(
+        "No live send remained. The local message was cancelled, but a copy may still arrive."
     ));
     assert!(messaging.contains("\"stop_scope\": \"preparation\""));
     assert!(messaging.contains("\"active_and_retries\""));
@@ -6948,7 +6948,7 @@ fn optimistic_lxmf_cancel_is_native_before_canonical_reconciliation() {
     assert!(messaging.contains("LxmfClientSendCancellation::Queued"));
     assert!(lxmf.contains("_pendingLxmfCancelByClientId[msgId] = true;"));
     assert!(lxmf.contains("return _invokeLxmfCancel(msgId).then(function(resp)"));
-    assert!(lxmf.contains("title: 'Stop sending?'"));
+    assert!(lxmf.contains("title: 'Cancel sending?'"));
     assert!(lxmf.contains("var eventMsgId = data.msg_id || data.client_msg_id;"));
 }
 
