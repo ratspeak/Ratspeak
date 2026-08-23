@@ -32,6 +32,10 @@ var _lxmfMessageScrollStates = new WeakMap();
 var _messageLongPressDetachFns = [];
 var _pendingAttachmentToken = 0;
 var _pendingLxmfCancelByClientId = {};
+var _deferredConversationRenderOptions = null;
+var _deferredConversationRenderOwnerHash = null;
+var _deferredConversationRenderGeneration = 0;
+var _deferredConversationRenderRelease = null;
 var lxmfLimits = {
     max_attachment_bytes: 128000000,
     max_message_bytes: 134217727,
@@ -3222,11 +3226,212 @@ document.addEventListener('DOMContentLoaded', function() {
 
 window.renderConversation = renderConversation;
 
+function _messageDisplayContent(msg, hasRenderedAudio) {
+    var displayContent = (msg && msg.content) || '';
+    if (msg && (msg.image || (msg.attachments && msg.attachments.length > 0)) && displayContent) {
+        displayContent = displayContent.replace(/\n?\[File:[^\]]*\]\s*$/, '');
+    }
+    if (hasRenderedAudio && displayContent.trim() === 'Voice message') displayContent = '';
+    return displayContent;
+}
+
+function _mergeConversationRenderOptions(previous, next) {
+    previous = previous || {};
+    next = next || {};
+    return {
+        forceScrollBottom: !!(previous.forceScrollBottom || next.forceScrollBottom),
+        stickToBottom: !!(previous.stickToBottom || next.stickToBottom),
+    };
+}
+
+function _activeSelectionOwnsCurrentMessage() {
+    if (!_activeMessageTextSelection || !_activeMessageTextSelection.msgId) return false;
+    if (_activeMessageTextSelection.ownerHash !== _canonicalConversationHash(lxmfActiveContact)) return false;
+    return lxmfConversation.some(function(message) {
+        return message.id === _activeMessageTextSelection.msgId;
+    });
+}
+
+function _activeActionOwnsCurrentMessage() {
+    if (!_activeContextMenu || !_activeContextMenu.msgId) return false;
+    if (_activeContextMenu.ownerHash !== _canonicalConversationHash(lxmfActiveContact)) return false;
+    return lxmfConversation.some(function(message) {
+        return message.id === _activeContextMenu.msgId;
+    });
+}
+
+function _deferConversationRender(options) {
+    var ownerHash = _canonicalConversationHash(lxmfActiveContact);
+    if (!_deferredConversationRenderOptions || _deferredConversationRenderOwnerHash !== ownerHash) {
+        if (_deferredConversationRenderOptions &&
+                _deferredConversationRenderOwnerHash !== ownerHash) {
+            _cancelScheduledDeferredConversationRender(_deferredConversationRenderGeneration);
+        }
+        _deferredConversationRenderOptions = null;
+        _deferredConversationRenderOwnerHash = ownerHash;
+        _deferredConversationRenderGeneration++;
+    }
+    _deferredConversationRenderOptions = _mergeConversationRenderOptions(
+        _deferredConversationRenderOptions,
+        options
+    );
+}
+
+function _pendingRenderReleaseOwnsCurrentConversation() {
+    return !!(_deferredConversationRenderRelease &&
+        _deferredConversationRenderOptions &&
+        _deferredConversationRenderRelease.ownerHash === _canonicalConversationHash(lxmfActiveContact) &&
+        _deferredConversationRenderRelease.generation === _deferredConversationRenderGeneration);
+}
+
+function _deferActiveMessageInteractionRender(options) {
+    if (!_activeSelectionOwnsCurrentMessage() && !_activeActionOwnsCurrentMessage() &&
+            !_pendingRenderReleaseOwnsCurrentConversation()) return false;
+    _deferConversationRender(options);
+    return true;
+}
+
+function _clearDeferredConversationRender(expectedGeneration) {
+    if (typeof expectedGeneration === 'number' &&
+            expectedGeneration !== _deferredConversationRenderGeneration) return false;
+    _deferredConversationRenderOptions = null;
+    _deferredConversationRenderOwnerHash = null;
+    return true;
+}
+
+function _takeDeferredConversationRenderOptions(options) {
+    var ownerHash = _canonicalConversationHash(lxmfActiveContact);
+    var deferredOptions = _deferredConversationRenderOwnerHash === ownerHash
+        ? _deferredConversationRenderOptions
+        : null;
+    if (_deferredConversationRenderOptions) {
+        _cancelScheduledDeferredConversationRender(_deferredConversationRenderGeneration);
+    }
+    var merged = _mergeConversationRenderOptions(deferredOptions, options);
+    _clearDeferredConversationRender();
+    return merged;
+}
+
+function _cancelScheduledDeferredConversationRender(expectedGeneration) {
+    if (!_deferredConversationRenderRelease) return false;
+    if (typeof expectedGeneration === 'number' &&
+            expectedGeneration !== _deferredConversationRenderRelease.generation) return false;
+    _deferredConversationRenderRelease.cleanup();
+    _deferredConversationRenderRelease = null;
+    return true;
+}
+
+function _scheduleDeferredConversationRenderAfterPointer() {
+    if (_deferredConversationRenderRelease) return false;
+    // Establish the release lease even before the first network/progress render.
+    // A neutral intent is cheap and ensures that first update cannot detach the
+    // pointer's eventual click target.
+    if (!_deferredConversationRenderOptions) _deferConversationRender({});
+    var ownerHash = _canonicalConversationHash(lxmfActiveContact);
+    var generation = _deferredConversationRenderGeneration;
+    var record = null;
+    function removeReleaseListeners() {
+        document.removeEventListener('pointerup', release, true);
+        document.removeEventListener('pointercancel', cancelRelease, true);
+        document.removeEventListener('mouseup', release, true);
+        document.removeEventListener('touchend', release, true);
+        document.removeEventListener('touchcancel', cancelRelease, true);
+    }
+    function removeClickListener() {
+        document.removeEventListener('click', clickAfterRelease, true);
+    }
+    function runFlush() {
+        if (!record) return;
+        record.cleanup();
+        if (_deferredConversationRenderRelease === record) {
+            _deferredConversationRenderRelease = null;
+        }
+        if (ownerHash !== _canonicalConversationHash(lxmfActiveContact)) {
+            _clearDeferredConversationRender(generation);
+            return;
+        }
+        _flushDeferredConversationRender(generation);
+    }
+    function scheduleFlush() {
+        if (!record || record.flushScheduled) return;
+        record.flushScheduled = true;
+        removeReleaseListeners();
+        removeClickListener();
+        if (record.fallbackTimer !== null) clearTimeout(record.fallbackTimer);
+        record.fallbackTimer = null;
+        record.timer = setTimeout(runFlush, 0);
+    }
+    function release() {
+        if (!record || record.released) return;
+        record.released = true;
+        removeReleaseListeners();
+        document.addEventListener('click', clickAfterRelease, true);
+        record.fallbackTimer = setTimeout(runFlush, 450);
+    }
+    function cancelRelease() {
+        if (!record || record.released) return;
+        record.released = true;
+        scheduleFlush();
+    }
+    function clickAfterRelease() {
+        scheduleFlush();
+    }
+    record = {
+        ownerHash: ownerHash,
+        generation: generation,
+        released: false,
+        flushScheduled: false,
+        timer: null,
+        fallbackTimer: null,
+        cleanup: function() {
+            removeReleaseListeners();
+            removeClickListener();
+            if (record.timer !== null) clearTimeout(record.timer);
+            if (record.fallbackTimer !== null) clearTimeout(record.fallbackTimer);
+        },
+    };
+    _deferredConversationRenderRelease = record;
+    document.addEventListener('pointerup', release, true);
+    document.addEventListener('pointercancel', cancelRelease, true);
+    document.addEventListener('mouseup', release, true);
+    document.addEventListener('touchend', release, true);
+    document.addEventListener('touchcancel', cancelRelease, true);
+    return true;
+}
+
+function _flushDeferredConversationRender(expectedGeneration) {
+    if (!_deferredConversationRenderOptions) return false;
+    if (typeof expectedGeneration === 'number' &&
+            expectedGeneration !== _deferredConversationRenderGeneration) return false;
+    if (_deferredConversationRenderOwnerHash !== _canonicalConversationHash(lxmfActiveContact)) {
+        _clearDeferredConversationRender(expectedGeneration);
+        return false;
+    }
+    _cancelScheduledDeferredConversationRender(expectedGeneration);
+    var options = _deferredConversationRenderOptions;
+    _clearDeferredConversationRender(expectedGeneration);
+    renderConversation(options);
+    return true;
+}
+
 function renderConversation(options) {
     options = options || {};
     var container = document.getElementById('lxmf-messages');
     if (!container) return;
-    _dismissContextMenu();
+    if (_deferActiveMessageInteractionRender(options)) return;
+    var activeOwnerHash = (_activeMessageTextSelection && _activeMessageTextSelection.ownerHash) ||
+        (_activeContextMenu && _activeContextMenu.ownerHash);
+    if (activeOwnerHash && activeOwnerHash !== _canonicalConversationHash(lxmfActiveContact)) {
+        _cancelScheduledDeferredConversationRender();
+        _clearDeferredConversationRender();
+    }
+    options = _takeDeferredConversationRenderOptions(options);
+    _dismissContextMenu({ restoreFocus: false, flushDeferredRender: false });
+    _exitMessageTextSelectionMode({
+        restoreFocus: false,
+        clearNativeSelection: true,
+        flushDeferredRender: false,
+    });
     _detachMessageLongPressHandlers();
     _wireLxmfMessageScroll(container);
     var scrollState = _captureLxmfMessageScrollState(container);
@@ -3394,26 +3599,29 @@ function renderConversation(options) {
             Object.keys(grouped).forEach(function(emoji) {
                 var count = grouped[emoji].length;
                 var isMine = grouped[emoji].indexOf(ourHash) !== -1;
-                reactionHtml += '<span class="reaction-pill' + (isMine ? ' mine' : '') + '" ' +
-                    'data-emoji="' + escapeHtml(emoji) + '" data-msg-id="' + escapeHtml(msg.id) + '">' +
-                    escapeHtml(emoji) + (count > 1 ? ' ' + count : '') + '</span>';
+                var reactionLabel = (isMine ? 'Remove' : 'Add') + ' ' + emoji +
+                    ' reaction' + (count > 1 ? ', ' + count + ' reactions' : '');
+                reactionHtml += '<button type="button" class="reaction-pill' + (isMine ? ' mine' : '') + '" ' +
+                    'data-emoji="' + escapeHtml(emoji) + '" data-msg-id="' + escapeHtml(msg.id) + '" ' +
+                    'aria-pressed="' + (isMine ? 'true' : 'false') + '" aria-label="' + escapeHtml(reactionLabel) + '">' +
+                    '<span aria-hidden="true">' + escapeHtml(emoji) + (count > 1 ? ' ' + count : '') + '</span></button>';
             });
             reactionHtml += '</div>';
         }
 
         // Strip the `[File: ...]` fallback suffix when we have structured payload.
-        var displayContent = msg.content || '';
-        if ((msg.image || (msg.attachments && msg.attachments.length > 0)) && displayContent) {
-            displayContent = displayContent.replace(/\n?\[File:[^\]]*\]\s*$/, '');
-        }
-        if (audioHtml && displayContent.trim() === 'Voice message') displayContent = '';
+        var displayContent = _messageDisplayContent(msg, !!audioHtml);
 
         var hasReactions = reactionHtml ? ' has-reactions' : '';
         var hasImage = !!imageHtml;
         var hasAttachment = !!attachHtml;
         var metaHtml = _messageProgressMetaHtml(msg) +
             (canCancelSend ? _messageInlineCancelHtml(msg) : '<span class="msg-time">' + time + '</span>') +
-            stateIcon;
+            stateIcon +
+            '<button type="button" class="msg-actions-trigger" data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
+                'aria-label="More actions for this message" aria-haspopup="dialog" aria-expanded="false">' +
+                _messageActionIcon('more') +
+            '</button>';
         var bubbleClass = bubbleClassBase +
             (hasImage ? ' msg-has-image' : '') +
             (hasImage && !displayContent && !hasAttachment ? ' msg-image-only' : '');
@@ -3458,6 +3666,7 @@ function renderConversation(options) {
     container.querySelectorAll('a.rs-file-download[data-stored-name]').forEach(function(link) {
         link.addEventListener('click', function(e) {
             e.preventDefault();
+            if (_consumePendingMessageHoldActivation(e, this)) return;
             var name = this.getAttribute('data-stored-name');
             if (!name) return;
             RS.saveFile(name).then(function(saved) {
@@ -3480,11 +3689,7 @@ function renderConversation(options) {
 
     container.querySelectorAll('.lxmf-clickable-img').forEach(function(img) {
         img.addEventListener('click', function(e) {
-            if (Date.now() < _suppressImageOpenUntil) {
-                e.preventDefault();
-                e.stopPropagation();
-                return;
-            }
+            if (_consumePendingMessageHoldActivation(e, this)) return;
             e.stopPropagation();
             if (typeof openImageViewer === 'function') openImageViewer(this);
         });
@@ -3494,6 +3699,8 @@ function renderConversation(options) {
         link.addEventListener('click', function(e) {
             e.preventDefault();
             e.stopPropagation();
+            if (_consumePendingMessageHoldActivation(e, this)) return;
+            if (!_messageLinkActivationAllowed(this)) return;
             var url = this.getAttribute('data-url');
             if (url && window.RS && typeof RS.openExternalUrl === 'function') {
                 RS.openExternalUrl(url).catch(function(err) {
@@ -3520,12 +3727,30 @@ function renderConversation(options) {
             var emoji = this.getAttribute('data-emoji');
             var msgId = this.getAttribute('data-msg-id');
             var msgData = lxmfConversation.find(function(m) { return m.id === msgId; }) || { id: msgId };
-            _sendReactionForMessage(msgData, emoji, { dismiss: false });
+            _sendReactionForMessage(msgData, emoji, {
+                dismiss: false,
+                restoreReactionFocus: true,
+                focusExpected: _messageActivationExpectsFocus(e),
+            });
         }.bind(pill));
     });
 
+    container.querySelectorAll('.msg-actions-trigger').forEach(function(trigger) {
+        _bindMessageFocusPreservingActivation(trigger, function(event) {
+            var msgId = trigger.getAttribute('data-msg-id');
+            var bubble = trigger.closest('.lxmf-msg');
+            var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
+            if (!bubble || !msgData) return;
+            var rect = trigger.getBoundingClientRect();
+            _showMsgContextMenu(msgData, rect.left + (rect.width / 2), rect.bottom, bubble, trigger, {
+                focusDialog: _messageActivationExpectsFocus(event),
+            });
+        });
+    });
+
     container.querySelectorAll('.msg-reply-quote').forEach(function(quote) {
-        quote.addEventListener('click', function() {
+        quote.addEventListener('click', function(e) {
+            if (_consumePendingMessageHoldActivation(e, this)) return;
             var targetId = this.getAttribute('data-reply-id');
             if (!targetId) return;
             var targetEl = container.querySelector('[data-msg-id="' + targetId + '"]');
@@ -3541,48 +3766,71 @@ function renderConversation(options) {
     });
 
     container.querySelectorAll('.lxmf-msg').forEach(function(bubble) {
+        bubble.addEventListener('keydown', function(e) {
+            if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
+            e.preventDefault();
+            var msgId = this.getAttribute('data-msg-id');
+            var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
+            if (!msgData) return;
+            var trigger = this.querySelector('.msg-actions-trigger');
+            var rect = (trigger || this).getBoundingClientRect();
+            _showMsgContextMenu(msgData, rect.left + (rect.width / 2), rect.bottom, this, trigger, {
+                focusDialog: true,
+            });
+        });
         if (window.RS && RS.gestures && typeof RS.gestures.attachLongPress === 'function') {
             var detachLongPress = RS.gestures.attachLongPress(bubble, {
                 duration: 500,
                 moveCancelPx: 12,
                 excludeZone: function(touch) {
-                    return _messageTouchTargetsSelectableText(touch, bubble);
+                    return _messageTextSelectionOwnsBubble(bubble) ||
+                        _messageTouchStartsDirectControl(touch, bubble);
                 },
                 hapticStages: [{ at: 0.55, level: 'light' }],
-                // Keep the gesture start passive. The transcript's delegated
-                // touch handler already preserves composer focus, while
-                // cancelling touchstart here prevents Android WebView from
-                // handing the same gesture to native vertical scrolling.
+                // Keep the first-stage hold passive so native vertical
+                // scrolling can still claim a drifting touch. CSS transfers
+                // selection ownership to one exact message only after the
+                // user explicitly chooses Select Text.
                 onFire: function(touch) {
-                    // Native selection owns long-presses that start on text.
-                    // Message actions remain available from bubble chrome,
-                    // media, metadata, and the desktop context menu.
-                    if (_messageTouchTargetsSelectableText(touch, bubble) ||
+                    if (_messageTextSelectionOwnsBubble(bubble) ||
                             _messageSelectionIntersectsBubble(bubble)) return;
                     var msgId = bubble.getAttribute('data-msg-id');
                     if (!msgId) return;
                     var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
                     if (!msgData) return;
-                    _suppressNextContextMenuUntil = Date.now() + 1200;
-                    _suppressImageOpenUntil = Date.now() + 900;
+                    _armPendingMessageHoldActivation(bubble, msgId, touch);
                     _showMsgContextMenu(msgData, touch.clientX, touch.clientY, bubble);
                 }
             });
             if (typeof detachLongPress === 'function') _messageLongPressDetachFns.push(detachLongPress);
         }
+        bubble.addEventListener('touchend', function() {
+            _releasePendingMessageHoldActivation(this);
+        });
+        bubble.addEventListener('touchcancel', function() {
+            if (_pendingMessageHoldActivation && _pendingMessageHoldActivation.bubble === this) {
+                _clearPendingMessageHoldActivation(_pendingMessageHoldActivation.sequence);
+            }
+        });
         bubble.addEventListener('contextmenu', function(e) {
             var target = e.target;
-            var selectableText = target && target.closest && target.closest('.lxmf-msg-content');
-            var touchModality = document.documentElement.dataset.inputModality === 'touch';
-            if (selectableText && (touchModality || _messageSelectionIntersectsBubble(this))) {
-                return;
-            }
+            // Pointer users retain the browser's link menu. Touch links use the
+            // same message action sheet as the rest of the bubble; otherwise a
+            // link-only message would have no practical reaction/reply target.
+            var disposition = _messageContextMenuDisposition(target, this);
+            if (disposition === 'native') return;
             e.preventDefault();
-            if (Date.now() < _suppressNextContextMenuUntil) return;
+            if (disposition === 'suppress') return;
             var msgId = this.getAttribute('data-msg-id');
             if (!msgId) return;
             var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
-            if (msgData) _showMsgContextMenu(msgData, e.clientX, e.clientY, this);
+            if (msgData) {
+                var focusDialog = document.documentElement.dataset.inputModality !== 'touch';
+                var trigger = focusDialog ? this.querySelector('.msg-actions-trigger') : null;
+                _showMsgContextMenu(msgData, e.clientX, e.clientY, this, trigger, {
+                    focusDialog: focusDialog,
+                });
+            }
         });
     });
 
@@ -4413,8 +4661,101 @@ function _messageSourceName(msg) {
 }
 
 var _activeContextMenu = null;
-var _suppressNextContextMenuUntil = 0;
-var _suppressImageOpenUntil = 0;
+var _activeMessageTextSelection = null;
+var _pendingMessageHoldActivation = null;
+var _messageHoldActivationSequence = 0;
+
+function _messageHoldActivationSurface(target, bubble) {
+    if (!target || !target.closest || !bubble || !bubble.contains(target)) return null;
+    return target.closest('.lxmf-clickable-img, .rs-message-link, .rs-file-download, .msg-reply-quote');
+}
+
+function _clearPendingMessageHoldActivation(expectedSequence) {
+    if (!_pendingMessageHoldActivation) return false;
+    if (expectedSequence && _pendingMessageHoldActivation.sequence !== expectedSequence) return false;
+    if (_pendingMessageHoldActivation.expiryTimer) {
+        clearTimeout(_pendingMessageHoldActivation.expiryTimer);
+    }
+    _pendingMessageHoldActivation = null;
+    return true;
+}
+
+function _armPendingMessageHoldActivation(bubble, msgId, touch) {
+    _clearPendingMessageHoldActivation();
+    var touchTarget = touch && touch.target;
+    if (!bubble || !msgId || !touchTarget || !bubble.contains(touchTarget)) return false;
+    _pendingMessageHoldActivation = {
+        sequence: ++_messageHoldActivationSequence,
+        bubble: bubble,
+        msgId: msgId,
+        touchTarget: touchTarget,
+        surface: _messageHoldActivationSurface(touchTarget, bubble),
+        released: false,
+        contextConsumed: false,
+        activationConsumed: false,
+        expiresAt: null,
+        expiryTimer: null,
+    };
+    return true;
+}
+
+function _releasePendingMessageHoldActivation(bubble, now) {
+    var pending = _pendingMessageHoldActivation;
+    if (!pending || pending.bubble !== bubble || pending.released) return false;
+    var timestamp = typeof now === 'number' ? now : Date.now();
+    pending.released = true;
+    pending.expiresAt = timestamp + 750;
+    var sequence = pending.sequence;
+    pending.expiryTimer = setTimeout(function() {
+        _clearPendingMessageHoldActivation(sequence);
+    }, 750);
+    return true;
+}
+
+function _pendingMessageHoldContextMatches(target, bubble) {
+    var pending = _pendingMessageHoldActivation;
+    if (!pending || pending.bubble !== bubble || !target) return false;
+    if (target === pending.touchTarget) return true;
+    if (target.contains && target.contains(pending.touchTarget)) return true;
+    return !!(pending.touchTarget.contains && pending.touchTarget.contains(target));
+}
+
+function _consumePendingMessageHoldContext(target, bubble, now) {
+    var pending = _pendingMessageHoldActivation;
+    var timestamp = typeof now === 'number' ? now : Date.now();
+    if (!pending || (pending.expiresAt !== null && timestamp > pending.expiresAt)) {
+        if (pending) _clearPendingMessageHoldActivation(pending.sequence);
+        return false;
+    }
+    if (!_pendingMessageHoldContextMatches(target, bubble)) return false;
+    pending.contextConsumed = true;
+    return true;
+}
+
+function _consumePendingMessageHoldActivation(event, surface, now) {
+    var pending = _pendingMessageHoldActivation;
+    var timestamp = typeof now === 'number' ? now : Date.now();
+    var bubble = surface && surface.closest ? surface.closest('.lxmf-msg') : null;
+    if (!pending || !pending.released || pending.activationConsumed || !surface ||
+            pending.surface !== surface || bubble !== pending.bubble) {
+        return false;
+    }
+    if (pending.expiresAt !== null && timestamp > pending.expiresAt) {
+        _clearPendingMessageHoldActivation(pending.sequence);
+        return false;
+    }
+    pending.activationConsumed = true;
+    if (event && event.cancelable) event.preventDefault();
+    if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
+    return true;
+}
+
+function _findRenderedMessageBubble(container, msgId) {
+    if (!container || !msgId) return null;
+    return Array.from(container.querySelectorAll('.lxmf-msg[data-msg-id]')).find(function(candidate) {
+        return candidate.getAttribute('data-msg-id') === msgId;
+    }) || null;
+}
 
 function _messageActionShouldPreserveComposer() {
     return !!((_activeContextMenu && _activeContextMenu.preserveComposerKeyboard) || _shouldPreserveLxmfComposerKeyboard());
@@ -4456,8 +4797,30 @@ function _bindMessageFocusPreservingActivation(el, handler) {
     });
 }
 
-function _dismissContextMenu() {
+function _prefersKeyboardMessageFocus() {
+    return !!(window.RS && RS.ui && typeof RS.ui.prefersKeyboardFocus === 'function' &&
+        RS.ui.prefersKeyboardFocus());
+}
+
+function _messageActivationExpectsFocus(event) {
+    if (_prefersKeyboardMessageFocus()) return true;
+    if (!event) return false;
+    if (event.type === 'click' && event.detail === 0) return true;
+    return document.documentElement.dataset.inputModality === 'pointer';
+}
+
+function _focusMessageControl(control) {
+    if (!control || typeof control.focus !== 'function') return;
+    try { control.focus({ preventScroll: true }); }
+    catch (_) { control.focus(); }
+}
+
+function _dismissContextMenu(opts) {
+    opts = opts || {};
     if (!_activeContextMenu) return false;
+    var trigger = _activeContextMenu.trigger;
+    var msgId = _activeContextMenu.msgId;
+    var restoreFocusExpected = _activeContextMenu.restoreFocusExpected;
     if (_activeContextMenu.menu && _activeContextMenu.menu.parentNode) {
         _activeContextMenu.menu.parentNode.removeChild(_activeContextMenu.menu);
     }
@@ -4467,7 +4830,113 @@ function _dismissContextMenu() {
     if (_activeContextMenu.container) {
         _activeContextMenu.container.classList.remove('msg-action-mode');
     }
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
     _activeContextMenu = null;
+    var flushedRender = opts.flushDeferredRender !== false && _flushDeferredConversationRender();
+    if (opts.restoreFocus !== false && restoreFocusExpected) {
+        var focusTarget = trigger;
+        if (flushedRender && trigger && msgId) {
+            var container = document.getElementById('lxmf-messages');
+            var bubble = _findRenderedMessageBubble(container, msgId);
+            focusTarget = bubble && bubble.querySelector('.msg-actions-trigger');
+        }
+        _focusMessageControl(focusTarget);
+    }
+    return true;
+}
+
+function _messageInteractionUsesTouchStaging() {
+    if (document.documentElement.dataset.inputModality === 'touch') return true;
+    return typeof isTauriMobile === 'function' && isTauriMobile();
+}
+
+function _messageTextSelectionOwnsBubble(bubble) {
+    return !!(_activeMessageTextSelection && _activeMessageTextSelection.bubble === bubble);
+}
+
+function _clearNativeMessageSelection() {
+    if (!window.getSelection) return;
+    var selection = window.getSelection();
+    if (selection && typeof selection.removeAllRanges === 'function') selection.removeAllRanges();
+}
+
+function _selectMessageTextNow(content) {
+    if (!content || !window.getSelection || !document.createRange) return false;
+    var selection = window.getSelection();
+    if (!selection || typeof selection.addRange !== 'function') return false;
+    var range = document.createRange();
+    range.selectNodeContents(content);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
+}
+
+function _exitMessageTextSelectionMode(opts) {
+    opts = opts || {};
+    if (!_activeMessageTextSelection) {
+        if (opts.clearNativeSelection) _clearNativeMessageSelection();
+        return false;
+    }
+    var state = _activeMessageTextSelection;
+    _activeMessageTextSelection = null;
+    if (state.row) state.row.classList.remove('msg-text-selection-target');
+    if (state.container) state.container.classList.remove('msg-text-selection-mode');
+    if (state.guide && state.guide.parentNode) state.guide.parentNode.removeChild(state.guide);
+    if (opts.clearNativeSelection) _clearNativeMessageSelection();
+    var flushedRender = opts.flushDeferredRender !== false && _flushDeferredConversationRender();
+    if (opts.restoreFocus !== false && state.restoreFocusExpected) {
+        var focusTarget = state.trigger;
+        if (flushedRender && state.trigger && state.msgId) {
+            var container = document.getElementById('lxmf-messages');
+            var bubble = _findRenderedMessageBubble(container, state.msgId);
+            focusTarget = bubble && bubble.querySelector('.msg-actions-trigger');
+        }
+        _focusMessageControl(focusTarget);
+    }
+    return true;
+}
+
+function _enterMessageTextSelectionMode(bubble, trigger, opts) {
+    opts = opts || {};
+    var content = bubble && bubble.querySelector ? bubble.querySelector('.lxmf-msg-content') : null;
+    if (!content || !String(content.textContent || '').trim()) return false;
+
+    _exitMessageTextSelectionMode({ restoreFocus: false, clearNativeSelection: true });
+    var container = document.getElementById('lxmf-messages');
+    var row = bubble.closest ? bubble.closest('.msg-row') : null;
+    var touchStaged = _messageInteractionUsesTouchStaging();
+    if (container) container.classList.add('msg-text-selection-mode');
+    if (row) row.classList.add('msg-text-selection-target');
+
+    var guide = document.createElement('div');
+    guide.className = 'msg-text-selection-guide';
+    guide.innerHTML = '<span role="status">' + (touchStaged
+        ? 'Hold and drag in this message to select text.'
+        : 'Text selected. Adjust the selection or choose Done.') + '</span>' +
+        '<button type="button" class="msg-text-selection-done">Done</button>';
+    if (row) row.appendChild(guide);
+
+    _activeMessageTextSelection = {
+        bubble: bubble,
+        content: content,
+        container: container,
+        row: row,
+        guide: guide,
+        trigger: trigger,
+        msgId: bubble.getAttribute('data-msg-id'),
+        ownerHash: _canonicalConversationHash(lxmfActiveContact),
+        restoreFocusExpected: !!opts.restoreFocusExpected,
+    };
+    var done = guide.querySelector('.msg-text-selection-done');
+    if (done) {
+        done.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            _exitMessageTextSelectionMode({ clearNativeSelection: true });
+        });
+    }
+    if (!touchStaged) _selectMessageTextNow(content);
+    if (opts.restoreFocusExpected) _focusMessageControl(done);
     return true;
 }
 
@@ -4480,6 +4949,12 @@ function _messageActionIcon(name) {
     }
     if (name === 'save') {
         return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
+    }
+    if (name === 'select') {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h4M7 4v16M5 20h4M13 7h6M13 12h6M13 17h6"/></svg>';
+    }
+    if (name === 'more') {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>';
     }
     return '';
 }
@@ -4497,10 +4972,32 @@ function _messageSelectionIntersectsBubble(bubble) {
     return !!ancestor && bubble.contains(ancestor);
 }
 
-function _messageTouchTargetsSelectableText(touch, bubble) {
+function _messageTouchStartsDirectControl(touch, bubble) {
     var target = touch && touch.target;
     if (!target || !target.closest || !bubble || !bubble.contains(target)) return false;
-    return !!target.closest('.lxmf-msg-content');
+    return !!target.closest(
+        '.msg-actions-trigger, .lxmf-send-cancel, .msg-send-cancel-inline, .msg-retry-btn, ' +
+        '.voice-memo-player-play, .voice-memo-player-waveform, .voice-memo-player-download'
+    );
+}
+
+function _messageLinkUsesNativeContext(target) {
+    var isMessageLink = target && target.closest && target.closest('.rs-message-link');
+    return !!isMessageLink && document.documentElement.dataset.inputModality !== 'touch';
+}
+
+function _messageLinkActivationAllowed(link) {
+    var bubble = link && link.closest ? link.closest('.lxmf-msg') : null;
+    return !_messageTextSelectionOwnsBubble(bubble);
+}
+
+function _messageContextMenuDisposition(target, bubble, now) {
+    if (_messageLinkUsesNativeContext(target)) return 'native';
+    var selectableText = target && target.closest && target.closest('.lxmf-msg-content');
+    if ((selectableText && _messageTextSelectionOwnsBubble(bubble)) ||
+            _messageSelectionIntersectsBubble(bubble)) return 'native';
+    if (_consumePendingMessageHoldContext(target, bubble, now)) return 'suppress';
+    return 'actions';
 }
 
 function _ownReactionSender() {
@@ -4544,13 +5041,43 @@ function _optimisticApplyReaction(msgId, emoji, action) {
     renderConversation();
 }
 
+function _restoreRenderedMessageActionFocus(msgId, emoji, focusExpected) {
+    if (!(focusExpected || _prefersKeyboardMessageFocus()) || !msgId) return;
+    var container = document.getElementById('lxmf-messages');
+    if (!container) return;
+    var bubble = Array.from(container.querySelectorAll('.lxmf-msg[data-msg-id]')).find(function(candidate) {
+        return candidate.getAttribute('data-msg-id') === msgId;
+    });
+    var target = null;
+    if (emoji) {
+        target = Array.from(container.querySelectorAll('.reaction-pill[data-msg-id]')).find(function(candidate) {
+            return candidate.getAttribute('data-msg-id') === msgId &&
+                candidate.getAttribute('data-emoji') === emoji;
+        }) || null;
+    }
+    if (!target && bubble) target = bubble.querySelector('.msg-actions-trigger');
+    _focusMessageControl(target);
+}
+
 function _sendReactionForMessage(msgData, emoji, opts) {
     opts = opts || {};
     if (!msgData || !msgData.id || !emoji) return;
     var shouldRestoreComposer = _messageActionShouldPreserveComposer();
+    var focusExpected = !!(opts.focusExpected ||
+        (_activeContextMenu && _activeContextMenu.restoreFocusExpected));
     var action = _hasOwnReaction(msgData.id, emoji) ? 'remove' : 'add';
-    if (opts.dismiss !== false) _dismissContextMenu();
+    if (opts.dismiss !== false) {
+        // The optimistic reaction render consumes any coalesced transcript
+        // update, so keep this as one rebuild after the action has activated.
+        _dismissContextMenu({ flushDeferredRender: false });
+    }
     _optimisticApplyReaction(msgData.id, emoji, action);
+    _flushDeferredConversationRender();
+    _restoreRenderedMessageActionFocus(
+        msgData.id,
+        opts.restoreReactionFocus ? emoji : null,
+        focusExpected
+    );
     _restoreLxmfComposerKeyboard(shouldRestoreComposer);
     if (typeof haptic === 'function') haptic('selection');
     RS.invoke('send_reaction', {
@@ -4564,6 +5091,11 @@ function _sendReactionForMessage(msgData, emoji, opts) {
     }).catch(function() {
         // Roll the optimistic apply back so the pill reflects reality.
         _optimisticApplyReaction(msgData.id, emoji, action === 'add' ? 'remove' : 'add');
+        _restoreRenderedMessageActionFocus(
+            msgData.id,
+            opts.restoreReactionFocus ? emoji : null,
+            focusExpected
+        );
         if (typeof showToast === 'function') showToast('Could not add the reaction', 'toast-error', 2500);
     });
 }
@@ -4618,9 +5150,10 @@ function _saveDownloadedMediaFile(file, opts) {
 
 function _messageMediaContextAction(msgData) {
     if (msgData && msgData.image) {
+        var image = msgData.image;
         var canCopyImage = _canCopyDownloadedImages();
         return {
-            label: canCopyImage ? 'Copy' : 'Save',
+            label: canCopyImage ? 'Copy Image' : 'Save Image',
             icon: canCopyImage ? 'copy' : 'save',
             run: function() {
                 if (!canCopyImage && image.stored_name && typeof isTauriMobile === 'function' && isTauriMobile()) {
@@ -4641,7 +5174,7 @@ function _messageMediaContextAction(msgData) {
     var attachment = _messageFirstAttachment(msgData);
     if (attachment) {
         return {
-            label: 'Save',
+            label: 'Save File',
             icon: 'save',
             run: function() {
                 if (attachment.stored_name &&
@@ -4679,8 +5212,26 @@ function _positionMsgContextMenu(menu, x, y, bubble) {
     menu.style.top = top + 'px';
 }
 
-function _showMsgContextMenu(msgData, x, y, bubble) {
-    _dismissContextMenu();
+function _prepareMessageActionTarget(msgData, bubble, trigger, x, y) {
+    // Selection and actions share one transcript-DOM lease. Mode transfers must
+    // keep that DOM stable; the final exit performs the coalesced render.
+    _exitMessageTextSelectionMode({
+        restoreFocus: false,
+        clearNativeSelection: true,
+        flushDeferredRender: false,
+    });
+    return { bubble: bubble, trigger: trigger, x: x, y: y };
+}
+
+function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
+    opts = opts || {};
+    var preparedTarget = _prepareMessageActionTarget(msgData, bubble, trigger, x, y);
+    if (!preparedTarget) return;
+    bubble = preparedTarget.bubble;
+    trigger = preparedTarget.trigger;
+    x = preparedTarget.x;
+    y = preparedTarget.y;
+    _dismissContextMenu({ restoreFocus: false, flushDeferredRender: false });
 
     var preserveComposerKeyboard = _shouldPreserveLxmfComposerKeyboard();
     if (typeof haptic === 'function') haptic('selection');
@@ -4695,7 +5246,9 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
 
     var menu = document.createElement('div');
     menu.className = 'msg-context-menu msg-action-menu';
-    menu.setAttribute('role', 'menu');
+    menu.setAttribute('role', 'dialog');
+    menu.setAttribute('aria-modal', 'false');
+    menu.setAttribute('aria-label', 'Message actions');
     menu.addEventListener('mousedown', _preventMessageActionFocusSteal);
     menu.addEventListener('touchstart', _preventMessageActionFocusSteal, { passive: false });
 
@@ -4707,9 +5260,14 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
         btn.type = 'button';
         btn.className = 'quick-react-emoji';
         btn.textContent = em;
-        btn.setAttribute('aria-label', 'React ' + em);
-        _bindMessageFocusPreservingActivation(btn, function() {
-            _sendReactionForMessage(msgData, em);
+        btn.setAttribute('data-message-action', 'reaction:' + em);
+        var hasOwnReaction = _hasOwnReaction(msgData.id, em);
+        btn.setAttribute('aria-pressed', hasOwnReaction ? 'true' : 'false');
+        btn.setAttribute('aria-label', (hasOwnReaction ? 'Remove ' : 'Add ') + em + ' reaction');
+        _bindMessageFocusPreservingActivation(btn, function(e) {
+            _sendReactionForMessage(msgData, em, {
+                focusExpected: _messageActivationExpectsFocus(e),
+            });
         });
         reactBar.appendChild(btn);
     });
@@ -4720,6 +5278,7 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
     plusBtn.textContent = '+';
     plusBtn.title = 'More emoji';
     plusBtn.setAttribute('aria-label', 'More emoji');
+    plusBtn.setAttribute('data-message-action', 'reaction-more');
     _bindMessageFocusPreservingActivation(plusBtn, function() {
         var shouldRestoreComposer = _messageActionShouldPreserveComposer();
         // Capture before dismiss removes plusBtn from the DOM.
@@ -4759,6 +5318,7 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
     var replyBtn = document.createElement('button');
     replyBtn.className = 'msg-ctx-btn msg-ctx-reply';
     replyBtn.type = 'button';
+    replyBtn.setAttribute('data-message-action', 'reply');
     replyBtn.innerHTML = _messageActionIcon('reply') + '<span>Reply</span>';
     _bindMessageFocusPreservingActivation(replyBtn, function() {
         _dismissContextMenu();
@@ -4767,56 +5327,142 @@ function _showMsgContextMenu(msgData, x, y, bubble) {
     });
     actions.appendChild(replyBtn);
 
-    var copyBtn = document.createElement('button');
-    copyBtn.className = 'msg-ctx-btn msg-ctx-copy';
-    copyBtn.type = 'button';
-    var mediaAction = _messageMediaContextAction(msgData);
-    copyBtn.innerHTML = _messageActionIcon(mediaAction ? mediaAction.icon : 'copy') +
-        '<span>' + (mediaAction ? mediaAction.label : 'Copy') + '</span>';
-    _bindMessageFocusPreservingActivation(copyBtn, function() {
-        var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-        _dismissContextMenu();
-        var action = mediaAction ? mediaAction.run() : _copyToClipboard(msgData.content || '');
-        action.then(function(ok) {
-            if (typeof showToast === 'function') {
-                if (!mediaAction) showToast(ok ? 'Message copied' : 'Could not copy', ok ? 'toast-success' : 'toast-error', 1600);
-            }
-            if (typeof haptic === 'function') haptic(ok ? 'success' : 'warning');
-            _restoreLxmfComposerKeyboard(shouldRestoreComposer);
-        }).catch(function(err) {
-            if (typeof showToast === 'function') {
-                showToast((mediaAction && mediaAction.label === 'Save' ? 'Could not save: ' : 'Could not copy: ') + ((err && err.message) || 'unknown error'), 'toast-error', 3500);
-            }
-            if (typeof haptic === 'function') haptic('warning');
-            _restoreLxmfComposerKeyboard(shouldRestoreComposer);
+    var content = bubble && bubble.querySelector ? bubble.querySelector('.lxmf-msg-content') : null;
+    var messageText = _messageDisplayContent(msgData, !!(msgData && msgData.audio));
+    var hasText = !!(content && String(messageText || '').trim());
+    if (hasText) {
+        var selectBtn = document.createElement('button');
+        selectBtn.className = 'msg-ctx-btn msg-ctx-select';
+        selectBtn.type = 'button';
+        selectBtn.setAttribute('data-message-action', 'select-text');
+        selectBtn.innerHTML = _messageActionIcon('select') + '<span>Select Text</span>';
+        _bindMessageFocusPreservingActivation(selectBtn, function() {
+            var restoreFocusExpected = !!(_activeContextMenu && _activeContextMenu.restoreFocusExpected);
+            var wasTriggeredByControl = !!trigger;
+            _dismissContextMenu({ restoreFocus: false, flushDeferredRender: false });
+            var renderedContainer = document.getElementById('lxmf-messages');
+            var selectionBubble = _findRenderedMessageBubble(renderedContainer, msgData.id) || bubble;
+            var selectionTrigger = wasTriggeredByControl
+                ? selectionBubble.querySelector('.msg-actions-trigger')
+                : null;
+            _enterMessageTextSelectionMode(selectionBubble, selectionTrigger, {
+                restoreFocusExpected: restoreFocusExpected,
+            });
+            if (typeof haptic === 'function') haptic('light');
         });
-    });
-    actions.appendChild(copyBtn);
+        actions.appendChild(selectBtn);
+
+        var copyBtn = document.createElement('button');
+        copyBtn.className = 'msg-ctx-btn msg-ctx-copy';
+        copyBtn.type = 'button';
+        copyBtn.setAttribute('data-message-action', 'copy-message');
+        copyBtn.innerHTML = _messageActionIcon('copy') + '<span>Copy Message</span>';
+        _bindMessageFocusPreservingActivation(copyBtn, function() {
+            var shouldRestoreComposer = _messageActionShouldPreserveComposer();
+            _dismissContextMenu();
+            _copyToClipboard(messageText).then(function(ok) {
+                if (typeof showToast === 'function') {
+                    showToast(ok ? 'Message copied' : 'Could not copy', ok ? 'toast-success' : 'toast-error', 1600);
+                }
+                if (typeof haptic === 'function') haptic(ok ? 'success' : 'warning');
+                _restoreLxmfComposerKeyboard(shouldRestoreComposer);
+            }).catch(function(err) {
+                if (typeof showToast === 'function') {
+                    showToast('Could not copy: ' + ((err && err.message) || 'unknown error'), 'toast-error', 3500);
+                }
+                if (typeof haptic === 'function') haptic('warning');
+                _restoreLxmfComposerKeyboard(shouldRestoreComposer);
+            });
+        });
+        actions.appendChild(copyBtn);
+    }
+
+    var mediaAction = _messageMediaContextAction(msgData);
+    if (mediaAction) {
+        var mediaBtn = document.createElement('button');
+        mediaBtn.className = 'msg-ctx-btn msg-ctx-media';
+        mediaBtn.type = 'button';
+        mediaBtn.setAttribute('data-message-action', 'media');
+        mediaBtn.innerHTML = _messageActionIcon(mediaAction.icon) + '<span>' + mediaAction.label + '</span>';
+        _bindMessageFocusPreservingActivation(mediaBtn, function() {
+            var shouldRestoreComposer = _messageActionShouldPreserveComposer();
+            _dismissContextMenu();
+            mediaAction.run().then(function(ok) {
+                if (typeof haptic === 'function') haptic(ok ? 'success' : 'warning');
+                _restoreLxmfComposerKeyboard(shouldRestoreComposer);
+            }).catch(function(err) {
+                if (typeof showToast === 'function') {
+                    showToast((mediaAction.label.indexOf('Save') === 0 ? 'Could not save: ' : 'Could not copy: ') +
+                        ((err && err.message) || 'unknown error'), 'toast-error', 3500);
+                }
+                if (typeof haptic === 'function') haptic('warning');
+                _restoreLxmfComposerKeyboard(shouldRestoreComposer);
+            });
+        });
+        actions.appendChild(mediaBtn);
+    }
 
     menu.appendChild(actions);
 
     document.body.appendChild(menu);
-    _activeContextMenu = { menu: menu, row: row, container: container, preserveComposerKeyboard: preserveComposerKeyboard };
+    if (trigger) trigger.setAttribute('aria-expanded', 'true');
+    _activeContextMenu = {
+        menu: menu,
+        row: row,
+        container: container,
+        trigger: trigger,
+        msgId: msgData.id,
+        ownerHash: _canonicalConversationHash(lxmfActiveContact),
+        restoreFocusExpected: !!opts.focusDialog,
+        preserveComposerKeyboard: preserveComposerKeyboard,
+    };
     _positionMsgContextMenu(menu, x, y, bubble);
+    if (opts.focusDialog) {
+        _focusMessageControl(menu.querySelector('button'));
+    }
 }
 
 function _handleMessageActionPointer(e) {
-    if (!_activeContextMenu) return;
-    var menu = _activeContextMenu.menu;
-    if (menu && menu.contains(e.target)) return;
-    _dismissContextMenu();
+    if (_activeContextMenu) {
+        var menu = _activeContextMenu.menu;
+        if (menu && menu.contains(e.target)) return;
+        if (_dismissContextMenu({ restoreFocus: false, flushDeferredRender: false })) {
+            _scheduleDeferredConversationRenderAfterPointer();
+        }
+    }
+    if (_activeMessageTextSelection) {
+        var state = _activeMessageTextSelection;
+        if ((state.row && state.row.contains(e.target)) ||
+                (state.guide && state.guide.contains(e.target))) return;
+        if (_exitMessageTextSelectionMode({
+                restoreFocus: false,
+                clearNativeSelection: true,
+                flushDeferredRender: false,
+            })) {
+            _scheduleDeferredConversationRenderAfterPointer();
+        }
+    }
 }
 
 document.addEventListener('pointerdown', _handleMessageActionPointer, true);
 document.addEventListener('mousedown', _handleMessageActionPointer, true);
 document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') _dismissContextMenu();
+    if (e.key !== 'Escape') return;
+    if (_dismissContextMenu()) {
+        e.preventDefault();
+        return;
+    }
+    if (_exitMessageTextSelectionMode({ clearNativeSelection: true })) e.preventDefault();
 }, true);
 
 window.RS = window.RS || {};
 window.RS.closeMessageActionMenu = function() {
     if (_activeContextMenu) {
         _dismissContextMenu();
+        return true;
+    }
+    if (_activeMessageTextSelection) {
+        _exitMessageTextSelectionMode({ clearNativeSelection: true });
         return true;
     }
     return false;

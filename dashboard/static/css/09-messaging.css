@@ -343,6 +343,39 @@
     -webkit-user-select: text;
     -webkit-touch-callout: default;
 }
+html[data-input-modality="touch"] .lxmf-messages:not(.msg-text-selection-mode) .lxmf-msg-content,
+html[data-input-modality="touch"] .lxmf-messages.msg-text-selection-mode .msg-row:not(.msg-text-selection-target) .lxmf-msg-content {
+    cursor: default;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
+}
+html[data-input-modality="touch"] .lxmf-messages.msg-text-selection-mode .msg-text-selection-target .lxmf-msg-content {
+    cursor: text;
+    touch-action: auto;
+    user-select: text;
+    -webkit-user-select: text;
+    -webkit-touch-callout: default;
+}
+html[data-input-modality="touch"] .lxmf-messages.msg-text-selection-mode .msg-text-selection-target .rs-message-link {
+    -webkit-touch-callout: none;
+}
+@media (hover: none) and (pointer: coarse) {
+    .lxmf-messages:not(.msg-text-selection-mode) .lxmf-msg-content,
+    .lxmf-messages.msg-text-selection-mode .msg-row:not(.msg-text-selection-target) .lxmf-msg-content {
+        cursor: default;
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;
+    }
+    .lxmf-messages.msg-text-selection-mode .msg-text-selection-target .lxmf-msg-content {
+        cursor: text;
+        touch-action: auto;
+        user-select: text;
+        -webkit-user-select: text;
+        -webkit-touch-callout: default;
+    }
+}
 .rs-message-link {
     color: var(--accent);
     text-decoration: underline;
@@ -1766,12 +1799,16 @@ body.image-viewer-open {
 .msg-row.outbound .msg-reactions { justify-content: flex-end; padding-right: 8px; }
 .msg-row.inbound .msg-reactions { justify-content: flex-start; padding-left: 8px; }
 .reaction-pill {
+    appearance: none;
+    -webkit-appearance: none;
     display: inline-flex;
     align-items: center;
     gap: var(--space-1);
     padding: var(--space-1) var(--space-3);
     border-radius: var(--radius-lg-plus);
     background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
     font-size: var(--text-base);
     cursor: pointer;
     user-select: none;
@@ -1781,6 +1818,120 @@ body.image-viewer-open {
 }
 .reaction-pill:hover { background: rgba(255,255,255,0.15); }
 .reaction-pill.mine { border-color: var(--accent); background: var(--accent-bg); }
+.reaction-pill:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
+
+.msg-actions-trigger {
+    appearance: none;
+    -webkit-appearance: none;
+    position: relative;
+    display: inline-grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    flex: 0 0 24px;
+    margin: -5px -5px -5px 0;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: currentColor;
+    cursor: pointer;
+    opacity: 0.42;
+    transition: opacity var(--transition-fast), background var(--transition-fast), color var(--transition-fast);
+}
+.msg-actions-trigger::before {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: var(--touch-target);
+    height: var(--touch-target);
+    transform: translate(-50%, -50%);
+}
+.msg-actions-trigger svg {
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+    stroke: none;
+}
+.lxmf-msg:hover .msg-actions-trigger,
+.msg-actions-trigger[aria-expanded="true"],
+.msg-actions-trigger:focus-visible {
+    opacity: 1;
+    color: var(--text-primary);
+    background: var(--overlay-white-subtle);
+}
+.msg-actions-trigger:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
+html[data-input-modality="touch"] .msg-actions-trigger {
+    opacity: 1;
+}
+html[data-input-modality="touch"] .reaction-pill,
+html[data-input-modality="touch"] .quick-react-emoji,
+html[data-input-modality="touch"] .quick-react-plus,
+html[data-input-modality="touch"] .msg-ctx-btn,
+html[data-input-modality="touch"] .msg-text-selection-done {
+    min-height: var(--touch-target);
+}
+@media (hover: none) and (pointer: coarse) {
+    .msg-actions-trigger { opacity: 1; }
+    .reaction-pill,
+    .quick-react-emoji,
+    .quick-react-plus,
+    .msg-ctx-btn,
+    .msg-text-selection-done {
+        min-height: var(--touch-target);
+    }
+}
+
+.lxmf-messages.msg-text-selection-mode .msg-row:not(.msg-text-selection-target) {
+    opacity: 0.52;
+}
+.msg-row.msg-text-selection-target .lxmf-msg {
+    touch-action: auto;
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    box-shadow: 0 8px 26px rgba(0, 0, 0, 0.28);
+}
+.msg-text-selection-guide {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    width: min(100%, 440px);
+    max-width: 100%;
+    margin-top: var(--space-3);
+    padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4);
+    border-left: 2px solid var(--accent);
+    border-radius: var(--radius-sm);
+    background: var(--surface-card-muted);
+    color: var(--text-secondary);
+    font-size: var(--text-xs);
+    box-shadow: var(--shadow-sm);
+}
+.msg-text-selection-guide span {
+    flex: 1;
+}
+.msg-text-selection-done {
+    min-width: 44px;
+    min-height: 36px;
+    padding: 0 var(--space-3);
+    border: 1px solid var(--accent-border);
+    border-radius: var(--radius-pill);
+    background: var(--accent-bg);
+    color: var(--accent);
+    font: inherit;
+    font-weight: 700;
+    cursor: pointer;
+}
+.msg-text-selection-done:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
 
 .msg-context-menu {
     position: fixed; z-index: calc(var(--z-modal) + 3);
@@ -1812,6 +1963,10 @@ body.image-viewer-open {
     line-height: 1;
 }
 .quick-react-emoji:hover { background: var(--overlay-white-hover); }
+.quick-react-emoji[aria-pressed="true"] {
+    background: var(--accent-bg);
+    box-shadow: inset 0 0 0 1px var(--accent-border);
+}
 .quick-react-plus {
     font-size: var(--text-xl); cursor: pointer; padding: 4px 8px; border-radius: var(--radius-sm);
     color: var(--text-muted); font-weight: 700;
@@ -1819,7 +1974,14 @@ body.image-viewer-open {
     transition: background var(--transition-fast), color var(--transition-fast);
 }
 .quick-react-plus:hover { background: var(--overlay-white-hover); color: var(--text-primary); }
-.msg-context-actions { display: flex; gap: 6px; }
+.msg-context-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+}
+.msg-context-actions > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+}
 .msg-ctx-btn {
     flex: 1; padding: 8px 10px;
     background: rgba(255,255,255,0.05);
@@ -1836,6 +1998,12 @@ body.image-viewer-open {
     min-height: 36px;
 }
 .msg-ctx-btn:hover { background: var(--overlay-white-hover); }
+.msg-ctx-btn:focus-visible,
+.quick-react-emoji:focus-visible,
+.quick-react-plus:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
 .msg-ctx-btn svg {
     width: 16px;
     height: 16px;
@@ -1991,6 +2159,12 @@ body.image-viewer-open {
 }
 .msg-row.msg-group-first .lxmf-msg-meta,
 .msg-row.msg-group-middle .lxmf-msg-meta {
+    min-height: 14px;
+    margin-top: 0;
+    display: flex;
+}
+.msg-row.msg-group-first .lxmf-msg-meta > :not(.msg-actions-trigger),
+.msg-row.msg-group-middle .lxmf-msg-meta > :not(.msg-actions-trigger) {
     display: none;
 }
 

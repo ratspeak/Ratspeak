@@ -6913,13 +6913,11 @@ fn mobile_haptics_use_tauri_plugin_commands_and_semantic_feedback() {
 }
 
 #[test]
-fn message_actions_use_mobile_long_press_and_action_state() {
+fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     let root = repo_root();
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("messaging css");
-    let responsive_css =
-        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
     let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
     let gestures = read_source(root.join("dashboard/static/js/gestures.js")).expect("gestures js");
     let emoji_picker =
@@ -6933,11 +6931,13 @@ fn message_actions_use_mobile_long_press_and_action_state() {
 
     assert!(lxmf.contains("RS.gestures.attachLongPress(bubble"));
     assert!(lxmf.contains("function _messageSelectionIntersectsBubble(bubble)"));
-    assert!(lxmf.contains("function _messageTouchTargetsSelectableText(touch, bubble)"));
+    assert!(lxmf.contains("function _messageTextSelectionOwnsBubble(bubble)"));
+    assert!(lxmf.contains("function _messageTouchStartsDirectControl(touch, bubble)"));
+    assert!(lxmf.contains("function _messageLinkUsesNativeContext(target)"));
     assert!(lxmf.contains("excludeZone: function(touch)"));
     assert!(lxmf.contains("hapticStages: [{ at: 0.55, level: 'light' }]"));
-    assert!(lxmf.contains("_messageTouchTargetsSelectableText(touch, bubble) ||"));
-    assert!(lxmf.contains("touchModality || _messageSelectionIntersectsBubble(this)"));
+    assert!(lxmf.contains("return _messageTextSelectionOwnsBubble(bubble) ||"));
+    assert!(lxmf.contains("_messageTouchStartsDirectControl(touch, bubble);"));
     assert!(!lxmf.contains("preventDefaultOnStart: function()"));
     assert!(lxmf.contains("container.addEventListener('touchstart', function()"));
     assert!(lxmf.contains("state.settleToken++;"));
@@ -6947,7 +6947,13 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(lxmf.contains("(t.closest('.lxmf-msg') && _shouldPreserveLxmfComposerKeyboard())"));
     assert!(lxmf.contains("function _bindMessageFocusPreservingActivation"));
     assert!(lxmf.contains("preserveComposerKeyboard"));
-    assert!(lxmf.contains("var _suppressImageOpenUntil = 0;"));
+    assert!(lxmf.contains("var _pendingMessageHoldActivation = null;"));
+    assert!(lxmf.contains("var _messageHoldActivationSequence = 0;"));
+    assert!(lxmf.contains("function _armPendingMessageHoldActivation(bubble, msgId, touch)"));
+    assert!(lxmf.contains("function _releasePendingMessageHoldActivation(bubble, now)"));
+    assert!(lxmf.contains("function _consumePendingMessageHoldContext(target, bubble, now)"));
+    assert!(lxmf.contains("function _consumePendingMessageHoldActivation(event, surface, now)"));
+    assert!(lxmf.contains("pending.surface !== surface || bubble !== pending.bubble"));
     assert!(lxmf.contains("container.querySelectorAll('.lxmf-send-cancel, .msg-send-cancel-inline').forEach(function(btn)"));
     assert!(lxmf.contains("_bindMessageFocusPreservingActivation(btn, function()"));
     assert!(lxmf.contains("_cancelLxmfSend(btn.getAttribute('data-msg-id'));"));
@@ -6968,8 +6974,13 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(inbound.contains("lxmf_step_starts_delivery_timeout"));
     assert!(inbound.contains("manager.cancel_outbound_message(msg_id)"));
     assert!(inbound.contains("\"step\": \"timeout\""));
-    assert!(lxmf.contains("_suppressImageOpenUntil = Date.now() + 900;"));
-    assert!(lxmf.contains("if (Date.now() < _suppressImageOpenUntil)"));
+    assert!(lxmf.contains("_armPendingMessageHoldActivation(bubble, msgId, touch);"));
+    assert!(lxmf.contains("_releasePendingMessageHoldActivation(this);"));
+    assert!(
+        lxmf.matches("if (_consumePendingMessageHoldActivation(e, this)) return;")
+            .count()
+            >= 4
+    );
     assert!(lxmf.contains("function _restoreLxmfComposerKeyboard"));
     assert!(lxmf.contains("window.RS.closeMessageActionMenu"));
     assert!(lxmf.contains("var ICON_SEND_OPPORTUNISTIC"));
@@ -6982,8 +6993,38 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(lxmf.contains("function _resolveMessageImageFile(msgData)"));
     assert!(lxmf.contains("function _resolveMessageAttachmentFile(att)"));
     assert!(lxmf.contains("var mediaAction = _messageMediaContextAction(msgData);"));
-    assert!(lxmf.contains("_messageActionIcon(mediaAction ? mediaAction.icon : 'copy')"));
-    assert!(lxmf.contains("mediaAction ? mediaAction.label : 'Copy'"));
+    assert!(lxmf.contains("<span>Select Text</span>"));
+    assert!(lxmf.contains("<span>Copy Message</span>"));
+    assert!(lxmf.contains("label: canCopyImage ? 'Copy Image' : 'Save Image'"));
+    assert!(lxmf.contains("label: 'Save File'"));
+    assert!(lxmf.contains("menu.setAttribute('role', 'dialog')"));
+    assert!(lxmf.contains("menu.setAttribute('aria-modal', 'false')"));
+    assert!(lxmf.contains("menu.setAttribute('aria-label', 'Message actions')"));
+    assert!(!lxmf.contains("menu.setAttribute('role', 'menu')"));
+    assert!(lxmf.contains("class=\"msg-actions-trigger\""));
+    assert!(lxmf.contains("function _enterMessageTextSelectionMode(bubble, trigger, opts)"));
+    assert!(lxmf.contains("function _exitMessageTextSelectionMode(opts)"));
+    assert!(lxmf.contains("function _messageActivationExpectsFocus(event)"));
+    assert!(lxmf.contains("var _deferredConversationRenderOwnerHash = null;"));
+    assert!(lxmf.contains("var _deferredConversationRenderGeneration = 0;"));
+    assert!(lxmf.contains("function _deferActiveMessageInteractionRender(options)"));
+    assert!(lxmf.contains("function _pendingRenderReleaseOwnsCurrentConversation()"));
+    assert!(lxmf.contains("function _scheduleDeferredConversationRenderAfterPointer()"));
+    assert!(
+        lxmf.contains("if (!_deferredConversationRenderOptions) _deferConversationRender({});")
+    );
+    assert!(lxmf.contains("function _flushDeferredConversationRender(expectedGeneration)"));
+    assert!(lxmf.contains("if (_deferActiveMessageInteractionRender(options)) return;"));
+    assert!(lxmf.contains("document.addEventListener('click', clickAfterRelease, true);"));
+    assert!(lxmf.contains("record.fallbackTimer = setTimeout(runFlush, 450);"));
+    assert!(lxmf.contains("document.addEventListener('touchcancel', cancelRelease, true);"));
+    assert!(lxmf.contains("flushDeferredRender: false"));
+    assert!(lxmf.contains("function _prepareMessageActionTarget(msgData, bubble, trigger, x, y)"));
+    assert!(!lxmf.contains("function _captureMessageInteractionForRender()"));
+    assert!(!lxmf.contains("function _restoreMessageInteractionAfterRender(state, container)"));
+    assert!(
+        lxmf.contains("function _restoreRenderedMessageActionFocus(msgId, emoji, focusExpected)")
+    );
     assert!(lxmf.contains("function _optimisticApplyReaction"));
     assert!(lxmf.contains("showToast(ok ? 'Message copied'"));
     assert!(gestures.contains("var preventDefaultOnStart = opts.preventDefaultOnStart || null;"));
@@ -6995,7 +7036,17 @@ fn message_actions_use_mobile_long_press_and_action_state() {
     assert!(messaging_css.contains(".msg-row.msg-action-selected .lxmf-msg"));
     assert!(messaging_css.contains(".lxmf-msg-content {"));
     assert!(messaging_css.contains("-webkit-touch-callout: default;"));
-    assert!(responsive_css.contains(".lxmf-msg-content {"));
+    assert!(messaging_css.contains(
+        "html[data-input-modality=\"touch\"] .lxmf-messages:not(.msg-text-selection-mode) .lxmf-msg-content"
+    ));
+    assert!(messaging_css.contains(".msg-text-selection-target .lxmf-msg-content"));
+    assert!(messaging_css.contains(".msg-row.msg-text-selection-target .lxmf-msg {"));
+    assert!(messaging_css.contains("touch-action: auto;"));
+    assert!(messaging_css.contains(".msg-actions-trigger::before"));
+    assert!(messaging_css.contains(".msg-context-actions > :last-child:nth-child(odd)"));
+    assert!(messaging_css.contains("grid-column: 1 / -1;"));
+    assert!(messaging_css.contains("width: min(100%, 440px);"));
+    assert!(messaging_css.contains("max-width: 100%;"));
     assert!(messaging_css.contains("position: fixed; z-index: calc(var(--z-modal) + 3);"));
     assert!(nav.contains("RS.closeMessageActionMenu()"));
 
