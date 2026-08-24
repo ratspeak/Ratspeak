@@ -21,7 +21,7 @@ use ratspeak_runtime::activity::producer::{
 #[cfg(target_os = "android")]
 use ratspeak_runtime::mobile_platform::NativeBleRnodeDisconnect;
 #[cfg(feature = "ble")]
-use rns_interface::rnode::RNodeStartupOptions;
+use ratspeak_runtime::rns::ble_rnode_startup_options;
 
 use crate::commands::interface_activity::record_interface_event as record_interface_activity;
 #[cfg(any(feature = "ble", test))]
@@ -1711,7 +1711,7 @@ pub async fn apply_ble_rnode_bridge_ready(
                                     id_callsign,
                                 },
                                 tcp_port,
-                                RNodeStartupOptions::default(),
+                                ble_rnode_startup_options(),
                             )
                             .await
                             .map_err(|error| error.to_string());

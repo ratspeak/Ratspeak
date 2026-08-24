@@ -20,6 +20,8 @@ use ratspeak_runtime::activity::producer::{
 use ratspeak_runtime::mobile_platform::NativeBleRnodeDisconnect;
 #[cfg(all(feature = "ble", target_os = "android"))]
 use ratspeak_runtime::mobile_platform::NativeBleRnodeRequest;
+#[cfg(feature = "ble")]
+use ratspeak_runtime::rns::ble_rnode_startup_options;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tauri::State;
@@ -3647,7 +3649,7 @@ async fn spawn_editable_interface(
                                 // an active CMD_READY polling loop stalls after one packet.
                                 flow_control: false,
                             },
-                            RNodeStartupOptions::default(),
+                            ble_rnode_startup_options(),
                         )
                         .await
                         .map_err(|error| error.to_string())?;
@@ -5187,7 +5189,7 @@ pub async fn add_lora_interface(
                             // an active CMD_READY polling loop stalls after one packet.
                             flow_control: false,
                         },
-                        RNodeStartupOptions::default(),
+                        ble_rnode_startup_options(),
                     )
                     .await
                     .map_err(|error| error.to_string())

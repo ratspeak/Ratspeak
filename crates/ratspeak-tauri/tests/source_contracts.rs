@@ -1405,7 +1405,7 @@ fn ble_rnode_runtime_spawns_use_upstream_flow_control_default() {
 }
 
 #[test]
-fn all_rnode_creation_paths_use_upstream_compatible_startup() {
+fn all_rnode_creation_paths_use_transport_specific_startup_policy() {
     let root = repo_root();
     let runtime_rs =
         read_source(root.join("crates/ratspeak-runtime/src/rns.rs")).expect("RNS runtime");
@@ -1414,9 +1414,10 @@ fn all_rnode_creation_paths_use_upstream_compatible_startup() {
     let ble_rs =
         read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("BLE commands");
     let default_option = "RNodeStartupOptions::default()";
+    let ble_option = "ble_rnode_startup_options()";
     let strict_option = "RNodeStartupOptions::require_capability_admission()";
 
-    let assert_default_calls = |source: &str, call_path: &str, expected: usize| {
+    let assert_option_calls = |source: &str, call_path: &str, expected: usize, option: &str| {
         let calls = rust_call_blocks(source, call_path);
         assert_eq!(
             calls.len(),
@@ -1425,46 +1426,54 @@ fn all_rnode_creation_paths_use_upstream_compatible_startup() {
         );
         for call in calls {
             assert!(
-                call.contains(default_option),
-                "{call_path} must preserve upstream-compatible RNode startup:\n{call}"
+                call.contains(option),
+                "{call_path} must use {option}:\n{call}"
             );
         }
     };
 
-    assert_default_calls(
+    assert_option_calls(
         &runtime_rs,
         "reticulum::init_with_options_and_rnode_startup_options",
         1,
+        ble_option,
     );
     let configured_startup = rust_call_blocks(
         &runtime_rs,
         "reticulum::init_with_options_and_rnode_startup_options",
     );
     assert!(configured_startup[0].contains("InitOptions::default()"));
-    assert_default_calls(
+    assert!(
+        runtime_rs.contains("RNodeStartupOptions::default().with_persisted_bluetooth_enabled()")
+    );
+    assert_option_calls(
         &interfaces_rs,
         "rns_runtime::reticulum::spawn_ble_rnode_runtime_observed_with_options",
         2,
+        ble_option,
     );
-    assert_default_calls(
+    assert_option_calls(
         &interfaces_rs,
         "rns_runtime::reticulum::spawn_android_usb_rnode_runtime_with_config_and_options",
         2,
+        default_option,
     );
-    assert_default_calls(
+    assert_option_calls(
         &interfaces_rs,
         "rns_runtime::reticulum::spawn_rnode_runtime_observed_with_options",
         2,
+        default_option,
     );
-    assert_default_calls(
+    assert_option_calls(
         &ble_rs,
         "rns_runtime::reticulum::spawn_ble_rnode_runtime_native_with_config_and_options",
         1,
+        ble_option,
     );
 
     assert_eq!(runtime_rs.matches(default_option).count(), 1);
-    assert_eq!(interfaces_rs.matches(default_option).count(), 6);
-    assert_eq!(ble_rs.matches(default_option).count(), 1);
+    assert_eq!(interfaces_rs.matches(default_option).count(), 4);
+    assert_eq!(ble_rs.matches(default_option).count(), 0);
     for source in [&runtime_rs, &interfaces_rs, &ble_rs] {
         assert_eq!(
             source.matches(strict_option).count(),

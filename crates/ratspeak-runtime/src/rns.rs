@@ -21,6 +21,16 @@ use crate::state::RNodeActivityOrigin;
 
 pub const UI_PATH_TABLE_LIMIT: usize = 500;
 
+/// Ratspeak's BLE RNode startup policy.
+///
+/// Official firmware leaves Bluetooth disabled after a cold boot unless the
+/// host explicitly persists it. Selecting that behavior here keeps automatic
+/// saved-interface reconnect product-owned while rsReticulum's generic default
+/// and every non-BLE Ratspeak spawn remain wire-compatible.
+pub fn ble_rnode_startup_options() -> RNodeStartupOptions {
+    RNodeStartupOptions::default().with_persisted_bluetooth_enabled()
+}
+
 pub struct RnsManager {
     pub handle: ReticulumHandle,
     pub shutdown: ShutdownSignal,
@@ -50,7 +60,7 @@ impl RnsManager {
             shutdown.clone(),
             is_foreground,
             InitOptions::default(),
-            RNodeStartupOptions::default(),
+            ble_rnode_startup_options(),
         )
         .await
         .map_err(|e| format!("RNS init failed: {e:?}"))?;
