@@ -5,6 +5,19 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+## [1.0.30] - 2026-08-24
+
+### Fixed
+
+- Restored mobile message actions on text, links, and media while keeping
+  deliberate native text selection available from an elevated message, and
+  improved the corresponding desktop mouse and keyboard interactions.
+- Made previously paired Bluetooth RNodes advertise automatically after a
+  power cycle and reconnect without requiring pairing mode again.
+- Made Android RNode recovery show accurate waiting, connecting, initializing,
+  and connected states without replacing an active retry, and fixed the
+  pairing sheet jumping when the system PIN prompt closes.
+
 ## [1.0.29] - 2026-08-21
 
 ### Fixed
@@ -73,7 +86,8 @@ changes that materially affect how an artifact is reproduced.
 - Declared every first-party Ratspeak package non-publishable and recorded
   compatible versions alongside all sibling path dependencies.
 
-[Unreleased]: https://github.com/ratspeak/Ratspeak/compare/v1.0.29...HEAD
+[Unreleased]: https://github.com/ratspeak/Ratspeak/compare/v1.0.30...HEAD
+[1.0.30]: https://github.com/ratspeak/Ratspeak/compare/v1.0.29...v1.0.30
 [1.0.29]: https://github.com/ratspeak/Ratspeak/compare/v1.0.28...v1.0.29
 [1.0.28]: https://github.com/ratspeak/Ratspeak/compare/v1.0.27...v1.0.28
 [1.0.27]: https://github.com/ratspeak/Ratspeak/compare/v1.0.26o...v1.0.27

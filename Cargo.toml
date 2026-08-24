@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.29"
+version = "1.0.30"
 edition = "2024"
 license = "AGPL-3.0-or-later"
 rust-version = "1.87"
@@ -38,10 +38,10 @@ lxst-telephony = { path = "../rsLXST/crates/lxst-telephony", version = "0.2.0" }
 # --- Internal crates ---
 # lrgp is an exact sibling source dependency; registry publication is out of scope.
 lrgp = { path = "../lrgp-rs", version = "0.4.1" }
-ratspeak-core = { path = "crates/ratspeak-core", version = "1.0.29" }
-ratspeak-db = { path = "crates/ratspeak-db", version = "1.0.29" }
-ratspeak-runtime = { path = "crates/ratspeak-runtime", version = "1.0.29" }
-ratspeak-tauri = { path = "crates/ratspeak-tauri", version = "1.0.29" }
+ratspeak-core = { path = "crates/ratspeak-core", version = "1.0.30" }
+ratspeak-db = { path = "crates/ratspeak-db", version = "1.0.30" }
+ratspeak-runtime = { path = "crates/ratspeak-runtime", version = "1.0.30" }
+ratspeak-tauri = { path = "crates/ratspeak-tauri", version = "1.0.30" }
 
 # --- External dependencies ---
 

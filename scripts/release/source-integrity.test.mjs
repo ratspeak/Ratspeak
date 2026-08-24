@@ -67,6 +67,13 @@ test("dependency-set schema rejects source and platform identity drift", () => {
   const futureRelease = structuredClone(set);
   futureRelease.product.displayVersion = "1.0.29";
   futureRelease.product.marketingVersion = "1.0.29";
+  futureRelease.product.predecessor = {
+    displayVersion: "1.0.28",
+    tag: "v1.0.28",
+    commit: "aaa7f176f0de62b497aea503cdff8022ea515218",
+    androidVersionCode: 1000043,
+    iosBundleVersion: "1000043",
+  };
   for (const component of futureRelease.components) {
     component.integrationTag = null;
   }

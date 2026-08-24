@@ -1,8 +1,3 @@
-- Qualified and fixed Bluetooth RNode support on iOS and Android for Heltec V3/V4 and LilyGO T114/T-Echo, including fresh pairing, adapter toggles, walking out of range, automatic reconnect, and queued-message recovery.
-- Made RNode readiness reflect the completed hardware handshake immediately, prevented traffic loss across reconnect generations, and used each device's advertised four-character identifier in its default interface name.
-- Made manual and interface-online announces coalesce into one prompt queue operation, report actual interface acceptance, and remain responsive during background maintenance.
-- Moved LXMF identity, ratchet, and router persistence off the protocol lock and made pruning incremental, durable, and safe under concurrent activity.
-- Aligned LXMF first-hop establishment timing with Reticulum so slower radio links are not failed prematurely.
-- Clarified pending-message cancellation as stopping local retries without promising that a copy already handed to the network can be recalled.
-- Enabled native selection and copying of sent and received message text, and applied the same desktop typing-assistance policy to Direct Messages and Channels.
-- Added an exact dependency manifest and coordinated annotated sibling tags for reproducible v1.0.29 builds without date-based revision guessing.
+- Restored mobile message actions on text, links, and media while keeping deliberate native text selection available from an elevated message, and improved the corresponding desktop mouse and keyboard interactions.
+- Made previously paired Bluetooth RNodes advertise automatically after a power cycle and reconnect without requiring pairing mode again.
+- Made Android RNode recovery show accurate waiting, connecting, initializing, and connected states without replacing an active retry, and fixed the pairing sheet jumping when the system PIN prompt closes.
