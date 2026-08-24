@@ -20,7 +20,7 @@ use ratspeak_runtime::activity::producer::{
 use ratspeak_runtime::mobile_platform::NativeBleRnodeDisconnect;
 #[cfg(all(feature = "ble", target_os = "android"))]
 use ratspeak_runtime::mobile_platform::NativeBleRnodeRequest;
-#[cfg(feature = "ble")]
+#[cfg(all(feature = "ble", not(target_os = "android")))]
 use ratspeak_runtime::rns::ble_rnode_startup_options;
 use serde::Deserialize;
 use serde_json::{Value, json};
