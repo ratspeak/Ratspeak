@@ -1739,11 +1739,6 @@ pub async fn apply_ble_rnode_bridge_ready(
                                 spawned.observer.clone(),
                                 rnode_activity_origin,
                             );
-                            state_arc.publish_mobile_hardware_state(
-                                "ble_rnode",
-                                "reconnecting",
-                                None,
-                            );
                         } else {
                             teardown_spawned_rnode_exact(&rns, &spawned).await;
                             #[cfg(target_os = "android")]

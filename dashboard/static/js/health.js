@@ -288,12 +288,52 @@ function buildIfaceActionItems(ifaceType, ifaceName) {
     var live = supportsPause ? getInterfaceLiveStatus(ifaceName) : null;
     var statusKnown = !!(lastStats && lastStats.interface_stats);
     var unavailable = supportsPause && statusKnown && !paused && (!live || live.online === false);
+    var port = supportsPause ? String(record.iface.port || '') : '';
+    var isBleRnode = ifaceType === 'rnode' && port.indexOf('ble://') === 0;
+    var bleState = isBleRnode && _cachedConfigIfaces && _cachedConfigIfaces.mobile_hardware
+        ? _cachedConfigIfaces.mobile_hardware.ble_rnode
+        : null;
+    var bleStateName = bleState && typeof bleState.state === 'string' ? bleState.state : '';
+    var bleInFlight = bleStateName === 'waiting_for_radio' ||
+        bleStateName === 'reconnecting' ||
+        bleStateName === 'connecting' ||
+        bleStateName === 'initializing';
     if (supportsPause) {
-        items.push({
-            label: (paused || unavailable) ? 'Resume Interface' : 'Pause Interface',
-            icon: (paused || unavailable) ? ICON_PLAY : ICON_PAUSE,
-            onSelect: function() { setInterfacePaused(ifaceType, ifaceName, !(paused || unavailable)); }
-        });
+        if (paused) {
+            items.push({
+                label: 'Resume Interface',
+                icon: ICON_PLAY,
+                onSelect: function() { setInterfacePaused(ifaceType, ifaceName, false); }
+            });
+        } else if (isBleRnode && bleInFlight) {
+            // The native supervisor already owns the durable retry. Re-running
+            // Resume here would replace that valid owner and reset its retry
+            // generation, so expose progress without a destructive action.
+            items.push({ label: 'Connecting…', icon: ICON_RADIO, disabled: true });
+        } else if (isBleRnode && bleStateName === 'conflict') {
+            items.push({ label: 'Radio conflict', icon: ICON_RADIO, disabled: true });
+        } else if (isBleRnode && (bleStateName === 'failed' || bleStateName === 'disabled')) {
+            items.push({
+                label: 'Retry Connection',
+                icon: ICON_PLAY,
+                onSelect: function() { setInterfacePaused(ifaceType, ifaceName, false); }
+            });
+        } else if (isBleRnode) {
+            // Enabled configuration remains owned by its runtime even while
+            // live stats are absent or offline. Missing stats alone must never
+            // turn Pause into the destructive Resume/replacement path.
+            items.push({
+                label: 'Pause Interface',
+                icon: ICON_PAUSE,
+                onSelect: function() { setInterfacePaused(ifaceType, ifaceName, true); }
+            });
+        } else {
+            items.push({
+                label: unavailable ? 'Resume Interface' : 'Pause Interface',
+                icon: unavailable ? ICON_PLAY : ICON_PAUSE,
+                onSelect: function() { setInterfacePaused(ifaceType, ifaceName, !unavailable); }
+            });
+        }
         items.push({ separator: true });
     }
     if (isLoraInterfaceType(ifaceType)) {
@@ -919,7 +959,9 @@ function _mobileRnodeHealth(port, mobileHardware) {
         if (!state || state.state === 'connected') return null;
         var bleLabels = {
             connecting: 'Connecting',
-            reconnecting: 'Reconnecting',
+            waiting_for_radio: 'Waiting for radio',
+            reconnecting: 'Waiting for radio',
+            initializing: 'Initializing',
             disabled: 'Disconnected',
             conflict: 'Radio conflict',
         };
@@ -930,7 +972,7 @@ function _mobileRnodeHealth(port, mobileHardware) {
             bond_timeout: 'Pairing timed out',
             stale_bond: 'Pair again',
             bridge_unavailable: 'Radio service unavailable',
-            radio_disconnected: 'Reconnecting',
+            radio_disconnected: 'Waiting for radio',
             auto_resume_disabled: 'Reconnect paused',
             connect_failed: 'Connection failed',
             multiple_configured_radios: 'Radio conflict',
@@ -942,7 +984,7 @@ function _mobileRnodeHealth(port, mobileHardware) {
             label: state.state === 'failed'
                 ? (failedLabels[state.reason] || 'Connection failed')
                 : (bleLabels[state.state] || 'Waiting for radio'),
-            actionable: state.state === 'failed' || state.state === 'conflict' || state.state === 'disabled',
+            actionable: state.state === 'failed' || state.state === 'disabled',
         };
     }
     return null;

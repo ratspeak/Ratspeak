@@ -554,8 +554,8 @@ pub extern "system" fn Java_org_ratspeak_android_RatspeakNativeBridge_nativeBleR
                 "ble_rnode",
                 match state_code {
                     0 => "connecting",
-                    1 => "reconnecting",
-                    _ => "connected",
+                    1 => "waiting_for_radio",
+                    _ => "initializing",
                 },
                 None,
             );

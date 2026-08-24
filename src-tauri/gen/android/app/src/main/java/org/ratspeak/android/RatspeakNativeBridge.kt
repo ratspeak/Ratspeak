@@ -25,9 +25,9 @@ object RatspeakNativeBridge {
     const val USB_SNAPSHOT = 4
 
     const val BLE_CONNECTING = 0
-    const val BLE_RECONNECTING = 1
+    const val BLE_WAITING_FOR_RADIO = 1
     const val BLE_LISTENER_READY = 2
-    const val BLE_CONNECTED = 3
+    const val BLE_INITIALIZING = 3
     const val BLE_FAILED = 4
     const val BLE_DISABLED = 5
 

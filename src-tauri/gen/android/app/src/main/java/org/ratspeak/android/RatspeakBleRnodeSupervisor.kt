@@ -222,7 +222,7 @@ object RatspeakBleRnodeSupervisor {
                 physical.disconnect(graceful = false)
                 break
             }
-            publishReady(entry)
+            publishInitializing(entry)
             physical.startForwarding(entry.listener)
             physical.awaitStopped()
             entry.physical = null
@@ -259,13 +259,13 @@ object RatspeakBleRnodeSupervisor {
         }
     }
 
-    private fun publishReady(entry: Entry) {
+    private fun publishInitializing(entry: Entry) {
         synchronized(entry.publishLock) {
             if (!isCurrent(entry)) return
             RatspeakNativeBridge.publishBleState(
                 entry.token,
                 entry.generation,
-                RatspeakNativeBridge.BLE_CONNECTED,
+                RatspeakNativeBridge.BLE_INITIALIZING,
                 0,
                 null,
             )
@@ -278,7 +278,7 @@ object RatspeakBleRnodeSupervisor {
             RatspeakNativeBridge.publishBleState(
                 entry.token,
                 entry.generation,
-                RatspeakNativeBridge.BLE_RECONNECTING,
+                RatspeakNativeBridge.BLE_WAITING_FOR_RADIO,
                 0,
                 closedBleError(reason),
             )

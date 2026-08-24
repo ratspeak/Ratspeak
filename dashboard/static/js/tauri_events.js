@@ -1044,8 +1044,10 @@ RS.listen('mobile_hardware_state', function(data) {
     }
     if (data.kind !== 'ble_rnode') return;
     var messages = {
+        waiting_for_radio: 'Waiting for radio...',
+        reconnecting: 'Waiting for radio...',
         connecting: 'Connecting to RNode...',
-        reconnecting: 'RNode unavailable — reconnecting...',
+        initializing: 'Initializing RNode...',
         connected: 'RNode connected',
         disabled: 'RNode disconnected',
         conflict: 'Only one Bluetooth RNode can be active on Android.',

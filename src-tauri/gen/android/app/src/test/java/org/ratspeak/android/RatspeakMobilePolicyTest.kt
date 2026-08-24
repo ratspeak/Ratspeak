@@ -18,6 +18,16 @@ import java.util.concurrent.TimeUnit
 
 class RatspeakMobilePolicyTest {
     @Test
+    fun bleProductStateAbiSeparatesGattFromProtocolReadiness() {
+        assertEquals(0, RatspeakNativeBridge.BLE_CONNECTING)
+        assertEquals(1, RatspeakNativeBridge.BLE_WAITING_FOR_RADIO)
+        assertEquals(2, RatspeakNativeBridge.BLE_LISTENER_READY)
+        assertEquals(3, RatspeakNativeBridge.BLE_INITIALIZING)
+        assertEquals(4, RatspeakNativeBridge.BLE_FAILED)
+        assertEquals(5, RatspeakNativeBridge.BLE_DISABLED)
+    }
+
+    @Test
     fun mtuUsesTwentyUntilNegotiationActuallySucceeds() {
         assertEquals(20, RatspeakMobilePolicy.attPayload(517, false))
         assertEquals(20, RatspeakMobilePolicy.attPayload(23, true))

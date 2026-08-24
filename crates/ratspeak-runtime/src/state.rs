@@ -308,6 +308,38 @@ struct BleRnodeRollbackContext {
     marker: u64,
 }
 
+#[cfg(any(target_os = "android", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AndroidBleReadyCacheTransition {
+    Publish,
+    AlreadyConnected,
+    PhaseMismatch,
+}
+
+#[cfg(any(target_os = "android", test))]
+fn transition_android_ble_cache_to_connected(
+    latest: &mut std::collections::BTreeMap<String, serde_json::Value>,
+) -> AndroidBleReadyCacheTransition {
+    let current = latest
+        .get("ble_rnode")
+        .and_then(|payload| payload.get("state"))
+        .and_then(serde_json::Value::as_str);
+    match current {
+        Some("initializing") => {
+            latest.insert(
+                "ble_rnode".to_string(),
+                serde_json::json!({
+                    "kind": "ble_rnode",
+                    "state": "connected",
+                }),
+            );
+            AndroidBleReadyCacheTransition::Publish
+        }
+        Some("connected") => AndroidBleReadyCacheTransition::AlreadyConnected,
+        _ => AndroidBleReadyCacheTransition::PhaseMismatch,
+    }
+}
+
 /// Closed, snapshot-free failure vocabulary for a native BLE-RNode operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BleRnodeOperationFailure {
@@ -2929,6 +2961,64 @@ impl AppState {
         self.emit_to_all("mobile_hardware_state", payload);
     }
 
+    /// Publish Android's healthy BLE-RNode product state only while the exact
+    /// covered runtime observation still belongs to the installed RNS
+    /// session and is protocol-ready. Holding the session/readiness guards
+    /// through emission prevents a stale observer from racing a replacement
+    /// session and painting it connected.
+    #[cfg(any(target_os = "android", test))]
+    pub(crate) fn publish_ready_android_ble_hardware_state_for_rnode_observation(
+        &self,
+        interface_id: rns_interface::traits::InterfaceId,
+        origin: RNodeActivityOrigin,
+    ) -> bool {
+        if self.current_identity_session_generation() != origin.identity_generation() {
+            return false;
+        }
+        let Ok(rns) = self.rns.read() else {
+            return false;
+        };
+        let Some(rns) = rns.as_ref() else {
+            return false;
+        };
+        if self.current_identity_session_generation() != origin.identity_generation()
+            || !rns.owns_rnode_activity_session(origin)
+            || !rns.is_rnode_activity_interface_covered(interface_id, origin.identity_generation())
+            || rns.handle.rnode_runtime(interface_id).is_err()
+        {
+            return false;
+        }
+        let Ok(readiness) = self.rnode_product_readiness.read() else {
+            return false;
+        };
+        if readiness.get(&interface_id).copied() != Some(true) {
+            return false;
+        }
+
+        let Ok(mut latest) = self.mobile_hardware_state.write() else {
+            return false;
+        };
+        // The runtime can be torn down after the first registry lookup while
+        // this observer waits for the product-state cache. Revalidate at the
+        // exact compare-and-transition boundary so an inactive old observer
+        // cannot consume a replacement operation's `initializing` state.
+        if rns.handle.rnode_runtime(interface_id).is_err() {
+            return false;
+        }
+        match transition_android_ble_cache_to_connected(&mut latest) {
+            AndroidBleReadyCacheTransition::Publish => {
+                let payload = latest
+                    .get("ble_rnode")
+                    .cloned()
+                    .expect("published BLE state must exist");
+                self.emit_to_all("mobile_hardware_state", payload);
+            }
+            AndroidBleReadyCacheTransition::AlreadyConnected
+            | AndroidBleReadyCacheTransition::PhaseMismatch => {}
+        }
+        true
+    }
+
     pub fn mobile_hardware_state_snapshot(&self) -> serde_json::Value {
         self.mobile_hardware_state
             .read()
@@ -3110,6 +3200,47 @@ mod tests {
         assert!(!state.android_ble_rnode_auto_resume_enabled());
         state.set_android_ble_rnode_auto_resume_enabled(true);
         assert!(state.android_ble_rnode_auto_resume_enabled());
+    }
+
+    #[test]
+    fn android_ble_ready_cache_transition_is_initializing_only() {
+        let mut latest = std::collections::BTreeMap::new();
+        assert_eq!(
+            transition_android_ble_cache_to_connected(&mut latest),
+            AndroidBleReadyCacheTransition::PhaseMismatch
+        );
+
+        for protected in [
+            "waiting_for_radio",
+            "connecting",
+            "disabled",
+            "failed",
+            "conflict",
+        ] {
+            latest.insert(
+                "ble_rnode".to_string(),
+                serde_json::json!({ "kind": "ble_rnode", "state": protected }),
+            );
+            assert_eq!(
+                transition_android_ble_cache_to_connected(&mut latest),
+                AndroidBleReadyCacheTransition::PhaseMismatch
+            );
+            assert_eq!(latest["ble_rnode"]["state"], protected);
+        }
+
+        latest.insert(
+            "ble_rnode".to_string(),
+            serde_json::json!({ "kind": "ble_rnode", "state": "initializing" }),
+        );
+        assert_eq!(
+            transition_android_ble_cache_to_connected(&mut latest),
+            AndroidBleReadyCacheTransition::Publish
+        );
+        assert_eq!(latest["ble_rnode"]["state"], "connected");
+        assert_eq!(
+            transition_android_ble_cache_to_connected(&mut latest),
+            AndroidBleReadyCacheTransition::AlreadyConnected
+        );
     }
 
     fn interface_stat(

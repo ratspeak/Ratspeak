@@ -1231,6 +1231,69 @@ fn android_ble_rnode_auto_resume_is_persisted_adapter_aware_and_single_owned() {
 }
 
 #[test]
+fn android_ble_product_state_waits_for_exact_protocol_readiness() {
+    let root = repo_root();
+    let kotlin_root = root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android");
+    let supervisor = read_source(kotlin_root.join("RatspeakBleRnodeSupervisor.kt"))
+        .expect("BLE RNode supervisor");
+    let native_bridge =
+        read_source(kotlin_root.join("RatspeakNativeBridge.kt")).expect("Android native bridge");
+    let native = read_source(root.join("src-tauri/src/mobile_native.rs")).expect("native JNI");
+    let ble =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/ble.rs")).expect("BLE commands");
+    let activity = read_source(root.join("crates/ratspeak-runtime/src/rnode_activity.rs"))
+        .expect("RNode activity monitor");
+    let state =
+        read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
+    let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
+    let events =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("frontend events");
+
+    assert!(native_bridge.contains("const val BLE_WAITING_FOR_RADIO = 1"));
+    assert!(native_bridge.contains("const val BLE_INITIALIZING = 3"));
+    assert!(!native_bridge.contains("BLE_RECONNECTING"));
+    assert!(!native_bridge.contains("BLE_CONNECTED"));
+    assert!(supervisor.contains("publishInitializing(entry)"));
+    assert!(supervisor.contains("RatspeakNativeBridge.BLE_WAITING_FOR_RADIO"));
+    assert!(!supervisor.contains("RatspeakNativeBridge.BLE_CONNECTED"));
+    assert!(native.contains("1 => \"waiting_for_radio\""));
+    assert!(native.contains("_ => \"initializing\""));
+    assert!(!native.contains("_ => \"connected\""));
+    let saved_startup = ble
+        .split("if saved_startup {")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("// Keep cancellation/replacement responsive")
+                .next()
+        })
+        .expect("saved Android BLE startup branch");
+    assert!(!saved_startup.contains("publish_mobile_hardware_state"));
+
+    assert!(activity.contains("should_publish_android_ble_connected"));
+    assert!(activity.contains("publish_ready_android_ble_hardware_state_for_rnode_observation"));
+    assert!(state.contains("publish_ready_android_ble_hardware_state_for_rnode_observation"));
+    assert!(
+        state
+            .matches("rns.handle.rnode_runtime(interface_id).is_err()")
+            .count()
+            >= 2
+    );
+    assert!(state.contains("readiness.get(&interface_id).copied() != Some(true)"));
+    assert!(state.contains("transition_android_ble_cache_to_connected"));
+    assert!(state.contains("Some(\"initializing\") =>"));
+    assert!(
+        activity.contains("android_ble_ready_publication_requires_the_active_registry_generation")
+    );
+    assert!(health.contains("waiting_for_radio: 'Waiting for radio'"));
+    assert!(health.contains("initializing: 'Initializing'"));
+    assert!(health.contains("label: 'Connecting…'"));
+    assert!(health.contains("label: 'Retry Connection'"));
+    assert!(health.contains("label: 'Radio conflict'"));
+    assert!(events.contains("waiting_for_radio: 'Waiting for radio...'"));
+    assert!(events.contains("initializing: 'Initializing RNode...'"));
+}
+
+#[test]
 fn incoming_lxmf_limit_setting_is_normal_default_on_and_backend_authoritative() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
@@ -2293,6 +2356,22 @@ fn android_service_is_not_sticky_without_runtime_ownership() {
 
     assert!(service.contains("return START_NOT_STICKY"));
     assert!(!service.contains("return START_STICKY"));
+}
+
+#[test]
+fn android_ime_geometry_has_one_owner_and_cannot_lift_fixed_sheets() {
+    let root = repo_root();
+    let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
+        .expect("Android manifest");
+    let activity = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("Android MainActivity");
+
+    assert!(manifest.contains(r#"android:windowSoftInputMode="adjustResize""#));
+    assert!(activity.contains("view.setPadding(bars.left, 0, bars.right, 0)"));
+    assert!(!activity.contains("WindowInsetsCompat.Type.ime()"));
+    assert!(!activity.contains("if (ime.bottom > 0) ime.bottom else 0"));
 }
 
 #[test]
@@ -8397,7 +8476,7 @@ fn interface_warning_statuses_use_plain_text() {
     let root = repo_root();
     let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
     assert!(health.contains("connecting: 'Connecting'"));
-    assert!(health.contains("reconnecting: 'Reconnecting'"));
+    assert!(health.contains("reconnecting: 'Waiting for radio'"));
     assert!(health.contains("conn-iface-status-text is-warning"));
     assert!(!health.contains("conn-iface-pill"));
 

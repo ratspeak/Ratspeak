@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+#[cfg(any(target_os = "android", test))]
+use rns_interface::rnode::RNodeTransportClass;
 use rns_interface::rnode::{
     RNodeCapabilityState, RNodeRuntimePhase, RNodeRuntimeReason, RNodeRuntimeSnapshot,
 };
@@ -371,6 +373,18 @@ async fn run_ready_rnode_activity_monitor(
     if !state.set_rnode_product_readiness(interface_id, origin, true) {
         return;
     }
+    #[cfg(any(target_os = "android", test))]
+    {
+        let current = observer.snapshot();
+        if should_publish_android_ble_connected(current.transport, current.phase)
+            && !state.publish_ready_android_ble_hardware_state_for_rnode_observation(
+                interface_id,
+                origin,
+            )
+        {
+            return;
+        }
+    }
     if !emit_signals_if_current(
         &state,
         origin,
@@ -393,6 +407,14 @@ async fn run_ready_rnode_activity_monitor(
         if !state.set_rnode_product_readiness(interface_id, origin, product_ready) {
             return;
         }
+        #[cfg(any(target_os = "android", test))]
+        if changed.as_ref().is_some_and(|snapshot| {
+            should_publish_android_ble_connected(snapshot.transport, snapshot.phase)
+        }) && !state
+            .publish_ready_android_ble_hardware_state_for_rnode_observation(interface_id, origin)
+        {
+            return;
+        }
         let signals = match changed.as_ref() {
             Some(snapshot) => reducer.observe(snapshot.as_ref().into()),
             None => reducer.publisher_closed(),
@@ -410,6 +432,14 @@ async fn run_ready_rnode_activity_monitor(
             return;
         }
     }
+}
+
+#[cfg(any(target_os = "android", test))]
+fn should_publish_android_ble_connected(
+    transport: RNodeTransportClass,
+    phase: RNodeRuntimePhase,
+) -> bool {
+    transport == RNodeTransportClass::Ble && phase == RNodeRuntimePhase::Ready
 }
 
 async fn await_identity_lifecycle_release(
@@ -519,7 +549,28 @@ mod tests {
         .unwrap()
     }
 
-    fn test_state() -> AppState {
+    #[cfg(feature = "rnode-tcp")]
+    #[derive(Default)]
+    struct RecordingEmitter {
+        events: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
+    }
+
+    #[cfg(feature = "rnode-tcp")]
+    impl ratspeak_core::Emitter for RecordingEmitter {
+        fn try_emit(
+            &self,
+            event: &str,
+            payload: serde_json::Value,
+        ) -> Result<(), ratspeak_core::EmitError> {
+            self.events
+                .lock()
+                .unwrap()
+                .push((event.to_string(), payload));
+            Ok(())
+        }
+    }
+
+    fn test_state_with_emitter(emitter: Arc<dyn ratspeak_core::Emitter>) -> AppState {
         let manager = SqliteConnectionManager::memory();
         let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
         crate::db::init_schema(&pool).unwrap();
@@ -528,9 +579,13 @@ mod tests {
                 std::env::temp_dir().join("ratspeak-rnode-activity-fence-test"),
             ),
             pool,
-            Arc::new(ratspeak_core::NoopEmitter),
+            emitter,
             Arc::new(ratspeak_core::NoopNotifier),
         )
+    }
+
+    fn test_state() -> AppState {
+        test_state_with_emitter(Arc::new(ratspeak_core::NoopEmitter))
     }
 
     #[test]
@@ -564,6 +619,26 @@ mod tests {
             )),
             vec![RNodeActivitySignal::Online]
         );
+    }
+
+    #[test]
+    fn android_ble_connected_projection_is_typed_ready_only() {
+        assert!(should_publish_android_ble_connected(
+            RNodeTransportClass::Ble,
+            RNodeRuntimePhase::Ready,
+        ));
+        assert!(!should_publish_android_ble_connected(
+            RNodeTransportClass::Ble,
+            RNodeRuntimePhase::Connecting,
+        ));
+        assert!(!should_publish_android_ble_connected(
+            RNodeTransportClass::Ble,
+            RNodeRuntimePhase::ReconnectBackoff,
+        ));
+        assert!(!should_publish_android_ble_connected(
+            RNodeTransportClass::Tcp,
+            RNodeRuntimePhase::Ready,
+        ));
     }
 
     #[test]
@@ -788,6 +863,16 @@ mod tests {
         assert!(first_context.origin() == first_origin);
         assert!(state.cover_rnode_activity_interface(71, first_origin));
         assert!(state.set_rnode_product_readiness(71, first_origin, true));
+        state.publish_mobile_hardware_state("ble_rnode", "initializing", None);
+        assert!(
+            !state
+                .publish_ready_android_ble_hardware_state_for_rnode_observation(71, first_origin,)
+        );
+        assert_eq!(
+            state.mobile_hardware_state_snapshot()["ble_rnode"]["state"],
+            "initializing",
+            "covered readiness without an active registry record must not publish"
+        );
         assert!(!state.effective_interface_online(71, false));
         assert!(state.effective_interface_online(71, true));
         state.set_last_stats(serde_json::json!({"session": "first"}));
@@ -798,11 +883,197 @@ mod tests {
         let second_origin = state.set_rns(second).unwrap();
         assert!(first_origin != second_origin);
         assert!(state.last_stats.read().unwrap().is_none());
+        state.publish_mobile_hardware_state("ble_rnode", "initializing", None);
         assert!(!state.effective_interface_online(71, false));
         assert!(!state.set_rnode_product_readiness(71, first_origin, true));
+        assert!(
+            !state
+                .publish_ready_android_ble_hardware_state_for_rnode_observation(71, first_origin,)
+        );
+        assert_eq!(
+            state.mobile_hardware_state_snapshot()["ble_rnode"]["state"],
+            "initializing",
+            "a stale observer must not overwrite its replacement session"
+        );
         assert!(!state.cover_rnode_activity_interface(72, first_origin));
         assert!(state.cover_rnode_activity_interface(72, second_origin));
 
+        let current = state.rns.write().unwrap().take().unwrap();
+        current.shutdown().await;
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[cfg(feature = "rnode-tcp")]
+    #[tokio::test]
+    async fn android_ble_ready_publication_requires_the_active_registry_generation() {
+        async fn manager(root: &std::path::Path) -> crate::rns::RnsManager {
+            std::fs::create_dir_all(root).unwrap();
+            std::fs::write(
+                root.join("config"),
+                "[reticulum]\nshare_instance = No\nenable_transport = No\n\n[interfaces]\n",
+            )
+            .unwrap();
+            crate::rns::RnsManager::init(
+                root.to_str().unwrap(),
+                Some(root.join("cache")),
+                Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            )
+            .await
+            .unwrap()
+        }
+
+        async fn spawn_connecting_rnode(
+            handle: &rns_runtime::reticulum::ReticulumHandle,
+            name: &str,
+        ) -> (
+            rns_runtime::reticulum::SpawnedRNodeRuntime,
+            std::thread::JoinHandle<()>,
+        ) {
+            use std::io::Read;
+
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let port = format!("tcp://{}", listener.local_addr().unwrap());
+            let peer = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut buffer = [0u8; 256];
+                loop {
+                    match stream.read(&mut buffer) {
+                        Ok(0) => break,
+                        Ok(_) => {}
+                        Err(error)
+                            if matches!(
+                                error.kind(),
+                                std::io::ErrorKind::Interrupted
+                                    | std::io::ErrorKind::WouldBlock
+                                    | std::io::ErrorKind::TimedOut
+                            ) =>
+                        {
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
+            });
+            let defaults = rns_interface::rnode::RNodeConfig::new(name, &port);
+            let spawned = rns_runtime::reticulum::spawn_rnode_runtime_observed(
+                handle,
+                rns_runtime::reticulum::RnodeRuntimeArgs {
+                    name,
+                    port: &port,
+                    frequency: defaults.frequency,
+                    bandwidth: defaults.bandwidth,
+                    spreading_factor: defaults.spreading_factor,
+                    coding_rate: defaults.coding_rate,
+                    tx_power: i8::try_from(defaults.tx_power).unwrap(),
+                    mode: defaults.mode,
+                    st_alock: defaults.st_alock,
+                    lt_alock: defaults.lt_alock,
+                    flow_control: defaults.flow_control,
+                },
+            )
+            .await
+            .unwrap();
+            (spawned, peer)
+        }
+
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "ratspeak-mobile-ready-registry-{}-{nonce}",
+            std::process::id()
+        ));
+        let emitter = Arc::new(RecordingEmitter::default());
+        let state = test_state_with_emitter(emitter.clone());
+        let origin = state.set_rns(manager(&root).await).unwrap();
+        let handle = state
+            .rnode_activity_runtime_context_for_identity(
+                state.current_identity_session_generation(),
+            )
+            .unwrap()
+            .handle()
+            .clone();
+
+        let (first, first_peer) = spawn_connecting_rnode(&handle, "registry-owner-a").await;
+        let id = first.interface_id;
+        assert!(state.cover_rnode_activity_interface(id, origin));
+        assert!(state.set_rnode_product_readiness(id, origin, true));
+        state.publish_mobile_hardware_state("ble_rnode", "initializing", None);
+        assert!(state.publish_ready_android_ble_hardware_state_for_rnode_observation(id, origin));
+        assert_eq!(
+            state.mobile_hardware_state_snapshot()["ble_rnode"]["state"],
+            "connected"
+        );
+
+        state.publish_mobile_hardware_state("ble_rnode", "disabled", None);
+        let before_disabled_ready = emitter.events.lock().unwrap().len();
+        assert!(
+            state.publish_ready_android_ble_hardware_state_for_rnode_observation(id, origin),
+            "a current observer must survive a native phase mismatch"
+        );
+        assert_eq!(
+            state.mobile_hardware_state_snapshot()["ble_rnode"]["state"],
+            "disabled",
+            "Ready must not repaint a disabled native owner"
+        );
+        assert_eq!(
+            emitter.events.lock().unwrap().len(),
+            before_disabled_ready,
+            "a disabled native owner must not emit a connected transition"
+        );
+
+        rns_runtime::reticulum::teardown_interface(&handle, id).await;
+        first_peer.join().unwrap();
+        state.publish_mobile_hardware_state("ble_rnode", "initializing", None);
+        let before_inactive_ready = emitter.events.lock().unwrap().len();
+        assert!(
+            !state.publish_ready_android_ble_hardware_state_for_rnode_observation(id, origin),
+            "a covered tombstone without an active registry record must fail closed"
+        );
+        assert_eq!(
+            state.mobile_hardware_state_snapshot()["ble_rnode"]["state"],
+            "initializing"
+        );
+        assert_eq!(
+            emitter.events.lock().unwrap().len(),
+            before_inactive_ready,
+            "an inactive covered tombstone must not emit"
+        );
+
+        let (replacement, replacement_peer) =
+            spawn_connecting_rnode(&handle, "registry-owner-b").await;
+        let replacement_id = replacement.interface_id;
+        assert_ne!(replacement_id, id);
+        assert!(state.cover_rnode_activity_interface(replacement_id, origin));
+        assert!(state.set_rnode_product_readiness(replacement_id, origin, true));
+        let before_old_again = emitter.events.lock().unwrap().len();
+        assert!(
+            !state.publish_ready_android_ble_hardware_state_for_rnode_observation(id, origin),
+            "an inactive old ID must not consume its active replacement's initializing state"
+        );
+        assert_eq!(
+            state.mobile_hardware_state_snapshot()["ble_rnode"]["state"],
+            "initializing"
+        );
+        assert_eq!(emitter.events.lock().unwrap().len(), before_old_again);
+        assert!(
+            state.publish_ready_android_ble_hardware_state_for_rnode_observation(
+                replacement_id,
+                origin,
+            ),
+            "the active replacement may consume initializing"
+        );
+        assert_eq!(
+            state.mobile_hardware_state_snapshot()["ble_rnode"]["state"],
+            "connected"
+        );
+
+        rns_runtime::reticulum::teardown_interface(&handle, replacement_id).await;
+        replacement_peer.join().unwrap();
         let current = state.rns.write().unwrap().take().unwrap();
         current.shutdown().await;
         std::fs::remove_dir_all(root).ok();
