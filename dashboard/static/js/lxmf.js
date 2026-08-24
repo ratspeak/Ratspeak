@@ -3235,6 +3235,11 @@ function _messageDisplayContent(msg, hasRenderedAudio) {
     return displayContent;
 }
 
+function _mobileMessageActionsUseLongPress() {
+    return (typeof isTauriMobile === 'function' && isTauriMobile()) ||
+        (typeof isMobile === 'function' && isMobile());
+}
+
 function _mergeConversationRenderOptions(previous, next) {
     previous = previous || {};
     next = next || {};
@@ -3242,14 +3247,6 @@ function _mergeConversationRenderOptions(previous, next) {
         forceScrollBottom: !!(previous.forceScrollBottom || next.forceScrollBottom),
         stickToBottom: !!(previous.stickToBottom || next.stickToBottom),
     };
-}
-
-function _activeSelectionOwnsCurrentMessage() {
-    if (!_activeMessageTextSelection || !_activeMessageTextSelection.msgId) return false;
-    if (_activeMessageTextSelection.ownerHash !== _canonicalConversationHash(lxmfActiveContact)) return false;
-    return lxmfConversation.some(function(message) {
-        return message.id === _activeMessageTextSelection.msgId;
-    });
 }
 
 function _activeActionOwnsCurrentMessage() {
@@ -3285,7 +3282,7 @@ function _pendingRenderReleaseOwnsCurrentConversation() {
 }
 
 function _deferActiveMessageInteractionRender(options) {
-    if (!_activeSelectionOwnsCurrentMessage() && !_activeActionOwnsCurrentMessage() &&
+    if (!_activeActionOwnsCurrentMessage() &&
             !_pendingRenderReleaseOwnsCurrentConversation()) return false;
     _deferConversationRender(options);
     return true;
@@ -3419,19 +3416,13 @@ function renderConversation(options) {
     var container = document.getElementById('lxmf-messages');
     if (!container) return;
     if (_deferActiveMessageInteractionRender(options)) return;
-    var activeOwnerHash = (_activeMessageTextSelection && _activeMessageTextSelection.ownerHash) ||
-        (_activeContextMenu && _activeContextMenu.ownerHash);
+    var activeOwnerHash = _activeContextMenu && _activeContextMenu.ownerHash;
     if (activeOwnerHash && activeOwnerHash !== _canonicalConversationHash(lxmfActiveContact)) {
         _cancelScheduledDeferredConversationRender();
         _clearDeferredConversationRender();
     }
     options = _takeDeferredConversationRenderOptions(options);
     _dismissContextMenu({ restoreFocus: false, flushDeferredRender: false });
-    _exitMessageTextSelectionMode({
-        restoreFocus: false,
-        clearNativeSelection: true,
-        flushDeferredRender: false,
-    });
     _detachMessageLongPressHandlers();
     _wireLxmfMessageScroll(container);
     var scrollState = _captureLxmfMessageScrollState(container);
@@ -3615,13 +3606,16 @@ function renderConversation(options) {
         var hasReactions = reactionHtml ? ' has-reactions' : '';
         var hasImage = !!imageHtml;
         var hasAttachment = !!attachHtml;
+        var mobileMessageActions = _mobileMessageActionsUseLongPress();
+        var messageActionsClass = 'msg-actions-trigger' +
+            (mobileMessageActions ? ' msg-actions-trigger-mobile-hidden' : '');
         var metaHtml = _messageProgressMetaHtml(msg) +
-            (canCancelSend ? _messageInlineCancelHtml(msg) : '<span class="msg-time">' + time + '</span>') +
-            stateIcon +
-            '<button type="button" class="msg-actions-trigger" data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
+            '<button type="button" class="' + messageActionsClass + '" data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
                 'aria-label="More actions for this message" aria-haspopup="dialog" aria-expanded="false">' +
                 _messageActionIcon('more') +
-            '</button>';
+            '</button>' +
+            (canCancelSend ? _messageInlineCancelHtml(msg) : '<span class="msg-time">' + time + '</span>') +
+            stateIcon;
         var bubbleClass = bubbleClassBase +
             (hasImage ? ' msg-has-image' : '') +
             (hasImage && !displayContent && !hasAttachment ? ' msg-image-only' : '');
@@ -3766,6 +3760,10 @@ function renderConversation(options) {
     });
 
     container.querySelectorAll('.lxmf-msg').forEach(function(bubble) {
+        bubble.addEventListener('mousedown', function(e) {
+            if (e.button !== 2) return;
+            _rememberMessagePointerContextSelection(e, this);
+        });
         bubble.addEventListener('keydown', function(e) {
             if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
             e.preventDefault();
@@ -3783,16 +3781,15 @@ function renderConversation(options) {
                 duration: 500,
                 moveCancelPx: 12,
                 excludeZone: function(touch) {
-                    return _messageTextSelectionOwnsBubble(bubble) ||
+                    return _messageElevatedTextStartsNativeSelection(touch, bubble) ||
                         _messageTouchStartsDirectControl(touch, bubble);
                 },
                 hapticStages: [{ at: 0.55, level: 'light' }],
-                // Keep the first-stage hold passive so native vertical
-                // scrolling can still claim a drifting touch. CSS transfers
-                // selection ownership to one exact message only after the
-                // user explicitly chooses Select Text.
+                // The first hold owns message actions. While that same bubble
+                // remains elevated, a second hold on its text is left entirely
+                // to the platform's native selection gesture.
                 onFire: function(touch) {
-                    if (_messageTextSelectionOwnsBubble(bubble) ||
+                    if (_messageElevatedTextStartsNativeSelection(touch, bubble) ||
                             _messageSelectionIntersectsBubble(bubble)) return;
                     var msgId = bubble.getAttribute('data-msg-id');
                     if (!msgId) return;
@@ -3817,10 +3814,17 @@ function renderConversation(options) {
             // Pointer users retain the browser's link menu. Touch links use the
             // same message action sheet as the rest of the bubble; otherwise a
             // link-only message would have no practical reaction/reply target.
-            var disposition = _messageContextMenuDisposition(target, this);
+            var selectionExistedBeforePointer = _consumeMessagePointerContextSelection(this);
+            var disposition = _messageContextMenuDisposition(
+                target,
+                this,
+                undefined,
+                selectionExistedBeforePointer
+            );
             if (disposition === 'native') return;
             e.preventDefault();
             if (disposition === 'suppress') return;
+            if (selectionExistedBeforePointer === false) _clearNativeMessageSelection();
             var msgId = this.getAttribute('data-msg-id');
             if (!msgId) return;
             var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
@@ -4661,9 +4665,9 @@ function _messageSourceName(msg) {
 }
 
 var _activeContextMenu = null;
-var _activeMessageTextSelection = null;
 var _pendingMessageHoldActivation = null;
 var _messageHoldActivationSequence = 0;
+var _messagePointerContextSelection = null;
 
 function _messageHoldActivationSurface(target, bubble) {
     if (!target || !target.closest || !bubble || !bubble.contains(target)) return null;
@@ -4845,99 +4849,25 @@ function _dismissContextMenu(opts) {
     return true;
 }
 
-function _messageInteractionUsesTouchStaging() {
-    if (document.documentElement.dataset.inputModality === 'touch') return true;
-    return typeof isTauriMobile === 'function' && isTauriMobile();
+function _messageActionOwnsText(bubble, target) {
+    if (!_activeContextMenu || !bubble || _activeContextMenu.bubble !== bubble) return false;
+    if (_activeContextMenu.ownerHash !== _canonicalConversationHash(lxmfActiveContact)) return false;
+    var content = target && target.closest ? target.closest('.lxmf-msg-content') : null;
+    return !!(content && bubble.contains(content));
 }
 
-function _messageTextSelectionOwnsBubble(bubble) {
-    return !!(_activeMessageTextSelection && _activeMessageTextSelection.bubble === bubble);
+function _messageElevatedTextStartsNativeSelection(touch, bubble) {
+    if (!_messageActionOwnsText(bubble, touch && touch.target)) return false;
+    // The first hold's synthetic context/click guard must never consume the
+    // new gesture that intentionally begins native selection.
+    _clearPendingMessageHoldActivation();
+    return true;
 }
 
 function _clearNativeMessageSelection() {
     if (!window.getSelection) return;
     var selection = window.getSelection();
     if (selection && typeof selection.removeAllRanges === 'function') selection.removeAllRanges();
-}
-
-function _selectMessageTextNow(content) {
-    if (!content || !window.getSelection || !document.createRange) return false;
-    var selection = window.getSelection();
-    if (!selection || typeof selection.addRange !== 'function') return false;
-    var range = document.createRange();
-    range.selectNodeContents(content);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    return true;
-}
-
-function _exitMessageTextSelectionMode(opts) {
-    opts = opts || {};
-    if (!_activeMessageTextSelection) {
-        if (opts.clearNativeSelection) _clearNativeMessageSelection();
-        return false;
-    }
-    var state = _activeMessageTextSelection;
-    _activeMessageTextSelection = null;
-    if (state.row) state.row.classList.remove('msg-text-selection-target');
-    if (state.container) state.container.classList.remove('msg-text-selection-mode');
-    if (state.guide && state.guide.parentNode) state.guide.parentNode.removeChild(state.guide);
-    if (opts.clearNativeSelection) _clearNativeMessageSelection();
-    var flushedRender = opts.flushDeferredRender !== false && _flushDeferredConversationRender();
-    if (opts.restoreFocus !== false && state.restoreFocusExpected) {
-        var focusTarget = state.trigger;
-        if (flushedRender && state.trigger && state.msgId) {
-            var container = document.getElementById('lxmf-messages');
-            var bubble = _findRenderedMessageBubble(container, state.msgId);
-            focusTarget = bubble && bubble.querySelector('.msg-actions-trigger');
-        }
-        _focusMessageControl(focusTarget);
-    }
-    return true;
-}
-
-function _enterMessageTextSelectionMode(bubble, trigger, opts) {
-    opts = opts || {};
-    var content = bubble && bubble.querySelector ? bubble.querySelector('.lxmf-msg-content') : null;
-    if (!content || !String(content.textContent || '').trim()) return false;
-
-    _exitMessageTextSelectionMode({ restoreFocus: false, clearNativeSelection: true });
-    var container = document.getElementById('lxmf-messages');
-    var row = bubble.closest ? bubble.closest('.msg-row') : null;
-    var touchStaged = _messageInteractionUsesTouchStaging();
-    if (container) container.classList.add('msg-text-selection-mode');
-    if (row) row.classList.add('msg-text-selection-target');
-
-    var guide = document.createElement('div');
-    guide.className = 'msg-text-selection-guide';
-    guide.innerHTML = '<span role="status">' + (touchStaged
-        ? 'Hold and drag in this message to select text.'
-        : 'Text selected. Adjust the selection or choose Done.') + '</span>' +
-        '<button type="button" class="msg-text-selection-done">Done</button>';
-    if (row) row.appendChild(guide);
-
-    _activeMessageTextSelection = {
-        bubble: bubble,
-        content: content,
-        container: container,
-        row: row,
-        guide: guide,
-        trigger: trigger,
-        msgId: bubble.getAttribute('data-msg-id'),
-        ownerHash: _canonicalConversationHash(lxmfActiveContact),
-        restoreFocusExpected: !!opts.restoreFocusExpected,
-    };
-    var done = guide.querySelector('.msg-text-selection-done');
-    if (done) {
-        done.addEventListener('click', function(e) {
-            e.preventDefault();
-            e.stopPropagation();
-            _exitMessageTextSelectionMode({ clearNativeSelection: true });
-        });
-    }
-    if (!touchStaged) _selectMessageTextNow(content);
-    if (opts.restoreFocusExpected) _focusMessageControl(done);
-    return true;
 }
 
 function _messageActionIcon(name) {
@@ -4950,11 +4880,8 @@ function _messageActionIcon(name) {
     if (name === 'save') {
         return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
     }
-    if (name === 'select') {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h4M7 4v16M5 20h4M13 7h6M13 12h6M13 17h6"/></svg>';
-    }
     if (name === 'more') {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></svg>';
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
     }
     return '';
 }
@@ -4988,15 +4915,39 @@ function _messageLinkUsesNativeContext(target) {
 
 function _messageLinkActivationAllowed(link) {
     var bubble = link && link.closest ? link.closest('.lxmf-msg') : null;
-    return !_messageTextSelectionOwnsBubble(bubble);
+    return !_messageActionOwnsText(bubble, link) && !_messageSelectionIntersectsBubble(bubble);
 }
 
-function _messageContextMenuDisposition(target, bubble, now) {
+function _rememberMessagePointerContextSelection(event, bubble) {
+    if (!event || event.button !== 2 || !bubble) return false;
+    _messagePointerContextSelection = {
+        bubble: bubble,
+        hadSelection: _messageSelectionIntersectsBubble(bubble),
+    };
+    return true;
+}
+
+function _consumeMessagePointerContextSelection(bubble) {
+    var record = _messagePointerContextSelection;
+    _messagePointerContextSelection = null;
+    if (!record || record.bubble !== bubble) return null;
+    return record.hadSelection;
+}
+
+function _messageContextMenuDisposition(target, bubble, now, selectionExistedBeforePointer) {
     if (_messageLinkUsesNativeContext(target)) return 'native';
-    var selectableText = target && target.closest && target.closest('.lxmf-msg-content');
-    if ((selectableText && _messageTextSelectionOwnsBubble(bubble)) ||
-            _messageSelectionIntersectsBubble(bubble)) return 'native';
+    // A contextmenu synthesized from the first action-opening hold belongs to
+    // that exact gesture. Suppress it before considering the newly elevated
+    // bubble; a real second hold has already cleared this pending record.
     if (_consumePendingMessageHoldContext(target, bubble, now)) return 'suppress';
+    var selectableText = target && target.closest && target.closest('.lxmf-msg-content');
+    var preserveSelection = selectionExistedBeforePointer === null ||
+        typeof selectionExistedBeforePointer === 'undefined'
+        ? _messageSelectionIntersectsBubble(bubble)
+        : selectionExistedBeforePointer;
+    if ((selectableText && _messageActionOwnsText(bubble, target)) || preserveSelection) {
+        return 'native';
+    }
     return 'actions';
 }
 
@@ -5213,13 +5164,6 @@ function _positionMsgContextMenu(menu, x, y, bubble) {
 }
 
 function _prepareMessageActionTarget(msgData, bubble, trigger, x, y) {
-    // Selection and actions share one transcript-DOM lease. Mode transfers must
-    // keep that DOM stable; the final exit performs the coalesced render.
-    _exitMessageTextSelectionMode({
-        restoreFocus: false,
-        clearNativeSelection: true,
-        flushDeferredRender: false,
-    });
     return { bubble: bubble, trigger: trigger, x: x, y: y };
 }
 
@@ -5331,27 +5275,6 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     var messageText = _messageDisplayContent(msgData, !!(msgData && msgData.audio));
     var hasText = !!(content && String(messageText || '').trim());
     if (hasText) {
-        var selectBtn = document.createElement('button');
-        selectBtn.className = 'msg-ctx-btn msg-ctx-select';
-        selectBtn.type = 'button';
-        selectBtn.setAttribute('data-message-action', 'select-text');
-        selectBtn.innerHTML = _messageActionIcon('select') + '<span>Select Text</span>';
-        _bindMessageFocusPreservingActivation(selectBtn, function() {
-            var restoreFocusExpected = !!(_activeContextMenu && _activeContextMenu.restoreFocusExpected);
-            var wasTriggeredByControl = !!trigger;
-            _dismissContextMenu({ restoreFocus: false, flushDeferredRender: false });
-            var renderedContainer = document.getElementById('lxmf-messages');
-            var selectionBubble = _findRenderedMessageBubble(renderedContainer, msgData.id) || bubble;
-            var selectionTrigger = wasTriggeredByControl
-                ? selectionBubble.querySelector('.msg-actions-trigger')
-                : null;
-            _enterMessageTextSelectionMode(selectionBubble, selectionTrigger, {
-                restoreFocusExpected: restoreFocusExpected,
-            });
-            if (typeof haptic === 'function') haptic('light');
-        });
-        actions.appendChild(selectBtn);
-
         var copyBtn = document.createElement('button');
         copyBtn.className = 'msg-ctx-btn msg-ctx-copy';
         copyBtn.type = 'button';
@@ -5408,6 +5331,7 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     if (trigger) trigger.setAttribute('aria-expanded', 'true');
     _activeContextMenu = {
         menu: menu,
+        bubble: bubble,
         row: row,
         container: container,
         trigger: trigger,
@@ -5426,43 +5350,44 @@ function _handleMessageActionPointer(e) {
     if (_activeContextMenu) {
         var menu = _activeContextMenu.menu;
         if (menu && menu.contains(e.target)) return;
+        // The elevated bubble is the mobile native-selection surface. Keep
+        // both it and the transcript DOM alive while a second hold begins.
+        if (_messageActionOwnsText(_activeContextMenu.bubble, e.target)) return;
         if (_dismissContextMenu({ restoreFocus: false, flushDeferredRender: false })) {
-            _scheduleDeferredConversationRenderAfterPointer();
-        }
-    }
-    if (_activeMessageTextSelection) {
-        var state = _activeMessageTextSelection;
-        if ((state.row && state.row.contains(e.target)) ||
-                (state.guide && state.guide.contains(e.target))) return;
-        if (_exitMessageTextSelectionMode({
-                restoreFocus: false,
-                clearNativeSelection: true,
-                flushDeferredRender: false,
-            })) {
             _scheduleDeferredConversationRenderAfterPointer();
         }
     }
 }
 
+function _handleNativeMessageCopy() {
+    if (!_mobileMessageActionsUseLongPress() || !_activeContextMenu) return false;
+    var active = _activeContextMenu;
+    if (!_messageSelectionIntersectsBubble(active.bubble)) return false;
+    // Let the platform finish serializing the selected text before the
+    // transcript DOM or selection is changed. Exact object identity prevents
+    // this task from dismissing another message opened in the meantime.
+    setTimeout(function() {
+        if (_activeContextMenu !== active) return;
+        _clearNativeMessageSelection();
+        _dismissContextMenu({ restoreFocus: false });
+    }, 0);
+    return true;
+}
+
 document.addEventListener('pointerdown', _handleMessageActionPointer, true);
 document.addEventListener('mousedown', _handleMessageActionPointer, true);
+document.addEventListener('copy', _handleNativeMessageCopy, true);
 document.addEventListener('keydown', function(e) {
     if (e.key !== 'Escape') return;
     if (_dismissContextMenu()) {
         e.preventDefault();
-        return;
     }
-    if (_exitMessageTextSelectionMode({ clearNativeSelection: true })) e.preventDefault();
 }, true);
 
 window.RS = window.RS || {};
 window.RS.closeMessageActionMenu = function() {
     if (_activeContextMenu) {
         _dismissContextMenu();
-        return true;
-    }
-    if (_activeMessageTextSelection) {
-        _exitMessageTextSelectionMode({ clearNativeSelection: true });
         return true;
     }
     return false;

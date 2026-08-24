@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Behavioral coverage for message actions and explicitly staged text selection.
+// Behavioral coverage for message actions and elevated native text selection.
 
 'use strict';
 
@@ -58,7 +58,7 @@ function targetWithClasses(classes) {
 
 // Exercise the production recognizer with the production exclusion/ownership
 // helpers. This catches the issue #45 regression: ordinary text must reach the
-// first-stage action sheet, but an armed message must belong to native selection.
+// first-stage action sheet, but elevated message text must belong to native selection.
 (function testLongPressOwnership() {
     var now = 10;
     var nextRaf = 1;
@@ -91,8 +91,10 @@ function targetWithClasses(classes) {
     context.RS = context.window.RS;
     vm.runInNewContext(gesturesSource, context, { filename: 'gestures.js' });
     vm.runInNewContext(
-        'var _activeMessageTextSelection = null; var _pendingMessageHoldActivation = null; var _messageHoldActivationSequence = 0;\n' +
-        namedFunctionSource(lxmfSource, '_messageTextSelectionOwnsBubble') + '\n' +
+        'var _activeContextMenu = null; var lxmfActiveContact = "owner-a"; var _pendingMessageHoldActivation = null; var _messageHoldActivationSequence = 0;\n' +
+        'function _canonicalConversationHash(value) { return String(value || "").toLowerCase(); }\n' +
+        namedFunctionSource(lxmfSource, '_messageActionOwnsText') + '\n' +
+        namedFunctionSource(lxmfSource, '_messageElevatedTextStartsNativeSelection') + '\n' +
         namedFunctionSource(lxmfSource, '_messageTouchStartsDirectControl') + '\n' +
         namedFunctionSource(lxmfSource, '_messageHoldActivationSurface') + '\n' +
         namedFunctionSource(lxmfSource, '_clearPendingMessageHoldActivation') + '\n' +
@@ -101,8 +103,8 @@ function targetWithClasses(classes) {
         namedFunctionSource(lxmfSource, '_pendingMessageHoldContextMatches') + '\n' +
         namedFunctionSource(lxmfSource, '_consumePendingMessageHoldContext') + '\n' +
         namedFunctionSource(lxmfSource, '_consumePendingMessageHoldActivation') + '\n' +
-        'this.setSelectionOwner = function(bubble) { _activeMessageTextSelection = bubble ? { bubble: bubble } : null; };\n' +
-        'this.ownsBubble = _messageTextSelectionOwnsBubble;\n' +
+        'this.setActionOwner = function(bubble) { _activeContextMenu = bubble ? { bubble: bubble, ownerHash: "owner-a" } : null; };\n' +
+        'this.startsNativeSelection = _messageElevatedTextStartsNativeSelection;\n' +
         'this.startsDirectControl = _messageTouchStartsDirectControl;\n' +
         'this.armActivation = _armPendingMessageHoldActivation;\n' +
         'this.releaseActivation = _releasePendingMessageHoldActivation;\n' +
@@ -126,7 +128,7 @@ function targetWithClasses(classes) {
         });
     }
 
-    function beginGesture(target, selected) {
+    function beginGesture(target, elevated) {
         var element = new EventTargetStub();
         var bubble = {
             contains: function(candidate) { return candidate === target; },
@@ -134,12 +136,13 @@ function targetWithClasses(classes) {
         };
         target._messageBubble = bubble;
         var state = { fired: 0 };
-        context.setSelectionOwner(selected ? bubble : null);
+        context.setActionOwner(elevated ? bubble : null);
         context.RS.gestures.attachLongPress(element, {
             duration: 500,
             moveCancelPx: 12,
             excludeZone: function(touch) {
-                return context.ownsBubble(bubble) || context.startsDirectControl(touch, bubble);
+                return context.startsNativeSelection(touch, bubble) ||
+                    context.startsDirectControl(touch, bubble);
             },
             hapticStages: [{ at: 0.55, level: 'light' }],
             onFire: function(touch) {
@@ -157,8 +160,8 @@ function targetWithClasses(classes) {
         return { element: element, target: target, bubble: bubble, state: state };
     }
 
-    function hold(target, selected) {
-        var gesture = beginGesture(target, selected);
+    function hold(target, elevated) {
+        var gesture = beginGesture(target, elevated);
         advance(501);
         return gesture.state.fired;
     }
@@ -175,7 +178,7 @@ function targetWithClasses(classes) {
         'image surfaces must open the same message actions');
     var hapticsBeforeSelection = haptics.length;
     assert.strictEqual(hold(targetWithClasses(['lxmf-msg-content']), true), 0,
-        'an armed message must yield its next hold to native text selection');
+        'elevated message text must yield its next hold to native text selection');
     assert.strictEqual(haptics.length, hapticsBeforeSelection,
         'native selection ownership must not leak a staged reaction haptic');
     assert.strictEqual(hold(targetWithClasses(['voice-memo-player-play']), false), 0,
@@ -325,122 +328,6 @@ function classListStub() {
     };
 }
 
-// Enter/exit the production scoped-selection state against a small DOM model.
-// Touch stages; pointer/keyboard selects immediately; outside pointer exits.
-(function testScopedSelectionState() {
-    var selectedRanges = [];
-    var selection = {
-        removeAllRanges: function() { selectedRanges = []; },
-        addRange: function(range) { selectedRanges.push(range); },
-    };
-    var container = { classList: classListStub() };
-    var bubble;
-    var row = {
-        classList: classListStub(),
-        children: [],
-        appendChild: function(child) { child.parentNode = this; this.children.push(child); },
-        removeChild: function(child) {
-            this.children = this.children.filter(function(candidate) { return candidate !== child; });
-            child.parentNode = null;
-        },
-        contains: function(target) { return target === bubble || this.children.indexOf(target) !== -1; },
-    };
-    var content = { textContent: 'Selectable message' };
-    bubble = {
-        querySelector: function(selector) { return selector === '.lxmf-msg-content' ? content : null; },
-        closest: function(selector) { return selector === '.msg-row' ? row : null; },
-        getAttribute: function(name) { return name === 'data-msg-id' ? 'message-1' : null; },
-    };
-    var lastGuide = null;
-    function createGuide() {
-        var done = new EventTargetStub();
-        done.focus = function() { done.focused = true; };
-        var guide = {
-            className: '',
-            parentNode: null,
-            _html: '',
-            set innerHTML(value) { this._html = value; },
-            get innerHTML() { return this._html; },
-            querySelector: function(selector) { return selector === '.msg-text-selection-done' ? done : null; },
-            contains: function(target) { return target === done; },
-        };
-        lastGuide = guide;
-        return guide;
-    }
-    var documentStub = {
-        documentElement: { dataset: { inputModality: 'touch' } },
-        getElementById: function(id) { return id === 'lxmf-messages' ? container : null; },
-        createElement: function() { return createGuide(); },
-        createRange: function() {
-            return { selectNodeContents: function(node) { this.node = node; } };
-        },
-    };
-    var context = {
-        window: { RS: { ui: { prefersKeyboardFocus: function() { return false; } } }, getSelection: function() { return selection; } },
-        document: documentStub,
-        isTauriMobile: function() { return false; },
-    };
-    context.RS = context.window.RS;
-    vm.runInNewContext(
-        'var _activeContextMenu = null; var _activeMessageTextSelection = null; var lxmfActiveContact = "owner-a";\n' +
-        'function _canonicalConversationHash(value) { return String(value || "").toLowerCase(); }\n' +
-        'function _flushDeferredConversationRender() { return false; }\n' +
-        'function _scheduleDeferredConversationRenderAfterPointer() { return false; }\n' +
-        namedFunctionSource(lxmfSource, '_prefersKeyboardMessageFocus') + '\n' +
-        namedFunctionSource(lxmfSource, '_messageActivationExpectsFocus') + '\n' +
-        namedFunctionSource(lxmfSource, '_focusMessageControl') + '\n' +
-        namedFunctionSource(lxmfSource, '_messageInteractionUsesTouchStaging') + '\n' +
-        namedFunctionSource(lxmfSource, '_messageTextSelectionOwnsBubble') + '\n' +
-        namedFunctionSource(lxmfSource, '_clearNativeMessageSelection') + '\n' +
-        namedFunctionSource(lxmfSource, '_selectMessageTextNow') + '\n' +
-        namedFunctionSource(lxmfSource, '_exitMessageTextSelectionMode') + '\n' +
-        namedFunctionSource(lxmfSource, '_enterMessageTextSelectionMode') + '\n' +
-        'function _dismissContextMenu() { return false; }\n' +
-        namedFunctionSource(lxmfSource, '_handleMessageActionPointer') + '\n' +
-        'this.enterSelection = _enterMessageTextSelectionMode;\n' +
-        'this.exitSelection = _exitMessageTextSelectionMode;\n' +
-        'this.activationExpectsFocus = _messageActivationExpectsFocus;\n' +
-        'this.ownsBubble = _messageTextSelectionOwnsBubble;\n' +
-        'this.handleOutsidePointer = _handleMessageActionPointer;',
-        context,
-        { filename: 'message-selection-state.js' }
-    );
-
-    assert.strictEqual(context.enterSelection(bubble, null), true);
-    assert.strictEqual(context.ownsBubble(bubble), true);
-    assert.strictEqual(container.classList.contains('msg-text-selection-mode'), true);
-    assert.strictEqual(row.classList.contains('msg-text-selection-target'), true);
-    assert(lastGuide.innerHTML.indexOf('Hold and drag in this message') !== -1);
-    assert.strictEqual(selectedRanges.length, 0, 'touch activation must wait for native hold/drag');
-
-    context.handleOutsidePointer({ target: {} });
-    assert.strictEqual(context.ownsBubble(bubble), false);
-    assert.strictEqual(container.classList.contains('msg-text-selection-mode'), false);
-
-    var focusTrigger = { focus: function() { this.focused = true; } };
-    var assistiveFocus = context.activationExpectsFocus({ type: 'click', detail: 0 });
-    assert.strictEqual(assistiveFocus, true,
-        'an AT synthesized click must request managed focus even when modality remains touch');
-    assert.strictEqual(context.activationExpectsFocus({ type: 'click', detail: 1 }), false);
-    assert.strictEqual(context.enterSelection(bubble, focusTrigger, { restoreFocusExpected: assistiveFocus }), true);
-    var focusedDone = lastGuide.querySelector('.msg-text-selection-done');
-    assert.strictEqual(focusedDone.focused, true,
-        'AT-triggered selection must move focus to the live Done control even in touch modality');
-    focusedDone.dispatch('click', {
-        preventDefault: function() {},
-        stopPropagation: function() {},
-    });
-    assert.strictEqual(focusTrigger.focused, true,
-        'Done must restore focus to the More control that opened Select Text');
-
-    documentStub.documentElement.dataset.inputModality = 'pointer';
-    assert.strictEqual(context.enterSelection(bubble, null), true);
-    assert.strictEqual(selectedRanges.length, 1, 'desktop activation must select immediately');
-    assert.strictEqual(selectedRanges[0].node, content);
-    context.exitSelection({ clearNativeSelection: true });
-    assert.strictEqual(selectedRanges.length, 0);
-}());
-
 // Assistive-technology clicks can arrive with touch as the last raw modality.
 // Their explicit focus expectation must survive optimistic reaction rerenders.
 (function testAssistiveReactionFocusRestoration() {
@@ -499,7 +386,7 @@ function classListStub() {
 (function testActionRenderDeferral() {
     var context = {};
     vm.runInNewContext(
-        'var _activeMessageTextSelection = null; var _activeContextMenu = null;\n' +
+        'var _activeContextMenu = null;\n' +
         'var _deferredConversationRenderOptions = null; var _deferredConversationRenderOwnerHash = null;\n' +
         'var _deferredConversationRenderGeneration = 0; var _deferredConversationRenderRelease = null;\n' +
         'var lxmfConversation = [{ id: "message-1" }]; var lxmfActiveContact = "owner-a";\n' +
@@ -511,7 +398,6 @@ function classListStub() {
         'function _focusMessageControl() {}\n' +
         'function renderConversation(options) { renderCalls.push(options); }\n' +
         namedFunctionSource(lxmfSource, '_mergeConversationRenderOptions') + '\n' +
-        namedFunctionSource(lxmfSource, '_activeSelectionOwnsCurrentMessage') + '\n' +
         namedFunctionSource(lxmfSource, '_activeActionOwnsCurrentMessage') + '\n' +
         namedFunctionSource(lxmfSource, '_deferConversationRender') + '\n' +
         namedFunctionSource(lxmfSource, '_deferActiveMessageInteractionRender') + '\n' +
@@ -571,83 +457,6 @@ function classListStub() {
         'message removal must force immediate normal render/teardown');
 }());
 
-// Native Selection ranges and handles are tied to the exact transcript DOM.
-// Repeated model updates therefore coalesce while a selection owns its message,
-// and the latest render is flushed exactly once after selection exits.
-(function testSelectionRenderDeferral() {
-    var context = {};
-    vm.runInNewContext(
-        'var _activeMessageTextSelection = null; var _activeContextMenu = null;\n' +
-        'var _deferredConversationRenderOptions = null; var _deferredConversationRenderOwnerHash = null;\n' +
-        'var _deferredConversationRenderGeneration = 0; var _deferredConversationRenderRelease = null;\n' +
-        'var lxmfConversation = [{ id: "message-1" }]; var lxmfActiveContact = "owner-a";\n' +
-        'var renderCalls = []; var selectionActiveAtRender = [];\n' +
-        'function _canonicalConversationHash(value) { return String(value || "").toLowerCase(); }\n' +
-        'function renderConversation(options) { renderCalls.push(options); selectionActiveAtRender.push(!!_activeMessageTextSelection); }\n' +
-        'function _cancelScheduledDeferredConversationRender() { return false; }\n' +
-        'function _pendingRenderReleaseOwnsCurrentConversation() { return false; }\n' +
-        'function _clearNativeMessageSelection() {}\n' +
-        'function _focusMessageControl() {}\n' +
-        'function _findRenderedMessageBubble() { return null; }\n' +
-        namedFunctionSource(lxmfSource, '_mergeConversationRenderOptions') + '\n' +
-        namedFunctionSource(lxmfSource, '_activeSelectionOwnsCurrentMessage') + '\n' +
-        namedFunctionSource(lxmfSource, '_activeActionOwnsCurrentMessage') + '\n' +
-        namedFunctionSource(lxmfSource, '_deferConversationRender') + '\n' +
-        namedFunctionSource(lxmfSource, '_deferActiveMessageInteractionRender') + '\n' +
-        namedFunctionSource(lxmfSource, '_clearDeferredConversationRender') + '\n' +
-        namedFunctionSource(lxmfSource, '_flushDeferredConversationRender') + '\n' +
-        namedFunctionSource(lxmfSource, '_exitMessageTextSelectionMode') + '\n' +
-        'this.startSelection = function(bubble, range) {\n' +
-        '  _activeMessageTextSelection = {\n' +
-        '    bubble: bubble, content: {}, container: { classList: { remove: function() {} } },\n' +
-        '    row: { classList: { remove: function() {} } }, guide: null, trigger: null,\n' +
-        '    msgId: "message-1", ownerHash: "owner-a", range: range, restoreFocusExpected: false\n' +
-        '  };\n' +
-        '};\n' +
-        'this.defer = _deferActiveMessageInteractionRender;\n' +
-        'this.exitSelection = _exitMessageTextSelectionMode;\n' +
-        'this.flush = _flushDeferredConversationRender;\n' +
-        'this.getBubble = function() { return _activeMessageTextSelection && _activeMessageTextSelection.bubble; };\n' +
-        'this.getRange = function() { return _activeMessageTextSelection && _activeMessageTextSelection.range; };\n' +
-        'this.renderCalls = renderCalls; this.selectionActiveAtRender = selectionActiveAtRender;\n' +
-        'this.setOwner = function(owner) { lxmfActiveContact = owner; };\n' +
-        'this.setMessages = function(messages) { lxmfConversation = messages; };',
-        context,
-        { filename: 'message-selection-render-deferral.js' }
-    );
-
-    var originalBubble = { revision: 1 };
-    var substringRange = { startOffset: 3, endOffset: 9 };
-    context.startSelection(originalBubble, substringRange);
-    assert.strictEqual(context.defer({ stickToBottom: true }), true);
-    assert.strictEqual(context.defer({ forceScrollBottom: true }), true);
-    assert.strictEqual(context.defer({}), true);
-    assert.strictEqual(context.renderCalls.length, 0,
-        'progress-like updates must not replace the DOM under a native selection');
-    assert.strictEqual(context.getBubble(), originalBubble);
-    assert.strictEqual(context.getRange(), substringRange,
-        'a selected substring must survive without being expanded to the full message');
-
-    assert.strictEqual(context.exitSelection({ restoreFocus: false }), true);
-    assert.strictEqual(context.renderCalls.length, 1,
-        'selection exit must flush multiple queued updates exactly once');
-    assert.strictEqual(context.renderCalls[0].stickToBottom, true);
-    assert.strictEqual(context.renderCalls[0].forceScrollBottom, true);
-    assert.strictEqual(context.selectionActiveAtRender[0], false,
-        'the flush must run after native selection ownership is released');
-    assert.strictEqual(context.flush(), false,
-        'the coalesced render must not remain queued after exit');
-
-    context.startSelection(originalBubble, substringRange);
-    context.setOwner('owner-b');
-    assert.strictEqual(context.defer({ stickToBottom: true }), false,
-        'a conversation owner change must force the caller through the normal teardown/render path');
-    context.setOwner('owner-a');
-    context.setMessages([]);
-    assert.strictEqual(context.defer({ stickToBottom: true }), false,
-        'definitive message disappearance must force safe teardown/render');
-}());
-
 // Outside pointer dismissal releases the visible UI immediately but retains a
 // generation-bound transcript lease until that pointer's release/click task.
 (function testOutsidePointerReleaseLease() {
@@ -664,7 +473,7 @@ function classListStub() {
         clearTimeout: function(id) { timers.delete(id); },
     };
     vm.runInNewContext(
-        'var _activeMessageTextSelection = null; var _activeContextMenu = null;\n' +
+        'var _activeContextMenu = null;\n' +
         'var _deferredConversationRenderOptions = null; var _deferredConversationRenderOwnerHash = null;\n' +
         'var _deferredConversationRenderGeneration = 0; var _deferredConversationRenderRelease = null;\n' +
         'var lxmfActiveContact = "owner-a"; var lxmfConversation = [{ id: "message-1" }, { id: "message-2" }];\n' +
@@ -672,9 +481,8 @@ function classListStub() {
         'function _canonicalConversationHash(value) { return String(value || "").toLowerCase(); }\n' +
         'function _findRenderedMessageBubble() { return null; }\n' +
         'function _focusMessageControl() {}\n' +
-        'function _exitMessageTextSelectionMode() { return false; }\n' +
+        namedFunctionSource(lxmfSource, '_messageActionOwnsText') + '\n' +
         namedFunctionSource(lxmfSource, '_mergeConversationRenderOptions') + '\n' +
-        namedFunctionSource(lxmfSource, '_activeSelectionOwnsCurrentMessage') + '\n' +
         namedFunctionSource(lxmfSource, '_activeActionOwnsCurrentMessage') + '\n' +
         namedFunctionSource(lxmfSource, '_deferConversationRender') + '\n' +
         namedFunctionSource(lxmfSource, '_pendingRenderReleaseOwnsCurrentConversation') + '\n' +
@@ -796,32 +604,8 @@ function classListStub() {
         'a delayed synthetic click must activate before the coalesced render');
 }());
 
-// Selection -> actions transfers the same transcript lease. It must not flush
-// or replace the already-activated target before the dialog is built.
-(function testSelectionToActionLeaseTransfer() {
-    var oldTrigger = {};
-    var oldBubble = {
-        getAttribute: function(name) { return name === 'data-msg-id' ? 'message-1' : null; },
-    };
-    var context = {};
-    vm.runInNewContext(
-        'var _capturedExitOptions = null;\n' +
-        'function _exitMessageTextSelectionMode(opts) { _capturedExitOptions = opts; return true; }\n' +
-        namedFunctionSource(lxmfSource, '_prepareMessageActionTarget') + '\n' +
-        'this.prepare = _prepareMessageActionTarget; this.exitOptions = function() { return _capturedExitOptions; };',
-        context,
-        { filename: 'message-action-lease-transfer.js' }
-    );
-    var prepared = context.prepare({ id: 'message-1' }, oldBubble, oldTrigger, 1, 2);
-    assert.strictEqual(prepared.bubble, oldBubble);
-    assert.strictEqual(prepared.trigger, oldTrigger);
-    assert.strictEqual(prepared.x, 1);
-    assert.strictEqual(prepared.y, 2);
-    assert.strictEqual(context.exitOptions().flushDeferredRender, false);
-}());
-
 // Link context is deliberately modality-specific: native on pointer desktops,
-// message actions on touch so link-only messages can still react/reply/select.
+// message actions on the first touch hold, then native selection while elevated.
 (function testLinkContextOwnership() {
     var documentStub = { documentElement: { dataset: { inputModality: 'pointer' } } };
     var selection = { isCollapsed: true, rangeCount: 0 };
@@ -830,21 +614,28 @@ function classListStub() {
         window: { getSelection: function() { return selection; } },
     };
     vm.runInNewContext(
-        'var _activeMessageTextSelection = null;\n' +
-        'function _consumePendingMessageHoldContext() { return false; }\n' +
-        namedFunctionSource(lxmfSource, '_messageTextSelectionOwnsBubble') + '\n' +
+        'var _activeContextMenu = null; var _messagePointerContextSelection = null; var lxmfActiveContact = "owner-a"; var pendingContext = false;\n' +
+        'function _canonicalConversationHash(value) { return String(value || "").toLowerCase(); }\n' +
+        'function _consumePendingMessageHoldContext() { return pendingContext; }\n' +
+        namedFunctionSource(lxmfSource, '_messageActionOwnsText') + '\n' +
         namedFunctionSource(lxmfSource, '_messageSelectionIntersectsBubble') + '\n' +
         namedFunctionSource(lxmfSource, '_messageLinkUsesNativeContext') + '\n' +
         namedFunctionSource(lxmfSource, '_messageLinkActivationAllowed') + '\n' +
+        namedFunctionSource(lxmfSource, '_rememberMessagePointerContextSelection') + '\n' +
+        namedFunctionSource(lxmfSource, '_consumeMessagePointerContextSelection') + '\n' +
         namedFunctionSource(lxmfSource, '_messageContextMenuDisposition') + '\n' +
-        'this.setOwner = function(bubble) { _activeMessageTextSelection = bubble ? { bubble: bubble } : null; };\n' +
+        'this.setOwner = function(bubble) { _activeContextMenu = bubble ? { bubble: bubble, ownerHash: "owner-a" } : null; };\n' +
+        'this.setPendingContext = function(value) { pendingContext = value; };\n' +
+        'this.rememberPointerSelection = _rememberMessagePointerContextSelection;\n' +
+        'this.consumePointerSelection = _consumeMessagePointerContextSelection;\n' +
         'this.nativeLink = _messageLinkUsesNativeContext;\n' +
         'this.linkAllowed = _messageLinkActivationAllowed;\n' +
         'this.disposition = _messageContextMenuDisposition;',
         context,
         { filename: 'message-link-context.js' }
     );
-    var bubble = { contains: function() { return false; } };
+    var bubble = { contains: function(candidate) { return candidate === link || candidate === text; } };
+    var text;
     var link = {
         closest: function(selector) {
             if (selector === '.rs-message-link' || selector === '.lxmf-msg-content') return link;
@@ -854,33 +645,160 @@ function classListStub() {
     };
     assert.strictEqual(context.nativeLink(link), true);
     assert.strictEqual(context.disposition(link, bubble, 10), 'native');
+    text = {
+        closest: function(selector) {
+            if (selector === '.lxmf-msg-content') return text;
+            if (selector === '.lxmf-msg') return bubble;
+            return null;
+        }
+    };
+    assert.strictEqual(context.rememberPointerSelection({ button: 2 }, bubble), true);
+    selection = {
+        isCollapsed: false,
+        rangeCount: 1,
+        getRangeAt: function() { return { intersectsNode: function() { return true; } }; },
+    };
+    var selectionBeforeRightClick = context.consumePointerSelection(bubble);
+    assert.strictEqual(selectionBeforeRightClick, false,
+        'the pointer snapshot must precede the browser selecting a right-clicked word');
+    assert.strictEqual(context.disposition(text, bubble, 10, selectionBeforeRightClick), 'actions',
+        'a right-click-created word highlight must open message actions, not the native copy menu');
+    assert.strictEqual(context.disposition(text, bubble, 10, true), 'native',
+        'a pre-existing left-drag selection must retain the native copy menu');
+    selection = { isCollapsed: true, rangeCount: 0 };
     documentStub.documentElement.dataset.inputModality = 'touch';
     assert.strictEqual(context.nativeLink(link), false);
     assert.strictEqual(context.linkAllowed(link), true);
     assert.strictEqual(context.disposition(link, bubble, 10), 'actions');
     context.setOwner(bubble);
     assert.strictEqual(context.linkAllowed(link), false,
-        'an armed message must suppress link navigation during selection');
+        'an elevated message must suppress link navigation during native selection');
+    context.setPendingContext(true);
+    assert.strictEqual(context.disposition(link, bubble, 100), 'suppress',
+        'the first hold contextmenu must remain part of the action-opening gesture');
+    context.setPendingContext(false);
     assert.strictEqual(context.disposition(link, bubble, 101), 'native',
-        'the armed message must yield its contextmenu to native selection');
+        'elevated message text must yield its contextmenu to native selection');
+}());
+
+// Pointer-down capture must not dismiss the elevated action surface before a
+// second mobile hold can establish native selection on the same text node.
+(function testElevatedTextKeepsActionLease() {
+    var context = {};
+    vm.runInNewContext(
+        'var _activeContextMenu = null; var lxmfActiveContact = "owner-a"; var _dismissCalls = 0;\n' +
+        'function _canonicalConversationHash(value) { return String(value || "").toLowerCase(); }\n' +
+        'function _dismissContextMenu() { _dismissCalls += 1; _activeContextMenu = null; return true; }\n' +
+        'function _scheduleDeferredConversationRenderAfterPointer() {}\n' +
+        namedFunctionSource(lxmfSource, '_messageActionOwnsText') + '\n' +
+        namedFunctionSource(lxmfSource, '_handleMessageActionPointer') + '\n' +
+        'this.open = function(bubble) { _activeContextMenu = { bubble: bubble, ownerHash: "owner-a", menu: { contains: function() { return false; } } }; };\n' +
+        'this.handle = _handleMessageActionPointer; this.getDismissCount = function() { return _dismissCalls; };\n' +
+        'this.hasActive = function() { return !!_activeContextMenu; };',
+        context,
+        { filename: 'message-elevated-selection-lease.js' }
+    );
+    var text = {
+        closest: function(selector) { return selector === '.lxmf-msg-content' ? text : null; },
+    };
+    var bubble = { contains: function(candidate) { return candidate === text; } };
+    context.open(bubble);
+    context.handle({ target: text });
+    assert.strictEqual(context.hasActive(), true,
+        'second-hold pointerdown on elevated text must keep the stable transcript DOM');
+    assert.strictEqual(context.getDismissCount(), 0);
+    context.handle({ target: {} });
+    assert.strictEqual(context.hasActive(), false,
+        'an outside pointerdown must still dismiss the action/selection surface');
+    assert.strictEqual(context.getDismissCount(), 1);
+}());
+
+// Native Copy is the terminal action for an elevated mobile selection. Cleanup
+// runs after the copy event so the platform can first serialize the range.
+(function testNativeCopyDismissesElevatedMessage() {
+    var pendingTasks = [];
+    var selection = {
+        isCollapsed: false,
+        rangeCount: 1,
+        getRangeAt: function() { return { intersectsNode: function() { return true; } }; },
+        removeAllRanges: function() { this.cleared = true; },
+    };
+    var context = {
+        window: { getSelection: function() { return selection; } },
+        setTimeout: function(callback) { pendingTasks.push(callback); return pendingTasks.length; },
+        isTauriMobile: function() { return true; },
+        isMobile: function() { return true; },
+    };
+    vm.runInNewContext(
+        'var _activeContextMenu = null; var _dismissCalls = 0;\n' +
+        namedFunctionSource(lxmfSource, '_mobileMessageActionsUseLongPress') + '\n' +
+        namedFunctionSource(lxmfSource, '_messageSelectionIntersectsBubble') + '\n' +
+        namedFunctionSource(lxmfSource, '_clearNativeMessageSelection') + '\n' +
+        'function _dismissContextMenu() { _dismissCalls += 1; _activeContextMenu = null; return true; }\n' +
+        namedFunctionSource(lxmfSource, '_handleNativeMessageCopy') + '\n' +
+        'this.open = function(value) { _activeContextMenu = value; }; this.copy = _handleNativeMessageCopy;\n' +
+        'this.active = function() { return _activeContextMenu; }; this.getDismissCount = function() { return _dismissCalls; };',
+        context,
+        { filename: 'message-native-copy-cleanup.js' }
+    );
+    var active = { bubble: {} };
+    context.open(active);
+    assert.strictEqual(context.copy(), true);
+    assert.strictEqual(context.active(), active,
+        'copy handling must not replace the selected DOM before clipboard serialization');
+    pendingTasks.shift()();
+    assert.strictEqual(selection.cleared, true);
+    assert.strictEqual(context.active(), null);
+    assert.strictEqual(context.getDismissCount(), 1,
+        'copy completion must return the mobile message to its base state');
+
+    selection.cleared = false;
+    var oldActive = { bubble: {} };
+    var newActive = { bubble: {} };
+    context.open(oldActive);
+    assert.strictEqual(context.copy(), true);
+    context.open(newActive);
+    pendingTasks.shift()();
+    assert.strictEqual(context.active(), newActive,
+        'a delayed copy cleanup must never dismiss a newly opened message');
+    assert.strictEqual(selection.cleared, false);
 }());
 
 assert(/\.lxmf-msg\s*\{[\s\S]*?user-select:\s*none;[\s\S]*?-webkit-user-select:\s*none;/.test(messagingCss),
     'general message chrome must remain non-selectable');
-assert(messagingCss.includes('html[data-input-modality="touch"] .lxmf-messages:not(.msg-text-selection-mode) .lxmf-msg-content'),
+assert(messagingCss.includes('html[data-input-modality="touch"] .lxmf-msg-content'),
     'idle touch message text must not race the long-press action stage');
-assert(messagingCss.includes('.msg-text-selection-target .lxmf-msg-content'),
-    'only the explicitly armed message may opt into touch selection');
+assert(messagingCss.includes('.lxmf-messages.msg-action-mode .msg-row.msg-action-selected .lxmf-msg-content'),
+    'only the elevated message may opt into touch selection');
 assert(messagingCss.includes('@media (hover: none) and (pointer: coarse)') &&
-       messagingCss.includes('.lxmf-messages:not(.msg-text-selection-mode) .lxmf-msg-content'),
+       messagingCss.includes('.lxmf-messages.msg-action-mode .msg-row.msg-action-selected .lxmf-msg-content'),
     'coarse mobile input must stage selection before the first touch event');
 assert(messagingCss.includes('.msg-actions-trigger::before') && messagingCss.includes('var(--touch-target)'),
     'the restrained More control must retain a full touch target');
+assert(/\.msg-actions-trigger\s*\{[\s\S]*?width:\s*0;[\s\S]*?opacity:\s*0;[\s\S]*?pointer-events:\s*none;/.test(messagingCss) &&
+       /\.lxmf-msg:hover \.msg-actions-trigger,[\s\S]*?width:\s*24px;[\s\S]*?opacity:\s*1;/.test(messagingCss),
+    'the compact plus control must appear only for its hovered/focused/expanded message');
+assert(/html\[data-input-modality="touch"\] \.msg-actions-trigger\s*\{[\s\S]*?width:\s*0;[\s\S]*?opacity:\s*0;[\s\S]*?pointer-events:\s*none;/.test(messagingCss),
+    'mobile touch UI must keep the redundant plus control visually hidden');
+assert(lxmfSource.includes("mobileMessageActions ? ' msg-actions-trigger-mobile-hidden' : ''") &&
+       /\.msg-actions-trigger\.msg-actions-trigger-mobile-hidden\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?clip-path:\s*inset\(50%\);[\s\S]*?pointer-events:\s*none;/.test(messagingCss),
+    'native and responsive mobile rendering must hide the plus structurally from visual layout and taps');
+assert(lxmfSource.includes('<path d="M12 5v14M5 12h14"/>'),
+    'message actions must use the compact plus glyph instead of an ellipsis');
+var metaSource = lxmfSource.slice(
+    lxmfSource.indexOf('var metaHtml = _messageProgressMetaHtml(msg)'),
+    lxmfSource.indexOf('var bubbleClass = bubbleClassBase')
+);
+assert(metaSource.indexOf('msg-actions-trigger') < metaSource.indexOf('msg-time'),
+    'the plus action must render to the left of the timestamp');
 assert(messagingCss.includes('.msg-context-actions > :last-child:nth-child(odd)') &&
        messagingCss.includes('grid-column: 1 / -1;'),
     'an odd final action must span the dialog instead of leaving a visual hole');
-assert(/\.msg-text-selection-guide\s*\{[\s\S]*?width:\s*min\(100%, 440px\);[\s\S]*?max-width:\s*100%;/.test(messagingCss),
-    'the staged selection guide must remain inside a compact transcript row');
+assert(!messagingCss.includes('.msg-text-selection-guide') &&
+       !lxmfSource.includes('Text selected. Adjust the selection or choose Done.') &&
+       !lxmfSource.includes('<span>Select Text</span>') &&
+       !lxmfSource.includes("data-message-action', 'select-text"),
+    'selection must rely on the elevated bubble without a Select Text command or Done chrome');
 assert(lxmfSource.includes("menu.setAttribute('role', 'dialog')") &&
        lxmfSource.includes("menu.setAttribute('aria-label', 'Message actions')"),
     'message actions must expose a labelled nonmodal dialog');
@@ -894,4 +812,4 @@ assert(lxmfSource.includes('aria-haspopup="dialog" aria-expanded="false"') &&
        lxmfSource.includes("trigger.setAttribute('aria-expanded', 'false')"),
     'More must expose and maintain its dialog expansion state');
 
-console.log('Message action and staged text-selection behavior tests passed.');
+console.log('Message action and elevated native-selection behavior tests passed.');

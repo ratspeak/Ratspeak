@@ -6931,12 +6931,22 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
 
     assert!(lxmf.contains("RS.gestures.attachLongPress(bubble"));
     assert!(lxmf.contains("function _messageSelectionIntersectsBubble(bubble)"));
-    assert!(lxmf.contains("function _messageTextSelectionOwnsBubble(bubble)"));
+    assert!(lxmf.contains("function _messageActionOwnsText(bubble, target)"));
+    assert!(lxmf.contains("function _messageElevatedTextStartsNativeSelection(touch, bubble)"));
+    assert!(lxmf.contains("function _handleNativeMessageCopy()"));
+    assert!(lxmf.contains("document.addEventListener('copy', _handleNativeMessageCopy, true);"));
+    assert!(lxmf.contains("if (_activeContextMenu !== active) return;"));
+    assert!(lxmf.contains("_clearNativeMessageSelection();"));
     assert!(lxmf.contains("function _messageTouchStartsDirectControl(touch, bubble)"));
     assert!(lxmf.contains("function _messageLinkUsesNativeContext(target)"));
+    assert!(lxmf.contains("function _rememberMessagePointerContextSelection(event, bubble)"));
+    assert!(lxmf.contains("function _consumeMessagePointerContextSelection(bubble)"));
+    assert!(lxmf.contains(
+        "function _messageContextMenuDisposition(target, bubble, now, selectionExistedBeforePointer)"
+    ));
     assert!(lxmf.contains("excludeZone: function(touch)"));
     assert!(lxmf.contains("hapticStages: [{ at: 0.55, level: 'light' }]"));
-    assert!(lxmf.contains("return _messageTextSelectionOwnsBubble(bubble) ||"));
+    assert!(lxmf.contains("return _messageElevatedTextStartsNativeSelection(touch, bubble) ||"));
     assert!(lxmf.contains("_messageTouchStartsDirectControl(touch, bubble);"));
     assert!(!lxmf.contains("preventDefaultOnStart: function()"));
     assert!(lxmf.contains("container.addEventListener('touchstart', function()"));
@@ -6993,7 +7003,8 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(lxmf.contains("function _resolveMessageImageFile(msgData)"));
     assert!(lxmf.contains("function _resolveMessageAttachmentFile(att)"));
     assert!(lxmf.contains("var mediaAction = _messageMediaContextAction(msgData);"));
-    assert!(lxmf.contains("<span>Select Text</span>"));
+    assert!(!lxmf.contains("<span>Select Text</span>"));
+    assert!(!lxmf.contains("data-message-action', 'select-text"));
     assert!(lxmf.contains("<span>Copy Message</span>"));
     assert!(lxmf.contains("label: canCopyImage ? 'Copy Image' : 'Save Image'"));
     assert!(lxmf.contains("label: 'Save File'"));
@@ -7001,9 +7012,21 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(lxmf.contains("menu.setAttribute('aria-modal', 'false')"));
     assert!(lxmf.contains("menu.setAttribute('aria-label', 'Message actions')"));
     assert!(!lxmf.contains("menu.setAttribute('role', 'menu')"));
-    assert!(lxmf.contains("class=\"msg-actions-trigger\""));
-    assert!(lxmf.contains("function _enterMessageTextSelectionMode(bubble, trigger, opts)"));
-    assert!(lxmf.contains("function _exitMessageTextSelectionMode(opts)"));
+    assert!(lxmf.contains("var messageActionsClass = 'msg-actions-trigger' +"));
+    assert!(lxmf.contains("mobileMessageActions ? ' msg-actions-trigger-mobile-hidden' : ''"));
+    assert!(lxmf.contains("<path d=\"M12 5v14M5 12h14\"/>"));
+    assert!(
+        lxmf.contains(
+            "if (selectionExistedBeforePointer === false) _clearNativeMessageSelection();"
+        )
+    );
+    assert!(!lxmf.contains("function _enterMessageTextSelectionMode("));
+    assert!(!lxmf.contains("function _exitMessageTextSelectionMode("));
+    assert!(
+        lxmf.contains("if (_messageActionOwnsText(_activeContextMenu.bubble, e.target)) return;")
+    );
+    assert!(!lxmf.contains("msg-text-selection-guide"));
+    assert!(!lxmf.contains("Text selected. Adjust the selection or choose Done."));
     assert!(lxmf.contains("function _messageActivationExpectsFocus(event)"));
     assert!(lxmf.contains("var _deferredConversationRenderOwnerHash = null;"));
     assert!(lxmf.contains("var _deferredConversationRenderGeneration = 0;"));
@@ -7036,17 +7059,22 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(messaging_css.contains(".msg-row.msg-action-selected .lxmf-msg"));
     assert!(messaging_css.contains(".lxmf-msg-content {"));
     assert!(messaging_css.contains("-webkit-touch-callout: default;"));
-    assert!(messaging_css.contains(
-        "html[data-input-modality=\"touch\"] .lxmf-messages:not(.msg-text-selection-mode) .lxmf-msg-content"
-    ));
-    assert!(messaging_css.contains(".msg-text-selection-target .lxmf-msg-content"));
-    assert!(messaging_css.contains(".msg-row.msg-text-selection-target .lxmf-msg {"));
+    assert!(messaging_css.contains("html[data-input-modality=\"touch\"] .lxmf-msg-content"));
+    assert!(
+        messaging_css.contains(
+            ".lxmf-messages.msg-action-mode .msg-row.msg-action-selected .lxmf-msg-content"
+        )
+    );
     assert!(messaging_css.contains("touch-action: auto;"));
     assert!(messaging_css.contains(".msg-actions-trigger::before"));
+    assert!(messaging_css.contains("pointer-events: none;"));
+    assert!(messaging_css.contains(".lxmf-msg:hover .msg-actions-trigger"));
+    assert!(messaging_css.contains("html[data-input-modality=\"touch\"] .msg-actions-trigger"));
+    assert!(messaging_css.contains(".msg-actions-trigger.msg-actions-trigger-mobile-hidden"));
+    assert!(messaging_css.contains("clip-path: inset(50%);"));
+    assert!(!messaging_css.contains(".msg-text-selection-guide"));
     assert!(messaging_css.contains(".msg-context-actions > :last-child:nth-child(odd)"));
     assert!(messaging_css.contains("grid-column: 1 / -1;"));
-    assert!(messaging_css.contains("width: min(100%, 440px);"));
-    assert!(messaging_css.contains("max-width: 100%;"));
     assert!(messaging_css.contains("position: fixed; z-index: calc(var(--z-modal) + 3);"));
     assert!(nav.contains("RS.closeMessageActionMenu()"));
 
