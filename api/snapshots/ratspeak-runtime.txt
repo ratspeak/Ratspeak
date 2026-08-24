@@ -1809,6 +1809,7 @@ pub async fn ratspeak_runtime::rns::RnsManager::request_path(&self, [u8; 16])
 pub async fn ratspeak_runtime::rns::RnsManager::shutdown(&self)
 pub fn ratspeak_runtime::rns::RnsManager::startup_rnode_runtimes(&self) -> &[rns_runtime::reticulum::StartupRNodeRuntime]
 pub const ratspeak_runtime::rns::UI_PATH_TABLE_LIMIT: usize
+pub fn ratspeak_runtime::rns::ble_rnode_startup_options() -> rns_interface::rnode::RNodeStartupOptions
 pub fn ratspeak_runtime::rns::path_table_stats_snapshot(alloc::vec::Vec<rns_transport::messages::PathTableRpcEntry>) -> (alloc::vec::Vec<serde_json::value::Value>, serde_json::value::Value, usize, bool)
 pub fn ratspeak_runtime::rns::path_table_ui_snapshot(alloc::vec::Vec<rns_transport::messages::PathTableRpcEntry>) -> (alloc::vec::Vec<serde_json::value::Value>, usize, bool)
 pub mod ratspeak_runtime::rns_config

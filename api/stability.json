@@ -19,8 +19,8 @@
     "sourceCommit": "fc78e4926c696a921f308d238ef1b620e0db0078"
   },
   "snapshotSource": {
-    "commit": "66bc3a48aed3a0a05d8c853945560c2c09674c54",
-    "capturedOn": "2026-08-20",
+    "commit": "1886478993ab905d9e6ca77ebe3784b85630f88b",
+    "capturedOn": "2026-08-24",
     "review": {
       "areas": [
         "application domain and configuration",
@@ -36,18 +36,18 @@
       ],
       "classification": "application-internal lifecycle, persistence, and mobile integration",
       "publicApiDiff": {
-        "added": 122,
+        "added": 123,
         "removed": 12
       },
       "semver": "no public-library consequence; application integration only",
       "deprecations": "none",
-      "wirePersistenceRuntimeImpact": "no wire-format change; adds one persisted Android-only reconnect preference and reviews the announce, RNode readiness, and nonblocking LXMF persistence ownership surfaces",
+      "wirePersistenceRuntimeImpact": "no wire-format change; retains the reviewed announce, readiness, and persistence boundaries while exposing one application-internal BLE RNode startup-policy helper used to persist firmware Bluetooth availability",
       "platformEvidence": [
-        "rsReticulum and Ratspeak full Rust workspace gates",
-        "Android arm64 Kotlin policy and APK compilation",
-        "Apple BLE generation, pairing, and adapter-state lifecycle tests",
-        "dashboard behavior, JNI boundary, workflow pin, and source-contract gates",
-        "physical iOS RNode qualification on V3, V4, T114, and T-Echo before the adapter-state wake extension"
+        "rsReticulum full Rust workspace, MSRV, API, and cross-platform CI gates",
+        "Ratspeak full Rust workspace, strict Clippy, source-contract, and dashboard behavior gates",
+        "Android arm64 Kotlin policy, BLE lifecycle, and application compilation gates",
+        "physical Android BLE RNode power-cycle, pairing, reconnect, and interface-resume verification",
+        "desktop and Android message-action and native-selection interaction verification"
       ]
     }
   },
@@ -76,8 +76,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-runtime.txt",
-      "itemCount": 2464,
-      "sha256": "a8e51c5b14c4f65ff999e6278d165f2227f89984a89150b633859d6ccc5488e0"
+      "itemCount": 2465,
+      "sha256": "11ae8fd9547b39fb2413263dcc0bc4e5f03fa0db1d37307086e5987d71f1719b"
     },
     {
       "name": "ratspeak-tauri",
