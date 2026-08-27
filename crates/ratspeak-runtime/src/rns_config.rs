@@ -89,7 +89,7 @@ pub fn ensure_app_private_shared_instance_ports(
     std::fs::create_dir_all(config_dir)?;
     let path = config_dir.join("config");
     if !path.exists() {
-        write_config_result(config_dir, &ratspeak_default_config())?;
+        write_config_result(config_dir, &ratspeak_default_config(config_dir))?;
         return Ok(RatspeakRnsPortConfigChange::Created);
     }
 
@@ -105,10 +105,47 @@ pub fn ensure_app_private_shared_instance_ports(
     Ok(RatspeakRnsPortConfigChange::Updated)
 }
 
-fn ratspeak_default_config() -> String {
+/// Prepare the complete app-managed shared-instance selector in one durable
+/// config rewrite. The public ports-only helper above remains behaviorally
+/// narrow for existing callers; runtime startup additionally migrates the
+/// legacy Linux/Android `instance_name = default` selector.
+pub(crate) fn ensure_app_private_shared_instance(
+    config_dir: &Path,
+) -> std::io::Result<RatspeakRnsPortConfigChange> {
+    std::fs::create_dir_all(config_dir)?;
+    let path = config_dir.join("config");
+    if !path.exists() {
+        write_config_result(config_dir, &ratspeak_default_config(config_dir))?;
+        return Ok(RatspeakRnsPortConfigChange::Created);
+    }
+
+    let content = std::fs::read_to_string(&path)?;
+    let port_updated = ratspeak_shared_instance_port_update(&content)
+        .filter(|updated| updated != &content)
+        .unwrap_or_else(|| content.clone());
+    let updated = ratspeak_private_instance_name_update(&port_updated, config_dir)
+        .filter(|updated| updated != &port_updated)
+        .unwrap_or(port_updated);
+    if updated == content {
+        return Ok(RatspeakRnsPortConfigChange::Unchanged);
+    }
+
+    write_config_result(config_dir, &updated)?;
+    Ok(RatspeakRnsPortConfigChange::Updated)
+}
+
+fn ratspeak_default_config(config_dir: &Path) -> String {
+    let instance_name = ratspeak_private_instance_name(config_dir);
     format!(
-        "# This is the default Ratspeak Reticulum config file.\n\n[reticulum]\nenable_transport = False\nshare_instance = Yes\ninstance_name = default\nshared_instance_port = {RATSPEAK_RNS_SHARED_INSTANCE_PORT}\ninstance_control_port = {RATSPEAK_RNS_INSTANCE_CONTROL_PORT}\n\n[logging]\nloglevel = 4\n\n[interfaces]\n"
+        "# This is the default Ratspeak Reticulum config file.\n\n[reticulum]\nenable_transport = False\nshare_instance = Yes\ninstance_name = {instance_name}\nshared_instance_port = {RATSPEAK_RNS_SHARED_INSTANCE_PORT}\ninstance_control_port = {RATSPEAK_RNS_INSTANCE_CONTROL_PORT}\n\n[logging]\nloglevel = 4\n\n[interfaces]\n"
     )
+}
+
+fn ratspeak_private_instance_name(config_dir: &Path) -> String {
+    let stable_path =
+        std::fs::canonicalize(config_dir).unwrap_or_else(|_| config_dir.to_path_buf());
+    let digest = rns_crypto::sha::sha256(stable_path.as_os_str().as_encoded_bytes());
+    format!("ratspeak-{}", hex::encode(&digest[..8]))
 }
 
 pub fn strip_legacy_default_auto_interface(content: &str) -> String {
@@ -208,6 +245,119 @@ impl PortSetting {
     fn is_legacy_value(self, legacy: u16) -> bool {
         matches!(self, Self::Value(port) if port == legacy)
     }
+
+    fn is_app_managed(self, legacy: u16, current: u16) -> bool {
+        matches!(self, Self::Missing)
+            || matches!(self, Self::Value(port) if port == legacy || port == current)
+    }
+}
+
+fn ratspeak_private_instance_name_update(content: &str, config_dir: &Path) -> Option<String> {
+    let mut lines = content.lines().map(str::to_string).collect::<Vec<_>>();
+    let (section_start, section_end) = reticulum_section_bounds(&lines)?;
+
+    let mut instance_name_line = None;
+    let mut instance_name = None;
+    let mut shared = PortSetting::Missing;
+    let mut shared_seen = false;
+    let mut control = PortSetting::Missing;
+    let mut control_seen = false;
+    let mut share_instance = None;
+    let mut explicit_shared_instance_type = false;
+    let mut explicit_rpc_key = false;
+
+    for (idx, line) in lines
+        .iter()
+        .enumerate()
+        .take(section_end)
+        .skip(section_start + 1)
+    {
+        let Some((key, value)) = parse_ini_key_value(line) else {
+            continue;
+        };
+        match key.as_str() {
+            "instance_name" => {
+                if instance_name_line.replace(idx).is_some() {
+                    return None;
+                }
+                instance_name = Some(value);
+            }
+            "shared_instance_port" => {
+                if shared_seen {
+                    return None;
+                }
+                shared_seen = true;
+                shared = value
+                    .parse::<u16>()
+                    .map(PortSetting::Value)
+                    .unwrap_or(PortSetting::Invalid);
+            }
+            "instance_control_port" => {
+                if control_seen {
+                    return None;
+                }
+                control_seen = true;
+                control = value
+                    .parse::<u16>()
+                    .map(PortSetting::Value)
+                    .unwrap_or(PortSetting::Invalid);
+            }
+            "share_instance" => {
+                if share_instance.is_some() {
+                    return None;
+                }
+                share_instance = Some(match value.trim().to_ascii_lowercase().as_str() {
+                    "yes" | "true" | "1" | "on" => true,
+                    "no" | "false" | "0" | "off" => false,
+                    _ => return None,
+                });
+            }
+            "shared_instance_type" => explicit_shared_instance_type = true,
+            "rpc_key" => explicit_rpc_key = true,
+            _ => {}
+        }
+    }
+
+    // A configured carrier, key, custom port pair, disabled sharing, or custom
+    // name is an explicit external/custom ownership choice. Only migrate the
+    // app-generated/default-like selector that previously collided with rnsd.
+    if explicit_shared_instance_type
+        || explicit_rpc_key
+        || share_instance == Some(false)
+        || !shared.is_app_managed(
+            LEGACY_RNS_SHARED_INSTANCE_PORT,
+            RATSPEAK_RNS_SHARED_INSTANCE_PORT,
+        )
+        || !control.is_app_managed(
+            LEGACY_RNS_INSTANCE_CONTROL_PORT,
+            RATSPEAK_RNS_INSTANCE_CONTROL_PORT,
+        )
+    {
+        return None;
+    }
+
+    match instance_name.as_deref() {
+        Some(name) if !name.eq_ignore_ascii_case("default") => return None,
+        Some(_) => {
+            let idx = instance_name_line?;
+            lines[idx] = replace_key_line(
+                &lines[idx],
+                "instance_name",
+                ratspeak_private_instance_name(config_dir),
+            );
+        }
+        None => {
+            lines.splice(
+                section_end..section_end,
+                [format!(
+                    "instance_name = {}",
+                    ratspeak_private_instance_name(config_dir)
+                )],
+            );
+        }
+    }
+
+    Some(join_config_lines(lines))
 }
 
 fn ratspeak_shared_instance_port_update(content: &str) -> Option<String> {
@@ -2130,7 +2280,7 @@ pub fn update_backbone_server_with_ifac(
 }
 
 pub fn set_transport_mode(config_dir: &Path, enable: bool) -> bool {
-    let content = read_config(config_dir).unwrap_or_else(ratspeak_default_config);
+    let content = read_config(config_dir).unwrap_or_else(|| ratspeak_default_config(config_dir));
     write_config(config_dir, &transport_mode_update(&content, enable))
 }
 
@@ -2220,6 +2370,28 @@ mod tests {
         content.lines().filter(|line| line.trim() == needle).count()
     }
 
+    fn reticulum_value<'a>(content: &'a str, wanted: &str) -> Option<&'a str> {
+        let mut in_reticulum = false;
+        for line in content.lines() {
+            if named_top_level_section(line, "reticulum") {
+                in_reticulum = true;
+                continue;
+            }
+            if in_reticulum && is_top_level_section(line) {
+                break;
+            }
+            if in_reticulum {
+                let Some((key, value)) = line.split_once('=') else {
+                    continue;
+                };
+                if key.trim().eq_ignore_ascii_case(wanted) {
+                    return Some(value.trim());
+                }
+            }
+        }
+        None
+    }
+
     #[test]
     fn write_config_creates_missing_config_dir() {
         let dir = temp_config_dir().join("identity").join("reticulum");
@@ -2284,12 +2456,131 @@ mod tests {
 
         assert_eq!(change, RatspeakRnsPortConfigChange::Created);
         let content = read_config(&dir).unwrap();
+        let expected_instance_name = ratspeak_private_instance_name(&dir);
         assert!(content.contains("shared_instance_port = 37430"));
         assert!(content.contains("instance_control_port = 37431"));
+        assert_eq!(
+            reticulum_value(&content, "instance_name"),
+            Some(expected_instance_name.as_str())
+        );
+        assert!(!content.contains("instance_name = default"));
         assert!(content.contains("[interfaces]"));
         assert!(!content.contains("[[Default Interface]]"));
         assert!(!content.contains("type = AutoInterface"));
         assert!(!dir.join("config.backup").exists());
+    }
+
+    #[test]
+    fn app_private_instance_names_are_stable_opaque_and_path_scoped() {
+        let first = temp_config_dir();
+        let second = temp_config_dir();
+
+        let first_name = ratspeak_private_instance_name(&first);
+        let second_name = ratspeak_private_instance_name(&second);
+
+        assert_eq!(first_name, ratspeak_private_instance_name(&first));
+        assert_ne!(first_name, second_name);
+        assert!(first_name.starts_with("ratspeak-"));
+        assert_eq!(first_name.len(), "ratspeak-".len() + 16);
+        assert!(
+            first_name["ratspeak-".len()..]
+                .chars()
+                .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+        );
+        assert!(!first_name.contains(first.file_name().unwrap().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn ensure_app_private_instance_migrates_default_selector_atomically() {
+        let dir = temp_config_dir();
+        write_config(
+            &dir,
+            "[reticulum]\nenable_transport = False\nshare_instance = Yes\ninstance_name = default\nshared_instance_port = 37430\ninstance_control_port = 37431\n\n[interfaces]\n",
+        );
+        let before = read_config(&dir).unwrap();
+
+        let change = ensure_app_private_shared_instance(&dir).unwrap();
+
+        assert_eq!(change, RatspeakRnsPortConfigChange::Updated);
+        let content = read_config(&dir).unwrap();
+        let expected = ratspeak_private_instance_name(&dir);
+        assert_eq!(
+            reticulum_value(&content, "instance_name"),
+            Some(expected.as_str())
+        );
+        assert!(!content.contains("instance_name = default"));
+        assert_eq!(
+            std::fs::read_to_string(dir.join("config.backup")).unwrap(),
+            before
+        );
+
+        assert_eq!(
+            ensure_app_private_shared_instance(&dir).unwrap(),
+            RatspeakRnsPortConfigChange::Unchanged
+        );
+        assert_eq!(read_config(&dir).unwrap(), content);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("config.backup")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn ensure_app_private_instance_inserts_selector_and_migrates_legacy_ports_once() {
+        let dir = temp_config_dir();
+        write_config(
+            &dir,
+            "[reticulum]\nenable_transport = False\nshare_instance = Yes\nshared_instance_port = 37428\ninstance_control_port = 37429\n\n[interfaces]\n",
+        );
+        let before = read_config(&dir).unwrap();
+
+        assert_eq!(
+            ensure_app_private_shared_instance(&dir).unwrap(),
+            RatspeakRnsPortConfigChange::Updated
+        );
+
+        let content = read_config(&dir).unwrap();
+        let expected = ratspeak_private_instance_name(&dir);
+        assert_eq!(
+            reticulum_value(&content, "instance_name"),
+            Some(expected.as_str())
+        );
+        assert_eq!(
+            reticulum_value(&content, "shared_instance_port"),
+            Some("37430")
+        );
+        assert_eq!(
+            reticulum_value(&content, "instance_control_port"),
+            Some("37431")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("config.backup")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn ensure_app_private_instance_preserves_explicit_shared_instance_ownership() {
+        let explicit_configs = [
+            "[reticulum]\nshare_instance = Yes\ninstance_name = operator-instance\nshared_instance_port = 37430\ninstance_control_port = 37431\n\n[interfaces]\n",
+            "[reticulum]\nshare_instance = Yes\ninstance_name = default\nshared_instance_type = tcp\nshared_instance_port = 37430\ninstance_control_port = 37431\n\n[interfaces]\n",
+            "[reticulum]\nshare_instance = Yes\ninstance_name = default\nrpc_key = 42424242\nshared_instance_port = 37430\ninstance_control_port = 37431\n\n[interfaces]\n",
+            "[reticulum]\nshare_instance = Yes\ninstance_name = default\nshared_instance_port = 39000\ninstance_control_port = 39001\n\n[interfaces]\n",
+            "[reticulum]\nshare_instance = No\ninstance_name = default\nshared_instance_port = 37430\ninstance_control_port = 37431\n\n[interfaces]\n",
+        ];
+
+        for config in explicit_configs {
+            let dir = temp_config_dir();
+            write_config(&dir, config);
+            let before = read_config(&dir).unwrap();
+
+            assert_eq!(
+                ensure_app_private_shared_instance(&dir).unwrap(),
+                RatspeakRnsPortConfigChange::Unchanged
+            );
+            assert_eq!(read_config(&dir).unwrap(), before);
+            assert!(!dir.join("config.backup").exists());
+        }
     }
 
     #[test]

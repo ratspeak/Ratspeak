@@ -1516,13 +1516,13 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         state.config.rns_config_dir.clone()
     };
     if state.config.uses_app_private_rns_config_dir() {
-        match rns_config::ensure_app_private_shared_instance_ports(&config_dir) {
+        match rns_config::ensure_app_private_shared_instance(&config_dir) {
             Ok(rns_config::RatspeakRnsPortConfigChange::Created) => {
                 tracing::info!(
                     shared_instance_port = ratspeak_core::config::RATSPEAK_RNS_SHARED_INSTANCE_PORT,
                     instance_control_port =
                         ratspeak_core::config::RATSPEAK_RNS_INSTANCE_CONTROL_PORT,
-                    "created Ratspeak app-private Reticulum config"
+                    "created isolated Ratspeak app-private Reticulum config"
                 );
             }
             Ok(rns_config::RatspeakRnsPortConfigChange::Updated) => {
@@ -1530,7 +1530,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     shared_instance_port = ratspeak_core::config::RATSPEAK_RNS_SHARED_INSTANCE_PORT,
                     instance_control_port =
                         ratspeak_core::config::RATSPEAK_RNS_INSTANCE_CONTROL_PORT,
-                    "updated Ratspeak app-private Reticulum shared-instance ports"
+                    "updated Ratspeak app-private Reticulum shared-instance isolation"
                 );
             }
             Ok(rns_config::RatspeakRnsPortConfigChange::Unchanged) => {}
