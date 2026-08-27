@@ -32,8 +32,8 @@ assert.deepStrictEqual(
 );
 assert.deepStrictEqual(
     JSON.parse(JSON.stringify(context._settingsNotificationActionForState('granted'))),
-    { hidden: true, disabled: false, label: 'Allowed' },
-    'granted permission needs no extra action'
+    { hidden: false, disabled: false, label: 'Review' },
+    'granted permission must keep device sound and haptics settings reachable'
 );
 assert.deepStrictEqual(
     JSON.parse(JSON.stringify(context._settingsNotificationActionForState('unavailable'))),

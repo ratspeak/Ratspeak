@@ -271,14 +271,13 @@ class MainActivity : TauriActivity() {
 
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
 
-            // `adjustResize` is the single owner of IME geometry. Applying the
-            // IME inset as root padding as well briefly lifts the whole WebView
-            // when a system keyboard (notably the Bluetooth PIN prompt) closes,
-            // leaving fixed bottom sheets above an empty strip until the next
-            // inset dispatch. CSS owns top/bottom safe areas; native padding is
-            // retained only for physical left/right cutouts.
-            view.setPadding(bars.left, 0, bars.right, 0)
+            // Keep the established Android keyboard pipeline used through
+            // v1.0.29: native padding moves the WebView immediately, while the
+            // original IME inset continues downstream so WebView can update
+            // its visual viewport during the same transition.
+            view.setPadding(bars.left, 0, bars.right, ime.bottom)
 
             // Convert physical pixels to CSS pixels (dp)
             val density = view.resources.displayMetrics.density

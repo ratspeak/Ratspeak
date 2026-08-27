@@ -1725,7 +1725,7 @@ document.addEventListener('DOMContentLoaded', function() {
 RS.listen('app_settings_updated', applyAppSettingsPayload);
 
 function _settingsNotificationActionForState(state) {
-    if (state === 'granted') return { hidden: true, disabled: false, label: 'Allowed' };
+    if (state === 'granted') return { hidden: false, disabled: false, label: 'Review' };
     if (state === 'prompt') return { hidden: false, disabled: false, label: 'Allow' };
     if (state === 'denied') return { hidden: false, disabled: false, label: 'Open Settings' };
     return { hidden: false, disabled: true, label: 'Unavailable' };

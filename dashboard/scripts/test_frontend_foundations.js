@@ -123,7 +123,7 @@ assert(!/<a class="bottom-bar-item"/.test(html), 'mobile primary navigation must
 var revisionMatches = Array.from(html.matchAll(/\/(?:static\/(?!js\/vendor)[^"?]+)\?v=([^"&]+)/g));
 assert(revisionMatches.length > 20, 'first-party asset revisions must be explicit');
 var revisions = new Set(revisionMatches.map(function(match) { return match[1]; }));
-assert.deepStrictEqual(Array.from(revisions), ['ui-20260815-7'],
+assert.deepStrictEqual(Array.from(revisions), ['ui-20260826-1'],
     'first-party CSS, fonts, and JS must share one build-level asset revision');
 
 var nav = read('static/js/nav.js');
@@ -195,6 +195,23 @@ assert(shared.includes('RS.ui.bindHelpPopovers = function'));
 assert(shared.includes('RS.ui.prefersKeyboardFocus = function'));
 assert(!read('static/js/setup.js').includes('tooltip-backdrop'),
     'setup help must not dim the entire screen with a bespoke backdrop');
+var setupKeyboardBlurred = 0;
+var setupKeyboardContext = {
+    document: {
+        getElementById: function(id) {
+            return id === 'setup-display-name'
+                ? { blur: function() { setupKeyboardBlurred += 1; } }
+                : null;
+        }
+    }
+};
+vm.createContext(setupKeyboardContext);
+vm.runInContext(functionSource(setupSource, 'dismissSetupKeyboard'), setupKeyboardContext);
+setupKeyboardContext.dismissSetupKeyboard();
+assert.strictEqual(setupKeyboardBlurred, 1,
+    'submitting the setup display name must dismiss the mobile keyboard before advancing');
+assert(setupSource.includes("e.key === 'Enter' && !e.isComposing"),
+    'setup must not submit while a mobile IME is still composing the display name');
 var channelsSource = read('static/js/channels.js');
 assert(channelsSource.includes('channel-consent-acknowledgements'),
     'public-channel safety confirmations must remain one coherent acknowledgement group');

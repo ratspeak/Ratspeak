@@ -43,6 +43,17 @@ impl NativeNotifier for TauriNotifier {
             .body(body)
             .auto_cancel();
 
+        #[cfg(target_os = "ios")]
+        {
+            // The plugin exposes iOS sounds as names rather than exposing
+            // `UNNotificationSound.default` directly. `default` intentionally
+            // names no bundled custom file, so UserNotifications follows its
+            // documented missing-file fallback and plays the system default.
+            // Without a sound object, iOS shows the banner silently. The OS
+            // still owns Sounds, Haptics, silent-mode and Focus decisions.
+            builder = builder.sound("default");
+        }
+
         if let Some(id) = notification_id {
             builder = builder.id(id);
         }

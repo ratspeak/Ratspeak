@@ -4,6 +4,11 @@ var setupRecoveryMnemonic = '';
 var setupConnectingDotsTimer = null;
 var setupConnectingDotCount = 1;
 
+function dismissSetupKeyboard() {
+    var input = document.getElementById('setup-display-name');
+    if (input && typeof input.blur === 'function') input.blur();
+}
+
 function requestSetupNotificationPermissionIfEnabled() {
     if (typeof isTauriMobile !== 'function' || !isTauriMobile()) return;
     if (typeof rsNotify === 'undefined' || !rsNotify.available()) return;
@@ -569,6 +574,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var finishBtn = document.getElementById('setup-finish-btn');
     if (finishBtn) {
         finishBtn.addEventListener('click', function() {
+            dismissSetupKeyboard();
             var displayName = document.getElementById('setup-display-name').value.trim();
             finishBtn.disabled = true;
             finishBtn.textContent = 'Connecting...';
@@ -610,7 +616,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var setupNameInput = document.getElementById('setup-display-name');
     if (setupNameInput && finishBtn) {
         setupNameInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
+            if (e.key === 'Enter' && !e.isComposing) {
                 e.preventDefault();
                 if (!finishBtn.disabled) finishBtn.click();
             }
