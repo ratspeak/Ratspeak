@@ -1,3 +1,5 @@
-- Restored mobile message actions on text, links, and media while keeping deliberate native text selection available from an elevated message, and improved the corresponding desktop mouse and keyboard interactions.
-- Made previously paired Bluetooth RNodes advertise automatically after a power cycle and reconnect without requiring pairing mode again.
-- Made Android RNode recovery show accurate waiting, connecting, initializing, and connected states without replacing an active retry, and fixed the pairing sheet jumping when the system PIN prompt closes.
+- Prevented app-managed shared Reticulum instances on Linux and Android from colliding with other local instances that use a different port, while preserving explicit operator configurations.
+- Restored mobile keyboard avoidance across Direct Messages, Channels, and input sheets, and made first-run setup dismiss the keyboard after submission.
+- Enabled iOS notification sounds when permitted by the user's device settings.
+- Hardened voice messages across Android versions, including short or silent recordings, first-time microphone permission, review and discard ownership, correct re-recorded previews, and visible waveform playback progress.
+- Aligned Channel receive-window handling with Reticulum 1.4.2 so far-future packets are rejected until a retransmission enters the valid window.

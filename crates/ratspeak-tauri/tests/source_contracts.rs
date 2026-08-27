@@ -5664,9 +5664,11 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "Restored mobile message actions on text, links, and media",
-        "Made previously paired Bluetooth RNodes advertise automatically",
-        "Made Android RNode recovery show accurate waiting",
+        "Prevented app-managed shared Reticulum instances on Linux and Android",
+        "Restored mobile keyboard avoidance across Direct Messages",
+        "Enabled iOS notification sounds when permitted",
+        "Hardened voice messages across Android versions",
+        "Aligned Channel receive-window handling with Reticulum 1.4.2",
     ];
 
     for workflow_path in [

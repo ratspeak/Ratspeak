@@ -5,6 +5,22 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+## [1.0.31] - 2026-08-26
+
+### Fixed
+
+- Prevented app-managed shared Reticulum instances on Linux and Android from
+  colliding with other local instances that use a different port, while
+  preserving explicit operator configurations.
+- Restored mobile keyboard avoidance across Direct Messages, Channels, and
+  input sheets, and made first-run setup dismiss the keyboard after submission.
+- Enabled iOS notification sounds when permitted by the user's device settings.
+- Hardened voice messages across Android versions, including short or silent
+  recordings, first-time microphone permission, review and discard ownership,
+  correct re-recorded previews, and visible waveform playback progress.
+- Aligned Channel receive-window handling with Reticulum 1.4.2 so far-future
+  packets are rejected until a retransmission enters the valid window.
+
 ## [1.0.30] - 2026-08-24
 
 ### Fixed
@@ -86,7 +102,8 @@ changes that materially affect how an artifact is reproduced.
 - Declared every first-party Ratspeak package non-publishable and recorded
   compatible versions alongside all sibling path dependencies.
 
-[Unreleased]: https://github.com/ratspeak/Ratspeak/compare/v1.0.30...HEAD
+[Unreleased]: https://github.com/ratspeak/Ratspeak/compare/v1.0.31...HEAD
+[1.0.31]: https://github.com/ratspeak/Ratspeak/compare/v1.0.30...v1.0.31
 [1.0.30]: https://github.com/ratspeak/Ratspeak/compare/v1.0.29...v1.0.30
 [1.0.29]: https://github.com/ratspeak/Ratspeak/compare/v1.0.28...v1.0.29
 [1.0.28]: https://github.com/ratspeak/Ratspeak/compare/v1.0.27...v1.0.28
