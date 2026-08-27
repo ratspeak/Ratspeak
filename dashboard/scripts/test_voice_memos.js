@@ -180,6 +180,11 @@ assert(oggOpus.includes('data.len() > VOICE_MEMO_MAX_AUDIO_BYTES'));
 assert(runtime.includes('struct NativeVoiceMemoSource') &&
     runtime.includes('NATIVE_PLAYBACK_REFILL_TARGET_MS'),
     'native playback must incrementally decode the bounded Ogg/Opus packet stream');
+assert(capture.includes('startup_prime_frames: startup_frames') &&
+    capture.includes('android_memo_needs_refill(submitted, played, self.startup_prime_frames)') &&
+    capture.includes('voice_memo_startup_prime_frames()?') &&
+    capture.includes('finish_voice_memo_input()?'),
+    'Android memo playback must prime from the effective native AudioTrack requirement');
 assert(runtime.includes('runtime.block_on(drive_native_playback(') &&
     runtime.includes('command_tx: mpsc::Sender<PlaybackCommand>'),
     'native mobile audio objects must remain inside their dedicated blocking worker');
@@ -194,8 +199,15 @@ assert(capture.includes('VOICE_MEMO_OUTPUT_BUFFER_MS') &&
     'iOS native memo output must use a fixed PCM ring without blocking its realtime callback');
 assert(capture.includes('start_voice_memo_playback') &&
     androidVoiceAudio.includes('startVoiceMemoPlayback') &&
-    androidVoiceAudio.includes('playbackHeadFrames'),
+    androidVoiceAudio.includes('playbackHeadFrames') &&
+    androidVoiceAudio.includes('voiceMemoStartupPrimeFrames') &&
+    androidVoiceAudio.includes('voiceMemoPlaybackStarted') &&
+    androidVoiceAudio.includes('finishVoiceMemoInput'),
     'Android native memo output must use the proven AudioTrack bridge and its playback clock');
+assert(androidVoiceAudio.includes('Build.VERSION.SDK_INT < Build.VERSION_CODES.S') &&
+    androidVoiceAudio.includes('RatspeakMobilePolicy.voiceMemoStartupFrames') &&
+    androidVoiceAudio.includes('trackSubmittedFrames += writtenFrames.toLong()'),
+    'pre-API31 and short memos must fill the actual startup threshold without extending their timeline');
 assert(runtime.includes('call_audio_reserved'));
 assert(runtime.includes('_platform_audio_session'));
 assert(commands.includes('VOICE_MEMO_START_UNAVAILABLE'));
@@ -218,8 +230,15 @@ assert(voice.includes("classes = ['is-recorded']") && voice.includes("classes.pu
     'the live waveform must distinguish captured signal from its single newest sample');
 assert(voice.includes("class=\"is-empty\""),
     'the live waveform must leave uncaptured timeline slots visibly empty');
-assert(/\.voice-memo-waveform span\.is-recorded\s*\{[\s\S]*?background:\s*var\(--status-error\)/.test(css),
+assert(/\.voice-memo-waveform\s*>\s*span\.is-recorded\s*\{[\s\S]*?background:\s*var\(--status-error\)/.test(css),
     'only recorded waveform samples should use the recording color');
+assert(voice.includes('setPlaybackWaveformProgress(waveform, draft.waveform || [], fraction)') &&
+    voice.includes("waveform.style.setProperty('--voice-playback-unplayed'") &&
+    voice.includes("voice-memo-waveform-layer voice-memo-waveform-played"),
+    'preview and message playback must share one stable elapsed-waveform treatment');
+assert(/\.voice-memo-waveform-played\s*\{[\s\S]*?clip-path:\s*inset\(0 var\(--voice-playback-unplayed\) 0 0\)/.test(css) &&
+    /\.voice-memo-waveform-played\s*>\s*span\s*\{[\s\S]*?background:\s*var\(--accent\)/.test(css),
+    'elapsed waveform audio must reveal the existing orange accent over the muted base');
 assert(/prefers-reduced-motion:[^)]*reduce[\s\S]*?voice-memo/.test(css),
     'voice animation must honor reduced motion');
 assert(/\.voice-memo-record-btn,[\s\S]*?width:\s*44px/.test(responsive),

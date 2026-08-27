@@ -18,6 +18,18 @@ import java.util.concurrent.TimeUnit
 
 class RatspeakMobilePolicyTest {
     @Test
+    fun voiceMemoStartupUsesCapacityBeforeApi31AndAcceptedThresholdAfterward() {
+        assertEquals(10_560, RatspeakMobilePolicy.voiceMemoStartupFrames(30, 10_560, 1_920))
+        assertEquals(1_920, RatspeakMobilePolicy.voiceMemoStartupFrames(31, 10_560, 1_920))
+        assertEquals(10_560, RatspeakMobilePolicy.voiceMemoStartupFrames(31, 10_560, 20_000))
+        assertEquals(1, RatspeakMobilePolicy.voiceMemoStartupFrames(31, 0, 0))
+
+        assertEquals(1_920L, RatspeakMobilePolicy.voiceMemoStartupPaddingFrames(10_560, 8_640))
+        assertEquals(0L, RatspeakMobilePolicy.voiceMemoStartupPaddingFrames(10_560, 11_520))
+        assertEquals(10_560L, RatspeakMobilePolicy.voiceMemoStartupPaddingFrames(10_560, -1))
+    }
+
+    @Test
     fun bleProductStateAbiSeparatesGattFromProtocolReadiness() {
         assertEquals(0, RatspeakNativeBridge.BLE_CONNECTING)
         assertEquals(1, RatspeakNativeBridge.BLE_WAITING_FOR_RADIO)

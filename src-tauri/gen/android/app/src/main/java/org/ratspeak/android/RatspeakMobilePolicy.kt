@@ -13,6 +13,25 @@ object RatspeakMobilePolicy {
     const val RNODE_MAX_ESCAPED_FRAME_BYTES = 508 * 2 + 3
     private const val MAX_ATT_PAYLOAD = 514
 
+    /** Pre-API31 AudioTrack has no public start-threshold control. */
+    fun voiceMemoStartupFrames(
+        sdkInt: Int,
+        capacityFrames: Int,
+        acceptedThresholdFrames: Int,
+    ): Int {
+        val capacity = capacityFrames.coerceAtLeast(1)
+        return if (sdkInt < 31) {
+            capacity
+        } else {
+            acceptedThresholdFrames.coerceIn(1, capacity)
+        }
+    }
+
+    fun voiceMemoStartupPaddingFrames(requiredFrames: Int, submittedFrames: Long): Long {
+        return (requiredFrames.coerceAtLeast(1).toLong() - submittedFrames.coerceAtLeast(0L))
+            .coerceAtLeast(0L)
+    }
+
     // Closed localhost-only protocol used by the native BLE bridge. The RNode
     // never sees this command: Kotlin emits it only toward Rust after a complete
     // KISS data frame has crossed an acknowledged GATT write boundary.

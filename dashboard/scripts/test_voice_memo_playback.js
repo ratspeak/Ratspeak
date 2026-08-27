@@ -8,7 +8,8 @@ var vm = require('vm');
 var childProcess = require('child_process');
 
 var androidScenario = process.argv.includes('--android');
-var platformName = androidScenario ? 'Android' : 'iOS';
+var desktopScenario = process.argv.includes('--desktop');
+var platformName = desktopScenario ? 'desktop' : androidScenario ? 'Android' : 'iOS';
 
 var root = path.join(__dirname, '..', '..');
 var source = fs.readFileSync(path.join(root, 'dashboard/static/js/voice_memos.js'), 'utf8');
@@ -25,6 +26,8 @@ var failNativeStart = false;
 var failNativeStopOnce = false;
 var nextLease = 1;
 var scheduledTimeouts = [];
+var rejectDesktopDecode = null;
+var resolveMetadataInspect = null;
 
 function classList() {
     var values = new Set();
@@ -48,16 +51,34 @@ var playButton = {
     },
     setAttribute: function(name, value) { this[name] = value; },
 };
+var waveformInnerHtml = '';
+var waveformInnerHtmlWrites = 0;
+var waveformStyle = Object.create(null);
 var waveform = {
-    innerHTML: '',
+    dataset: {},
+    style: {
+        setProperty: function(name, value) { waveformStyle[name] = value; },
+        removeProperty: function(name) { delete waveformStyle[name]; },
+    },
     tabIndex: -1,
     addEventListener: function(name, callback) {
         if (name === 'click') seekHandler = callback;
     },
     setAttribute: function(name, value) { this[name] = value; },
     getAttribute: function(name) { return this[name]; },
+    querySelector: function(selector) {
+        return selector === '.voice-memo-waveform-played' &&
+            waveformInnerHtml.includes('voice-memo-waveform-played') ? {} : null;
+    },
     getBoundingClientRect: function() { return { left: 0, width: 100 }; },
 };
+Object.defineProperty(waveform, 'innerHTML', {
+    get: function() { return waveformInnerHtml; },
+    set: function(value) {
+        waveformInnerHtml = value;
+        waveformInnerHtmlWrites += 1;
+    },
+});
 var time = { textContent: '' };
 var status = { textContent: '' };
 var player = {
@@ -72,6 +93,7 @@ var player = {
         return null;
     },
 };
+var visiblePlayer = player;
 var container = {
     querySelectorAll: function(selector) {
         return selector === '.voice-memo-player' ? [player] : [];
@@ -90,12 +112,14 @@ var context = {
         addEventListener: function() {},
         getElementById: function() { return null; },
         querySelector: function(selector) {
-            return selector.indexOf('memo-test') !== -1 ? player : null;
+            return selector.indexOf('memo-test') !== -1 ? visiblePlayer : null;
         },
     },
     navigator: androidScenario
         ? { userAgent: 'Android', platform: 'Linux armv8l', maxTouchPoints: 5 }
-        : { userAgent: 'iPhone', platform: 'iPhone', maxTouchPoints: 1 },
+        : desktopScenario
+            ? { userAgent: 'Macintosh', platform: 'MacIntel', maxTouchPoints: 0 }
+            : { userAgent: 'iPhone', platform: 'iPhone', maxTouchPoints: 1 },
     Promise: Promise,
     Uint8Array: Uint8Array,
     Object: Object,
@@ -119,7 +143,7 @@ var context = {
     CustomEvent: function() {},
     CSS: { escape: function(value) { return value; } },
     escapeHtml: function(value) { return value; },
-    isIOS: function() { return !androidScenario; },
+    isIOS: function() { return !androidScenario && !desktopScenario; },
     isAndroid: function() { return androidScenario; },
     showToast: function(message) { toasts.push(message); },
     addEventListener: function() {},
@@ -138,6 +162,9 @@ var context = {
             if (command === 'voice_memo_status') return Promise.resolve({ state: 'idle' });
             if (command === 'voice_memo_decode_data' || command === 'voice_memo_decode_stored') {
                 decodeCalls += 1;
+                if (desktopScenario) {
+                    return new Promise(function(_resolve, reject) { rejectDesktopDecode = reject; });
+                }
                 return Promise.resolve({
                     mime: 'audio/wav',
                     data_base64: 'AQIDBA==',
@@ -162,6 +189,9 @@ var context = {
                     return Promise.reject(new Error('temporary release failure'));
                 }
                 return Promise.resolve({ ok: true, released: true, position_ms: 1200 });
+            }
+            if (command === 'voice_memo_inspect_stored') {
+                return new Promise(function(resolve) { resolveMetadataInspect = resolve; });
             }
             return Promise.reject(new Error('Unexpected command: ' + command));
         },
@@ -191,6 +221,29 @@ async function runLatestTimeout() {
 }
 
 (async function() {
+    if (desktopScenario) {
+        context.RS.voiceMemos.registerDraft('memo-test', {
+            data_base64: 'container',
+            duration_ms: 4000,
+            waveform: [30, 80, 120],
+        });
+        context.RS.voiceMemos.hydratePlayers(container);
+        clickHandler();
+        var decodeReplacement = {
+            dataset: { voiceKey: 'memo-test', storedName: '', playbackState: 'idle' },
+            classList: classList(),
+            querySelector: player.querySelector,
+        };
+        visiblePlayer = decodeReplacement;
+        await flush();
+        assert(rejectDesktopDecode, 'desktop decode must remain pending for the rerender race');
+        rejectDesktopDecode(new Error('decode unavailable'));
+        await flush();
+        assert.equal(decodeReplacement.dataset.playbackState, 'error',
+            'an async decode failure must settle on the current rerendered player');
+        console.log('desktop voice memo async rerender tests passed');
+        return;
+    }
     assert(nativeEvents, platformName + ' must subscribe to exact native playback progress events');
     var unsupportedHtml = context.RS.voiceMemos.renderAudio({
         mode: 0x20,
@@ -220,7 +273,18 @@ async function runLatestTimeout() {
     assert(seekHandler, 'the player must bind its seek action');
 
     clickHandler();
+    var startReplacement = {
+        dataset: { voiceKey: 'memo-test', storedName: '', playbackState: 'idle' },
+        classList: classList(),
+        querySelector: player.querySelector,
+    };
+    visiblePlayer = startReplacement;
     await flush();
+    assert.equal(startReplacement.dataset.playbackState, 'starting',
+        'async startup must bind to the current rerendered player');
+    visiblePlayer = player;
+    delete player.dataset.voiceBound;
+    context.RS.voiceMemos.hydratePlayers(container);
     assert.equal(nativeStarts.length, 1, platformName + ' must start one native playback worker');
     assert.equal(nativeStarts[0].data_base64, 'container');
     assert.equal(nativeStarts[0].position_ms, 0);
@@ -253,12 +317,54 @@ async function runLatestTimeout() {
     assert(icon.innerHTML.includes('M6 5h4v14H6z'));
     assert.equal(waveform['aria-disabled'], 'false');
     assert.equal(waveform.tabIndex, 0);
+    assert.equal(waveformStyle['--voice-playback-unplayed'], '98%',
+        'native output position must reveal the matching orange waveform fraction');
+    var stableWaveformWrites = waveformInnerHtmlWrites;
+    nativeEvents({
+        lease_id: leaseId(1),
+        state: 'playing',
+        position_ms: 1200,
+        duration_ms: 4000,
+    });
+    await flush();
+    assert.equal(waveformStyle['--voice-playback-unplayed'], '70%');
+    assert.equal(waveformInnerHtmlWrites, stableWaveformWrites,
+        'playback progress must update one CSS value without rebuilding waveform bars');
 
     clickHandler();
     await flush();
     assert.equal(nativeStops[nativeStops.length - 1], leaseId(1),
         'pause must stop only the exact native playback lease');
     assert.equal(player.dataset.playbackState, 'paused');
+    var pausedHtml = context.RS.voiceMemos.renderAudio({
+        mode: 0x10,
+        supported: true,
+        voice_memo_key: 'memo-test',
+        voice_memo: { duration_ms: 4000, waveform: [30, 80, 120] },
+    }, { id: 'message-test' });
+    assert(pausedHtml.includes('aria-valuetext="0:01 of 0:04"'),
+        'a paused rerender must restore the elapsed accessibility value');
+    assert(pausedHtml.includes('<span class="voice-memo-player-time">0:01</span>'),
+        'a paused rerender must restore the elapsed visible time');
+    player.dataset.storedName = 'stored-voice.ogg';
+    context.RS.voiceMemos.releaseInactiveMedia(false);
+    var storedReplacement = {
+        dataset: { voiceKey: 'memo-test', storedName: 'stored-voice.ogg', playbackState: 'idle' },
+        classList: classList(),
+        querySelector: player.querySelector,
+    };
+    player = storedReplacement;
+    visiblePlayer = storedReplacement;
+    context.RS.voiceMemos.hydratePlayers(container);
+    assert(resolveMetadataInspect, 'stored metadata must rehydrate after noncritical media pressure');
+    resolveMetadataInspect({ duration_ms: 4000, waveform: [30, 80, 120] });
+    await flush();
+    assert.equal(player.dataset.playbackState, 'paused');
+    assert.equal(waveformStyle['--voice-playback-unplayed'], '70%');
+    assert.equal(waveform['aria-valuenow'], '30');
+    assert.equal(waveform['aria-valuetext'], '0:01 of 0:04');
+    assert.equal(waveform['aria-disabled'], 'false');
+    assert.equal(time.textContent, '0:01');
     seekHandler({ clientX: 50 });
     await flush();
     clickHandler();
@@ -294,6 +400,8 @@ async function runLatestTimeout() {
 
     clickHandler();
     await flush();
+    assert.equal(waveformStyle['--voice-playback-unplayed'], '100%',
+        'retrying an ended or failed memo must reset stale orange progress before playback');
     nativeEvents({ lease_id: leaseId(5), state: 'playing', position_ms: 80, duration_ms: 4000 });
     clickHandler();
     await flush();
@@ -324,8 +432,9 @@ async function runLatestTimeout() {
         'memory pressure must not prevent a retained outgoing draft from reaching its expiry');
 
     console.log(platformName + ' voice memo playback tests passed');
-    if (!androidScenario) {
+    if (!androidScenario && !desktopScenario) {
         childProcess.execFileSync(process.execPath, [__filename, '--android'], { stdio: 'inherit' });
+        childProcess.execFileSync(process.execPath, [__filename, '--desktop'], { stdio: 'inherit' });
     }
 })().catch(function(error) {
     console.error(error);

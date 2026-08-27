@@ -28,6 +28,10 @@ pub const VOICE_MEMO_MAX_AUDIO_BYTES: usize = 1_000_000;
 
 const PROFILE: Profile = Profile::QualityMedium;
 const FRAME_MS: u32 = 60;
+const VOICE_MEMO_MIN_DURATION_MS: u32 = 1_000;
+const MIN_FRAME_COUNT: usize = (VOICE_MEMO_MIN_DURATION_MS as usize).div_ceil(FRAME_MS as usize);
+const MINIMUM_END_TRIM_48K: u64 =
+    (MIN_FRAME_COUNT as u64 * FRAME_MS as u64 - VOICE_MEMO_MIN_DURATION_MS as u64) * 48;
 const MAX_FRAME_COUNT: usize = (VOICE_MEMO_MAX_DURATION_MS / FRAME_MS) as usize;
 const MAX_RECORDING_PACKET_BYTES: usize = 60;
 pub const VOICE_MEMO_MAX_GENERATED_OGG_BYTES: usize = 313_550;
@@ -35,9 +39,7 @@ const RECORDING_STOP_DRAIN_TIMEOUT: Duration = Duration::from_millis(180);
 const RECORDING_SESSION_PREFIX: &str = "vmr-";
 const PLAYBACK_LEASE_PREFIX: &str = "vmp-";
 #[cfg(target_os = "ios")]
-const NATIVE_PLAYBACK_REFILL_TARGET_MS: u32 = 1_500;
-#[cfg(target_os = "android")]
-const NATIVE_PLAYBACK_REFILL_TARGET_MS: u32 = 180;
+pub(crate) const NATIVE_PLAYBACK_REFILL_TARGET_MS: u32 = 1_500;
 
 pub type VoiceMemoResult<T> = Result<T, String>;
 
@@ -244,14 +246,14 @@ impl NativeVoiceMemoSource {
 
     #[cfg(any(target_os = "ios", target_os = "android"))]
     fn refill(&mut self, output: &crate::voice::NativeVoiceMemoOutput) -> VoiceMemoResult<()> {
-        while !self.exhausted && output.buffered_duration_ms() < NATIVE_PLAYBACK_REFILL_TARGET_MS {
+        while !self.exhausted && output.needs_refill() {
             let Some(frame) = self.next_decoded()? else {
                 break;
             };
             output.enqueue_frame(&frame, 0)?;
         }
         if self.exhausted {
-            output.finish_input();
+            output.finish_input()?;
         }
         Ok(())
     }
@@ -859,19 +861,45 @@ async fn drive_recording(actor: RecordingActor) {
                         let _ = reply.send(snapshot);
                     }
                     RecorderCommand::Stop { reply } => {
-                        stream.take();
-                        if capture_open && !paused {
-                            if let Err(error) = drain_capture_on_stop(
+                        let should_drain = should_drain_capture_on_stop(capture_open, paused);
+                        let drain_result = if should_drain {
+                            drain_capture_before_stream_stop(
                                 &mut capture_rx,
                                 &mut encoder,
                                 &mut frames,
                                 &mut waveform,
-                            ).await {
+                            )
+                            .await
+                        } else {
+                            Ok(())
+                        };
+                        // The callback-owned sender must remain alive until the
+                        // bounded final receive above completes. Dropping the
+                        // stream first made this only an empty-channel check.
+                        stream.take();
+                        if let Err(error) = drain_result {
+                            let _ = reply.send(Err(error));
+                            return;
+                        }
+                        if should_drain {
+                            if let Err(error) = drain_ready_capture(
+                                &mut capture_rx,
+                                &mut encoder,
+                                &mut frames,
+                                &mut waveform,
+                            ) {
                                 let _ = reply.send(Err(error));
                                 return;
                             }
                         }
-                        let result = finish_draft(frames, waveform);
+                        let result = pad_recording_to_minimum_duration(
+                            &mut encoder,
+                            &mut frames,
+                            &mut waveform,
+                        )
+                        .and_then(|end_trim_48k| {
+                            finish_draft_with_end_trim(frames, waveform, end_trim_48k)
+                        });
                         let _ = reply.send(result);
                         break;
                     }
@@ -971,6 +999,10 @@ fn update_status(
     snapshot
 }
 
+fn should_drain_capture_on_stop(capture_open: bool, paused: bool) -> bool {
+    capture_open && !paused
+}
+
 fn encode_captured_frame(
     encoder: &mut OpusEncoderState,
     frame: RawAudioFrame,
@@ -994,43 +1026,93 @@ fn encode_captured_frame(
     Ok(level)
 }
 
-async fn drain_capture_on_stop(
+async fn drain_capture_before_stream_stop(
     capture_rx: &mut mpsc::Receiver<RawAudioFrame>,
     encoder: &mut OpusEncoderState,
     frames: &mut Vec<Vec<u8>>,
     waveform: &mut Vec<u8>,
 ) -> VoiceMemoResult<()> {
+    drain_ready_capture(capture_rx, encoder, frames, waveform)?;
+    if frames.len() >= MAX_FRAME_COUNT {
+        return Ok(());
+    }
+
+    // Rescue at most one pending callback edge while the stream still owns
+    // its sender. This avoids both the old zero-frame teardown race and a
+    // fixed 180 ms recording tail after the user pressed Stop.
     let deadline = tokio::time::Instant::now() + RECORDING_STOP_DRAIN_TIMEOUT;
+    if let Ok(Some(frame)) = tokio::time::timeout_at(deadline, capture_rx.recv()).await {
+        encode_captured_frame(encoder, frame, frames, waveform)?;
+    }
+    drain_ready_capture(capture_rx, encoder, frames, waveform)
+}
+
+fn drain_ready_capture(
+    capture_rx: &mut mpsc::Receiver<RawAudioFrame>,
+    encoder: &mut OpusEncoderState,
+    frames: &mut Vec<Vec<u8>>,
+    waveform: &mut Vec<u8>,
+) -> VoiceMemoResult<()> {
     while frames.len() < MAX_FRAME_COUNT {
-        match tokio::time::timeout_at(deadline, capture_rx.recv()).await {
-            Ok(Some(frame)) => {
-                encode_captured_frame(encoder, frame, frames, waveform)?;
-            }
-            Ok(None) | Err(_) => break,
-        }
+        let Ok(frame) = capture_rx.try_recv() else {
+            break;
+        };
+        encode_captured_frame(encoder, frame, frames, waveform)?;
     }
     Ok(())
 }
 
-fn finish_draft(frames: Vec<Vec<u8>>, waveform: Vec<u8>) -> VoiceMemoResult<VoiceMemoDraft> {
+fn pad_recording_to_minimum_duration(
+    encoder: &mut OpusEncoderState,
+    frames: &mut Vec<Vec<u8>>,
+    waveform: &mut Vec<u8>,
+) -> VoiceMemoResult<u64> {
+    if frames.len() >= MIN_FRAME_COUNT {
+        return Ok(0);
+    }
+    while frames.len() < MIN_FRAME_COUNT {
+        let silence = RawAudioFrame::new(
+            PROFILE.channels(),
+            vec![0.0; PROFILE.sample_frames_per_packet() * usize::from(PROFILE.channels())],
+        )
+        .map_err(|error| format!("Could not prepare voice memo silence: {error}"))?;
+        encode_captured_frame(encoder, silence, frames, waveform)?;
+    }
+    Ok(MINIMUM_END_TRIM_48K)
+}
+
+fn finish_draft_with_end_trim(
+    frames: Vec<Vec<u8>>,
+    waveform: Vec<u8>,
+    end_trim_48k: u64,
+) -> VoiceMemoResult<VoiceMemoDraft> {
     if frames.is_empty() {
-        return Err("No microphone audio was captured. Try recording again.".to_string());
+        return Err("Voice memo contains no encoded audio".to_string());
     }
     if frames.len() != waveform.len() || frames.len() > MAX_FRAME_COUNT {
         return Err("Voice memo frame metadata is invalid".to_string());
     }
-    let duration_ms = duration_for_frames(frames.len());
     let serial = u32::from_le_bytes(
         Uuid::new_v4().as_bytes()[..4]
             .try_into()
             .expect("UUID serial slice"),
     );
-    let data = ogg_opus::mux_opus_packets(&frames, serial)?;
+    let data = ogg_opus::mux_opus_packets_with_timing(&frames, serial, 0, end_trim_48k, 0, 0)?;
+    let duration_ms = if end_trim_48k == 0 {
+        duration_for_frames(frames.len())
+    } else {
+        VOICE_MEMO_MIN_DURATION_MS
+    };
     Ok(VoiceMemoDraft {
         data,
         duration_ms,
         waveform,
     })
+}
+
+#[cfg(test)]
+fn finish_draft(frames: Vec<Vec<u8>>, waveform: Vec<u8>) -> VoiceMemoResult<VoiceMemoDraft> {
+    finish_draft_with_end_trim(frames, waveform, 0)
 }
 
 fn duration_for_frames(frame_count: usize) -> u32 {
@@ -1351,7 +1433,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_recording_is_not_sendable_but_one_frame_is_valid() {
+    fn raw_empty_draft_is_invalid_but_one_frame_is_valid() {
         assert!(finish_draft(Vec::new(), Vec::new()).is_err());
 
         let (frames, waveform) = synthetic_frames(1);
@@ -1360,6 +1442,50 @@ mod tests {
         let parsed = ogg_opus::parse_ogg_opus(&draft.data).unwrap();
         assert_eq!(parsed.metadata.duration_ms, FRAME_MS);
         assert_eq!(parsed.packets.len(), 1);
+    }
+
+    #[test]
+    fn stopped_recordings_pad_zero_or_short_capture_to_exactly_one_second() {
+        for captured_count in [0, 1, 16] {
+            let mut encoder = OpusEncoderState::new(PROFILE).unwrap();
+            let (mut frames, mut waveform) = synthetic_frames(captured_count);
+            let captured_packets = frames.clone();
+            let end_trim =
+                pad_recording_to_minimum_duration(&mut encoder, &mut frames, &mut waveform)
+                    .unwrap();
+            let draft = finish_draft_with_end_trim(frames, waveform, end_trim).unwrap();
+            let parsed = ogg_opus::parse_ogg_opus(&draft.data).unwrap();
+
+            assert_eq!(draft.duration_ms, VOICE_MEMO_MIN_DURATION_MS);
+            assert_eq!(parsed.metadata.duration_ms, VOICE_MEMO_MIN_DURATION_MS);
+            assert_eq!(parsed.metadata.end_trim_48k, MINIMUM_END_TRIM_48K);
+            assert_eq!(parsed.packets.len(), MIN_FRAME_COUNT);
+            assert_eq!(&parsed.packets[..captured_count], captured_packets);
+        }
+    }
+
+    #[test]
+    fn recording_at_or_above_minimum_keeps_every_real_packet_untrimmed() {
+        let mut encoder = OpusEncoderState::new(PROFILE).unwrap();
+        let (mut frames, mut waveform) = synthetic_frames(MIN_FRAME_COUNT);
+        let captured_packets = frames.clone();
+        let end_trim =
+            pad_recording_to_minimum_duration(&mut encoder, &mut frames, &mut waveform).unwrap();
+        let draft = finish_draft_with_end_trim(frames, waveform, end_trim).unwrap();
+        let parsed = ogg_opus::parse_ogg_opus(&draft.data).unwrap();
+
+        assert_eq!(end_trim, 0);
+        assert_eq!(draft.duration_ms, MIN_FRAME_COUNT as u32 * FRAME_MS);
+        assert_eq!(parsed.metadata.end_trim_48k, 0);
+        assert_eq!(parsed.packets, captured_packets);
+    }
+
+    #[test]
+    fn stopped_capture_drains_only_an_open_unpaused_microphone_generation() {
+        assert!(should_drain_capture_on_stop(true, false));
+        assert!(!should_drain_capture_on_stop(true, true));
+        assert!(!should_drain_capture_on_stop(false, false));
+        assert!(!should_drain_capture_on_stop(false, true));
     }
 
     #[tokio::test]
@@ -1372,7 +1498,9 @@ mod tests {
                 phase.sin() * 0.2
             })
             .collect::<Vec<_>>();
-        let frame = RawAudioFrame::new(PROFILE.channels(), samples).unwrap();
+        let frame = RawAudioFrame::new(PROFILE.channels(), samples.clone()).unwrap();
+        let after_stop_frame = RawAudioFrame::new(PROFILE.channels(), samples).unwrap();
+        let after_stop_tx = capture_tx.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(10)).await;
             capture_tx.send(frame).await.unwrap();
@@ -1381,11 +1509,20 @@ mod tests {
         let mut encoder = OpusEncoderState::new(PROFILE).unwrap();
         let mut frames = Vec::new();
         let mut waveform = Vec::new();
-        drain_capture_on_stop(&mut capture_rx, &mut encoder, &mut frames, &mut waveform)
+        drain_capture_before_stream_stop(&mut capture_rx, &mut encoder, &mut frames, &mut waveform)
             .await
             .unwrap();
 
         assert_eq!(frames.len(), 1);
         assert_eq!(waveform.len(), 1);
+
+        after_stop_tx.send(after_stop_frame).await.unwrap();
+        drain_ready_capture(&mut capture_rx, &mut encoder, &mut frames, &mut waveform).unwrap();
+        assert_eq!(
+            frames.len(),
+            2,
+            "the post-stream-drop queue edge must be retained"
+        );
+        assert_eq!(waveform.len(), 2);
     }
 }

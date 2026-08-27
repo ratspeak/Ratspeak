@@ -16,6 +16,7 @@
     var playbackOrder = [];
     var playbackBytes = 0;
     var playbackInFlightByKey = Object.create(null);
+    var retiredPlaybackKeys = Object.create(null);
     var metadataOrder = [];
     var draftExpiryTokenByKey = Object.create(null);
     var draftExpirySequence = 0;
@@ -36,6 +37,9 @@
     var playbackGeneration = 0;
     var playbackCoordinator = null;
     var previewPlaybackState = 'idle';
+    var draftPlaybackKey = '';
+    var draftPlaybackSequence = 0;
+    var DRAFT_PLAYBACK_PREFIX = '__voice_memo_draft__:';
     var pointerStartedRecording = false;
     var nativeMobilePlaybackByLease = Object.create(null);
     var START_FAILURE_MESSAGE = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
@@ -91,6 +95,18 @@
         var seconds = total % 60;
         return minutes + ':' + String(seconds).padStart(2, '0');
     }
+    function clampPlaybackFraction(value) {
+        return Math.max(0, Math.min(1, Number(value) || 0));
+    }
+    function playbackPositionText(durationMs, fraction, state) {
+        var clamped = clampPlaybackFraction(fraction);
+        if (state === 'idle' && clamped === 0) return formatDuration(durationMs);
+        return formatDuration(clamped * Math.max(0, Number(durationMs) || 0));
+    }
+    function playbackValueText(durationMs, fraction) {
+        var duration = Math.max(0, Number(durationMs) || 0);
+        return formatDuration(clampPlaybackFraction(fraction) * duration) + ' of ' + formatDuration(duration);
+    }
     function isAudio(audio) {
         return Number(audio && audio.mode) === 0x10;
     }
@@ -129,29 +145,51 @@
         }
         return result;
     }
-    function barsHtml(values, playedFraction) {
+    function waveformShape(values) {
         values = Array.isArray(values) ? values : [];
         var bars = values.length
             ? downsample(values, BAR_COUNT)
             : Array.from({ length: BAR_COUNT }, function() { return 0; });
-        return bars.map(function(value, index) {
+        return bars.map(function(value) {
             var normalized = Math.max(0, Math.min(255, Number(value) || 0));
             var height = 4 + Math.round(normalized / 255 * 22);
-            var played = typeof playedFraction === 'number' && ((index + 0.5) / BAR_COUNT) <= playedFraction;
-            return '<span' + (played ? ' class="is-played"' : '') + ' style="--voice-bar-height:' + height + 'px"></span>';
+            return height;
+        });
+    }
+    function playbackWaveformHtml(values) {
+        var shape = waveformShape(values);
+        var bars = shape.map(function(height) {
+            return '<span style="--voice-bar-height:' + height + 'px"></span>';
         }).join('');
+        return '<span class="voice-memo-waveform-layer voice-memo-waveform-base" aria-hidden="true">' + bars + '</span>' +
+            '<span class="voice-memo-waveform-layer voice-memo-waveform-played" aria-hidden="true">' + bars + '</span>';
+    }
+    function setPlaybackWaveformProgress(waveform, values, playedFraction) {
+        if (!waveform) return;
+        var shape = waveformShape(values);
+        var signature = shape.join(',');
+        if (waveform.dataset.voiceWaveformShape !== signature ||
+            !waveform.querySelector('.voice-memo-waveform-played')) {
+            waveform.innerHTML = playbackWaveformHtml(values);
+            waveform.dataset.voiceWaveformShape = signature;
+        }
+        var fraction = clampPlaybackFraction(playedFraction);
+        waveform.style.setProperty('--voice-playback-unplayed', ((1 - fraction) * 100) + '%');
+        waveform.dataset.playbackProgress = String(fraction);
     }
     function renderRecorderWaveform(values, live) {
         var waveform = el('voice-memo-waveform');
         if (!waveform) return;
         var capturing = live === true || live === 'paused';
         if (!capturing) {
-            waveform.innerHTML = downsample(values, BAR_COUNT).map(function(value) {
-                var height = 4 + Math.round(Math.max(0, Math.min(255, Number(value) || 0)) / 255 * 22);
-                return '<span style="--voice-bar-height:' + height + 'px"></span>';
-            }).join('');
+            waveform.classList.add('has-playback-progress');
+            setPlaybackWaveformProgress(waveform, values, 0);
             return;
         }
+        waveform.classList.remove('has-playback-progress');
+        delete waveform.dataset.voiceWaveformShape;
+        delete waveform.dataset.playbackProgress;
+        waveform.style.removeProperty('--voice-playback-unplayed');
 
         // A recording is a right-edge timeline, not a decorative animation:
         // new signal enters on the right, previous samples move left, and only
@@ -274,6 +312,19 @@
     function playWithAudioSession(audio) {
         return Promise.resolve(audio.play());
     }
+    function updatePreviewPlaybackProgress(fraction) {
+        var waveform = el('voice-memo-waveform');
+        if (!waveform || !draft) return;
+        waveform.classList.add('has-playback-progress');
+        setPlaybackWaveformProgress(waveform, draft.waveform || [], fraction);
+    }
+    function isDraftPlaybackKey(key) {
+        return String(key || '').indexOf(DRAFT_PLAYBACK_PREFIX) === 0;
+    }
+    function createDraftPlaybackKey(value) {
+        var token = String(value && value.staging_token || '').trim();
+        return DRAFT_PLAYBACK_PREFIX + (++draftPlaybackSequence) + (token ? ':' + token : '');
+    }
     function stopAnyPlayback() {
         playbackGeneration += 1;
         if (playbackCoordinator && playbackCoordinator.watchdog) clearTimeout(playbackCoordinator.watchdog);
@@ -285,7 +336,8 @@
         var previous = activeKey;
         activeKey = '';
         playbackCoordinator = null;
-        if (previous) updatePlayerProgress(previous, 0, false, 'idle');
+        if (isDraftPlaybackKey(previous) && previous === draftPlaybackKey) updatePreviewPlaybackProgress(0);
+        else if (previous) updatePlayerProgress(previous, 0, false, 'idle');
         syncPreviewPlayButton(false, 'idle');
         return stopping.catch(function(error) {
             window.RS.diag('warn', '[voice memo] playback release failed:', error);
@@ -368,7 +420,8 @@
         var generation = recordingGeneration;
         var sessionId = recordingSessionId;
         RS.invoke('voice_memo_pause', recordingCommandArgs({ paused: nextPaused })).then(function() {
-            if (generation !== recordingGeneration || sessionId !== recordingSessionId) return;
+            if (generation !== recordingGeneration || sessionId !== recordingSessionId ||
+                (recorderState !== 'recording' && recorderState !== 'paused')) return;
             paused = nextPaused;
             syncPauseButton();
             setRecorderState(paused ? 'paused' : 'recording');
@@ -392,7 +445,9 @@
                 return;
             }
             recordingSessionId = '';
+            if (draftPlaybackKey) evictPlaybackKey(draftPlaybackKey);
             draft = result;
+            draftPlaybackKey = createDraftPlaybackKey(result);
             paused = false;
             var timer = el('voice-memo-timer');
             if (timer) timer.textContent = formatDuration(result.duration_ms);
@@ -409,16 +464,19 @@
             showToast((error && error.message) || 'Could not finish the voice message.', 'toast-error', 4200);
         });
     }
-    function discardRecording() {
+    function discardRecording(options) {
         if (recordingDiscardPromise) return recordingDiscardPromise;
+        options = options || {};
         var generation = ++recordingGeneration;
         var sessionId = recordingSessionId;
         var pendingStart = recordingStartPromise;
+        var wasCapturing = recorderState === 'recording' || recorderState === 'paused' || recorderState === 'starting' || recorderState === 'stopping';
+        if (recorderState === 'review') setRecorderState('stopping');
         recordingSessionId = '';
         recordingSendAdmissionStarted = false;
         var playbackStopped = stopAnyPlayback();
-        var wasCapturing = recorderState === 'recording' || recorderState === 'paused' || recorderState === 'starting' || recorderState === 'stopping';
         var stagedToken = draft && String(draft.staging_token || '');
+        var retiringPlaybackKey = draftPlaybackKey;
         var request = stagedToken
             ? RS.invoke('cancel_attachment_stage', { token: stagedToken }).catch(function() {})
             : Promise.resolve();
@@ -437,13 +495,17 @@
         }
         var discardPromise = Promise.all([playbackStopped, request]).then(function() {
             if (generation !== recordingGeneration) return;
+            evictPlaybackKey(retiringPlaybackKey);
+            if (draftPlaybackKey === retiringPlaybackKey) draftPlaybackKey = '';
             draft = null;
             paused = false;
             recordingTarget = '';
             recordingOwner = null;
             setRecorderState('idle');
-            announce('Voice message discarded');
-            voiceHaptic('light');
+            if (options.report !== false) {
+                announce('Voice message discarded');
+                voiceHaptic('light');
+            }
         }).finally(function() {
             if (recordingDiscardPromise === discardPromise) recordingDiscardPromise = null;
         });
@@ -457,7 +519,11 @@
             discardRecording();
             return;
         }
-        stopAnyPlayback();
+        var playbackStopped = stopAnyPlayback();
+        var retiringPlaybackKey = draftPlaybackKey;
+        Promise.resolve(playbackStopped).then(function() {
+            evictPlaybackKey(retiringPlaybackKey);
+        });
         var toSend = draft;
         var generation = recordingGeneration;
         var sendOwner = recordingOwner;
@@ -476,6 +542,7 @@
         })).then(function() {
             if (generation !== recordingGeneration) return;
             draft = null;
+            if (draftPlaybackKey === retiringPlaybackKey) draftPlaybackKey = '';
             recordingTarget = '';
             recordingOwner = null;
             recordingSendAdmissionStarted = false;
@@ -485,6 +552,7 @@
         }).catch(function() {
             if (generation !== recordingGeneration) return;
             draft = null;
+            if (draftPlaybackKey === retiringPlaybackKey) draftPlaybackKey = '';
             recordingTarget = '';
             recordingOwner = null;
             recordingSendAdmissionStarted = false;
@@ -496,6 +564,8 @@
         if (recorderState !== 'sending' || !recordingSendAdmissionStarted) return false;
         recordingGeneration += 1;
         draft = null;
+        if (draftPlaybackKey) evictPlaybackKey(draftPlaybackKey);
+        draftPlaybackKey = '';
         paused = false;
         recordingTarget = '';
         recordingOwner = null;
@@ -527,6 +597,21 @@
         var index = playbackOrder.indexOf(key);
         if (index !== -1) playbackOrder.splice(index, 1);
         playbackOrder.push(key);
+    }
+    function evictPlaybackKey(key) {
+        key = String(key || '');
+        if (!key) return;
+        if (playbackInFlightByKey[key]) retiredPlaybackKeys[key] = true;
+        var item = playbackByKey[key];
+        if (item) {
+            playbackBytes = Math.max(0, playbackBytes - (item.bytes || 0));
+            if (item.url) {
+                try { URL.revokeObjectURL(item.url); } catch (_) {}
+            }
+            delete playbackByKey[key];
+        }
+        playbackOrder = playbackOrder.filter(function(candidate) { return candidate !== key; });
+        if (!playbackInFlightByKey[key]) delete retiredPlaybackKeys[key];
     }
     function trimPlaybackCache() {
         while (playbackOrder.length > MAX_PLAYBACK_ITEMS || playbackBytes > MAX_PLAYBACK_BYTES) {
@@ -567,6 +652,9 @@
         }
     }
     function ensurePlayback(key, source) {
+        if (retiredPlaybackKeys[key]) {
+            return Promise.reject(new Error('Voice message preview was retired'));
+        }
         if (playbackByKey[key]) {
             touchPlaybackKey(key);
             return Promise.resolve(playbackByKey[key]);
@@ -582,6 +670,8 @@
                 duration_ms: Number(nativeMetadata.duration_ms || 0),
                 waveform: nativeMetadata.waveform || [],
                 bytes: 0,
+                ui_state: 'idle',
+                ui_fraction: 0,
             };
             playbackByKey[key] = nativeItem;
             touchPlaybackKey(key);
@@ -590,7 +680,7 @@
         }
         var cacheGeneration = mediaCacheGeneration;
         var decode = decodeDraftOrStored(source).then(function(result) {
-            if (cacheGeneration !== mediaCacheGeneration) {
+            if (cacheGeneration !== mediaCacheGeneration || retiredPlaybackKeys[key]) {
                 throw new Error('Voice message decode was superseded');
             }
             var wavBytes = base64Bytes(result.data_base64);
@@ -601,6 +691,8 @@
                 duration_ms: result.duration_ms,
                 waveform: result.waveform || [],
                 bytes: wavBytes.byteLength,
+                ui_state: 'idle',
+                ui_fraction: 0,
             };
             playbackByKey[key] = item;
             playbackBytes += item.bytes;
@@ -609,6 +701,7 @@
             return item;
         }).finally(function() {
             if (playbackInFlightByKey[key] === decode) delete playbackInFlightByKey[key];
+            delete retiredPlaybackKeys[key];
         });
         playbackInFlightByKey[key] = decode;
         return decode;
@@ -768,11 +861,13 @@
             activeAudio = audio;
             activeKey = coordinator.key;
             playbackCoordinator = coordinator;
+            updatePreviewPlaybackProgress(audio.duration ? audio.currentTime / audio.duration : 0);
             syncPreviewPlayButton(false, coordinator.recoveryCount ? 'recovering' : 'starting');
             audio.addEventListener('timeupdate', function() {
                 if (!playbackAttemptIsCurrent(coordinator, audio)) return;
                 var timer = el('voice-memo-timer');
                 if (timer) timer.textContent = formatDuration(audio.currentTime * 1000);
+                updatePreviewPlaybackProgress(audio.duration ? audio.currentTime / audio.duration : 0);
                 if (!coordinator.progressProven && audio.currentTime > coordinator.baseline + 0.02) {
                     coordinator.progressProven = true;
                     clearPlaybackWatchdog(coordinator);
@@ -784,6 +879,7 @@
                 clearPlaybackWatchdog(coordinator);
                 var timer = el('voice-memo-timer');
                 if (timer) timer.textContent = formatDuration(coordinator.item.duration_ms);
+                updatePreviewPlaybackProgress(1);
                 syncPreviewPlayButton(false, 'ended');
                 activeAudio = null;
                 activeKey = '';
@@ -817,9 +913,13 @@
         });
     }
     function togglePreviewPlayback() {
-        if (!draft) return;
+        if (recorderState !== 'review' || !draft) return;
         if (previewPlaybackState === 'starting' || previewPlaybackState === 'recovering') return;
-        var key = '__voice_memo_draft__';
+        var key = draftPlaybackKey;
+        if (!key) {
+            key = createDraftPlaybackKey(draft);
+            draftPlaybackKey = key;
+        }
         var ready = preparePlaybackInteraction();
         if (activeAudio && activeKey === key) {
             var coordinator = playbackCoordinator;
@@ -904,15 +1004,20 @@
         var unsupported = !isAudio(audio) || audio.supported === false;
         var disabled = unsupported || (!storedName && !draftByKey[key]);
         var loading = !unsupported && disabled;
-        var initialState = unsupported ? 'error' : disabled ? 'loading' : 'idle';
-        var statusText = unsupported ? 'Unsupported audio' : disabled ? 'Loading' : '';
+        var playbackView = playbackByKey[key] || {};
+        var initialFraction = clampPlaybackFraction(playbackView.ui_fraction);
+        var initialState = unsupported ? 'error' : disabled ? 'loading' : playbackView.ui_state || 'idle';
+        var statusText = unsupported ? 'Unsupported audio' : disabled ? 'Loading' :
+            initialState === 'starting' ? 'Starting playback' :
+            initialState === 'recovering' || initialState === 'stalled' ? 'Restoring playback' :
+            initialState === 'error' ? 'Couldn\'t play' : '';
         return '<div class="voice-memo-player' + (loading ? ' is-loading' : '') + '" data-playback-state="' + initialState + '" data-voice-key="' + esc(key) + '" data-stored-name="' + esc(storedName) + '" data-audio-supported="' + (unsupported ? '0' : '1') + '">' +
             '<button class="voice-memo-player-play" type="button" aria-label="Play voice message"' + (disabled ? ' disabled' : '') + '>' +
                 '<svg class="voice-memo-player-icon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' + ICON_PLAY + '</svg>' +
                 '<span class="loading-spinner voice-memo-player-spinner" aria-hidden="true"></span>' +
             '</button>' +
-            '<div class="voice-memo-player-waveform" role="slider" tabindex="-1" aria-disabled="true" aria-label="Voice message position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">' + barsHtml(waveform || [], 0) + '</div>' +
-            '<span class="voice-memo-player-time">' + (duration ? formatDuration(duration) : unsupported ? '--:--' : 'Loading') + '</span>' +
+            '<div class="voice-memo-player-waveform" role="slider" tabindex="-1" aria-disabled="true" aria-label="Voice message position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + Math.round(initialFraction * 100) + '" aria-valuetext="' + esc(playbackValueText(duration, initialFraction)) + '" style="--voice-playback-unplayed:' + ((1 - initialFraction) * 100) + '%" data-playback-progress="' + initialFraction + '">' + playbackWaveformHtml(waveform || playbackView.waveform || []) + '</div>' +
+            '<span class="voice-memo-player-time">' + (duration ? playbackPositionText(duration, initialFraction, initialState) : unsupported ? '--:--' : 'Loading') + '</span>' +
             '<span class="voice-memo-player-status" role="status" aria-live="polite">' + statusText + '</span>' +
         '</div>';
     }
@@ -951,6 +1056,8 @@
     function setPlayerState(player, state, statusText) {
         if (!player) return;
         player.dataset.playbackState = state;
+        var playbackView = playbackByKey[player.dataset.voiceKey || ''];
+        if (playbackView) playbackView.ui_state = state;
         player.classList.toggle('is-loading', state === 'loading');
         player.classList.toggle('is-error', state === 'error');
         var icon = player.querySelector('.voice-memo-player-icon');
@@ -987,18 +1094,37 @@
     function setPlayerPlaying(player, playing) {
         setPlayerState(player, playing ? 'playing' : 'paused');
     }
+    function currentPlayerForKey(key) {
+        if (!key) return null;
+        return document.querySelector('.voice-memo-player[data-voice-key="' + cssEscape(key) + '"]');
+    }
+    function rebindCoordinatorPlayer(coordinator) {
+        if (!coordinator) return null;
+        var current = currentPlayerForKey(coordinator.key);
+        if (current) coordinator.player = current;
+        return current;
+    }
     function updatePlayerProgress(key, fraction, playing, explicitState) {
-        var player = document.querySelector('.voice-memo-player[data-voice-key="' + cssEscape(key) + '"]');
+        var clamped = clampPlaybackFraction(fraction);
+        var state = explicitState || (playing ? 'playing' : 'paused');
+        var playbackView = playbackByKey[key];
+        if (playbackView) {
+            playbackView.ui_fraction = clamped;
+            playbackView.ui_state = state;
+        }
+        var player = currentPlayerForKey(key);
         if (!player) return;
-        var item = playbackByKey[key] || metadataByStoredName[player.dataset.storedName] || draftByKey[key] || {};
+        var item = playbackView || metadataByStoredName[player.dataset.storedName] || draftByKey[key] || {};
         var waveform = player.querySelector('.voice-memo-player-waveform');
         if (waveform) {
-            waveform.innerHTML = barsHtml(item.waveform || [], fraction);
-            waveform.setAttribute('aria-valuenow', String(Math.round(fraction * 100)));
+            setPlaybackWaveformProgress(waveform, item.waveform || [], clamped);
+            waveform.setAttribute('aria-valuenow', String(Math.round(clamped * 100)));
             var durationMs = Number(item.duration_ms || 0);
-            waveform.setAttribute('aria-valuetext', formatDuration(fraction * durationMs) + ' of ' + formatDuration(durationMs));
+            waveform.setAttribute('aria-valuetext', playbackValueText(durationMs, clamped));
         }
-        setPlayerState(player, explicitState || (playing ? 'playing' : 'paused'));
+        var time = player.querySelector('.voice-memo-player-time');
+        if (time) time.textContent = playbackPositionText(item.duration_ms, clamped, state);
+        setPlayerState(player, state);
     }
     function cssEscape(value) {
         if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(value));
@@ -1023,6 +1149,8 @@
     function failPlaybackCoordinator(coordinator, message) {
         if (!coordinator || playbackCoordinator !== coordinator) return;
         releasePlaybackAttempt(coordinator);
+        rebindCoordinatorPlayer(coordinator);
+        if (playbackByKey[coordinator.key]) playbackByKey[coordinator.key].ui_state = 'error';
         setPlayerState(coordinator.player, 'error', message || 'Couldn\'t play');
         activeAudio = null;
         activeKey = '';
@@ -1031,6 +1159,7 @@
     function attachPlaybackEvents(coordinator, audio) {
         audio.addEventListener('timeupdate', function() {
             if (!playbackAttemptIsCurrent(coordinator, audio)) return;
+            rebindCoordinatorPlayer(coordinator);
             var fraction = audio.duration ? audio.currentTime / audio.duration : 0;
             if (!coordinator.progressProven && audio.currentTime > coordinator.baseline + 0.02) {
                 coordinator.progressProven = true;
@@ -1044,6 +1173,7 @@
         });
         audio.addEventListener('ended', function() {
             if (!playbackAttemptIsCurrent(coordinator, audio)) return;
+            rebindCoordinatorPlayer(coordinator);
             clearPlaybackWatchdog(coordinator);
             updatePlayerProgress(coordinator.key, 1, false, 'ended');
             var finalTime = coordinator.player.querySelector('.voice-memo-player-time');
@@ -1061,15 +1191,25 @@
         if (!coordinator || coordinator.generation !== playbackGeneration) return Promise.resolve(false);
         return createPlayback(coordinator.item).then(function(audio) {
             if (coordinator.generation !== playbackGeneration) return false;
+            if (!rebindCoordinatorPlayer(coordinator)) {
+                try { audio.pause(); } catch (_) {}
+                return false;
+            }
             coordinator.audio = audio;
             coordinator.progressProven = false;
             coordinator.baseline = Number(audio.currentTime || 0);
             activeAudio = audio;
             activeKey = coordinator.key;
             attachPlaybackEvents(coordinator, audio);
-            setPlayerState(coordinator.player, coordinator.recoveryCount ? 'recovering' : 'starting');
+            updatePlayerProgress(
+                coordinator.key,
+                audio.duration ? audio.currentTime / audio.duration : 0,
+                false,
+                coordinator.recoveryCount ? 'recovering' : 'starting',
+            );
             return playWithAudioSession(audio).then(function() {
                 if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
+                rebindCoordinatorPlayer(coordinator);
                 clearPlaybackWatchdog(coordinator);
                 coordinator.watchdog = setTimeout(function() {
                     if (!playbackAttemptIsCurrent(coordinator, audio) || coordinator.progressProven) return;
@@ -1106,11 +1246,13 @@
             var audio = activeAudio;
             ready.then(function(canPlay) {
                 if (!canPlay || !playbackAttemptIsCurrent(coordinator, audio)) return;
+                var currentPlayer = rebindCoordinatorPlayer(coordinator);
+                if (!currentPlayer) return;
                 if (audio.paused) {
                     coordinator.recoveryCount = 0;
                     coordinator.progressProven = false;
                     coordinator.baseline = Number(audio.currentTime || 0);
-                    setPlayerState(player, 'starting');
+                    setPlayerState(currentPlayer, 'starting');
                     playWithAudioSession(audio).then(function() {
                         if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
                         clearPlaybackWatchdog(coordinator);
@@ -1128,7 +1270,7 @@
                 } else {
                     audio.pause();
                     clearPlaybackWatchdog(coordinator);
-                    setPlayerState(player, 'paused');
+                    setPlayerState(currentPlayer, 'paused');
                 }
             });
             return;
@@ -1141,13 +1283,15 @@
             return stopped.then(function() { return ensurePlayback(key, source); });
         }).then(function(item) {
             if (!item || generation !== playbackGeneration) return null;
-            var time = player.querySelector('.voice-memo-player-time');
+            var currentPlayer = currentPlayerForKey(key);
+            if (!currentPlayer) return null;
+            var time = currentPlayer.querySelector('.voice-memo-player-time');
             if (time) time.textContent = formatDuration(item.duration_ms);
             playbackCoordinator = {
                 generation: generation,
                 key: key,
                 item: item,
-                player: player,
+                player: currentPlayer,
                 audio: null,
                 watchdog: 0,
                 progressProven: false,
@@ -1157,12 +1301,14 @@
             return startPlaybackAttempt(playbackCoordinator);
         }).catch(function(error) {
             if (generation !== playbackGeneration) return;
-            var unavailable = player.dataset.playbackState === 'loading';
-            if (unavailable) {
-                setPlayerState(player, 'error', 'Voice message unavailable');
+            var currentPlayer = currentPlayerForKey(key);
+            var currentCoordinator = playbackCoordinator && playbackCoordinator.generation === generation &&
+                playbackCoordinator.key === key ? playbackCoordinator : null;
+            if (!currentCoordinator) {
+                setPlayerState(currentPlayer, 'error', 'Voice message unavailable');
                 window.RS.diag('warn', '[voice memo] decode failed:', error);
             } else {
-                failPlaybackCoordinator(playbackCoordinator, 'Couldn\'t play');
+                failPlaybackCoordinator(currentCoordinator, 'Couldn\'t play');
                 window.RS.diag('warn', '[voice memo] playback failed:', error);
             }
         });
@@ -1171,6 +1317,39 @@
         var key = player.dataset.voiceKey || '';
         if (!activeAudio || activeKey !== key || !isFinite(activeAudio.duration)) return;
         activeAudio.currentTime = Math.max(0, Math.min(1, fraction)) * activeAudio.duration;
+    }
+    function restorePlayerPlaybackView(player, playbackView) {
+        if (!player || !playbackView) return;
+        var key = player.dataset.voiceKey || '';
+        if (playbackCoordinator && playbackCoordinator.key === key) {
+            playbackCoordinator.player = player;
+        }
+        var restoredFraction = clampPlaybackFraction(playbackView.ui_fraction);
+        var restoredWaveform = player.querySelector('.voice-memo-player-waveform');
+        setPlaybackWaveformProgress(
+            restoredWaveform,
+            playbackView.waveform || [],
+            restoredFraction,
+        );
+        setPlayerState(player, playbackView.ui_state || 'idle');
+        if (restoredWaveform) {
+            restoredWaveform.setAttribute(
+                'aria-valuenow',
+                String(Math.round(restoredFraction * 100)),
+            );
+            restoredWaveform.setAttribute(
+                'aria-valuetext',
+                playbackValueText(playbackView.duration_ms, restoredFraction),
+            );
+        }
+        var restoredTime = player.querySelector('.voice-memo-player-time');
+        if (restoredTime) {
+            restoredTime.textContent = playbackPositionText(
+                playbackView.duration_ms,
+                restoredFraction,
+                playbackView.ui_state || 'idle',
+            );
+        }
     }
     function hydrateMetadata(player) {
         var storedName = player.dataset.storedName || '';
@@ -1190,8 +1369,18 @@
             var waveform = current.querySelector('.voice-memo-player-waveform');
             var time = current.querySelector('.voice-memo-player-time');
             var play = current.querySelector('.voice-memo-player-play');
+            var playbackView = playbackByKey[current.dataset.voiceKey || ''];
+            if (playbackView) {
+                playbackView.duration_ms = Number(metadata.duration_ms || playbackView.duration_ms || 0);
+                if (Array.isArray(metadata.waveform) && metadata.waveform.length) {
+                    playbackView.waveform = metadata.waveform;
+                }
+                if (play) play.disabled = false;
+                restorePlayerPlaybackView(current, playbackView);
+                return;
+            }
             if (waveform) {
-                waveform.innerHTML = barsHtml(metadata.waveform || [], 0);
+                setPlaybackWaveformProgress(waveform, metadata.waveform || [], 0);
                 waveform.tabIndex = -1;
                 waveform.setAttribute('aria-disabled', 'true');
                 waveform.setAttribute('aria-valuetext', '0:00 of ' + formatDuration(metadata.duration_ms));
@@ -1201,7 +1390,9 @@
             setPlayerState(current, 'idle');
         }).catch(function() {
             if (cacheGeneration !== mediaCacheGeneration) return;
-            setPlayerState(player, 'error', 'Voice message unavailable');
+            var current = document.querySelector('.voice-memo-player[data-stored-name="' + cssEscape(storedName) + '"]');
+            if (!current || playbackByKey[current.dataset.voiceKey || '']) return;
+            setPlayerState(current, 'error', 'Voice message unavailable');
         });
     }
     function hydratePlayers(container) {
@@ -1210,6 +1401,11 @@
             if (player.dataset.voiceBound === '1') return;
             player.dataset.voiceBound = '1';
             if (player.dataset.audioSupported === '0') return;
+            var key = player.dataset.voiceKey || '';
+            var playbackView = playbackByKey[key];
+            if (playbackView) {
+                restorePlayerPlaybackView(player, playbackView);
+            }
             hydrateMetadata(player);
             var play = player.querySelector('.voice-memo-player-play');
             var waveform = player.querySelector('.voice-memo-player-waveform');
@@ -1239,6 +1435,12 @@
         if (!data || recorderState === 'idle' || recorderState === 'review') return;
         var eventSessionId = String(data.session_id || data.recording_session_id || '');
         if (!eventSessionId || !recordingSessionId || eventSessionId !== recordingSessionId) return;
+        // Stop is a monotonic, command-owned boundary. Android can deliver
+        // already-queued recording/paused/idle events while the native stop
+        // call is encoding and staging the final memo. Letting those events
+        // move the UI backwards clears the exact session before the valid
+        // stop result arrives, making the finished draft look stale.
+        if (recorderState === 'stopping') return;
         if (data.state === 'recording') {
             paused = false;
             recorderState = 'recording';
@@ -1312,9 +1514,13 @@
             if (document.hidden) stopAnyPlayback();
             if (document.hidden && recorderState !== 'idle') {
                 if (retireAdmittedSendUi()) return;
-                showToast('Voice message discarded while Ratspeak was in the background.', 'toast-warning', 4200);
-                alertVoice('Voice message discarded while Ratspeak was in the background');
-                discardRecording();
+                var permissionOnly = recorderState === 'requesting_permission' &&
+                    !recordingSessionId && !recordingStartPromise && !draft;
+                if (!permissionOnly) {
+                    showToast('Voice message discarded while Ratspeak was in the background.', 'toast-warning', 4200);
+                    alertVoice('Voice message discarded while Ratspeak was in the background');
+                }
+                discardRecording({ report: !permissionOnly });
             }
         });
         window.addEventListener('pagehide', function() {

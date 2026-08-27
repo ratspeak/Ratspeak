@@ -3101,6 +3101,7 @@ pub(crate) struct NativeVoiceMemoOutput {
 pub(crate) struct NativeVoiceMemoOutput {
     progress: Arc<NativeVoiceMemoOutputProgress>,
     source_sample_rate: u32,
+    startup_prime_frames: u64,
 }
 
 #[cfg(target_os = "ios")]
@@ -3145,6 +3146,10 @@ impl NativeVoiceMemoOutput {
         ((buffered_samples as u64 * 1_000) / samples_per_second).min(u64::from(u32::MAX)) as u32
     }
 
+    pub(crate) fn needs_refill(&self) -> bool {
+        self.buffered_duration_ms() < crate::voice_memo::NATIVE_PLAYBACK_REFILL_TARGET_MS
+    }
+
     pub(crate) fn enqueue_frame(&self, frame: &RawAudioFrame, skip_ms: u32) -> VoiceResult<()> {
         let mut samples = resample_output_frame(
             frame,
@@ -3172,8 +3177,9 @@ impl NativeVoiceMemoOutput {
         Ok(())
     }
 
-    pub(crate) fn finish_input(&self) {
+    pub(crate) fn finish_input(&self) -> VoiceResult<()> {
         self.progress.input_complete.store(true, Ordering::Release);
+        Ok(())
     }
 
     pub(crate) fn play(&self) -> VoiceResult<()> {
@@ -3214,11 +3220,10 @@ impl NativeVoiceMemoOutput {
         }
     }
 
-    pub(crate) fn buffered_duration_ms(&self) -> u32 {
+    pub(crate) fn needs_refill(&self) -> bool {
         let submitted = self.progress.submitted_samples.load(Ordering::Acquire);
         let played = android_voice_audio::played_frames().unwrap_or_default();
-        let buffered = submitted.saturating_sub(played);
-        ((buffered * 1_000) / u64::from(Self::OUTPUT_SAMPLE_RATE)).min(u64::from(u32::MAX)) as u32
+        android_memo_needs_refill(submitted, played, self.startup_prime_frames)
     }
 
     pub(crate) fn enqueue_frame(&self, frame: &RawAudioFrame, skip_ms: u32) -> VoiceResult<()> {
@@ -3241,8 +3246,10 @@ impl NativeVoiceMemoOutput {
         Ok(())
     }
 
-    pub(crate) fn finish_input(&self) {
+    pub(crate) fn finish_input(&self) -> VoiceResult<()> {
+        android_voice_audio::finish_voice_memo_input()?;
         self.progress.input_complete.store(true, Ordering::Release);
+        Ok(())
     }
 
     pub(crate) fn play(&self) -> VoiceResult<()> {
@@ -3251,6 +3258,9 @@ impl NativeVoiceMemoOutput {
         }
         if !android_voice_audio::is_active().unwrap_or(false) {
             return Err("Android voice message output did not start".to_string());
+        }
+        if !android_voice_audio::voice_memo_playback_started().unwrap_or(false) {
+            return Err("Android voice message playback clock did not start".to_string());
         }
         Ok(())
     }
@@ -3355,6 +3365,16 @@ fn finite_output_finished(
 ) -> bool {
     input_complete.load(Ordering::Acquire)
         && rendered_samples >= submitted_samples.load(Ordering::Acquire)
+}
+
+#[cfg(any(target_os = "android", test))]
+fn android_memo_needs_refill(submitted: u64, played: u64, startup_prime_frames: u64) -> bool {
+    const STEADY_REFILL_FRAMES: u64 = 48_000 * 180 / 1_000;
+    if played == 0 {
+        submitted < startup_prime_frames.max(1)
+    } else {
+        submitted.saturating_sub(played) < STEADY_REFILL_FRAMES
+    }
 }
 
 #[cfg(any(target_os = "ios", test))]
@@ -3495,6 +3515,11 @@ pub(crate) fn start_voice_memo_output(
         output_sample_rate,
         NativeVoiceMemoOutput::OUTPUT_CHANNELS,
     )?;
+    let startup_frames = android_voice_audio::voice_memo_startup_prime_frames()?;
+    if startup_frames == 0 {
+        android_voice_audio::stop();
+        return Err("Android voice message output reported no startup capacity".to_string());
+    }
     Ok(NativeVoiceMemoOutput {
         progress: Arc::new(NativeVoiceMemoOutputProgress {
             submitted_samples: AtomicU64::new(0),
@@ -3504,6 +3529,7 @@ pub(crate) fn start_voice_memo_output(
             duration_ms,
         }),
         source_sample_rate,
+        startup_prime_frames: startup_frames,
     })
 }
 
@@ -4225,6 +4251,62 @@ mod android_voice_audio {
         })
     }
 
+    pub fn voice_memo_startup_prime_frames() -> VoiceResult<u64> {
+        with_env(|env| {
+            let class = find_app_class(env, CLASS_NAME)?;
+            let frames = env
+                .call_static_method(class, "voiceMemoStartupPrimeFrames", "()J", &[])
+                .map_err(|e| {
+                    clear_exception(env);
+                    format!("RatspeakVoiceAudio.voiceMemoStartupPrimeFrames: {e}")
+                })?
+                .j()
+                .map_err(|e| {
+                    format!("RatspeakVoiceAudio.voiceMemoStartupPrimeFrames result: {e}")
+                })?;
+            Ok(frames.max(0) as u64)
+        })
+    }
+
+    pub fn voice_memo_playback_started() -> VoiceResult<bool> {
+        with_env(|env| {
+            let class = find_app_class(env, CLASS_NAME)?;
+            env.call_static_method(class, "voiceMemoPlaybackStarted", "()Z", &[])
+                .map_err(|e| {
+                    clear_exception(env);
+                    format!("RatspeakVoiceAudio.voiceMemoPlaybackStarted: {e}")
+                })?
+                .z()
+                .map_err(|e| format!("RatspeakVoiceAudio.voiceMemoPlaybackStarted result: {e}"))
+        })
+    }
+
+    pub fn finish_voice_memo_input() -> VoiceResult<()> {
+        with_env(|env| {
+            let class = find_app_class(env, CLASS_NAME)?;
+            let ok = env
+                .call_static_method(class, "finishVoiceMemoInput", "()Z", &[])
+                .map_err(|e| {
+                    clear_exception(env);
+                    format!("RatspeakVoiceAudio.finishVoiceMemoInput: {e}")
+                })?
+                .z()
+                .map_err(|e| format!("RatspeakVoiceAudio.finishVoiceMemoInput result: {e}"))?;
+            if ok {
+                Ok(())
+            } else {
+                let detail = last_error(env, class);
+                if detail.is_empty() {
+                    Err("Android voice message output could not finish startup priming".to_string())
+                } else {
+                    Err(format!(
+                        "Android voice message output could not finish startup priming: {detail}"
+                    ))
+                }
+            }
+        })
+    }
+
     pub fn played_frames() -> VoiceResult<u64> {
         with_env(|env| {
             let class = find_app_class(env, CLASS_NAME)?;
@@ -4835,5 +4917,13 @@ mod tests {
             &submitted_samples,
             1_296
         ));
+    }
+
+    #[test]
+    fn android_memo_refill_uses_exact_frames_without_rounding_deadlock() {
+        assert!(android_memo_needs_refill(10_560, 0, 10_561));
+        assert!(!android_memo_needs_refill(10_561, 0, 10_561));
+        assert!(android_memo_needs_refill(9_639, 1_000, 10_561));
+        assert!(!android_memo_needs_refill(9_640, 1_000, 10_561));
     }
 }

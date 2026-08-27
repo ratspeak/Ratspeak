@@ -47,6 +47,7 @@ pub(crate) struct ParsedOggOpus {
     pub(crate) packets: Vec<Vec<u8>>,
 }
 
+#[cfg(test)]
 pub(crate) fn mux_opus_packets(
     packets: &[Vec<u8>],
     stream_serial: u32,

@@ -1219,8 +1219,24 @@ body.image-viewer-open {
     gap: 2px;
     overflow: hidden;
 }
-.voice-memo-waveform span,
-.voice-memo-player-waveform span {
+.voice-memo-waveform.has-playback-progress,
+.voice-memo-player-waveform {
+    position: relative;
+    display: block;
+    --voice-playback-unplayed: 100%;
+}
+.voice-memo-waveform-layer {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: stretch;
+    gap: 2px;
+    overflow: hidden;
+    pointer-events: none;
+}
+.voice-memo-waveform:not(.has-playback-progress) > span,
+.voice-memo-waveform-layer > span {
     width: 3px;
     min-width: 2px;
     height: var(--voice-bar-height, 4px);
@@ -1231,20 +1247,24 @@ body.image-viewer-open {
     opacity: 0.48;
     transition: height 90ms linear, opacity var(--transition-fast), background var(--transition-fast);
 }
-.voice-memo-waveform span.is-empty {
+.voice-memo-waveform-played {
+    clip-path: inset(0 var(--voice-playback-unplayed) 0 0);
+    transition: clip-path 80ms linear;
+}
+.voice-memo-waveform-played > span {
+    background: var(--accent);
+    opacity: 0.95;
+}
+.voice-memo-waveform > span.is-empty {
     opacity: 0.22;
 }
-.voice-memo-waveform span.is-recorded {
+.voice-memo-waveform > span.is-recorded {
     background: var(--status-error);
     opacity: 0.66;
 }
-.voice-memo-waveform span.is-live {
+.voice-memo-waveform > span.is-live {
     opacity: 0.96;
     animation: voice-memo-live-head 1.15s ease-in-out infinite;
-}
-.voice-memo-player-waveform span.is-played {
-    background: var(--accent);
-    opacity: 0.95;
 }
 .voice-memo-timer,
 .voice-memo-player-time {
@@ -1390,10 +1410,6 @@ body.image-viewer-open {
     background: var(--accent);
     color: var(--on-accent);
 }
-.voice-memo-player[data-playback-state="ended"] .voice-memo-player-waveform span {
-    background: var(--accent);
-    opacity: 0.95;
-}
 .voice-memo-player-play:disabled {
     cursor: wait;
     opacity: 1;
@@ -1425,14 +1441,15 @@ body.image-viewer-open {
 }
 
 @media (prefers-reduced-motion: reduce) {
-    .voice-memo-waveform span,
-    .voice-memo-player-waveform span {
+    .voice-memo-waveform:not(.has-playback-progress) > span,
+    .voice-memo-waveform-layer,
+    .voice-memo-waveform-layer > span {
         transition: none;
     }
     .voice-memo-live-dot {
         box-shadow: none;
     }
-    .voice-memo-waveform span.is-live {
+    .voice-memo-waveform > span.is-live {
         animation: none;
     }
 }

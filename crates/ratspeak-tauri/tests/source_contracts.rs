@@ -112,6 +112,10 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
     let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    let android_activity = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .expect("Android activity");
     let build_css = read_source(root.join("dashboard/build-css.sh")).expect("css build script");
     let runtime = read_source(root.join("crates/ratspeak-runtime/src/channels.rs"))
         .expect("channels runtime");
@@ -340,6 +344,34 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(keyboard_detection.contains("'view-chat-detail'"));
     assert!(keyboard_detection.contains("'view-channel-detail'"));
     assert!(keyboard_detection.contains("keyboardOpen && inConversationDetail"));
+    assert!(keyboard_detection.contains("'--visual-viewport-height'"));
+    assert!(keyboard_detection.contains("'--visual-viewport-top'"));
+    assert!(keyboard_detection.contains("'--keyboard-inset'"));
+    assert!(keyboard_detection.contains("vv.pageTop"));
+    assert!(keyboard_detection.contains("bodyRect.top"));
+    assert!(
+        keyboard_detection.contains("el.id === 'lxmf-input' || el.id === 'channel-message-input'")
+    );
+    assert!(!keyboard_detection.contains("scheduleViewportSettle"));
+    assert!(keyboard_detection.contains("active.closest('.bottom-sheet.open')"));
+    assert!(keyboard_detection.contains("'data-keyboard-platform'"));
+    assert!(!nav_js.contains("function _androidImeViewportMetrics"));
+    assert!(!nav_js.contains("window.ratspeakApplyNativeImeGeometry"));
+    assert!(nav_js.contains("if (isIOS()) window.addEventListener('resize', onResize)"));
+    assert!(nav_js.contains("// Preserve the Android pipeline used through v1.0.29:"));
+    assert!(nav_js.contains("style.setProperty('--app-height', currentHeight + 'px')"));
+    assert!(nav_js.contains("if (isIOS()) onResize();"));
+    assert!(android_activity.contains("view.setPadding(bars.left, 0, bars.right, ime.bottom)"));
+    assert!(!android_activity.contains("appOwnsVisibleIme"));
+    assert!(!android_activity.contains("inputMethod.isActive(webView)"));
+    assert!(!android_activity.contains("WindowInsetsCompat.Builder(insets)"));
+    assert!(responsive_css.contains(
+        "html[data-keyboard-platform=\"ios\"].keyboard-open body.view-chat-detail .app-layout"
+    ));
+    assert!(responsive_css.contains(
+        "html[data-keyboard-platform=\"ios\"].keyboard-open body.view-channel-detail .app-layout"
+    ));
+    assert!(responsive_css.contains("top: var(--visual-viewport-top, 0px);"));
     assert!(tauri_events.contains("function _decodeChannelNotificationRoute"));
     assert!(tauri_events.contains("window.channelsOpenNotificationRoute"));
 
@@ -1355,7 +1387,7 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
-    assert!(index.contains("/static/style.css?v=ui-20260815-7"));
+    assert!(index.contains("/static/style.css?v=ui-20260826-1"));
     assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
     assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
     assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
@@ -2359,7 +2391,7 @@ fn android_service_is_not_sticky_without_runtime_ownership() {
 }
 
 #[test]
-fn android_ime_geometry_has_one_owner_and_cannot_lift_fixed_sheets() {
+fn android_ime_pipeline_matches_the_proven_v1_0_29_contract() {
     let root = repo_root();
     let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
         .expect("Android manifest");
@@ -2367,11 +2399,21 @@ fn android_ime_geometry_has_one_owner_and_cannot_lift_fixed_sheets() {
         root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
     )
     .expect("Android MainActivity");
+    let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("navigation source");
 
     assert!(manifest.contains(r#"android:windowSoftInputMode="adjustResize""#));
-    assert!(activity.contains("view.setPadding(bars.left, 0, bars.right, 0)"));
-    assert!(!activity.contains("WindowInsetsCompat.Type.ime()"));
-    assert!(!activity.contains("if (ime.bottom > 0) ime.bottom else 0"));
+    assert!(activity.contains("WindowInsetsCompat.Type.ime()"));
+    assert!(activity.contains("view.setPadding(bars.left, 0, bars.right, ime.bottom)"));
+    assert!(!activity.contains("appOwnsVisibleIme"));
+    assert!(!activity.contains("inputMethod.isActive(webView)"));
+    assert!(!activity.contains("WindowInsetsCompat.Builder(insets)"));
+    assert!(!activity.contains(".setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)"));
+    assert!(!activity.contains("WindowInsetsAnimationCompat.Callback"));
+    assert!(!activity.contains("window.ratspeakApplyNativeImeGeometry"));
+    assert!(!nav.contains("function _androidImeViewportMetrics"));
+    assert!(!nav.contains("window.ratspeakApplyNativeImeGeometry"));
+    assert!(nav.contains("// Preserve the Android pipeline used through v1.0.29:"));
+    assert!(nav.contains("style.setProperty('--app-height', currentHeight + 'px')"));
 }
 
 #[test]
@@ -4945,6 +4987,9 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(voice_audio.contains("AudioAttributes.USAGE_MEDIA"));
     assert!(voice_audio.contains("fun startVoiceMemoPlayback("));
     assert!(voice_audio.contains("fun playbackHeadFrames(): Long"));
+    assert!(voice_audio.contains("fun voiceMemoStartupPrimeFrames(): Long"));
+    assert!(voice_audio.contains("fun voiceMemoPlaybackStarted(): Boolean"));
+    assert!(voice_audio.contains("fun finishVoiceMemoInput(): Boolean"));
     assert!(voice_audio.contains("AudioAttributes.CONTENT_TYPE_SPEECH"));
     assert!(voice_audio.contains("AudioFormat.ENCODING_PCM_FLOAT"));
     assert!(voice_audio.contains("AudioFormat.ENCODING_PCM_16BIT"));
@@ -4952,7 +4997,23 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(voice_audio.contains("AudioTrack.WRITE_BLOCKING"));
     assert!(voice_audio.contains("AudioTrack.WRITE_NON_BLOCKING"));
     assert!(voice_audio.contains("setStartThresholdInFrames"));
-    assert!(voice_audio.contains("if (written > 0 && starting)"));
+    assert!(voice_audio.contains("RatspeakMobilePolicy.voiceMemoStartupFrames("));
+    assert!(voice_audio.contains("active.startThresholdInFrames"));
+    assert!(voice_audio.contains("trackSubmittedFrames += writtenFrames.toLong()"));
+    let memo_encoding_order = voice_audio
+        .split("if (usage == AudioAttributes.USAGE_MEDIA)")
+        .nth(1)
+        .and_then(|source| source.split("} else {").next())
+        .expect("voice memo encoding preference");
+    let memo_pcm16 = memo_encoding_order
+        .find("AudioFormat.ENCODING_PCM_16BIT")
+        .expect("voice memos prefer PCM16");
+    let memo_float = memo_encoding_order
+        .find("AudioFormat.ENCODING_PCM_FLOAT")
+        .expect("voice memos retain float fallback");
+    assert!(memo_pcm16 < memo_float);
+    assert!(voice_audio.contains("if (written > 0)"));
+    assert!(voice_audio.contains("maybeStartAfterWrite(active)"));
     assert!(!voice_audio.contains("created.play()"));
     let first_write = voice_audio
         .find("val written = if (trackEncoding")
@@ -5176,6 +5237,7 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(notifier_rs.contains("NativeNotificationKind::Call => \"ratspeak_calls\""));
     assert!(notifier_rs.contains("| ratspeak_core::NativeNotificationKind::Channel"));
     assert!(notifier_rs.contains("builder.action_type_id(thread_id)"));
+    assert!(notifier_rs.contains("builder = builder.sound(\"default\")"));
     let tauri_events =
         read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events");
     assert!(tauri_events.contains("notification.actionTypeId"));
@@ -5236,10 +5298,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("/static/js/state.js?v=ui-20260815-7"));
-    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260815-7"));
-    assert!(index.contains("/static/js/lxmf.js?v=ui-20260815-7"));
-    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260815-7"));
+    assert!(index.contains("/static/js/state.js?v=ui-20260826-1"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260826-1"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260826-1"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260826-1"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));
@@ -6032,6 +6094,7 @@ fn settings_information_architecture_groups_one_off_settings() {
     assert!(general_panel.contains(r#"id="settings-row-notifications""#));
     assert!(general_panel.contains(r#"id="desktop-notifications-toggle""#));
     assert!(general_panel.contains(r#"id="settings-notification-action""#));
+    assert!(general_panel.contains("sound and haptics follow device settings"));
     assert!(general_panel.contains(r#"id="settings-row-keep-connected""#));
     assert!(general_panel.contains(r#"<span class="settings-row-label">Block List</span>"#));
     assert!(general_panel.contains(
@@ -8647,7 +8710,10 @@ fn voice_memos_share_lxst_capture_and_use_first_class_lxmf_audio() {
     assert!(voice.contains("pub(crate) fn start_microphone_capture"));
     assert!(voice.contains("MICROPHONE_CAPTURE_RETRY_DELAYS"));
     assert!(memo.contains("RECORDING_STOP_DRAIN_TIMEOUT"));
-    assert!(memo.contains("drain_capture_on_stop("));
+    assert!(memo.contains("drain_capture_before_stream_stop("));
+    assert!(memo.contains("pad_recording_to_minimum_duration("));
+    assert!(memo.contains("VOICE_MEMO_MIN_DURATION_MS: u32 = 1_000"));
+    assert!(memo.contains("MINIMUM_END_TRIM_48K"));
     assert!(voice.contains("MICROPHONE_CONFIG_ATTEMPT_LIMIT"));
     assert!(voice.contains("fn select_input_configs("));
     assert!(voice.contains("android_microphone_candidate_sample_rates"));
@@ -8741,7 +8807,18 @@ fn voice_memos_share_lxst_capture_and_use_first_class_lxmf_audio() {
     assert!(voice_memos.contains(
         "if (!eventSessionId || !recordingSessionId || eventSessionId !== recordingSessionId) return;"
     ));
+    assert!(voice_memos.contains("if (recorderState === 'stopping') return;"));
+    assert!(
+        voice_memos
+            .contains("(recorderState !== 'recording' && recorderState !== 'paused')) return;")
+    );
     assert!(voice_memos.contains("cacheGeneration !== mediaCacheGeneration"));
+    assert!(voice_memos.contains("var DRAFT_PLAYBACK_PREFIX = '__voice_memo_draft__:';"));
+    assert!(voice_memos.contains("draftPlaybackKey = createDraftPlaybackKey(result);"));
+    assert!(voice_memos.contains("evictPlaybackKey(retiringPlaybackKey);"));
+    assert!(voice_memos.contains("retiredPlaybackKeys[key]"));
+    assert!(voice_memos.contains("var permissionOnly = recorderState === 'requesting_permission'"));
+    assert!(voice_memos.contains("discardRecording({ report: !permissionOnly });"));
     assert!(voice_memos.contains("var token = ++draftExpirySequence"));
     assert!(voice_memos.contains("leaseId = stoppingLease"));
     assert!(voice_memos.contains("nativeMobilePlaybackByLease[stoppingLease] = handle"));
@@ -8755,6 +8832,9 @@ fn voice_memos_share_lxst_capture_and_use_first_class_lxmf_audio() {
     assert!(voice_memos.contains("classes = ['is-recorded']"));
     assert!(voice_memos.contains("classes.push('is-live')"));
     assert!(voice_memos.contains("class=\"is-empty\""));
+    assert!(voice_memos.contains("function setPlaybackWaveformProgress("));
+    assert!(voice_memos.contains("'--voice-playback-unplayed'"));
+    assert!(voice_memos.contains("updatePreviewPlaybackProgress(audio.duration"));
     assert!(voice_memos.contains("typeof isIOS === 'function' && isIOS()"));
     assert!(!voice_memos.contains("voice-memo-player-speed"));
     assert!(!voice_memos.contains("playbackSpeed"));

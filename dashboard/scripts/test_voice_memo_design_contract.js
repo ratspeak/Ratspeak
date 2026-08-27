@@ -74,8 +74,17 @@ for (var playbackState of [
 assert(messaging.includes('.voice-memo-player-spinner') &&
     messaging.includes('.voice-memo-player-status'),
     'player state transitions need canonical spinner and concise status hooks');
+assert(messaging.includes('.voice-memo-waveform-layer') &&
+    messaging.includes('.voice-memo-waveform-played') &&
+    messaging.includes('clip-path: inset(0 var(--voice-playback-unplayed) 0 0)') &&
+    messaging.includes('background: var(--accent)'),
+    'playback must reveal one stable orange waveform over the muted base');
+assert(!messaging.includes('will-change: clip-path'),
+    'the small progress clip must not retain a persistent compositor allocation');
 assert(/prefers-reduced-motion:[^)]*reduce[\s\S]*?voice-memo/.test(messaging),
     'the signal-head treatment must remain still under reduced motion');
+assert(/prefers-reduced-motion:[^)]*reduce[\s\S]*?\.voice-memo-waveform-layer[\s\S]*?transition:\s*none/.test(messaging),
+    'elapsed waveform progress must not animate when reduced motion is requested');
 
 assert(/\.voice-memo-field\s*\{[\s\S]*?grid-template-columns:\s*var\(--touch-target\)/.test(responsive),
     'mobile recorder tracks must use the canonical touch target');
