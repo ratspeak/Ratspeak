@@ -7,6 +7,8 @@
 Ratspeak is a native desktop and mobile client for E2EE conversations over
 Reticulum, a new type of mesh networking. Ratspeak gives you messaging, file/image sharing, voice calls and voice messages (experimental), Channels, LoRa capability, WiFi, BLE, TCP, offline messaging, turn-based games, and more.
 
+[Click here for iOS TestFlight Public Beta!](https://testflight.apple.com/join/AzzW4Jg6)
+
 [Docs](https://docs.ratspeak.org/) |
 [Build from source](https://docs.ratspeak.org/docs/reference/building-from-source) |
 [rsReticulum](https://github.com/ratspeak/rsReticulum) |
