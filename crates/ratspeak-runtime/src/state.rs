@@ -541,6 +541,8 @@ pub struct AppState {
     pub announce_history: RwLock<IndexMap<String, serde_json::Value>>,
     pub alerts: Mutex<Vec<serde_json::Value>>,
     pub rns: RwLock<Option<RnsManager>>,
+    pub(crate) network_session: RwLock<crate::network_ownership::NetworkSession>,
+    pub(crate) network_credentials: Arc<dyn crate::network_secrets::CredentialStore>,
     /// Process-monotonic source for opaque installed-RNS ownership tokens.
     /// Identity-scoped resets deliberately do not rewind it.
     rnode_activity_session_generation: AtomicU64,
@@ -733,6 +735,8 @@ pub struct AppState {
     /// Serializes read-modify-write edits to the active Reticulum config file.
     pub rns_config_lock: Mutex<()>,
     pub identity_switch_lock: IdentitySwitchLock,
+    /// Serializes AutoInterface ownership against identity/network replacement.
+    pub auto_interface_lock: Arc<tokio::sync::Mutex<()>>,
     pub ble_peer_enable_lock: tokio::sync::Mutex<()>,
     pub identity_session_generation: AtomicU64,
     /// Secret handed to the next protected-identity load (hardware PIN or
@@ -845,6 +849,8 @@ impl AppState {
             announce_history: RwLock::new(IndexMap::new()),
             alerts: Mutex::new(Vec::new()),
             rns: RwLock::new(None),
+            network_session: RwLock::new(crate::network_ownership::NetworkSession::default()),
+            network_credentials: Arc::new(crate::network_secrets::NativeCredentialStore),
             rnode_activity_session_generation: AtomicU64::new(0),
             channels: RwLock::new(None),
             channel_hub: RwLock::new(None),
@@ -934,6 +940,7 @@ impl AppState {
             lxmf_limit_1mb: AtomicBool::new(initial_lxmf_limit_1mb),
             rns_config_lock: Mutex::new(()),
             identity_switch_lock: IdentitySwitchLock::new(),
+            auto_interface_lock: Arc::new(tokio::sync::Mutex::new(())),
             ble_peer_enable_lock: tokio::sync::Mutex::new(()),
             identity_session_generation: AtomicU64::new(0),
             hw_pending_pin: Mutex::new(None),

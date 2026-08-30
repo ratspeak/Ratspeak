@@ -21,6 +21,8 @@ pub mod lxmf;
 pub mod lxmf_persistence;
 pub mod messaging;
 pub mod mobile_platform;
+pub mod network_ownership;
+mod network_secrets;
 pub mod propagation;
 mod rnode_activity;
 pub mod rns;
@@ -717,6 +719,7 @@ pub async fn shutdown_ble_peer_for_exit() {
 /// Activity reset failure leaves the current protocol runtime untouched.
 pub async fn restart_rns_lxmf(state: Arc<AppState>) -> Result<(), ActivityRecorderError> {
     let _identity_lifecycle = state.identity_switch_lock.lock().await;
+    let _auto_ownership = state.auto_interface_lock.lock().await;
     shutdown_rns_lxmf(&state).await?;
     tokio::time::sleep(Duration::from_millis(300)).await;
     if let Ok(mut sig) = state.session_shutdown.write() {
@@ -927,6 +930,13 @@ fn reconcile_persisted_transport_mode_for_startup(state: &AppState, config_dir: 
 /// Soft-shutdown: stop RNS/LXMF tasks without re-init. App stays open.
 /// Activity reset must acknowledge before any protocol teardown begins.
 pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityRecorderError> {
+    shutdown_rns_lxmf_inner(state, true).await
+}
+
+pub(crate) async fn shutdown_rns_lxmf_inner(
+    state: &Arc<AppState>,
+    relock_identity: bool,
+) -> Result<(), ActivityRecorderError> {
     {
         let _activity_control = state.activity_control_lock.lock().await;
         state.bump_activity_boundary_generation();
@@ -1008,7 +1018,7 @@ pub async fn shutdown_rns_lxmf(state: &Arc<AppState>) -> Result<(), ActivityReco
         *lxmf = None;
     }
     // All signing loops are down — re-lock the token (drops the on-card PIN cache).
-    if let Some(id) = hw_identity {
+    if let Some(id) = hw_identity.filter(|_| relock_identity) {
         id.lock();
     }
     state.clear_identity_scoped_runtime_state();
@@ -1259,6 +1269,11 @@ pub async fn start_channel_hub_service(state: &Arc<AppState>) -> bool {
 }
 
 pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
+    state
+        .network_session
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .error = None;
     propagation::seed_static_nodes(&state);
 
     let ratspeak_dir = data_dir.join(".ratspeak");
@@ -1316,7 +1331,16 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         }
     });
     let active_is_protected = lock_kind.is_some();
-    if active_is_protected && hw_pin.is_none() {
+    let retained_identity = state
+        .network_session
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .retained_identity
+        .clone()
+        .filter(|(identity, _)| {
+            Some(hex::encode(identity.hash)).as_deref() == preferred_identity_hash.as_deref()
+        });
+    if active_is_protected && hw_pin.is_none() && retained_identity.is_none() {
         let hash = preferred_identity_hash.clone().unwrap_or_default();
         let kind = lock_kind.unwrap_or("hardware");
         tracing::info!(identity = %short_id(&hash), kind, "identity locked — awaiting unlock secret");
@@ -1329,7 +1353,15 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
         return;
     }
 
-    match lxmf::LxmfManager::load_or_create(&data_dir, preferred_identity_hash.as_deref(), hw_pin) {
+    let loaded = match retained_identity {
+        Some((identity, hardware)) => {
+            lxmf::LxmfManager::from_loaded_identity(&data_dir, identity, hardware)
+        }
+        None => {
+            lxmf::LxmfManager::load_or_create(&data_dir, preferred_identity_hash.as_deref(), hw_pin)
+        }
+    };
+    match loaded {
         Ok(mut mgr) => {
             state.set_hw_locked(None);
             state.set_hw_last_error(None);
@@ -1542,11 +1574,24 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
             }
         }
     }
-    reconcile_persisted_transport_mode_for_startup(&state, &config_dir);
-    #[cfg(target_os = "android")]
-    enforce_android_single_ble_rnode_for_startup(&state, &config_dir);
-    #[cfg(target_os = "android")]
-    migrate_android_usb_selectors_for_startup(&state, &config_dir).await;
+    let policy = match network_ownership::startup_policy(&state, &config_dir).await {
+        Ok(policy) => policy,
+        Err(error) => {
+            network_ownership::fail_startup(&state, error);
+            return;
+        }
+    };
+    if !matches!(
+        policy,
+        rns_runtime::shared_instance::InstancePolicy::SharedClient(_)
+    ) && state.config.uses_app_private_rns_config_dir()
+    {
+        reconcile_persisted_transport_mode_for_startup(&state, &config_dir);
+        #[cfg(target_os = "android")]
+        enforce_android_single_ble_rnode_for_startup(&state, &config_dir);
+        #[cfg(target_os = "android")]
+        migrate_android_usb_selectors_for_startup(&state, &config_dir).await;
+    }
     let config_str = config_dir.to_string_lossy().to_string();
 
     // Android sandbox blocks /tmp — keep UDS under data_dir/cache.
@@ -1557,7 +1602,14 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
     std::fs::create_dir_all(&socket_dir).ok();
     let socket_dir = Some(socket_dir);
 
-    match rns::RnsManager::init(&config_str, socket_dir, state.is_foreground.clone()).await {
+    match rns::RnsManager::init_with_policy(
+        &config_str,
+        socket_dir,
+        state.is_foreground.clone(),
+        policy,
+    )
+    .await
+    {
         Ok(rns_mgr) => {
             let registration_info = if let Ok(mut lxmf) = state.lxmf.lock() {
                 if let Some(mgr) = lxmf.as_mut() {
@@ -2884,9 +2936,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 });
             }
         }
-        Err(_) => {
+        Err(error) => {
             tracing::warn!(reason = "initialization_failed", "Failed to initialize RNS");
-            tracing::warn!("Starting in degraded mode — network features unavailable");
+            network_ownership::fail_startup(&state, error.to_string());
+            return;
         }
     }
 
@@ -5119,13 +5172,16 @@ async fn push_stats_once(state: &AppState) {
     let Some(handle) = handle else {
         return;
     };
-    let mode = handle.instance_mode;
 
     let (iface_result, path_result, link_result) = tokio::join!(
         handle.query_control(rns_transport::messages::TransportQuery::GetInterfaceStats),
         crate::transport_observation::authoritative_path_table(&handle),
         handle.query_control(rns_transport::messages::TransportQuery::GetLinkCount),
     );
+
+    if !is_current_network_runtime(state, &handle) {
+        return;
+    }
 
     let iface_stats = match iface_result {
         Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(s)) => {
@@ -5166,13 +5222,12 @@ async fn push_stats_once(state: &AppState) {
         })
         .unwrap_or(false);
 
-    let connected = any_online
-        && (mode == rns_runtime::reticulum::InstanceMode::Client
-            || mode == rns_runtime::reticulum::InstanceMode::Shared);
+    let connected = any_online && network_ownership::shared_connection_ready(&handle);
 
     let stats = json!({
         "timestamp": now,
         "connected": connected,
+        "network_ownership": network_ownership::snapshot(state),
         "interface_stats": iface_stats,
         "path_table": path_table,
         "path_index": path_index,
@@ -5184,6 +5239,22 @@ async fn push_stats_once(state: &AppState) {
 
     state.set_last_stats(stats.clone());
     state.emit_to_all("stats_update", stats);
+}
+
+// Ownership can change without changing identity. Fence observations by the
+// actual transport channel, not only the profile generation.
+fn is_current_network_runtime(
+    state: &AppState,
+    handle: &rns_runtime::reticulum::ReticulumHandle,
+) -> bool {
+    state.rns.read().ok().is_some_and(|rns| {
+        rns.as_ref().is_some_and(|manager| {
+            manager
+                .handle
+                .transport_tx
+                .same_channel(&handle.transport_tx)
+        })
+    }) && !handle.shutdown.is_triggered()
 }
 
 fn cache_lxmf_route_hops_from_path_table(
@@ -5400,7 +5471,6 @@ async fn poll_stats_loop(
         let Some(handle) = handle else {
             continue;
         };
-        let mode = handle.instance_mode;
 
         // Python-parity control surfaces proxy to the shared instance in
         // client mode; recent announces stay local dashboard state.
@@ -5411,6 +5481,10 @@ async fn poll_stats_loop(
                 handle.query_control(rns_transport::messages::TransportQuery::GetLinkCount),
                 handle.query_transport(rns_transport::messages::TransportQuery::GetRecentAnnounces),
             );
+
+            if !is_current_network_runtime(&state, &handle) {
+                continue;
+            }
 
             let iface_stats = match iface_result {
                 Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(s)) => {
@@ -5881,13 +5955,12 @@ async fn poll_stats_loop(
                 })
                 .unwrap_or(false);
 
-            let connected = any_online
-                && (mode == rns_runtime::reticulum::InstanceMode::Client
-                    || mode == rns_runtime::reticulum::InstanceMode::Shared);
+            let connected = any_online && network_ownership::shared_connection_ready(&handle);
 
             json!({
                 "timestamp": now,
                 "connected": connected,
+                "network_ownership": network_ownership::snapshot(&state),
                 "interface_stats": iface_stats,
                 "path_table": path_table,
                 "path_index": path_index,
@@ -5902,6 +5975,7 @@ async fn poll_stats_loop(
             .identity_session_generation
             .load(std::sync::atomic::Ordering::SeqCst)
             != poll_generation
+            || !is_current_network_runtime(&state, &handle)
         {
             continue;
         }

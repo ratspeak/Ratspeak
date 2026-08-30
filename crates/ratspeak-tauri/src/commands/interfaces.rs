@@ -699,12 +699,7 @@ fn persisted_transport_network_type(state: &AppState) -> String {
 }
 
 fn local_transport_runtime_allowed(state: &AppState) -> bool {
-    state
-        .rns
-        .read()
-        .ok()
-        .and_then(|r| r.as_ref().map(|mgr| mgr.handle.instance_mode))
-        .is_none_or(|mode| mode != rns_runtime::reticulum::InstanceMode::Client)
+    ratspeak_runtime::network_ownership::local_interfaces_allowed(state)
 }
 
 fn configured_transport_enabled_for_interfaces(state: &AppState, ifaces: &Value) -> bool {
@@ -797,6 +792,8 @@ pub async fn set_transport_mode(
     state: State<'_, Arc<AppState>>,
     args: TransportModeArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let mode = normalize_transport_mode(&args.mode)
         .ok_or_else(|| AppError::bad_request("transport mode must be off | auto | on"))?;
     let config_dir = active_rns_config_dir(&state);
@@ -3107,6 +3104,9 @@ async fn teardown_live_interface_by_name(
     rnode_port: Option<&str>,
     operation_lease: Option<&InterfaceLifecycleOperationLease>,
 ) -> bool {
+    if !ratspeak_runtime::network_ownership::local_interfaces_allowed(state) {
+        return false;
+    }
     #[cfg(not(any(
         feature = "ble",
         feature = "serial",
@@ -3920,6 +3920,12 @@ async fn finish_interface_replace(
     old_runtime: EditableInterfaceConfig,
     new_runtime: EditableInterfaceConfig,
 ) {
+    let _ownership = state.auto_interface_lock.lock().await;
+    if !state.is_current_activity_origin_fence(activity_fence)
+        || !ratspeak_runtime::network_ownership::local_interfaces_allowed(&state)
+    {
+        return;
+    }
     let old_name = old_runtime.name().to_string();
     emit_op_status_broadcast(
         &state,
@@ -4180,6 +4186,13 @@ pub async fn pause_interface(
     state: State<'_, Arc<AppState>>,
     args: InterfaceLifecycleArgs,
 ) -> AppResult<Value> {
+    let generation = state.current_identity_session_generation();
+    let auto_guard = state.auto_interface_lock.clone().lock_owned().await;
+    if state.current_identity_session_generation() != generation {
+        return Err(AppError::bad_request("The identity changed; try again."));
+    }
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&args.name, 64);
@@ -4226,6 +4239,7 @@ pub async fn pause_interface(
     let st = Arc::clone(&state_arc);
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
+        let _auto_guard = auto_guard;
         let iface_name = name;
         if operation_lease
             .as_ref()
@@ -4284,6 +4298,13 @@ pub async fn resume_interface(
     state: State<'_, Arc<AppState>>,
     args: InterfaceLifecycleArgs,
 ) -> AppResult<Value> {
+    let generation = state.current_identity_session_generation();
+    let auto_guard = state.auto_interface_lock.clone().lock_owned().await;
+    if state.current_identity_session_generation() != generation {
+        return Err(AppError::bad_request("The identity changed; try again."));
+    }
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&args.name, 64);
@@ -4359,6 +4380,7 @@ pub async fn resume_interface(
     let st = Arc::clone(&state_arc);
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
+        let _auto_guard = auto_guard;
         let iface_name = runtime.name().to_string();
         let rnode_port = runtime.rnode_port().map(str::to_string);
         let activity_class = resumable_interface_class(&runtime);
@@ -4550,6 +4572,8 @@ pub async fn add_lora_interface(
     state: State<'_, Arc<AppState>>,
     args: AddLoraArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&args.name, 64);
@@ -5836,6 +5860,8 @@ pub async fn update_lora_interface(
     state: State<'_, Arc<AppState>>,
     args: UpdateLoraArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let old_name = sanitize_text(&args.old_name, 64);
@@ -6123,6 +6149,8 @@ pub async fn remove_lora_interface(
     state: State<'_, Arc<AppState>>,
     name: String,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&name, 64);
@@ -6230,6 +6258,15 @@ pub async fn enable_auto_interface(
     #[allow(non_snake_case)] name: Option<String>,
     options: Option<crate::rns_config::AutoInterfaceOptions>,
 ) -> AppResult<Value> {
+    let generation = state.current_identity_session_generation();
+    let auto_guard = state.auto_interface_lock.clone().lock_owned().await;
+    if state.current_identity_session_generation() != generation {
+        return Err(AppError::bad_request(
+            "The identity changed; review its Local Network settings and try again.",
+        ));
+    }
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     use std::str::FromStr;
 
     let state_arc: Arc<AppState> = Arc::clone(&state);
@@ -6237,6 +6274,39 @@ pub async fn enable_auto_interface(
     let name = sanitize_text(name.as_deref().unwrap_or("Local Network"), 64);
     let config_dir = active_rns_config_dir(&state_arc);
     let opts = options.unwrap_or_default();
+
+    // Enabling twice must not tear down/rebind a live socket, or overwrite an
+    // existing (possibly non-Auto) interface with the same name.
+    if find_config_interface_with_group(&config_dir, None, &name).is_some() {
+        let handle = runtime_handle(&state_arc);
+        let online = if let Some(handle) = handle {
+            match handle
+                .query_transport(rns_transport::messages::TransportQuery::GetInterfaceStats)
+                .await
+            {
+                Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) => {
+                    stats.iter().any(|s| s.name == name && s.online)
+                }
+                _ => false,
+            }
+        } else {
+            false
+        };
+        if online && crate::rns_config::auto_interface_names(&config_dir).contains(&name) {
+            emit_op_status_broadcast(
+                &state_arc,
+                "enable_auto",
+                "hub",
+                "Local Network already enabled",
+                true,
+                None,
+            );
+            return Ok(json!({"already_enabled":true}));
+        }
+        return Err(AppError::bad_request(
+            "An interface with this name is already configured. Resume or remove it before adding another.",
+        ));
+    }
 
     // Validate before writing config to avoid half-written entries.
     if let Some(scope) = opts.discovery_scope.as_deref() {
@@ -6333,6 +6403,7 @@ pub async fn enable_auto_interface(
     let iface_name = name.clone();
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
+        let _auto_guard = auto_guard;
         let rns_handle = st
             .rns
             .read()
@@ -6346,7 +6417,6 @@ pub async fn enable_auto_interface(
                 auto_activity_transition(AutoActivityOutcome::Starting),
                 None,
             );
-            teardown_live_interface_by_name(&st, &iface_name, None, None).await;
             // Subscribe before the command-owned spawn: initial multicast
             // join failures are dispatched synchronously inside lower-layer
             // setup and would otherwise be missed by this operation.
@@ -6395,7 +6465,7 @@ pub async fn enable_auto_interface(
                         "hub",
                         "Spawn failed",
                         true,
-                        Some(&e),
+                        Some(&auto_startup_error_message(&e, data_port)),
                     );
                     record_interface_activity(
                         &st,
@@ -6455,6 +6525,15 @@ pub async fn disable_auto_interface(
     state: State<'_, Arc<AppState>>,
     name: Option<String>,
 ) -> AppResult<Value> {
+    let generation = state.current_identity_session_generation();
+    let auto_guard = state.auto_interface_lock.clone().lock_owned().await;
+    if state.current_identity_session_generation() != generation {
+        return Err(AppError::bad_request(
+            "The identity changed; review its Local Network settings and try again.",
+        ));
+    }
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let config_dir = active_rns_config_dir(&state_arc);
@@ -6495,6 +6574,7 @@ pub async fn disable_auto_interface(
     let st = Arc::clone(&state_arc);
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
+        let _auto_guard = auto_guard;
         if let Some(handle) = st
             .rns
             .read()
@@ -6534,6 +6614,10 @@ pub async fn disable_auto_interface(
         emit_hub_interfaces(&st, ifaces);
     });
     Ok(json!({ "queued": true }))
+}
+
+fn auto_startup_error_message(error: &str, data_port: u16) -> String {
+    ratspeak_runtime::network_ownership::auto_startup_error_message(error, data_port)
 }
 
 /// Relay `AutoInterfaceEvent`s as `auto_unavailable` / `auto_carrier_state`.
@@ -6609,6 +6693,8 @@ pub async fn add_tcp_connection(
     state: State<'_, Arc<AppState>>,
     args: TcpConnectionArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let host = sanitize_text(&args.host, 256);
@@ -6683,6 +6769,12 @@ pub async fn add_tcp_connection(
     let ifac_clone = ifac.clone();
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
+        let _ownership = st.auto_interface_lock.lock().await;
+        if !st.is_current_activity_origin_fence(activity_fence)
+            || !ratspeak_runtime::network_ownership::local_interfaces_allowed(&st)
+        {
+            return;
+        }
         let rns_handle = st
             .rns
             .read()
@@ -6762,6 +6854,8 @@ pub async fn update_tcp_connection(
     state: State<'_, Arc<AppState>>,
     args: UpdateTcpConnectionArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let old_name = sanitize_text(&args.old_name, 64);
@@ -6862,6 +6956,8 @@ pub async fn remove_tcp_connection(
     state: State<'_, Arc<AppState>>,
     name: String,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&name, 64);
@@ -6888,6 +6984,12 @@ pub async fn remove_tcp_connection(
     let name2 = name.clone();
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
+        let _ownership = st.auto_interface_lock.lock().await;
+        if !st.is_current_activity_origin_fence(activity_fence)
+            || !ratspeak_runtime::network_ownership::local_interfaces_allowed(&st)
+        {
+            return;
+        }
         let rns_handle = st
             .rns
             .read()
@@ -6948,6 +7050,8 @@ pub async fn add_tcp_server(
     state: State<'_, Arc<AppState>>,
     args: TcpServerArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&args.name, 64);
@@ -6985,6 +7089,12 @@ pub async fn add_tcp_server(
     let ifac_clone = ifac.clone();
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
+        let _ownership = st.auto_interface_lock.lock().await;
+        if !st.is_current_activity_origin_fence(activity_fence)
+            || !ratspeak_runtime::network_ownership::local_interfaces_allowed(&st)
+        {
+            return;
+        }
         let rns_handle = st
             .rns
             .read()
@@ -7069,6 +7179,8 @@ pub async fn update_tcp_server(
     state: State<'_, Arc<AppState>>,
     args: UpdateTcpServerArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let old_name = sanitize_text(&args.old_name, 64);
@@ -7144,7 +7256,10 @@ pub async fn update_tcp_server(
 
 #[tauri::command]
 pub async fn remove_tcp_server(state: State<'_, Arc<AppState>>, name: String) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&name, 64);
     let config_dir = active_rns_config_dir(&state_arc);
 
@@ -7169,6 +7284,12 @@ pub async fn remove_tcp_server(state: State<'_, Arc<AppState>>, name: String) ->
     let name2 = name.clone();
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
+        let _ownership = st.auto_interface_lock.lock().await;
+        if !st.is_current_activity_origin_fence(activity_fence)
+            || !ratspeak_runtime::network_ownership::local_interfaces_allowed(&st)
+        {
+            return;
+        }
         let rns_handle = st
             .rns
             .read()
@@ -7240,6 +7361,8 @@ pub async fn add_backbone_connection(
     state: State<'_, Arc<AppState>>,
     args: BackboneConnectionArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let host = sanitize_text(&args.host, 256);
@@ -7304,6 +7427,12 @@ pub async fn add_backbone_connection(
     let ifac_clone = ifac.clone();
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
+        let _ownership = st.auto_interface_lock.lock().await;
+        if !st.is_current_activity_origin_fence(activity_fence)
+            || !ratspeak_runtime::network_ownership::local_interfaces_allowed(&st)
+        {
+            return;
+        }
         let rns_handle = st
             .rns
             .read()
@@ -7396,6 +7525,8 @@ pub async fn update_backbone_connection(
     state: State<'_, Arc<AppState>>,
     args: UpdateBackboneConnectionArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let old_name = sanitize_text(&args.old_name, 64);
@@ -7490,6 +7621,8 @@ pub async fn remove_backbone_connection(
     state: State<'_, Arc<AppState>>,
     name: String,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&name, 64);
@@ -7516,6 +7649,12 @@ pub async fn remove_backbone_connection(
     let name2 = name.clone();
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
+        let _ownership = st.auto_interface_lock.lock().await;
+        if !st.is_current_activity_origin_fence(activity_fence)
+            || !ratspeak_runtime::network_ownership::local_interfaces_allowed(&st)
+        {
+            return;
+        }
         let rns_handle = st
             .rns
             .read()
@@ -7577,6 +7716,8 @@ pub async fn add_backbone_server(
     state: State<'_, Arc<AppState>>,
     args: BackboneServerArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&args.name, 64);
@@ -7623,6 +7764,12 @@ pub async fn add_backbone_server(
     let ifac_clone = ifac.clone();
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
+        let _ownership = st.auto_interface_lock.lock().await;
+        if !st.is_current_activity_origin_fence(activity_fence)
+            || !ratspeak_runtime::network_ownership::local_interfaces_allowed(&st)
+        {
+            return;
+        }
         let rns_handle = st
             .rns
             .read()
@@ -7719,6 +7866,8 @@ pub async fn update_backbone_server(
     state: State<'_, Arc<AppState>>,
     args: UpdateBackboneServerArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let old_name = sanitize_text(&args.old_name, 64);
@@ -7806,7 +7955,10 @@ pub async fn remove_backbone_server(
     state: State<'_, Arc<AppState>>,
     name: String,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
     let name = sanitize_text(&name, 64);
     let config_dir = active_rns_config_dir(&state_arc);
 
@@ -7831,6 +7983,12 @@ pub async fn remove_backbone_server(
     let name2 = name.clone();
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
+        let _ownership = st.auto_interface_lock.lock().await;
+        if !st.is_current_activity_origin_fence(activity_fence)
+            || !ratspeak_runtime::network_ownership::local_interfaces_allowed(&st)
+        {
+            return;
+        }
         let rns_handle = st
             .rns
             .read()

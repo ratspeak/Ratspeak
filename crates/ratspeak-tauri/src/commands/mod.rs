@@ -16,6 +16,7 @@ pub(crate) mod interface_activity;
 pub mod interfaces;
 pub mod messaging;
 pub mod network;
+pub mod network_ownership;
 pub mod peers;
 #[cfg(any(
     test,

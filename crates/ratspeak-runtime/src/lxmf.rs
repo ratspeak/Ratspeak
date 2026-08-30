@@ -1351,13 +1351,30 @@ impl LxmfManager {
             }
         };
 
+        Self::from_loaded_identity(data_dir, identity, is_hardware)
+    }
+
+    /// Rebuild a same-identity network session without saving an unlocked
+    /// identity or asking the user to enter its PIN/passcode again.
+    pub(crate) fn from_loaded_identity(
+        data_dir: &Path,
+        identity: Identity,
+        is_hardware: bool,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let ratspeak_dir = data_dir.join(".ratspeak");
+        let identities_dir = ratspeak_dir.join("identities");
+        let legacy_path = ratspeak_dir.join("identity");
         let identity_hash = hex::encode(identity.hash);
 
         let id_dir = identities_dir.join(&identity_hash);
         std::fs::create_dir_all(&id_dir)?;
 
         let id_file = id_dir.join("identity");
-        if !id_file.exists() && legacy_path.exists() {
+        if !id_file.exists()
+            && legacy_path.exists()
+            && !is_hardware
+            && !id_dir.join("identity.enc").exists()
+        {
             std::fs::copy(&legacy_path, &id_file)?;
         }
 

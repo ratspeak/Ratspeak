@@ -77,6 +77,9 @@ For setup help, see:
 
 ## Build From Source
 
+Advanced local-stack sharing in this source tree is described in
+[Local Reticulum ownership](docs/network-ownership.md).
+
 The full build guide is here:
 [Building from Source](https://docs.ratspeak.org/docs/reference/building-from-source).
 It covers desktop prerequisites, Android APKs, iOS signing, and the required

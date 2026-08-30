@@ -1828,6 +1828,29 @@
 }
 .settings-row:last-child { border-bottom: none; }
 
+.network-ownership-settings {
+    padding-bottom: var(--space-4);
+    border-bottom: 1px solid var(--border);
+}
+.network-ownership-settings[hidden],
+.network-ownership-settings [hidden] { display: none !important; }
+.network-ownership-settings > *,
+#network-owner-existing > *,
+#network-owner-managed > * { margin-block: var(--space-3); }
+.network-ownership-settings label { display: block; color: var(--text-primary); }
+.network-ownership-settings .modal-input { width: 100%; margin-top: var(--space-2); }
+.network-owner-ports { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+.network-owner-ports > label { min-width: 0; }
+.network-owner-notice, .network-owner-interfaces {
+    padding: var(--space-4);
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    overflow-wrap: anywhere;
+}
+.network-owner-interfaces > div { padding-block: var(--space-2); }
+.network-external .network-connections > .conn-section { display: none; }
+.network-external #transport-mode-select { pointer-events: none; opacity: .5; }
+
 .settings-row-actions {
     display: inline-flex;
     align-items: center;

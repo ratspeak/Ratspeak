@@ -94,6 +94,9 @@ pub fn ensure_app_private_shared_instance_ports(
     }
 
     let content = std::fs::read_to_string(&path)?;
+    if has_operator_shared_selector(&content) {
+        return Ok(RatspeakRnsPortConfigChange::Unchanged);
+    }
     let Some(updated) = ratspeak_shared_instance_port_update(&content) else {
         return Ok(RatspeakRnsPortConfigChange::Unchanged);
     };
@@ -120,6 +123,9 @@ pub(crate) fn ensure_app_private_shared_instance(
     }
 
     let content = std::fs::read_to_string(&path)?;
+    if has_operator_shared_selector(&content) {
+        return Ok(RatspeakRnsPortConfigChange::Unchanged);
+    }
     let port_updated = ratspeak_shared_instance_port_update(&content)
         .filter(|updated| updated != &content)
         .unwrap_or_else(|| content.clone());
@@ -137,7 +143,7 @@ pub(crate) fn ensure_app_private_shared_instance(
 fn ratspeak_default_config(config_dir: &Path) -> String {
     let instance_name = ratspeak_private_instance_name(config_dir);
     format!(
-        "# This is the default Ratspeak Reticulum config file.\n\n[reticulum]\nenable_transport = False\nshare_instance = Yes\ninstance_name = {instance_name}\nshared_instance_port = {RATSPEAK_RNS_SHARED_INSTANCE_PORT}\ninstance_control_port = {RATSPEAK_RNS_INSTANCE_CONTROL_PORT}\n\n[logging]\nloglevel = 4\n\n[interfaces]\n"
+        "# This is the default Ratspeak Reticulum config file.\n\n[reticulum]\nenable_transport = False\nshare_instance = No\ninstance_name = {instance_name}\nshared_instance_port = {RATSPEAK_RNS_SHARED_INSTANCE_PORT}\ninstance_control_port = {RATSPEAK_RNS_INSTANCE_CONTROL_PORT}\n\n[logging]\nloglevel = 4\n\n[interfaces]\n"
     )
 }
 
@@ -146,6 +152,52 @@ fn ratspeak_private_instance_name(config_dir: &Path) -> String {
         std::fs::canonicalize(config_dir).unwrap_or_else(|_| config_dir.to_path_buf());
     let digest = rns_crypto::sha::sha256(stable_path.as_os_str().as_encoded_bytes());
     format!("ratspeak-{}", hex::encode(&digest[..8]))
+}
+
+/// Determine operator intent before any port/name rewrite. An explicit key or
+/// carrier can point at upstream's canonical endpoints even in a private file.
+pub(crate) fn has_operator_shared_selector(content: &str) -> bool {
+    if rns_runtime::config::Config::parse(content).is_err() {
+        return true;
+    }
+    let lines = content.lines().map(str::to_string).collect::<Vec<_>>();
+    let Some((start, end)) = reticulum_section_bounds(&lines) else {
+        return false;
+    };
+    for line in &lines[start + 1..end] {
+        let Some((key, value)) = parse_ini_key_value(line) else {
+            continue;
+        };
+        match key.as_str() {
+            "rpc_key" | "shared_instance_type" => return true,
+            "instance_name"
+                if value != "default"
+                    && !value.strip_prefix("ratspeak-").is_some_and(|s| {
+                        s.len() == 16 && s.bytes().all(|c| c.is_ascii_hexdigit())
+                    }) =>
+            {
+                return true;
+            }
+            "shared_instance_port"
+                if !matches!(
+                    value.parse::<u16>(),
+                    Ok(LEGACY_RNS_SHARED_INSTANCE_PORT | RATSPEAK_RNS_SHARED_INSTANCE_PORT)
+                ) =>
+            {
+                return true;
+            }
+            "instance_control_port"
+                if !matches!(
+                    value.parse::<u16>(),
+                    Ok(LEGACY_RNS_INSTANCE_CONTROL_PORT | RATSPEAK_RNS_INSTANCE_CONTROL_PORT)
+                ) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
 }
 
 pub fn strip_legacy_default_auto_interface(content: &str) -> String {
@@ -2456,6 +2508,7 @@ mod tests {
 
         assert_eq!(change, RatspeakRnsPortConfigChange::Created);
         let content = read_config(&dir).unwrap();
+        assert_eq!(reticulum_value(&content, "share_instance"), Some("No"));
         let expected_instance_name = ratspeak_private_instance_name(&dir);
         assert!(content.contains("shared_instance_port = 37430"));
         assert!(content.contains("instance_control_port = 37431"));
@@ -2488,6 +2541,26 @@ mod tests {
                 .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
         );
         assert!(!first_name.contains(first.file_name().unwrap().to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn explicit_key_or_carrier_preserves_canonical_upstream_ports_before_migration() {
+        for explicit in [
+            "rpc_key = 1234",
+            "shared_instance_type = tcp",
+            "instance_name = operator",
+        ] {
+            let dir = temp_config_dir();
+            let original = format!(
+                "[reticulum]\nshare_instance = Yes\n{explicit}\nshared_instance_port = 37428\ninstance_control_port = 37429\n[interfaces]\n"
+            );
+            write_config(&dir, &original);
+            assert_eq!(
+                ensure_app_private_shared_instance(&dir).unwrap(),
+                RatspeakRnsPortConfigChange::Unchanged
+            );
+            assert_eq!(read_config(&dir).unwrap(), original);
+        }
     }
 
     #[test]

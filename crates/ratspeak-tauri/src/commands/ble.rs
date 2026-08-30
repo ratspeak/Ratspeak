@@ -681,6 +681,8 @@ pub async fn enable_ble_peer_interface(
     state: State<'_, Arc<AppState>>,
     args: EnableBlePeerArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let duration_secs = args.duration;
@@ -700,6 +702,11 @@ fn spawn_enable_ble_peer_task(
     // Mark `ble_peer_enabled=1` only after spawn success.
     tokio::spawn(async move {
         let _enable_guard = state_arc.ble_peer_enable_lock.lock().await;
+        if !state_arc.is_current_activity_origin_fence(activity_fence)
+            || !ratspeak_runtime::network_ownership::local_interfaces_allowed(&state_arc)
+        {
+            return;
+        }
         let _rns_handle = state_arc
             .rns
             .read()
@@ -1352,6 +1359,9 @@ fn spawn_enable_ble_peer_task(
 }
 
 pub(crate) async fn restore_ble_peer_if_requested(state: Arc<AppState>) {
+    if !ratspeak_runtime::network_ownership::local_interfaces_allowed(&state) {
+        return;
+    }
     let (enabled, expires_at) = db::spawn_db(state.db.clone(), |p| {
         let enabled = db::get_setting(&p, BLE_PEER_ENABLED_SETTING)
             .map(|v| v == "1")
@@ -1397,6 +1407,8 @@ pub(crate) async fn restore_ble_peer_if_requested(state: Arc<AppState>) {
 
 #[tauri::command]
 pub async fn disable_ble_peer_interface(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     tokio::spawn(async move {
@@ -1427,6 +1439,8 @@ pub async fn disconnect_ble_peer(
     state: State<'_, Arc<AppState>>,
     address: String,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
     let state_arc: Arc<AppState> = Arc::clone(&state);
     if address.is_empty() {
         emit_op_status_broadcast(
@@ -1554,6 +1568,8 @@ pub async fn apply_ble_rnode_bridge_ready(
     state_arc: Arc<AppState>,
     args: BleRnodeBridgeArgs,
 ) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state_arc)
+        .map_err(AppError::bad_request)?;
     let activity_operation = args.activity_operation.clone();
     let activity_fence = state_arc
         .claim_ble_rnode_activity_operation(&activity_operation)

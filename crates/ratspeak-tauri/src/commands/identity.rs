@@ -1103,6 +1103,9 @@ pub async fn api_delete_identity(
     crate::lxmf::LxmfManager::purge_identity_profile(&state.config.data_root, &hash_hex, cascade)
         .map_err(|e| AppError::internal(format!("Failed to remove identity files: {e}")))?;
     state.forget_local_identity_public_key(&hash_hex);
+    ratspeak_runtime::network_ownership::forget_deleted_profile(&state, &hash_hex)
+        .await
+        .map_err(AppError::internal)?;
     Ok(json!(null))
 }
 
@@ -1114,6 +1117,7 @@ pub struct DisplayNameArgs {
 
 async fn switch_identity_session(state: Arc<AppState>, hash_hex: String) -> AppResult<Value> {
     let _switch_guard = state.identity_switch_lock.lock().await;
+    let _auto_ownership = state.auto_interface_lock.lock().await;
 
     let hash_for_lookup = hash_hex.clone();
     let target = db::spawn_db(state.db.clone(), move |p| {

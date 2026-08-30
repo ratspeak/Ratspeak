@@ -3,9 +3,18 @@
   "rustSources": [
     "src-tauri/src/mobile_native.rs",
     "crates/ratspeak-runtime/src/voice.rs",
+    "crates/ratspeak-runtime/src/network_secrets.rs",
     "../rsReticulum/crates/rns-interface/src/ble_peer.rs"
   ],
   "classes": [
+    {
+      "name": "org.ratspeak.android.RatspeakSharedSecrets",
+      "methods": [
+        ["read", "(Landroid/content/Context;Ljava/lang/String;)[B"],
+        ["write", "(Landroid/content/Context;Ljava/lang/String;[B)V"],
+        ["delete", "(Landroid/content/Context;Ljava/lang/String;)V"]
+      ]
+    },
     {
       "name": "org.ratspeak.android.RatspeakNativeBridge",
       "methods": [

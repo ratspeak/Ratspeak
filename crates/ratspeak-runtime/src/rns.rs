@@ -53,17 +53,42 @@ impl RnsManager {
         socket_dir: Option<std::path::PathBuf>,
         is_foreground: Arc<AtomicBool>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::init_with_policy(
+            config_dir,
+            socket_dir,
+            is_foreground,
+            rns_runtime::shared_instance::InstancePolicy::Configured,
+        )
+        .await
+    }
+
+    pub async fn init_with_policy(
+        config_dir: &str,
+        socket_dir: Option<std::path::PathBuf>,
+        is_foreground: Arc<AtomicBool>,
+        policy: rns_runtime::shared_instance::InstancePolicy,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let shutdown = ShutdownSignal::new();
-        let handle = reticulum::init_with_options_and_rnode_startup_options(
+        let handle = reticulum::init_with_policy(
             Some(config_dir),
             socket_dir,
             shutdown.clone(),
             is_foreground,
             InitOptions::default(),
             ble_rnode_startup_options(),
+            policy,
         )
         .await
-        .map_err(|e| format!("RNS init failed: {e:?}"))?;
+        .map_err(|e| format!("RNS init failed: {e}"))?;
+        if handle.instance_mode == InstanceMode::Client {
+            if let Err(error) = handle
+                .query_control_result(TransportQuery::GetInterfaceStats)
+                .await
+            {
+                handle.shutdown_and_wait().await;
+                return Err(format!("Shared-instance control unavailable ({error}). Configure the existing instance and its RPC key in Settings → Network, or choose Managed by Ratspeak to use your TCP interfaces.").into());
+            }
+        }
         let startup_rnode_runtimes = handle.startup_rnode_runtimes();
 
         tracing::info!(

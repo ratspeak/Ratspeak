@@ -1387,7 +1387,7 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
-    assert!(index.contains("/static/style.css?v=ui-20260826-1"));
+    assert!(index.contains("/static/style.css?v=ui-20260830-1"));
     assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
     assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
     assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
@@ -1527,17 +1527,10 @@ fn all_rnode_creation_paths_use_transport_specific_startup_policy() {
         }
     };
 
-    assert_option_calls(
-        &runtime_rs,
-        "reticulum::init_with_options_and_rnode_startup_options",
-        1,
-        ble_option,
-    );
-    let configured_startup = rust_call_blocks(
-        &runtime_rs,
-        "reticulum::init_with_options_and_rnode_startup_options",
-    );
+    assert_option_calls(&runtime_rs, "reticulum::init_with_policy", 1, ble_option);
+    let configured_startup = rust_call_blocks(&runtime_rs, "reticulum::init_with_policy");
     assert!(configured_startup[0].contains("InitOptions::default()"));
+    assert!(configured_startup[0].contains("policy"));
     assert!(
         runtime_rs.contains("RNodeStartupOptions::default().with_persisted_bluetooth_enabled()")
     );
@@ -3778,7 +3771,7 @@ fn android_name_based_jni_boundary_is_pinned_and_final_artifacts_are_inspected()
     let classes = manifest["classes"].as_array().expect("boundary classes");
 
     assert_eq!(manifest["schemaVersion"], 1);
-    assert_eq!(classes.len(), 10);
+    assert_eq!(classes.len(), 11);
     for class in classes {
         let name = class["name"].as_str().expect("boundary class name");
         assert!(
@@ -5298,10 +5291,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("/static/js/state.js?v=ui-20260826-1"));
-    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260826-1"));
-    assert!(index.contains("/static/js/lxmf.js?v=ui-20260826-1"));
-    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260826-1"));
+    assert!(index.contains("/static/js/state.js?v=ui-20260830-1"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260830-1"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260830-1"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260830-1"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));
@@ -8202,7 +8195,10 @@ fn transport_mode_defaults_and_auto_policy_are_explicit() {
     assert!(interfaces_rs.contains("set_transport_mode db task panicked"));
     assert!(interfaces_rs.contains("configured_enabled"));
     assert!(interfaces_rs.contains("suppressed"));
-    assert!(interfaces_rs.contains("InstanceMode::Client"));
+    assert!(
+        rust_function_block(&interfaces_rs, "set_transport_mode")
+            .contains("network_ownership::require_local_interfaces(&state)")
+    );
 
     let shared_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/shared.rs"))
         .expect("shared source");
@@ -8264,6 +8260,67 @@ fn android_logcat_output_is_privacy_gated() {
     assert!(gradle.contains("dependsOn(patchTauriGeneratedLogger)"));
     assert!(gradle.contains("finalizedBy(patchTauriGeneratedLogger)"));
     assert!(gradle.contains("outputs.upToDateWhen { false }"));
+}
+
+#[test]
+fn network_ownership_gates_real_commands_and_keeps_credentials_native() {
+    let root = repo_root();
+    let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interface commands");
+    for name in [
+        "set_transport_mode",
+        "pause_interface",
+        "resume_interface",
+        "add_lora_interface",
+        "update_lora_interface",
+        "remove_lora_interface",
+        "enable_auto_interface",
+        "disable_auto_interface",
+        "add_tcp_connection",
+        "update_tcp_connection",
+        "remove_tcp_connection",
+        "add_tcp_server",
+        "update_tcp_server",
+        "remove_tcp_server",
+        "add_backbone_connection",
+        "update_backbone_connection",
+        "remove_backbone_connection",
+        "add_backbone_server",
+        "update_backbone_server",
+        "remove_backbone_server",
+    ] {
+        assert!(
+            rust_function_block(&interfaces, name)
+                .contains("network_ownership::require_local_interfaces(&state)"),
+            "{name} must enforce ownership in the backend"
+        );
+    }
+    let commands =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/network_ownership.rs"))
+            .expect("ownership commands");
+    assert!(rust_function_block(&commands, "set_network_ownership").contains("tokio::spawn"));
+    let runtime = read_source(root.join("crates/ratspeak-runtime/src/network_ownership.rs"))
+        .expect("ownership runtime");
+    for name in ["apply", "test_connection", "export_access"] {
+        assert!(rust_function_block(&runtime, name).contains("require_developer_mode"));
+    }
+    assert!(rust_function_block(&runtime, "apply").contains("identity_switch_lock.lock().await"));
+    assert!(rust_function_block(&runtime, "apply").contains("auto_interface_lock.lock().await"));
+    assert!(!rust_function_block(&runtime, "snapshot").contains("rpc_key"));
+    let secrets = read_source(root.join("crates/ratspeak-runtime/src/network_secrets.rs"))
+        .expect("native secrets");
+    assert!(!secrets.contains("db::"));
+    assert!(!secrets.contains("set_setting"));
+    let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("real Tauri shell");
+    for name in [
+        "api_network_ownership",
+        "test_shared_instance",
+        "set_network_ownership",
+        "export_shared_access",
+        "import_shared_access",
+    ] {
+        assert!(shell.contains(&format!("network_ownership::{name}")));
+    }
 }
 
 #[test]

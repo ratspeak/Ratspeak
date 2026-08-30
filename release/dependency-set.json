@@ -36,7 +36,7 @@
       "name": "rsReticulum",
       "repository": "https://github.com/ratspeak/rsReticulum.git",
       "path": "../rsReticulum",
-      "commit": "3b3eb29c16c9dbc114c9b31d9f912a7b1a68652c",
+      "commit": "8f1d65061402c42548675de70f45e575ea3be5a3",
       "version": "1.2.0",
       "integrationTag": "ratspeak-v1.0.31"
     },

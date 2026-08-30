@@ -4,15 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-visual">
     <meta name="theme-color" content="#FAF7F3">
-    <script src="/static/js/theme.js?v=ui-20260826-1"></script>
-    <script src="/static/js/text_scale.js?v=ui-20260826-1"></script>
+    <script src="/static/js/theme.js?v=ui-20260830-1"></script>
+    <script src="/static/js/text_scale.js?v=ui-20260830-1"></script>
     <!-- Safe-area insets (--sat/--sab/--sal/--sar) are defined in 00-tokens.css
          via env(safe-area-inset-*). iOS feeds env() through viewport-fit=cover +
          WKWebView contentInsetAdjustmentBehavior=.never; Android MainActivity
          injects pixel values via evaluateJavascript; desktop falls back to 0. -->
     <title>Ratspeak - Dashboard</title>
-    <link rel="stylesheet" href="/static/fonts/fonts.css?v=ui-20260826-1">
-    <link rel="stylesheet" href="/static/style.css?v=ui-20260826-1">
+    <link rel="stylesheet" href="/static/fonts/fonts.css?v=ui-20260830-1">
+    <link rel="stylesheet" href="/static/style.css?v=ui-20260830-1">
 </head>
 <body class="checking-setup">
 
@@ -838,6 +838,8 @@
 
                 <div class="network-main">
                     <div class="network-connections">
+                        <div id="network-owner-notice" class="network-owner-notice" role="status" hidden></div>
+                        <div id="network-owner-interfaces" class="network-owner-interfaces" hidden></div>
                         <div class="conn-section conn-section-tcp collapsed" data-iface-type="tcp">
                             <div class="conn-section-header" role="button" tabindex="0" aria-expanded="false">
                                 <div class="conn-section-icon"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10"/><path d="M12 2a15 15 0 0 0-4 10 15 15 0 0 0 4 10"/></svg></div>
@@ -1457,6 +1459,48 @@
 
                             <div class="panel settings-panel" id="panel-settings-network">
                         <div class="panel-body">
+                            <section id="network-ownership-settings" class="network-ownership-settings" hidden aria-label="Reticulum ownership">
+                                <h3 class="settings-panel-section-title">Reticulum ownership</h3>
+                                <p class="settings-row-desc">Choose who manages this identity's network interfaces. Internet/TCP connections remain ordinary interfaces in Ratspeak-managed mode.</p>
+                                <label for="network-owner-mode">Network stack</label>
+                                <select id="network-owner-mode" class="modal-input">
+                                    <option value="managed">Managed by Ratspeak</option>
+                                    <option value="existing">Use existing local instance</option>
+                                </select>
+                                <div id="network-owner-managed">
+                                    <label><input type="checkbox" id="network-owner-share"> Share Ratspeak's stack with other local apps</label>
+                                    <p class="settings-row-desc">Optional. Uses local TCP ports 37430 / 37431. This does not enable LAN discovery or a public TCP server.</p>
+                                    <button type="button" class="nr-btn nr-btn-sm" id="network-owner-export">Copy access configuration…</button>
+                                </div>
+                                <div id="network-owner-existing" hidden>
+                                    <p class="settings-row-desc">The other app owns LAN, TCP and radio interfaces. Enable its shared service and provide its RPC key. Ratspeak will not start a second stack if it disconnects.</p>
+                                    <label for="network-owner-carrier">Local connection</label>
+                                    <select id="network-owner-carrier" class="modal-input">
+                                        <option value="tcp">TCP loopback (127.0.0.1)</option>
+                                        <option value="unix" id="network-owner-unix-option" hidden>Linux abstract Unix socket</option>
+                                    </select>
+                                    <div id="network-owner-tcp" class="network-owner-ports">
+                                        <label>Packet port<input id="network-owner-packet" class="modal-input" type="number" min="1" max="65535" value="37428"></label>
+                                        <label>Control port<input id="network-owner-control" class="modal-input" type="number" min="1" max="65535" value="37429"></label>
+                                    </div>
+                                    <label id="network-owner-unix" hidden>Instance name<input id="network-owner-name" class="modal-input" value="default" maxlength="64" spellcheck="false" autocapitalize="none"></label>
+                                    <label for="network-owner-key">RPC key (hexadecimal)</label>
+                                    <input id="network-owner-key" class="modal-input" type="password" maxlength="2048" autocomplete="off" spellcheck="false" autocapitalize="none" aria-describedby="network-owner-key-help">
+                                    <p id="network-owner-key-help" class="settings-row-desc">Stored in your system's protected credential store, never in ordinary settings or logs.</p>
+                                    <details>
+                                        <summary>Paste an access configuration</summary>
+                                        <label for="network-owner-import">Shared-access JSON (contains a secret)</label>
+                                        <textarea id="network-owner-import" class="modal-input" rows="4" maxlength="8192" autocomplete="off" spellcheck="false" autocapitalize="none"></textarea>
+                                        <button type="button" class="nr-btn nr-btn-sm" id="network-owner-import-button">Use pasted configuration</button>
+                                    </details>
+                                    <button type="button" class="nr-btn nr-btn-sm" id="network-owner-test">Test connection</button>
+                                </div>
+                                <div class="settings-row-actions">
+                                    <button type="button" class="nr-btn nr-btn-sm" id="network-owner-apply">Apply network change…</button>
+                                    <button type="button" class="nr-btn nr-btn-sm" id="network-owner-reset">Discard edits</button>
+                                </div>
+                                <p id="network-owner-status" class="settings-row-desc" role="status" aria-live="polite"></p>
+                            </section>
                             <div class="settings-row">
                                 <div class="settings-row-info">
                                     <span class="settings-row-label">Transport Mode</span>
@@ -1985,43 +2029,44 @@
 <!-- Synchronous load order matters: state/constants/setup/nav before any caller
      of their module-level functions; tauri_events.js last (wires everything above).
      Reordering breaks fresh boots silently. -->
-<script src="/static/js/state.js?v=ui-20260826-1"></script>
-<script src="/static/js/constants.js?v=ui-20260826-1"></script>
-<script src="/static/js/setup.js?v=ui-20260826-1"></script>
-<script src="/static/js/nav.js?v=ui-20260826-1"></script>
-<script src="/static/js/gestures.js?v=ui-20260826-1"></script>
-<script src="/static/js/view_stack.js?v=ui-20260826-1"></script>
+<script src="/static/js/state.js?v=ui-20260830-1"></script>
+<script src="/static/js/constants.js?v=ui-20260830-1"></script>
+<script src="/static/js/setup.js?v=ui-20260830-1"></script>
+<script src="/static/js/nav.js?v=ui-20260830-1"></script>
+<script src="/static/js/gestures.js?v=ui-20260830-1"></script>
+<script src="/static/js/view_stack.js?v=ui-20260830-1"></script>
 
-<script src="/static/js/peers_cache.js?v=ui-20260826-1"></script>
-<script src="/static/js/connections.js?v=ui-20260826-1"></script>
-<script src="/static/js/peers.js?v=ui-20260826-1"></script>
-<script src="/static/js/toasts.js?v=ui-20260826-1"></script>
-<script src="/static/js/dialogs.js?v=ui-20260826-1"></script>
-<script src="/static/js/legal_documents.js?v=ui-20260826-1"></script>
-<script src="/static/js/action_popover.js?v=ui-20260826-1"></script>
-<script src="/static/js/ui_shared.js?v=ui-20260826-1"></script>
-<script src="/static/js/events.js?v=ui-20260826-1"></script>
-<script src="/static/js/activity.js?v=ui-20260826-1"></script>
-<script src="/static/js/health.js?v=ui-20260826-1"></script>
-<script src="/static/js/modals.js?v=ui-20260826-1"></script>
-<script src="/static/js/emoji_data.js?v=ui-20260826-1"></script>
-<script src="/static/js/emoji_picker.js?v=ui-20260826-1"></script>
-<script src="/static/js/voice_ringtones.js?v=ui-20260826-1"></script>
+<script src="/static/js/peers_cache.js?v=ui-20260830-1"></script>
+<script src="/static/js/connections.js?v=ui-20260830-1"></script>
+<script src="/static/js/peers.js?v=ui-20260830-1"></script>
+<script src="/static/js/toasts.js?v=ui-20260830-1"></script>
+<script src="/static/js/dialogs.js?v=ui-20260830-1"></script>
+<script src="/static/js/legal_documents.js?v=ui-20260830-1"></script>
+<script src="/static/js/action_popover.js?v=ui-20260830-1"></script>
+<script src="/static/js/ui_shared.js?v=ui-20260830-1"></script>
+<script src="/static/js/events.js?v=ui-20260830-1"></script>
+<script src="/static/js/activity.js?v=ui-20260830-1"></script>
+<script src="/static/js/health.js?v=ui-20260830-1"></script>
+<script src="/static/js/modals.js?v=ui-20260830-1"></script>
+<script src="/static/js/emoji_data.js?v=ui-20260830-1"></script>
+<script src="/static/js/emoji_picker.js?v=ui-20260830-1"></script>
+<script src="/static/js/voice_ringtones.js?v=ui-20260830-1"></script>
 <script src="/static/js/vendor/jsQR.js"></script>
-<script src="/static/js/contact_card.js?v=ui-20260826-1"></script>
-<script src="/static/js/lxmf.js?v=ui-20260826-1"></script>
-<script src="/static/js/voice_memos.js?v=ui-20260826-1"></script>
-<script src="/static/js/channels.js?v=ui-20260826-1"></script>
-<script src="/static/js/channel_hub.js?v=ui-20260826-1"></script>
-<script src="/static/js/propagation.js?v=ui-20260826-1"></script>
-<script src="/static/js/settings.js?v=ui-20260826-1"></script>
-<script src="/static/js/identity.js?v=ui-20260826-1"></script>
-<script src="/static/js/confetti.js?v=ui-20260826-1"></script>
-<script src="/static/js/game_registry.js?v=ui-20260826-1"></script>
-<script src="/static/js/four_in_a_row_view.js?v=ui-20260826-1"></script>
-<script src="/static/js/games_tab.js?v=ui-20260826-1"></script>
-<script src="/static/js/native_channel_share.js?v=ui-20260826-1"></script>
-<script src="/static/js/tauri_events.js?v=ui-20260826-1"></script>
-<script src="/static/js/init_dom_handlers.js?v=ui-20260826-1"></script>
+<script src="/static/js/contact_card.js?v=ui-20260830-1"></script>
+<script src="/static/js/lxmf.js?v=ui-20260830-1"></script>
+<script src="/static/js/voice_memos.js?v=ui-20260830-1"></script>
+<script src="/static/js/channels.js?v=ui-20260830-1"></script>
+<script src="/static/js/channel_hub.js?v=ui-20260830-1"></script>
+<script src="/static/js/propagation.js?v=ui-20260830-1"></script>
+<script src="/static/js/settings.js?v=ui-20260830-1"></script>
+    <script src="/static/js/network_ownership.js?v=ui-20260830-1"></script>
+<script src="/static/js/identity.js?v=ui-20260830-1"></script>
+<script src="/static/js/confetti.js?v=ui-20260830-1"></script>
+<script src="/static/js/game_registry.js?v=ui-20260830-1"></script>
+<script src="/static/js/four_in_a_row_view.js?v=ui-20260830-1"></script>
+<script src="/static/js/games_tab.js?v=ui-20260830-1"></script>
+<script src="/static/js/native_channel_share.js?v=ui-20260830-1"></script>
+<script src="/static/js/tauri_events.js?v=ui-20260830-1"></script>
+<script src="/static/js/init_dom_handlers.js?v=ui-20260830-1"></script>
 </body>
 </html>

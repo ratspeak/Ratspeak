@@ -49,6 +49,7 @@ android {
         applicationId = "org.ratspeak.android"
         minSdk = 24
         targetSdk = 36
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = ratspeakDisplayVersionName()
     }

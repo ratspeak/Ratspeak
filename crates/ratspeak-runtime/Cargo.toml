@@ -78,6 +78,16 @@ zeroize = "1"
 
 # Optional interface backends
 serialport = { workspace = true, optional = true }
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+keyring = { version = "3.6.3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3.6.3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3.6.3", features = ["sync-secret-service", "crypto-rust", "vendored"] }
+
 # iOS-only: CoreBluetooth authorization probe in platform_ios.rs
 [target.'cfg(target_os = "ios")'.dependencies]
 objc2 = "0.6"

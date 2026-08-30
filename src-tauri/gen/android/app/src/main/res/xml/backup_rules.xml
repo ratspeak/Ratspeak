@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Ciphertext is bound to a non-exportable device Keystore key. -->
+    <exclude domain="sharedpref" path="shared_instance_credentials.xml" />
+</full-backup-content>
