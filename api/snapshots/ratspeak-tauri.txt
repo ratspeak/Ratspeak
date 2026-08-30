@@ -612,6 +612,12 @@ pub async fn ratspeak_tauri::commands::network::set_propagation_node(tauri::stat
 pub async fn ratspeak_tauri::commands::network::set_stamp_settings(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::network::StampSettingsArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::network::sync_propagation(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::network::trigger_announce(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub mod ratspeak_tauri::commands::network_ownership
+pub async fn ratspeak_tauri::commands::network_ownership::api_network_ownership(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::network_ownership::export_shared_access(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<alloc::string::String>
+pub async fn ratspeak_tauri::commands::network_ownership::import_shared_access(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::network_ownership::set_network_ownership(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_runtime::network_ownership::NetworkRequest) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::network_ownership::test_shared_instance(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_runtime::network_ownership::NetworkRequest) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub mod ratspeak_tauri::commands::peers
 pub const ratspeak_tauri::commands::peers::PEER_RECENCY_SECS: f64
 pub async fn ratspeak_tauri::commands::peers::api_get_peers_snapshot(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>

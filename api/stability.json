@@ -19,35 +19,37 @@
     "sourceCommit": "fc78e4926c696a921f308d238ef1b620e0db0078"
   },
   "snapshotSource": {
-    "commit": "1886478993ab905d9e6ca77ebe3784b85630f88b",
-    "capturedOn": "2026-08-24",
+    "commit": "699ddfc08c9670dc0288dbc156dd6fa955ccc7c7",
+    "capturedOn": "2026-08-30",
     "review": {
       "areas": [
         "application domain and configuration",
         "database and persistence",
         "Reticulum and messaging runtime",
         "Tauri commands and events",
-        "desktop and mobile application shell"
+        "desktop and mobile application shell",
+        "profile-scoped shared-stack ownership, protected credentials and transactional switching"
       ],
       "canonicalDependencies": [
         "lxmf_core::message_api",
         "lxst_telephony::TelephonyService::registered",
         "lrgp::protocol"
       ],
-      "classification": "application-internal lifecycle, persistence, and mobile integration",
+      "classification": "application-internal lifecycle, persistence, mobile integration and explicit network ownership",
       "publicApiDiff": {
-        "added": 123,
+        "added": 157,
         "removed": 12
       },
       "semver": "no public-library consequence; application integration only",
       "deprecations": "none",
-      "wirePersistenceRuntimeImpact": "no wire-format change; retains the reviewed announce, readiness, and persistence boundaries while exposing one application-internal BLE RNode startup-policy helper used to persist firmware Bluetooth availability",
+      "wirePersistenceRuntimeImpact": "No wire-format change. Adds versioned profile ownership/selectors and opaque credential references, native protected secret storage, five Developer-gated Tauri commands, and the R8-kept Android credential JNI bridge. Mode changes serialize with identity/interface lifecycle, commit after readiness, retain unlocked identity only for same-profile rebuild, and verify rollback. External clients authenticate without fallback and reject local interface changes. New managed profiles are standalone; existing private sharing and operator selectors are preserved. AutoInterface UDP remains unchanged. Retains the previously reviewed announce/readiness boundaries and BLE firmware startup policy.",
       "platformEvidence": [
-        "rsReticulum full Rust workspace, MSRV, API, and cross-platform CI gates",
-        "Ratspeak full Rust workspace, strict Clippy, source-contract, and dashboard behavior gates",
-        "Android arm64 Kotlin policy, BLE lifecycle, and application compilation gates",
-        "physical Android BLE RNode power-cycle, pairing, reconnect, and interface-resume verification",
-        "desktop and Android message-action and native-selection interaction verification"
+        "Ratspeak workspace: 1007 tests passed, including 625 runtime, 128 Tauri unit and 132 source contracts; dashboard behavior tests passed",
+        "Rust 1.87 all-feature runtime/Tauri check; all-feature strict Clippy; full standalone Tauri shell compile",
+        "iOS and Android serial/BLE runtime cross-checks; Windows protocol and native keyring checks (full Windows app blocked by absent MinGW SQLite compiler)",
+        "Android 35 ARM64 emulator: 10 native sharing tests and 2 real Keystore instrumentation tests; release R8 DEX preserves all 49 registered JNI methods",
+        "Live Python RNS 1.4.2 strict authentication, encrypted Link exchange and 65000-byte Resource verification; 380 protocol runtime and 450 transport actor tests passed",
+        "Actual production settings markup/styles/controller browser fixture with fake IPC; not native end-to-end or physical Sideband/Columba, Linux Secret Service, background, RF or audio qualification"
       ]
     }
   },
@@ -76,8 +78,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-runtime.txt",
-      "itemCount": 2465,
-      "sha256": "11ae8fd9547b39fb2413263dcc0bc4e5f03fa0db1d37307086e5987d71f1719b"
+      "itemCount": 2493,
+      "sha256": "7a9c476f1f7a333c7f8b279a88152695e098809a5f393c60aed3d1be766d7a3c"
     },
     {
       "name": "ratspeak-tauri",
@@ -85,8 +87,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-tauri.txt",
-      "itemCount": 794,
-      "sha256": "e5c700da3c2adb819cb68ceb98dc00f41241d5819ba2ccb242e322f921093204"
+      "itemCount": 800,
+      "sha256": "d2fe81ea56e1583c7935ef32912952d111b5422705b5ee5d8b48a90e1c06d589"
     },
     {
       "name": "ratspeak",

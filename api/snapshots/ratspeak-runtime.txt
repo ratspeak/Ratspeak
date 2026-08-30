@@ -1754,6 +1754,32 @@ pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::request_andr
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::request_android_usb_permission_legacy(&self, &str) -> bool
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::set_android_ble_rnode_auto_resume(&self, bool) -> bool
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::start_or_replace_ble_rnode(&self, ratspeak_runtime::mobile_platform::NativeBleRnodeRequest) -> bool
+pub mod ratspeak_runtime::network_ownership
+pub enum ratspeak_runtime::network_ownership::LocalEndpoint
+pub ratspeak_runtime::network_ownership::LocalEndpoint::Tcp
+pub ratspeak_runtime::network_ownership::LocalEndpoint::Tcp::control_port: u16
+pub ratspeak_runtime::network_ownership::LocalEndpoint::Tcp::packet_port: u16
+pub ratspeak_runtime::network_ownership::LocalEndpoint::Unix
+pub ratspeak_runtime::network_ownership::LocalEndpoint::Unix::instance_name: alloc::string::String
+pub enum ratspeak_runtime::network_ownership::Ownership
+pub ratspeak_runtime::network_ownership::Ownership::Existing
+pub ratspeak_runtime::network_ownership::Ownership::Managed
+pub struct ratspeak_runtime::network_ownership::NetworkRequest
+pub ratspeak_runtime::network_ownership::NetworkRequest::endpoint: core::option::Option<ratspeak_runtime::network_ownership::LocalEndpoint>
+pub ratspeak_runtime::network_ownership::NetworkRequest::mode: ratspeak_runtime::network_ownership::Ownership
+pub ratspeak_runtime::network_ownership::NetworkRequest::rpc_key: core::option::Option<alloc::string::String>
+pub ratspeak_runtime::network_ownership::NetworkRequest::share: bool
+pub async fn ratspeak_runtime::network_ownership::apply(alloc::sync::Arc<ratspeak_runtime::state::AppState>, ratspeak_runtime::network_ownership::NetworkRequest) -> core::result::Result<serde_json::value::Value, alloc::string::String>
+pub fn ratspeak_runtime::network_ownership::auto_startup_error_message(&str, u16) -> alloc::string::String
+pub fn ratspeak_runtime::network_ownership::export_access(&ratspeak_runtime::state::AppState) -> core::result::Result<alloc::string::String, alloc::string::String>
+pub async fn ratspeak_runtime::network_ownership::forget_deleted_profile(&ratspeak_runtime::state::AppState, &str) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_runtime::network_ownership::import_access(alloc::string::String) -> core::result::Result<serde_json::value::Value, alloc::string::String>
+pub fn ratspeak_runtime::network_ownership::local_interfaces_allowed(&ratspeak_runtime::state::AppState) -> bool
+pub fn ratspeak_runtime::network_ownership::require_developer_mode(&ratspeak_runtime::state::AppState) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_runtime::network_ownership::require_local_interfaces(&ratspeak_runtime::state::AppState) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_runtime::network_ownership::shared_connection_ready(&rns_runtime::reticulum::ReticulumHandle) -> bool
+pub fn ratspeak_runtime::network_ownership::snapshot(&ratspeak_runtime::state::AppState) -> serde_json::value::Value
+pub async fn ratspeak_runtime::network_ownership::test_connection(alloc::sync::Arc<ratspeak_runtime::state::AppState>, ratspeak_runtime::network_ownership::NetworkRequest) -> core::result::Result<serde_json::value::Value, alloc::string::String>
 pub mod ratspeak_runtime::propagation
 pub enum ratspeak_runtime::propagation::PropagationMode
 pub ratspeak_runtime::propagation::PropagationMode::Auto
@@ -1805,6 +1831,7 @@ pub async fn ratspeak_runtime::rns::RnsManager::get_link_count(&self) -> i64
 pub async fn ratspeak_runtime::rns::RnsManager::get_path_table(&self) -> alloc::vec::Vec<serde_json::value::Value>
 pub async fn ratspeak_runtime::rns::RnsManager::get_rate_table(&self) -> alloc::vec::Vec<serde_json::value::Value>
 pub async fn ratspeak_runtime::rns::RnsManager::init(&str, core::option::Option<std::path::PathBuf>, alloc::sync::Arc<core::sync::atomic::AtomicBool>) -> core::result::Result<Self, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
+pub async fn ratspeak_runtime::rns::RnsManager::init_with_policy(&str, core::option::Option<std::path::PathBuf>, alloc::sync::Arc<core::sync::atomic::AtomicBool>, rns_runtime::shared_instance::InstancePolicy) -> core::result::Result<Self, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub async fn ratspeak_runtime::rns::RnsManager::request_path(&self, [u8; 16])
 pub async fn ratspeak_runtime::rns::RnsManager::shutdown(&self)
 pub fn ratspeak_runtime::rns::RnsManager::startup_rnode_runtimes(&self) -> &[rns_runtime::reticulum::StartupRNodeRuntime]
@@ -2100,6 +2127,7 @@ pub ratspeak_runtime::state::AppState::announce_interval_tx: tokio::sync::watch:
 pub ratspeak_runtime::state::AppState::announce_ratspeak_usage: core::sync::atomic::AtomicBool
 pub ratspeak_runtime::state::AppState::auto_active_node: std::sync::poison::rwlock::RwLock<core::option::Option<[u8; 16]>>
 pub ratspeak_runtime::state::AppState::auto_failure_counts: std::sync::poison::mutex::Mutex<std::collections::hash::map::HashMap<[u8; 16], (u32, std::time::Instant)>>
+pub ratspeak_runtime::state::AppState::auto_interface_lock: alloc::sync::Arc<tokio::sync::mutex::Mutex<()>>
 pub ratspeak_runtime::state::AppState::ble_peer_count: core::sync::atomic::AtomicUsize
 pub ratspeak_runtime::state::AppState::ble_peer_enable_lock: tokio::sync::mutex::Mutex<()>
 pub ratspeak_runtime::state::AppState::ble_peers: std::sync::poison::mutex::Mutex<alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>>

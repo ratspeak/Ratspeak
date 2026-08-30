@@ -1072,6 +1072,19 @@
           "sourceKind": "registry"
         },
         {
+          "name": "keyring",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(any(target_os = \"macos\", target_os = \"ios\"))",
+          "requirement": "^3.6.3",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "apple-native"
+          ],
+          "sourceKind": "registry"
+        },
+        {
           "name": "jni",
           "rename": null,
           "kind": null,
@@ -1102,6 +1115,34 @@
           "optional": false,
           "defaultFeatures": true,
           "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "keyring",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"linux\")",
+          "requirement": "^3.6.3",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "crypto-rust",
+            "sync-secret-service",
+            "vendored"
+          ],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "keyring",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"windows\")",
+          "requirement": "^3.6.3",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "windows-native"
+          ],
           "sourceKind": "registry"
         }
       ]
