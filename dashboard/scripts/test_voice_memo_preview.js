@@ -38,7 +38,7 @@ function element() {
     };
 }
 function harness(platform) {
-    var nodes = {}, events = {}, timers = [], clock = 0, starts = [], stops = [], media = [], sent = [], toasts = [];
+    var nodes = {}, events = {}, timers = [], clock = 0, starts = [], stops = [], recordings = [], media = [], sent = [], toasts = [];
     var draft = { data_base64: 'b2dnLW9wdXMtYnl0ZXM=', duration_ms: 4000,
         waveform: [20, 80, 120], staging_token: 'stage-preview', size: 14 };
     var hooks = {}, nextLease = 0;
@@ -79,7 +79,10 @@ function harness(platform) {
             listen: function(k, fn) { events[k] = fn; return Promise.resolve(function() {}); },
             invoke: function(command, payload) {
                 if (command === 'voice_memo_status') return Promise.resolve({ state: 'idle' });
-                if (command === 'voice_memo_start') return Promise.resolve({ session_id: 'vmr-0000000000000001' });
+                if (command === 'voice_memo_start') {
+                    recordings.push(command);
+                    return Promise.resolve({ session_id: 'vmr-0000000000000001' });
+                }
                 if (command === 'voice_memo_stop') return Promise.resolve(draft);
                 if (command === 'voice_memo_decode_data') {
                     assert.equal(platform, 'desktop', 'mobile preview must decode natively');
@@ -94,7 +97,7 @@ function harness(platform) {
                 }
                 if (command === 'voice_memo_playback_session_stop') {
                     stops.push(payload.args.lease_id);
-                    return Promise.resolve({ released: true });
+                    return hooks.stop ? hooks.stop(payload.args.lease_id) : Promise.resolve({ released: true });
                 }
                 if (command === 'cancel_attachment_stage') return Promise.resolve({ cancelled: true });
                 throw new Error('Unexpected command: ' + command);
@@ -104,7 +107,7 @@ function harness(platform) {
     context.window = context;
     vm.runInNewContext(source, context, { filename: 'voice_memos.js' });
     return {
-        starts: starts, stops: stops, sent: sent, draft: draft, hooks: hooks, context: context,
+        starts: starts, stops: stops, recordings: recordings, sent: sent, draft: draft, hooks: hooks, context: context,
         toasts: toasts, previewButton: node('voice-memo-play-btn'),
         state: function() { return node('voice-memo-play-btn').dataset.playbackState; },
         timer: function() { return node('voice-memo-timer').textContent; },
@@ -248,6 +251,41 @@ var cases = [
         h.event('playing', 1000, h.starts[0].lease);
         assert.equal(h.state(), 'starting', 'late events cannot revive retired output');
         h.event('playing', 1000); assert.equal(h.state(), 'playing');
+    }],
+    ['unsettled native start bounds retries and recording without losing late lease ownership', async function(platform) {
+        if (platform === 'desktop') return;
+        var h = harness(platform), reply = deferred(); await h.record();
+        h.hooks.start = function() { return reply.promise; };
+        await h.click('play'); await h.advance(10100);
+        await h.click('play'); await h.advance(10100);
+        assert.equal(h.state(), 'error', 'retry cannot silently wait forever for retirement');
+        assert(h.toasts.some(function(message) { return /restart Ratspeak/i.test(message); }), 'explain the safe recovery path');
+        assert.equal(h.starts.length, 1, 'never open replacement output while the old start is unresolved');
+        await h.click('discard'); await h.advance(10100);
+        await h.click('record'); await h.advance(10100);
+        assert.equal(h.context.document.getElementById('lxmf-voice-recorder').dataset.state, 'idle');
+        assert.equal(h.recordings.length, 1, 'recording cannot bypass unresolved output retirement');
+        h.hooks.start = null;
+        reply.resolve({ lease_id: h.starts[0].lease, position_ms: 0, duration_ms: 4000 }); await flush();
+        assert(h.stops.includes(h.starts[0].lease), 'late output still receives exact-lease cleanup');
+        await h.record(); await h.click('play');
+        assert.equal(h.starts.length, 2, 'a settled late retirement permits a fresh explicit action');
+    }],
+    ['unsettled native stop bounds recovery and rejected stops remain retryable', async function(platform) {
+        if (platform === 'desktop') return;
+        var h = harness(platform), reply = deferred(); await h.record();
+        await h.click('play'); h.event('playing', 1000);
+        h.hooks.stop = function() { return reply.promise; };
+        await h.advance(2100); assert.equal(h.state(), 'recovering');
+        await h.advance(10100); assert.equal(h.state(), 'error', 'recovery teardown has a deadline too');
+        reply.reject(new Error('native stop rejected')); await flush();
+        await h.click('play');
+        assert.equal(h.starts.length, 1, 'a failed release cannot be treated as permission to start');
+        assert.equal(h.state(), 'error');
+        h.hooks.stop = null;
+        await h.click('play');
+        assert.equal(h.stops[h.stops.length - 1], h.starts[0].lease, 'retry the exact failed lease');
+        assert.equal(h.starts.length, 2);
     }],
     ['failed native start does not keep unrelated early events for a later attempt', async function(platform) {
         if (platform === 'desktop') return;

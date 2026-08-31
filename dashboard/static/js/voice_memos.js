@@ -36,7 +36,9 @@
     var recordingSendAdmissionStarted = false;
     var playbackGeneration = 0;
     var playbackCoordinator = null;
-    var playbackRetirement = Promise.resolve(true);
+    var retiringPlaybacks = [];
+    var PLAYBACK_RELEASE_TIMEOUT = 10000;
+    var PLAYBACK_RELEASE_MESSAGE = 'Audio is still shutting down. Try again shortly; if it stays unavailable, restart Ratspeak. Your draft can still be sent.';
     var previewPlaybackState = 'idle';
     var draftPlaybackKey = '';
     var draftPlaybackSequence = 0;
@@ -331,9 +333,8 @@
     function stopAnyPlayback() {
         playbackGeneration += 1;
         if (playbackCoordinator && playbackCoordinator.watchdog) clearTimeout(playbackCoordinator.watchdog);
-        var stopping = Promise.resolve(true);
         if (activeAudio) {
-            stopping = retirePlaybackAudio(activeAudio);
+            retirePlaybackAudio(activeAudio);
         }
         activeAudio = null;
         var previous = activeKey;
@@ -342,7 +343,7 @@
         if (isDraftPlaybackKey(previous) && previous === draftPlaybackKey) updatePreviewPlaybackProgress(0);
         else if (previous) updatePlayerProgress(previous, 0, false, 'idle');
         syncPreviewPlayButton(false, 'idle');
-        return Promise.all([playbackRetirement, stopping]).then(function(results) { return results[1] !== false; });
+        return waitForPlaybackRetirement();
     }
     function dismissComposerForRecording() {
         var input = el('lxmf-input');
@@ -364,8 +365,16 @@
         recordingTarget = canonicalConversationHash(owner.hash);
         recordingSessionId = '';
         setRecorderState('requesting_permission');
-        return stopAnyPlayback().then(function() {
+        return stopAnyPlayback().then(function(released) {
             if (!recorderOperationIsCurrent(generation, owner)) return false;
+            if (!released) {
+                recordingGeneration += 1;
+                recordingTarget = '';
+                recordingOwner = null;
+                setRecorderState('idle');
+                showToast(PLAYBACK_RELEASE_MESSAGE, 'toast-error', 6000);
+                return false;
+            }
             return dismissComposerForRecording();
         }).then(function() {
             if (!recorderOperationIsCurrent(generation, owner)) return false;
@@ -906,8 +915,9 @@
         var previewDraft = draft;
         ready.then(function(canPlay) {
             if (!canPlay) return null;
-            return stopped.then(function() {
+            return stopped.then(function(released) {
                 if (generation !== playbackGeneration || draft !== previewDraft || recorderState !== 'review') return null;
+                if (!released) throw new Error(PLAYBACK_RELEASE_MESSAGE);
                 return ensurePlayback(key, previewDraft);
             });
         }).then(function(item) {
@@ -927,6 +937,8 @@
             return startPlaybackAttempt(coordinator);
         }).catch(function(error) {
             if (generation !== playbackGeneration) return;
+            syncPreviewPlayButton(false, 'error');
+            alertVoice((error && error.message) || 'Could not prepare voice message playback.');
             showToast((error && error.message) || 'Could not prepare voice message playback.', 'toast-error', 4000);
         });
     }
@@ -1096,11 +1108,18 @@
         clearPlaybackWatchdog(coordinator);
         if (coordinator && coordinator.audio) {
             coordinator.playingRequested = false;
-            return retirePlaybackAudio(coordinator.audio);
+            retirePlaybackAudio(coordinator.audio);
+            return waitForPlaybackRetirement();
         }
         return Promise.resolve(true);
     }
     function retirePlaybackAudio(audio) {
+        var entry = retiringPlaybacks.find(function(value) { return value.audio === audio; });
+        if (entry && entry.pending) return entry.pending;
+        if (!entry) {
+            entry = { audio: audio, pending: null };
+            retiringPlaybacks.push(entry);
+        }
         var stopping;
         try { stopping = Promise.resolve(audio.pause()); }
         catch (error) { stopping = Promise.reject(error); }
@@ -1108,12 +1127,30 @@
             window.RS.diag('warn', '[voice memo] playback release failed:', error);
             return false;
         });
-        // A timed-out start can return a lease later. Its pause operation owns
-        // that late lease; never race a new start against its exact teardown.
-        playbackRetirement = Promise.all([playbackRetirement, stopping]).then(function(results) {
-            return results[1] !== false;
+        entry.pending = stopping.then(function(released) {
+            entry.pending = null;
+            if (released !== false) {
+                retiringPlaybacks = retiringPlaybacks.filter(function(value) { return value !== entry; });
+            }
+            // Failed stops retain the exact handle/lease for the next retry.
+            return released !== false;
         });
-        return playbackRetirement;
+        return entry.pending;
+    }
+    function waitForPlaybackRetirement() {
+        // Bound the caller's wait, not the native ownership lifetime. A late
+        // start/stop still owns its exact lease; no timeout admits new audio.
+        var pending = retiringPlaybacks.slice().map(function(entry) {
+            return entry.pending || retirePlaybackAudio(entry.audio);
+        });
+        if (!pending.length) return Promise.resolve(true);
+        return new Promise(function(resolve) {
+            var timer = setTimeout(function() { resolve(false); }, PLAYBACK_RELEASE_TIMEOUT);
+            Promise.all(pending).then(function(results) {
+                clearTimeout(timer);
+                resolve(results.every(function(released) { return released !== false; }));
+            });
+        });
     }
     function setCoordinatorState(coordinator, state, message) {
         if (coordinator.preview) {
@@ -1178,7 +1215,11 @@
             releasePlaybackAttempt(coordinator).then(function(released) {
                 if (!playbackAttemptIsCurrent(coordinator, audio)) return;
                 if (released === false) {
-                    failPlaybackCoordinator(coordinator, 'Couldn\'t release playback. Try again.');
+                    failPlaybackCoordinator(coordinator, 'Audio is still shutting down. Restart Ratspeak if it stays unavailable.');
+                    if (coordinator.preview) {
+                        alertVoice(PLAYBACK_RELEASE_MESSAGE);
+                        showToast(PLAYBACK_RELEASE_MESSAGE, 'toast-error', 6000);
+                    }
                     return;
                 }
                 startPlaybackAttempt(coordinator).catch(function() {
@@ -1296,8 +1337,9 @@
         setPlayerState(player, 'loading');
         ready.then(function(canPlay) {
             if (!canPlay) return null;
-            return stopped.then(function() {
+            return stopped.then(function(released) {
                 if (generation !== playbackGeneration) return null;
+                if (!released) throw new Error(PLAYBACK_RELEASE_MESSAGE);
                 return ensurePlayback(key, source);
             });
         }).then(function(item) {
@@ -1324,7 +1366,7 @@
             var currentCoordinator = playbackCoordinator && playbackCoordinator.generation === generation &&
                 playbackCoordinator.key === key ? playbackCoordinator : null;
             if (!currentCoordinator) {
-                setPlayerState(currentPlayer, 'error', 'Voice message unavailable');
+                setPlayerState(currentPlayer, 'error', error && error.message || 'Voice message unavailable');
                 window.RS.diag('warn', '[voice memo] decode failed:', error);
             } else {
                 failPlaybackCoordinator(currentCoordinator, 'Couldn\'t play');
