@@ -24,10 +24,15 @@ var nativeStops = [];
 var toasts = [];
 var failNativeStart = false;
 var failNativeStopOnce = false;
+var deferNativeStopOnce = false;
+var resolveNativeStop = null;
 var nextLease = 1;
 var scheduledTimeouts = [];
 var rejectDesktopDecode = null;
 var resolveMetadataInspect = null;
+var desktopDecodePending = desktopScenario;
+var desktopAudio = null;
+var keyboardSeekHandler = null;
 
 function classList() {
     var values = new Set();
@@ -63,6 +68,7 @@ var waveform = {
     tabIndex: -1,
     addEventListener: function(name, callback) {
         if (name === 'click') seekHandler = callback;
+        if (name === 'keydown') keyboardSeekHandler = callback;
     },
     setAttribute: function(name, value) { this[name] = value; },
     getAttribute: function(name) { return this[name]; },
@@ -149,7 +155,19 @@ var context = {
     addEventListener: function() {},
     Audio: function() {
         mediaConstructs += 1;
-        throw new Error('mobile voice messages must not construct a WebView media element');
+        assert(desktopScenario, 'mobile voice messages must not construct a WebView media element');
+        var listeners = {}, position = 0;
+        this.duration = 4;
+        this.paused = true;
+        this.addEventListener = function(name, callback) { listeners[name] = callback; };
+        this.emit = function(name) { if (listeners[name]) listeners[name](); };
+        Object.defineProperty(this, 'currentTime', {
+            get: function() { return position; },
+            set: function(value) { position = value; this.emit('timeupdate'); },
+        });
+        this.play = function() { this.paused = false; return Promise.resolve(); };
+        this.pause = function() { this.paused = true; this.emit('timeupdate'); };
+        desktopAudio = this;
     },
     RS: {
         config: { VOICE_PLAYBACK_START_TIMEOUT: 2000 },
@@ -162,7 +180,7 @@ var context = {
             if (command === 'voice_memo_status') return Promise.resolve({ state: 'idle' });
             if (command === 'voice_memo_decode_data' || command === 'voice_memo_decode_stored') {
                 decodeCalls += 1;
-                if (desktopScenario) {
+                if (desktopDecodePending) {
                     return new Promise(function(_resolve, reject) { rejectDesktopDecode = reject; });
                 }
                 return Promise.resolve({
@@ -187,6 +205,10 @@ var context = {
                 if (failNativeStopOnce) {
                     failNativeStopOnce = false;
                     return Promise.reject(new Error('temporary release failure'));
+                }
+                if (deferNativeStopOnce) {
+                    deferNativeStopOnce = false;
+                    return new Promise(function(resolve) { resolveNativeStop = resolve; });
                 }
                 return Promise.resolve({ ok: true, released: true, position_ms: 1200 });
             }
@@ -220,6 +242,37 @@ async function runLatestTimeout() {
     throw new Error('No live timeout was scheduled');
 }
 
+async function assertPausedSeekRendering() {
+    var startsBeforeSeek = nativeStarts.length;
+    var timersBeforeSeek = scheduledTimeouts.length;
+    for (var target of [
+        { percent: 50, time: '0:02' },
+        { key: 'Home', percent: 0, time: '0:00' },
+        { key: 'End', percent: 100, time: '0:04' },
+        { percent: 50, time: '0:02' },
+    ]) {
+        if (target.key) keyboardSeekHandler({ key: target.key, preventDefault: function() {} });
+        else seekHandler({ clientX: target.percent });
+        await flush();
+        assert.equal(time.textContent, target.time, 'paused seeking must update visible time immediately');
+        assert.equal(waveform['aria-valuenow'], String(target.percent));
+        assert.equal(waveform['aria-valuetext'], target.time + ' of 0:04');
+        assert.equal(waveformStyle['--voice-playback-unplayed'], (100 - target.percent) + '%');
+        assert.equal(player.dataset.playbackState, 'paused', 'a seek is not playback or completion');
+        assert.equal(playButton['aria-label'], 'Play voice message');
+        assert.equal(playButton.disabled, false);
+        assert.equal(waveform['aria-disabled'], 'false');
+        assert.equal(nativeStarts.length, startsBeforeSeek, 'paused seeking must not open native output');
+        assert.equal(scheduledTimeouts.length, timersBeforeSeek, 'paused seeking must not arm a progress watchdog');
+    }
+    var pausedHtml = context.RS.voiceMemos.renderAudio({
+        mode: 0x10, supported: true, voice_memo_key: 'memo-test',
+        voice_memo: { duration_ms: 4000, waveform: [30, 80, 120] },
+    }, { id: 'message-test' });
+    assert(pausedHtml.includes('aria-valuetext="0:02 of 0:04"'), 'rerender must retain the paused seek');
+    assert(pausedHtml.includes('<span class="voice-memo-player-time">0:02</span>'));
+}
+
 (async function() {
     if (desktopScenario) {
         context.RS.voiceMemos.registerDraft('memo-test', {
@@ -242,6 +295,26 @@ async function runLatestTimeout() {
         assert.equal(decodeReplacement.dataset.playbackState, 'error',
             'an async decode failure must settle on the current rerendered player');
         console.log('desktop voice memo async rerender tests passed');
+
+        desktopDecodePending = false;
+        player = decodeReplacement;
+        context.RS.voiceMemos.hydratePlayers(container);
+        clickHandler();
+        await flush();
+        desktopAudio.currentTime = 1.2;
+        assert.equal(player.dataset.playbackState, 'playing');
+        clickHandler();
+        await flush();
+        assert.equal(desktopAudio.paused, true);
+        await assertPausedSeekRendering();
+        assert.equal(desktopAudio.paused, true, 'paused seek must not start the media element');
+        clickHandler();
+        await flush();
+        assert.equal(desktopAudio.currentTime, 2, 'resume must retain the paused seek position');
+        assert.equal(player.dataset.playbackState, 'starting', 'resume still requires fresh clock progress');
+        desktopAudio.currentTime = 2.08;
+        assert.equal(player.dataset.playbackState, 'playing');
+        console.log('desktop voice memo paused-seek tests passed');
         return;
     }
     assert(nativeEvents, platformName + ' must subscribe to exact native playback progress events');
@@ -365,8 +438,7 @@ async function runLatestTimeout() {
     assert.equal(waveform['aria-valuetext'], '0:01 of 0:04');
     assert.equal(waveform['aria-disabled'], 'false');
     assert.equal(time.textContent, '0:01');
-    seekHandler({ clientX: 50 });
-    await flush();
+    await assertPausedSeekRendering();
     clickHandler();
     await flush();
     assert.equal(nativeStarts[nativeStarts.length - 1].position_ms, 2000,
@@ -388,10 +460,16 @@ async function runLatestTimeout() {
     await flush();
     var frozenFirstLease = leaseId(3);
     assert.equal(nativeStarts.length, 3);
+    deferNativeStopOnce = true;
     await runLatestTimeout();
-    assert.equal(player.dataset.playbackState, 'recovering');
+    assert.equal(player.dataset.playbackState, 'recovering',
+        'a teardown timeupdate must not render recovery as a user pause');
     assert.equal(nativeStops[nativeStops.length - 1], frozenFirstLease,
         'bounded recovery must close its exact frozen worker');
+    assert.equal(nativeStarts.length, 3, 'recovery must wait for the old output to stop');
+    resolveNativeStop({ ok: true, released: true, position_ms: 1200 });
+    await flush();
+    assert.equal(player.dataset.playbackState, 'recovering');
     assert.equal(nativeStarts.length, 4, 'a frozen native start gets one fresh recovery');
     await runLatestTimeout();
     assert.equal(player.dataset.playbackState, 'error',

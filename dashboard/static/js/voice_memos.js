@@ -1191,8 +1191,16 @@
     function attachPlaybackEvents(coordinator, audio) {
         audio.addEventListener('timeupdate', function() {
             if (!playbackAttemptIsCurrent(coordinator, audio)) return;
-            if (!coordinator.playingRequested || audio.paused) return;
             var position = coordinatorPosition(coordinator);
+            if (!coordinator.playingRequested || audio.paused) {
+                var state = coordinator.preview ? previewPlaybackState : coordinator.item.ui_state;
+                // Paused seeks still update position, but are not playback
+                // progress. Teardown ticks must not overwrite recovery/error.
+                if (!coordinator.playingRequested && audio.paused && state === 'paused') {
+                    renderCoordinatorProgress(coordinator, position, 'paused');
+                }
+                return;
+            }
             if (position < coordinator.baseline) {
                 // Seeking backwards must rebase the progress deadline, not
                 // wait until the old position is reached again.
