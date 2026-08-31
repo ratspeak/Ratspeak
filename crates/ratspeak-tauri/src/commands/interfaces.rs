@@ -742,22 +742,27 @@ fn apply_transport_runtime_update(
     let runtime_allowed = local_transport_runtime_allowed(state);
     let enable = configured_enable && runtime_allowed;
 
-    let config_dir = active_rns_config_dir(state);
-    if !with_rns_config_lock(state, || {
-        crate::rns_config::set_transport_mode(&config_dir, config_enable)
-    }) {
-        return Err("Config write error".to_string());
-    }
+    // Native connectivity callbacks still arrive in client mode. They may
+    // update observed network type, but must not rewrite the retained managed
+    // config (or an explicit operator config) or control a client-side actor.
+    if runtime_allowed {
+        let config_dir = active_rns_config_dir(state);
+        if !with_rns_config_lock(state, || {
+            crate::rns_config::set_transport_mode(&config_dir, config_enable)
+        }) {
+            return Err("Config write error".to_string());
+        }
 
-    if let Some(tx) = state
-        .rns
-        .read()
-        .ok()
-        .and_then(|r| r.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
-    {
-        let _ = tx.try_send(
-            rns_transport::messages::TransportMessage::SetTransportEnabled { enabled: enable },
-        );
+        if let Some(tx) = state
+            .rns
+            .read()
+            .ok()
+            .and_then(|r| r.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
+        {
+            let _ = tx.try_send(
+                rns_transport::messages::TransportMessage::SetTransportEnabled { enabled: enable },
+            );
+        }
     }
 
     Ok(json!({
@@ -792,6 +797,11 @@ pub async fn set_transport_mode(
     state: State<'_, Arc<AppState>>,
     args: TransportModeArgs,
 ) -> AppResult<Value> {
+    let generation = state.current_identity_session_generation();
+    let _ownership = state.auto_interface_lock.lock().await;
+    if state.current_identity_session_generation() != generation {
+        return Err(AppError::bad_request("The identity changed; try again."));
+    }
     ratspeak_runtime::network_ownership::require_local_interfaces(&state)
         .map_err(AppError::bad_request)?;
     let mode = normalize_transport_mode(&args.mode)
@@ -880,6 +890,9 @@ pub async fn apply_network_type_change_transition(
         return Err(AppError::bad_request("Invalid network type"));
     }
     let _network_transition = state.network_transition_lock.lock().await;
+    // Lock order is connectivity edge -> interface ownership. Identity/mode
+    // switches never acquire the connectivity lock while holding ownership.
+    let _ownership = state.auto_interface_lock.lock().await;
     if !state.is_current_network_transition(transition) {
         return Ok(json!({ "updated": false, "stale": true }));
     }
@@ -934,6 +947,10 @@ async fn reconcile_android_auto_interfaces(
     should_spawn: bool,
     transition: u64,
 ) {
+    // The caller holds auto_interface_lock through this entire reconciliation.
+    if !ratspeak_runtime::network_ownership::local_interfaces_allowed(&state) {
+        return;
+    }
     let auto_configs: Vec<rns_interface::auto::AutoInterfaceConfig> = {
         let config_dir = active_rns_config_dir(&state);
         let v = crate::rns_config::get_all_interfaces(&config_dir);
@@ -1037,6 +1054,87 @@ pub async fn set_auto_announce(state: State<'_, Arc<AppState>>, interval: u64) -
     state.emit_to_all("auto_announce_updated", json!({ "interval": interval }));
     tracing::info!("Auto-announce interval set to {interval}s");
     Ok(json!({ "interval": interval }))
+}
+
+#[cfg(test)]
+mod network_ownership_edge_tests {
+    use super::*;
+
+    fn fixture(existing: bool) -> (tempfile::TempDir, Arc<AppState>) {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ratspeak_core::config::DashboardConfig {
+            data_root: dir.path().into(),
+            data_dir: dir.path().join(".ratspeak"),
+            rns_config_dir: dir.path().join("operator-reticulum"),
+            rns_config_dir_overridden: true,
+            max_log_entries: 200,
+        };
+        let pool = db::init_pool(dir.path()).unwrap();
+        db::init_schema(&pool).unwrap();
+        let identity = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        db::save_identity(
+            &pool,
+            identity,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "Audit",
+            "Audit",
+        );
+        db::set_active_identity(&pool, identity).unwrap();
+        db::set_setting(&pool, "transport_mode", "auto");
+        if existing {
+            db::set_setting(
+                &pool,
+                &format!("network_ownership.v1.{identity}"),
+                r#"{"mode":"existing","share":false,"endpoint":{"carrier":"tcp","packet_port":37428,"control_port":37429},"credential_ref":null}"#,
+            );
+        }
+        let state = Arc::new(AppState::new(
+            config,
+            pool,
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        ));
+        assert!(crate::rns_config::write_config(
+            &state.config.rns_config_dir,
+            "[reticulum]\nenable_transport = Yes\nshare_instance = No\n[interfaces]\n"
+        ));
+        (dir, state)
+    }
+
+    #[tokio::test]
+    async fn external_network_edges_do_not_rewrite_reticulum_config() {
+        let (_dir, state) = fixture(true);
+        let before = crate::rns_config::read_config(&state.config.rns_config_dir).unwrap();
+        apply_network_type_change(state.clone(), "wifi".into())
+            .await
+            .unwrap();
+        assert_eq!(
+            crate::rns_config::read_config(&state.config.rns_config_dir).unwrap(),
+            before
+        );
+        assert_eq!(
+            db::get_setting(&state.db, "transport_network_type").as_deref(),
+            Some("wifi")
+        );
+    }
+
+    #[tokio::test]
+    async fn managed_network_edges_wait_for_interface_ownership_then_reconcile() {
+        let (_dir, state) = fixture(false);
+        let guard = state.auto_interface_lock.lock().await;
+        let edge_state = state.clone();
+        let mut edge =
+            tokio::spawn(async move { apply_network_type_change(edge_state, "none".into()).await });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut edge)
+                .await
+                .is_err()
+        );
+        drop(guard);
+        edge.await.unwrap().unwrap();
+        let config = crate::rns_config::read_config(&state.config.rns_config_dir).unwrap();
+        assert!(config.contains("enable_transport = False"));
+    }
 }
 
 #[tauri::command]
