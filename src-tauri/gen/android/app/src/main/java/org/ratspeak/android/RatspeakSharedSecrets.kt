@@ -32,6 +32,8 @@ object RatspeakSharedSecrets {
 
     @JvmStatic
     @Synchronized
+    // KTX edit returns Unit; credential admission requires commit's Boolean result.
+    @Suppress("UseKtx")
     fun write(context: Context, id: String, secret: ByteArray) {
         require(secret.size in 1..1024)
         try {
@@ -62,6 +64,8 @@ object RatspeakSharedSecrets {
 
     @JvmStatic
     @Synchronized
+    // Deletion must report persistence failure, which KTX edit would discard.
+    @Suppress("UseKtx")
     fun delete(context: Context, id: String) {
         check(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(id).commit())
     }
