@@ -13,13 +13,15 @@ function node(id) {
     return nodes.get(id);
 }
 const field = id => node('network-owner-' + id);
-const events = {}, windowEvents = {}, calls = [];
+const events = {}, windowEvents = {}, documentEvents = {}, calls = [];
+let importReply = null;
 let developer = false;
 let data = { mode: 'managed', share: false, status: 'ready', configured: true,
     local_interfaces_allowed: true, credential_saved: false, unix_supported: false };
 let externalClass = false;
 const context = {
     document: { readyState: 'complete', getElementById: node,
+        hidden: false, addEventListener(name, fn) { documentEvents[name] = fn; },
         querySelectorAll: () => [...nodes.entries()].filter(([id]) => id.startsWith('network-owner-') && !['network-owner-notice', 'network-owner-interfaces'].includes(id)).map(([, value]) => value), createElement: () => node('remote-row'),
         body: { classList: { toggle(name, enabled) { externalClass = enabled; } } } },
     window: { ratspeakDeveloperModeEnabled: () => developer,
@@ -29,6 +31,7 @@ const context = {
         async invoke(name, args) {
             calls.push(name);
             if (name === 'api_network_ownership') return data;
+            if (name === 'import_shared_access') return importReply;
             if (name === 'test_shared_instance') throw new Error('RPC key rejected; unchanged');
             if (name === 'set_network_ownership') {
                 assert.equal(field('key').value, '', 'clear the form before awaiting IPC');
@@ -68,5 +71,29 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
     assert.equal(calls.length, before, 'hidden advanced controls cannot invoke mutations');
     events.identity_switching();
     assert.equal(field('key').value, '');
+    developer = true; windowEvents['ratspeak-developer-mode-changed']();
+    field('key').value = 'abcd'; field('import').value = 'secret';
+    context.document.hidden = true;
+    if (documentEvents.visibilitychange) documentEvents.visibilitychange();
+    assert.equal(field('key').value, '', 'backgrounding clears the secret fields');
+    assert.equal(field('import').value, '');
+    context.document.hidden = false;
+    for (const hide of ['developer', 'pagehide', 'visibility']) {
+        let resolveImport;
+        importReply = new Promise(resolve => { resolveImport = resolve; });
+        field('import').value = 'disposable access object';
+        const importing = field('import-button').events.click();
+        if (hide === 'developer') {
+            developer = false; windowEvents['ratspeak-developer-mode-changed']();
+            developer = true; windowEvents['ratspeak-developer-mode-changed']();
+        } else if (hide === 'pagehide') windowEvents.pagehide();
+        else {
+            context.document.hidden = true; documentEvents.visibilitychange();
+            context.document.hidden = false;
+        }
+        resolveImport({ endpoint: { carrier: 'tcp', packet_port: 37428, control_port: 37429 }, rpc_key: '1234' });
+        await importing;
+        assert.equal(field('key').value, '', hide + ' must invalidate pending imports, even after reopening');
+    }
     console.log('Network ownership controller: all assertions passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

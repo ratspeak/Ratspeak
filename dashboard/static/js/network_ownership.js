@@ -5,17 +5,27 @@
     var dirty = false;
     var busy = false;
     var epoch = 0;
+    var editorEnabled = false;
     function el(id) { return document.getElementById('network-owner-' + id); }
     function status(message) { if (el('status')) el('status').textContent = message || ''; }
     function clearSecrets() {
         if (el('key')) el('key').value = '';
         if (el('import')) el('import').value = '';
     }
+    function invalidateSecrets() {
+        epoch += 1;
+        clearSecrets();
+    }
     function developer() { return !!(window.ratspeakDeveloperModeEnabled && window.ratspeakDeveloperModeEnabled()); }
     function gate() {
         var section = document.getElementById('network-ownership-settings');
-        if (section) section.hidden = !developer();
-        if (!developer()) clearSecrets();
+        var enabled = developer();
+        if (section) section.hidden = !enabled;
+        if (!enabled) {
+            if (editorEnabled) invalidateSecrets();
+            else clearSecrets();
+        }
+        editorEnabled = enabled;
     }
     function fields() {
         var existing = el('mode').value === 'existing';
@@ -173,7 +183,10 @@
         el('import-button').addEventListener('click', importAccess);
         el('export').addEventListener('click', exportAccess);
         window.addEventListener('ratspeak-developer-mode-changed', gate);
-        window.addEventListener('pagehide', clearSecrets);
+        window.addEventListener('pagehide', invalidateSecrets);
+        document.addEventListener('visibilitychange', function() {
+            if (document.hidden) invalidateSecrets();
+        });
         RS.listen('network_ownership', function(data) { adopt(data, false); });
         RS.listen('stats_update', function(data) { if (data.network_ownership) adopt(data.network_ownership, false); remoteInterfaces(data); });
         RS.listen('identity_switching', function() { epoch += 1; dirty = false; clearSecrets(); current = null; });
