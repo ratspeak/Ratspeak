@@ -8263,6 +8263,26 @@ fn android_logcat_output_is_privacy_gated() {
 }
 
 #[test]
+fn dashboard_does_not_embed_development_http_servers() {
+    let mut files = Vec::new();
+    collect_files(&repo_root().join("dashboard"), &mut files);
+    for file in files {
+        if !matches!(
+            file.extension().and_then(|s| s.to_str()),
+            Some("js" | "mjs")
+        ) {
+            continue;
+        }
+        let source = read_source(&file).expect("dashboard source");
+        assert!(
+            !source.contains("node:http") && !source.contains("http.createServer("),
+            "development HTTP server must stay outside embedded frontendDist: {}",
+            file.display()
+        );
+    }
+}
+
+#[test]
 fn network_ownership_gates_real_commands_and_keeps_credentials_native() {
     let root = repo_root();
     let interfaces = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
