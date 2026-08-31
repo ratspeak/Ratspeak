@@ -112,7 +112,7 @@ var context = {
         addEventListener: function() {},
         getElementById: function() { return null; },
         querySelector: function(selector) {
-            return selector.indexOf('memo-test') !== -1 ? visiblePlayer : null;
+            return visiblePlayer && selector.indexOf(visiblePlayer.dataset.voiceKey) !== -1 ? visiblePlayer : null;
         },
     },
     navigator: androidScenario
@@ -419,6 +419,30 @@ async function runLatestTimeout() {
     await flush();
     assert.equal(player.dataset.playbackState, 'error',
         'native output startup failure must surface a retryable playback error');
+
+    // Keep the actual persisted-source path covered alongside unsent preview:
+    // it must retain native output and the same terminal/error handling.
+    failNativeStart = false;
+    player.dataset.voiceKey = 'stored-voice.ogg';
+    delete player.dataset.voiceBound;
+    context.RS.voiceMemos.hydratePlayers(container);
+    clickHandler();
+    await flush();
+    assert.equal(nativeStarts[nativeStarts.length - 1].stored_name, 'stored-voice.ogg');
+    assert.equal(nativeStarts[nativeStarts.length - 1].data_base64, undefined);
+    var storedLease = leaseId(nextLease - 1);
+    nativeEvents({ lease_id: storedLease, state: 'playing', position_ms: 800, duration_ms: 4000 });
+    nativeEvents({ lease_id: storedLease, state: 'error', position_ms: 800, duration_ms: 4000 });
+    await flush();
+    assert.equal(player.dataset.playbackState, 'error');
+    assert.equal(waveform['aria-disabled'], 'true');
+    clickHandler();
+    await flush();
+    storedLease = leaseId(nextLease - 1);
+    nativeEvents({ lease_id: storedLease, state: 'playing', position_ms: 4000, duration_ms: 4000 });
+    await flush();
+    assert.equal(player.dataset.playbackState, 'ended', 'persisted playback also finishes if the terminal event is lost');
+    assert.equal(time.textContent, '0:04');
 
     context.RS.voiceMemos.releaseInactiveMedia(false);
     draftExpiry.callback();

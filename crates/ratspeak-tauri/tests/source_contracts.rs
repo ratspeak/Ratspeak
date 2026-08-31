@@ -8893,7 +8893,12 @@ fn voice_memos_share_lxst_capture_and_use_first_class_lxmf_audio() {
     assert!(voice_memos.contains("class=\"is-empty\""));
     assert!(voice_memos.contains("function setPlaybackWaveformProgress("));
     assert!(voice_memos.contains("'--voice-playback-unplayed'"));
-    assert!(voice_memos.contains("updatePreviewPlaybackProgress(audio.duration"));
+    assert!(voice_memos.contains("updatePreviewPlaybackProgress(fraction)"));
+    assert!(voice_memos.contains("function renderCoordinatorProgress("));
+    assert!(voice_memos.contains("preview: true"));
+    assert!(voice_memos.contains("function armPlaybackWatchdog("));
+    assert!(voice_memos.contains("earlyNativePlaybackEvents[startedLease]"));
+    assert!(voice_memos.contains("Try voice message preview again"));
     assert!(voice_memos.contains("typeof isIOS === 'function' && isIOS()"));
     assert!(!voice_memos.contains("voice-memo-player-speed"));
     assert!(!voice_memos.contains("playbackSpeed"));

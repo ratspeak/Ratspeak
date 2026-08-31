@@ -36,12 +36,15 @@
     var recordingSendAdmissionStarted = false;
     var playbackGeneration = 0;
     var playbackCoordinator = null;
+    var playbackRetirement = Promise.resolve(true);
     var previewPlaybackState = 'idle';
     var draftPlaybackKey = '';
     var draftPlaybackSequence = 0;
     var DRAFT_PLAYBACK_PREFIX = '__voice_memo_draft__:';
     var pointerStartedRecording = false;
     var nativeMobilePlaybackByLease = Object.create(null);
+    var pendingNativePlaybackStarts = 0;
+    var earlyNativePlaybackEvents = Object.create(null);
     var START_FAILURE_MESSAGE = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
     var ICON_PLAY = '<path d="M8 5v14l11-7z"/>';
     var ICON_PAUSE = '<path d="M6 5h4v14H6zM14 5h4v14h-4z"/>';
@@ -330,7 +333,7 @@
         if (playbackCoordinator && playbackCoordinator.watchdog) clearTimeout(playbackCoordinator.watchdog);
         var stopping = Promise.resolve(true);
         if (activeAudio) {
-            try { stopping = Promise.resolve(activeAudio.pause()); } catch (_) {}
+            stopping = retirePlaybackAudio(activeAudio);
         }
         activeAudio = null;
         var previous = activeKey;
@@ -339,10 +342,7 @@
         if (isDraftPlaybackKey(previous) && previous === draftPlaybackKey) updatePreviewPlaybackProgress(0);
         else if (previous) updatePlayerProgress(previous, 0, false, 'idle');
         syncPreviewPlayButton(false, 'idle');
-        return stopping.catch(function(error) {
-            window.RS.diag('warn', '[voice memo] playback release failed:', error);
-            return false;
-        });
+        return Promise.all([playbackRetirement, stopping]).then(function(results) { return results[1] !== false; });
     }
     function dismissComposerForRecording() {
         var input = el('lxmf-input');
@@ -723,7 +723,21 @@
     function onNativeMobilePlaybackEvent(data) {
         var leaseId = String(data && (data.lease_id || data.session_id) || '');
         var handle = leaseId && nativeMobilePlaybackByLease[leaseId];
-        if (handle && typeof handle._nativeUpdate === 'function') handle._nativeUpdate(data);
+        if (handle && typeof handle._nativeUpdate === 'function') {
+            handle._nativeUpdate(data);
+        } else if (leaseId && pendingNativePlaybackStarts &&
+            ['playing', 'ended', 'error'].indexOf(data.state) !== -1) {
+            // Native events and the invoke reply use independent IPC paths.
+            // Keep only bounded status (never media) until the exact returned
+            // lease can be installed. A short memo may already have ended.
+            var previous = earlyNativePlaybackEvents[leaseId];
+            if (previous && previous.state !== 'playing') return;
+            earlyNativePlaybackEvents[leaseId] = {
+                state: data.state, position_ms: data.position_ms, duration_ms: data.duration_ms,
+            };
+            var leases = Object.keys(earlyNativePlaybackEvents);
+            if (leases.length > 16) delete earlyNativePlaybackEvents[leases[0]];
+        }
     }
     function createNativeMobilePlayback(item) {
         var handle = createEventedPlaybackHandle();
@@ -768,7 +782,10 @@
             if (source.data_base64) args.data_base64 = source.data_base64;
             else if (source.stored_name) args.stored_name = source.stored_name;
             else return Promise.reject(new Error('Voice message playback source is unavailable'));
-            return RS.invoke('voice_memo_playback_start', { args: args }).then(function(result) {
+            pendingNativePlaybackStarts += 1;
+            return Promise.resolve().then(function() {
+                return RS.invoke('voice_memo_playback_start', { args: args });
+            }).then(function(result) {
                 var startedLease = String(result && result.lease_id || '');
                 if (!startedLease) throw new Error('Native voice message playback did not return a lease');
                 leaseId = startedLease;
@@ -782,7 +799,13 @@
                     item.waveform = result.waveform;
                 }
                 if (!desiredPlaying) return stopLease().then(function() { return false; });
+                var early = earlyNativePlaybackEvents[startedLease];
+                delete earlyNativePlaybackEvents[startedLease];
+                if (early) handle._nativeUpdate(early);
                 return true;
+            }).finally(function() {
+                pendingNativePlaybackStarts -= 1;
+                if (!pendingNativePlaybackStarts) earlyNativePlaybackEvents = Object.create(null);
             });
         }
         handle.play = function() {
@@ -852,66 +875,6 @@
         if (usesNativeVoiceMemoPlayback()) return createNativeMobilePlayback(item);
         return createMediaPlayback(item);
     }
-    function startPreviewAttempt(coordinator) {
-        return createPlayback(coordinator.item).then(function(audio) {
-            if (coordinator.generation !== playbackGeneration) return false;
-            coordinator.audio = audio;
-            coordinator.progressProven = false;
-            coordinator.baseline = Number(audio.currentTime || 0);
-            activeAudio = audio;
-            activeKey = coordinator.key;
-            playbackCoordinator = coordinator;
-            updatePreviewPlaybackProgress(audio.duration ? audio.currentTime / audio.duration : 0);
-            syncPreviewPlayButton(false, coordinator.recoveryCount ? 'recovering' : 'starting');
-            audio.addEventListener('timeupdate', function() {
-                if (!playbackAttemptIsCurrent(coordinator, audio)) return;
-                var timer = el('voice-memo-timer');
-                if (timer) timer.textContent = formatDuration(audio.currentTime * 1000);
-                updatePreviewPlaybackProgress(audio.duration ? audio.currentTime / audio.duration : 0);
-                if (!coordinator.progressProven && audio.currentTime > coordinator.baseline + 0.02) {
-                    coordinator.progressProven = true;
-                    clearPlaybackWatchdog(coordinator);
-                    syncPreviewPlayButton(true, 'playing');
-                }
-            });
-            audio.addEventListener('ended', function() {
-                if (!playbackAttemptIsCurrent(coordinator, audio)) return;
-                clearPlaybackWatchdog(coordinator);
-                var timer = el('voice-memo-timer');
-                if (timer) timer.textContent = formatDuration(coordinator.item.duration_ms);
-                updatePreviewPlaybackProgress(1);
-                syncPreviewPlayButton(false, 'ended');
-                activeAudio = null;
-                activeKey = '';
-                playbackCoordinator = null;
-            });
-            return playWithAudioSession(audio).then(function() {
-                if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
-                clearPlaybackWatchdog(coordinator);
-                coordinator.watchdog = setTimeout(function() {
-                    if (!playbackAttemptIsCurrent(coordinator, audio) || coordinator.progressProven) return;
-                    if (coordinator.recoveryCount < 1) {
-                        coordinator.recoveryCount += 1;
-                        syncPreviewPlayButton(false, 'recovering');
-                        releasePlaybackAttempt(coordinator).then(function() {
-                            if (playbackAttemptIsCurrent(coordinator, audio)) {
-                                startPreviewAttempt(coordinator).catch(function(error) {
-                                    playbackError(coordinator, audio, error);
-                                });
-                            }
-                        });
-                        return;
-                    }
-                    playbackError(coordinator, audio, new Error('Voice message playback did not start'));
-                }, (window.RS && RS.config && RS.config.VOICE_PLAYBACK_START_TIMEOUT) || 2000);
-                return true;
-            }).catch(function(error) {
-                if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
-                playbackError(coordinator, audio, error);
-                return false;
-            });
-        });
-    }
     function togglePreviewPlayback() {
         if (recorderState !== 'review' || !draft) return;
         if (previewPlaybackState === 'starting' || previewPlaybackState === 'recovering') return;
@@ -927,32 +890,26 @@
             ready.then(function(canPlay) {
                 if (!canPlay || !playbackAttemptIsCurrent(coordinator, audio)) return;
                 if (audio.paused) {
-                    coordinator.baseline = Number(audio.currentTime || 0);
-                    coordinator.progressProven = false;
-                    syncPreviewPlayButton(false, 'starting');
-                    playWithAudioSession(audio).then(function() {
-                        if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
-                        clearPlaybackWatchdog(coordinator);
-                        coordinator.watchdog = setTimeout(function() {
-                            if (playbackAttemptIsCurrent(coordinator, audio) && !coordinator.progressProven) {
-                                playbackError(coordinator, audio, new Error('Voice message playback did not start'));
-                            }
-                        }, (window.RS && RS.config && RS.config.VOICE_PLAYBACK_START_TIMEOUT) || 2000);
-                        return true;
-                    }).catch(function(error) { playbackError(coordinator, audio, error); });
+                    coordinator.recoveryCount = 0;
+                    resumePlaybackAttempt(coordinator);
                 } else {
+                    coordinator.playingRequested = false;
                     audio.pause();
                     clearPlaybackWatchdog(coordinator);
-                    syncPreviewPlayButton(false, 'paused');
+                    setCoordinatorState(coordinator, 'paused');
                 }
             });
             return;
         }
         var stopped = stopAnyPlayback();
         var generation = playbackGeneration;
+        var previewDraft = draft;
         ready.then(function(canPlay) {
             if (!canPlay) return null;
-            return stopped.then(function() { return ensurePlayback(key, draft); });
+            return stopped.then(function() {
+                if (generation !== playbackGeneration || draft !== previewDraft || recorderState !== 'review') return null;
+                return ensurePlayback(key, previewDraft);
+            });
         }).then(function(item) {
             if (!item || generation !== playbackGeneration) return null;
             var coordinator = {
@@ -964,20 +921,14 @@
                 progressProven: false,
                 recoveryCount: 0,
                 baseline: 0,
+                preview: true,
             };
             playbackCoordinator = coordinator;
-            return startPreviewAttempt(coordinator);
+            return startPlaybackAttempt(coordinator);
         }).catch(function(error) {
             if (generation !== playbackGeneration) return;
             showToast((error && error.message) || 'Could not prepare voice message playback.', 'toast-error', 4000);
         });
-    }
-    function playbackError(coordinator, audio, error) {
-        if (!playbackAttemptIsCurrent(coordinator, audio)) return;
-        window.RS.diag('warn', '[voice memo] playback failed:', error && (error.name || error.message || error));
-        stopAnyPlayback();
-        syncPreviewPlayButton(false, 'error');
-        showToast('Could not play this voice message.', 'toast-error', 3500);
     }
     function syncPreviewPlayButton(playing, state) {
         previewPlaybackState = state || (playing ? 'playing' : 'idle');
@@ -990,8 +941,10 @@
         button.dataset.playbackState = previewPlaybackState;
         button.setAttribute('aria-label', playing ? 'Pause voice message' :
             busy ? (previewPlaybackState === 'recovering' ? 'Restoring voice message playback' : 'Starting voice message playback') :
+                previewPlaybackState === 'error' ? 'Try voice message preview again' :
                 'Play voice message');
-        button.title = playing ? 'Pause preview' : busy ? 'Preparing preview' : 'Play preview';
+        button.title = playing ? 'Pause preview' : busy ? 'Preparing preview' :
+            previewPlaybackState === 'error' ? 'Try preview again' : 'Play preview';
     }
 
     function renderAudio(audio, message) {
@@ -1142,45 +1095,127 @@
     function releasePlaybackAttempt(coordinator) {
         clearPlaybackWatchdog(coordinator);
         if (coordinator && coordinator.audio) {
-            try { return Promise.resolve(coordinator.audio.pause()); } catch (_) {}
+            coordinator.playingRequested = false;
+            return retirePlaybackAudio(coordinator.audio);
         }
         return Promise.resolve(true);
     }
-    function failPlaybackCoordinator(coordinator, message) {
-        if (!coordinator || playbackCoordinator !== coordinator) return;
-        releasePlaybackAttempt(coordinator);
-        rebindCoordinatorPlayer(coordinator);
-        if (playbackByKey[coordinator.key]) playbackByKey[coordinator.key].ui_state = 'error';
-        setPlayerState(coordinator.player, 'error', message || 'Couldn\'t play');
+    function retirePlaybackAudio(audio) {
+        var stopping;
+        try { stopping = Promise.resolve(audio.pause()); }
+        catch (error) { stopping = Promise.reject(error); }
+        stopping = stopping.catch(function(error) {
+            window.RS.diag('warn', '[voice memo] playback release failed:', error);
+            return false;
+        });
+        // A timed-out start can return a lease later. Its pause operation owns
+        // that late lease; never race a new start against its exact teardown.
+        playbackRetirement = Promise.all([playbackRetirement, stopping]).then(function(results) {
+            return results[1] !== false;
+        });
+        return playbackRetirement;
+    }
+    function setCoordinatorState(coordinator, state, message) {
+        if (coordinator.preview) {
+            syncPreviewPlayButton(state === 'playing', state);
+        } else {
+            rebindCoordinatorPlayer(coordinator);
+            setPlayerState(coordinator.player, state, message);
+        }
+    }
+    function coordinatorPosition(coordinator) {
+        var duration = Number(coordinator.item.duration_ms || 0) / 1000;
+        var position = Math.max(0, Number(coordinator.audio.currentTime) || 0);
+        return duration > 0 ? Math.min(duration, position) : position;
+    }
+    function renderCoordinatorProgress(coordinator, position, state) {
+        var duration = Number(coordinator.item.duration_ms || 0) / 1000;
+        var fraction = duration > 0 ? clampPlaybackFraction(position / duration) : 0;
+        if (coordinator.preview) {
+            updatePreviewPlaybackProgress(fraction);
+            var timer = el('voice-memo-timer');
+            if (timer) timer.textContent = formatDuration(position * 1000);
+            setCoordinatorState(coordinator, state);
+        } else {
+            rebindCoordinatorPlayer(coordinator);
+            updatePlayerProgress(coordinator.key, fraction, state === 'playing', state);
+        }
+    }
+    function finishPlaybackCoordinator(coordinator) {
+        if (!playbackAttemptIsCurrent(coordinator, coordinator.audio)) return;
+        renderCoordinatorProgress(coordinator, Number(coordinator.item.duration_ms || 0) / 1000, 'ended');
         activeAudio = null;
         activeKey = '';
         playbackCoordinator = null;
+        releasePlaybackAttempt(coordinator);
+    }
+    function failPlaybackCoordinator(coordinator, message) {
+        if (!coordinator || playbackCoordinator !== coordinator) return;
+        if (playbackByKey[coordinator.key]) playbackByKey[coordinator.key].ui_state = 'error';
+        setCoordinatorState(coordinator, 'error', message || 'Couldn\'t play');
+        activeAudio = null;
+        activeKey = '';
+        playbackCoordinator = null;
+        releasePlaybackAttempt(coordinator);
+        if (coordinator.preview) {
+            alertVoice('Could not play the preview. Try again.');
+            showToast('Could not play the preview. Try again.', 'toast-error', 3500);
+        }
+    }
+    function armPlaybackWatchdog(coordinator, audio) {
+        clearPlaybackWatchdog(coordinator);
+        coordinator.watchdog = setTimeout(function() {
+            if (!playbackAttemptIsCurrent(coordinator, audio) || !coordinator.playingRequested) return;
+            // No start reply means there is no known lease to safely replace.
+            // Fail visibly and retire it when the pending command settles.
+            if (coordinator.startPending || coordinator.recoveryCount >= 1) {
+                failPlaybackCoordinator(coordinator, 'Couldn\'t play. Try again.');
+                return;
+            }
+            coordinator.recoveryCount += 1;
+            coordinator.resumePosition = coordinatorPosition(coordinator);
+            setCoordinatorState(coordinator, 'recovering', 'Restoring playback');
+            releasePlaybackAttempt(coordinator).then(function(released) {
+                if (!playbackAttemptIsCurrent(coordinator, audio)) return;
+                if (released === false) {
+                    failPlaybackCoordinator(coordinator, 'Couldn\'t release playback. Try again.');
+                    return;
+                }
+                startPlaybackAttempt(coordinator).catch(function() {
+                    failPlaybackCoordinator(coordinator, 'Couldn\'t play');
+                });
+            });
+        }, coordinator.startPending ? 10000 :
+            (window.RS && RS.config && RS.config.VOICE_PLAYBACK_START_TIMEOUT) || 2000);
     }
     function attachPlaybackEvents(coordinator, audio) {
         audio.addEventListener('timeupdate', function() {
             if (!playbackAttemptIsCurrent(coordinator, audio)) return;
-            rebindCoordinatorPlayer(coordinator);
-            var fraction = audio.duration ? audio.currentTime / audio.duration : 0;
-            if (!coordinator.progressProven && audio.currentTime > coordinator.baseline + 0.02) {
-                coordinator.progressProven = true;
-                clearPlaybackWatchdog(coordinator);
-                setPlayerState(coordinator.player, 'playing');
+            if (!coordinator.playingRequested || audio.paused) return;
+            var position = coordinatorPosition(coordinator);
+            if (position < coordinator.baseline) {
+                // Seeking backwards must rebase the progress deadline, not
+                // wait until the old position is reached again.
+                coordinator.baseline = position;
+                if (coordinator.progressProven) renderCoordinatorProgress(coordinator, position, 'playing');
+                armPlaybackWatchdog(coordinator, audio);
             }
-            updatePlayerProgress(coordinator.key, fraction, coordinator.progressProven && !audio.paused,
-                coordinator.progressProven ? (audio.paused ? 'paused' : 'playing') : coordinator.player.dataset.playbackState);
-            var currentTime = coordinator.player.querySelector('.voice-memo-player-time');
-            if (currentTime) currentTime.textContent = formatDuration(audio.currentTime * 1000);
+            if (position > coordinator.baseline + 0.02) {
+                coordinator.baseline = position;
+                coordinator.progressProven = true;
+                renderCoordinatorProgress(coordinator, position, 'playing');
+                // Progress keeps extending one bounded liveness deadline. A
+                // single early tick is not proof the rest of the memo played.
+                armPlaybackWatchdog(coordinator, audio);
+            }
+            var duration = Number(coordinator.item.duration_ms || 0) / 1000;
+            if (coordinator.progressProven && duration > 0 && position >= duration) {
+                finishPlaybackCoordinator(coordinator);
+            }
         });
         audio.addEventListener('ended', function() {
             if (!playbackAttemptIsCurrent(coordinator, audio)) return;
-            rebindCoordinatorPlayer(coordinator);
-            clearPlaybackWatchdog(coordinator);
-            updatePlayerProgress(coordinator.key, 1, false, 'ended');
-            var finalTime = coordinator.player.querySelector('.voice-memo-player-time');
-            if (finalTime) finalTime.textContent = formatDuration(coordinator.item.duration_ms);
-            activeAudio = null;
-            activeKey = '';
-            playbackCoordinator = null;
+            finishPlaybackCoordinator(coordinator);
         });
         audio.addEventListener('error', function() {
             if (!playbackAttemptIsCurrent(coordinator, audio)) return;
@@ -1191,49 +1226,37 @@
         if (!coordinator || coordinator.generation !== playbackGeneration) return Promise.resolve(false);
         return createPlayback(coordinator.item).then(function(audio) {
             if (coordinator.generation !== playbackGeneration) return false;
-            if (!rebindCoordinatorPlayer(coordinator)) {
+            if (!coordinator.preview && !rebindCoordinatorPlayer(coordinator)) {
                 try { audio.pause(); } catch (_) {}
                 return false;
             }
             coordinator.audio = audio;
-            coordinator.progressProven = false;
-            coordinator.baseline = Number(audio.currentTime || 0);
+            if (coordinator.resumePosition) audio.currentTime = coordinator.resumePosition;
             activeAudio = audio;
             activeKey = coordinator.key;
             attachPlaybackEvents(coordinator, audio);
-            updatePlayerProgress(
-                coordinator.key,
-                audio.duration ? audio.currentTime / audio.duration : 0,
-                false,
-                coordinator.recoveryCount ? 'recovering' : 'starting',
-            );
-            return playWithAudioSession(audio).then(function() {
-                if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
-                rebindCoordinatorPlayer(coordinator);
-                clearPlaybackWatchdog(coordinator);
-                coordinator.watchdog = setTimeout(function() {
-                    if (!playbackAttemptIsCurrent(coordinator, audio) || coordinator.progressProven) return;
-                    if (coordinator.recoveryCount < 1) {
-                        coordinator.recoveryCount += 1;
-                        setPlayerState(coordinator.player, 'recovering', 'Restoring playback');
-                        releasePlaybackAttempt(coordinator).then(function() {
-                            if (coordinator.generation === playbackGeneration) {
-                                startPlaybackAttempt(coordinator).catch(function() {
-                                    failPlaybackCoordinator(coordinator, 'Couldn\'t play');
-                                });
-                            }
-                        });
-                        return;
-                    }
-                    failPlaybackCoordinator(coordinator, 'Couldn\'t play');
-                }, (window.RS && RS.config && RS.config.VOICE_PLAYBACK_START_TIMEOUT) || 2000);
-                return true;
-            }).catch(function(error) {
-                if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
-                failPlaybackCoordinator(coordinator, 'Couldn\'t play');
-                window.RS.diag('warn', '[voice memo] playback failed:', error);
-                return false;
-            });
+            return resumePlaybackAttempt(coordinator);
+        });
+    }
+    function resumePlaybackAttempt(coordinator) {
+        var audio = coordinator.audio;
+        coordinator.progressProven = false;
+        coordinator.baseline = coordinatorPosition(coordinator);
+        coordinator.playingRequested = true;
+        coordinator.startPending = true;
+        renderCoordinatorProgress(coordinator, coordinator.baseline,
+            coordinator.recoveryCount ? 'recovering' : 'starting');
+        armPlaybackWatchdog(coordinator, audio);
+        return playWithAudioSession(audio).then(function() {
+            if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
+            coordinator.startPending = false;
+            armPlaybackWatchdog(coordinator, audio);
+            return true;
+        }).catch(function(error) {
+            if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
+            failPlaybackCoordinator(coordinator, 'Couldn\'t play');
+            window.RS.diag('warn', '[voice memo] playback failed:', error);
+            return false;
         });
     }
     function togglePlayer(player) {
@@ -1250,24 +1273,9 @@
                 if (!currentPlayer) return;
                 if (audio.paused) {
                     coordinator.recoveryCount = 0;
-                    coordinator.progressProven = false;
-                    coordinator.baseline = Number(audio.currentTime || 0);
-                    setPlayerState(currentPlayer, 'starting');
-                    playWithAudioSession(audio).then(function() {
-                        if (!playbackAttemptIsCurrent(coordinator, audio)) return false;
-                        clearPlaybackWatchdog(coordinator);
-                        coordinator.watchdog = setTimeout(function() {
-                            if (playbackAttemptIsCurrent(coordinator, audio) && !coordinator.progressProven) {
-                                failPlaybackCoordinator(coordinator, 'Couldn\'t play');
-                            }
-                        }, (window.RS && RS.config && RS.config.VOICE_PLAYBACK_START_TIMEOUT) || 2000);
-                        return true;
-                    }).catch(function(error) {
-                        if (playbackAttemptIsCurrent(coordinator, audio)) {
-                            failPlaybackCoordinator(coordinator, 'Couldn\'t play');
-                        }
-                    });
+                    resumePlaybackAttempt(coordinator);
                 } else {
+                    coordinator.playingRequested = false;
                     audio.pause();
                     clearPlaybackWatchdog(coordinator);
                     setPlayerState(currentPlayer, 'paused');
@@ -1280,7 +1288,10 @@
         setPlayerState(player, 'loading');
         ready.then(function(canPlay) {
             if (!canPlay) return null;
-            return stopped.then(function() { return ensurePlayback(key, source); });
+            return stopped.then(function() {
+                if (generation !== playbackGeneration) return null;
+                return ensurePlayback(key, source);
+            });
         }).then(function(item) {
             if (!item || generation !== playbackGeneration) return null;
             var currentPlayer = currentPlayerForKey(key);
