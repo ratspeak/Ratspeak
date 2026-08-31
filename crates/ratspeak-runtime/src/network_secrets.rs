@@ -166,3 +166,34 @@ mod platform {
         Err(())
     }
 }
+
+#[cfg(all(
+    test,
+    any(
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "windows",
+        target_os = "linux"
+    )
+))]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires an unlocked native credential store; creates/deletes only a random audit entry"]
+    fn native_store_round_trip_and_deletion() {
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = delete(&self.0);
+            }
+        }
+        let entry = Cleanup(format!("audit-{}", uuid::Uuid::new_v4()));
+        let secret = Zeroizing::new(vec![0x37; 17]);
+        assert!(read(&entry.0).is_err());
+        write(&entry.0, &secret).expect("native credential write");
+        assert!(*read(&entry.0).expect("native credential read") == *secret);
+        delete(&entry.0).expect("native credential deletion");
+        assert!(read(&entry.0).is_err());
+    }
+}
