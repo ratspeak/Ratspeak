@@ -92,7 +92,7 @@
         var requestEpoch = epoch;
         return RS.invoke('api_network_ownership').then(function(data) {
             if (requestEpoch === epoch) adopt(data, reset);
-        }).catch(function(error) { status(error.message || 'Cannot read network ownership'); });
+        }).catch(function(error) { if (requestEpoch === epoch) status(error.message || 'Cannot read network ownership'); });
     }
     function request() {
         var existing = el('mode').value === 'existing';
@@ -120,31 +120,36 @@
         var ok = await rsConfirm({ message: 'Apply this network choice? Current calls and transfers will be interrupted. Your identity, messages and saved interface settings are kept.', confirmText: 'Apply' });
         if (!ok || requestEpoch !== epoch || !developer()) return;
         var args = request();
+        invalidateSecrets();
+        requestEpoch = epoch;
         setBusy(true);
-        clearSecrets();
         status('Changing network ownership…');
         try {
             var result = await RS.invoke('set_network_ownership', { args: args });
             if (requestEpoch === epoch) adopt(result, true);
         } catch (error) {
-            if (requestEpoch === epoch) { await refresh(false); status(error.message || String(error)); }
+            if (requestEpoch === epoch) {
+                await refresh(false);
+                if (requestEpoch === epoch) status(error.message || String(error));
+            }
         } finally { args.rpc_key = null; setBusy(false); }
     }
     async function importAccess() {
         if (busy || !developer()) return;
         var content = el('import').value;
         el('import').value = '';
-        var requestEpoch = epoch;
+        // The newest import or explicit form replacement owns its eventual reply.
+        var requestEpoch = ++epoch;
+        var result;
         try {
-            var result = await RS.invoke('import_shared_access', { content: content });
+            result = await RS.invoke('import_shared_access', { content: content });
             if (requestEpoch !== epoch || !developer()) return;
             applyEndpoint(result.endpoint);
             el('key').value = result.rpc_key;
-            result.rpc_key = null;
             dirty = true;
             status('Configuration loaded into the form. Test it, then apply when ready.');
-        } catch (error) { status(error.message || String(error)); }
-        finally { content = ''; }
+        } catch (error) { if (requestEpoch === epoch) status(error.message || String(error)); }
+        finally { content = ''; if (result) result.rpc_key = null; }
     }
     async function exportAccess() {
         if (busy || !developer()) return;
@@ -175,11 +180,11 @@
     function init() {
         if (!el('mode')) return;
         document.getElementById('network-ownership-settings').addEventListener('input', function() { dirty = true; fields(); });
-        el('mode').addEventListener('change', function() { dirty = true; clearSecrets(); fields(); });
+        el('mode').addEventListener('change', function() { dirty = true; invalidateSecrets(); fields(); });
         el('carrier').addEventListener('change', fields);
         el('test').addEventListener('click', test);
         el('apply').addEventListener('click', apply);
-        el('reset').addEventListener('click', function() { clearSecrets(); dirty = false; refresh(true); });
+        el('reset').addEventListener('click', function() { invalidateSecrets(); dirty = false; refresh(true); });
         el('import-button').addEventListener('click', importAccess);
         el('export').addEventListener('click', exportAccess);
         window.addEventListener('ratspeak-developer-mode-changed', gate);
