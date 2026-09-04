@@ -112,6 +112,13 @@ are permanent readable aliases for that graph. From the sibling layout above,
 `node Ratspeak/scripts/release/source-integrity.mjs verify-tags` verifies every
 component version, annotated tag, and exact commit before a build.
 
+For an automated exact checkout, use
+`node scripts/release/checkout-release-source.mjs --tag vX.Y.Z --destination ../release-source`
+from a tools checkout containing the helper. See
+[Source packaging](docs/source-packaging.md) for plan mode, archive handling, and
+Nix packaging. Fetch component `commit` values from the selected release's
+manifest; component `version` values must not be used as standalone source tags.
+
 For a release bundle, run `cargo tauri build -- --locked` from
 `Ratspeak/src-tauri`.
 Desktop bundles land under `Ratspeak/src-tauri/target/release/bundle/`.
