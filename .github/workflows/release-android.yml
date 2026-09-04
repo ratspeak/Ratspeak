@@ -155,7 +155,19 @@ jobs:
           if [ "$sdkmanager_status" -ne 0 ]; then
             exit "$sdkmanager_status"
           fi
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${{ steps.source.outputs.android_ndk }}" >> "$GITHUB_ENV"
+
+      - name: Isolate pinned Android NDK
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          PINNED_ANDROID_NDK: ${{ steps.source.outputs.android_ndk }}
+        run: |
+          # Tauri 2.11.1 ignores an existing NDK_HOME and selects the last SDK/ndk
+          # entry. Keep this view alive until the job ends: generated JNI links,
+          # Gradle lint, and the optional AAB still depend on it after APK build.
+          node scripts/release/android-sdk-view.mjs create \
+            --sdk "$ANDROID_HOME" --ndk "$PINNED_ANDROID_NDK" \
+            --parent "$RUNNER_TEMP" --github-env "$GITHUB_ENV"
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
@@ -191,24 +203,45 @@ jobs:
       - name: Build signed Android APKs
         shell: bash
         working-directory: Ratspeak/src-tauri
+        env:
+          PINNED_ANDROID_NDK: ${{ steps.source.outputs.android_ndk }}
         run: |
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
-          cargo tauri android build --target aarch64 armv7 x86_64 --apk --split-per-abi -- --locked
+          node ../scripts/release/android-sdk-view.mjs verify \
+            --view "$RATSPEAK_ANDROID_SDK_VIEW" --ndk "$PINNED_ANDROID_NDK"
+          cargo tauri android build --target aarch64 armv7 x86_64 --apk --split-per-abi -- --locked \
+            2>&1 | tee "$RUNNER_TEMP/ratspeak-android-apk-build.log"
+          node ../scripts/release/android-sdk-view.mjs verify \
+            --view "$RATSPEAK_ANDROID_SDK_VIEW" --ndk "$PINNED_ANDROID_NDK" \
+            --build-log "$RUNNER_TEMP/ratspeak-android-apk-build.log"
 
       - name: Lint Android release variant
         shell: bash
         working-directory: Ratspeak/src-tauri/gen/android
-        run: ./gradlew :app:lintArm64Release --warning-mode all
+        env:
+          PINNED_ANDROID_NDK: ${{ steps.source.outputs.android_ndk }}
+        run: |
+          node ../../../scripts/release/android-sdk-view.mjs verify \
+            --view "$RATSPEAK_ANDROID_SDK_VIEW" --ndk "$PINNED_ANDROID_NDK"
+          ./gradlew :app:lintArm64Release --warning-mode all
 
       - name: Build signed Android AAB
         if: ${{ inputs.upload_play }}
         shell: bash
         working-directory: Ratspeak/src-tauri
+        env:
+          PINNED_ANDROID_NDK: ${{ steps.source.outputs.android_ndk }}
         run: |
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
-          cargo tauri android build --target aarch64 armv7 x86_64 --aab -- --locked
+          node ../scripts/release/android-sdk-view.mjs verify \
+            --view "$RATSPEAK_ANDROID_SDK_VIEW" --ndk "$PINNED_ANDROID_NDK"
+          cargo tauri android build --target aarch64 armv7 x86_64 --aab -- --locked \
+            2>&1 | tee "$RUNNER_TEMP/ratspeak-android-aab-build.log"
+          node ../scripts/release/android-sdk-view.mjs verify \
+            --view "$RATSPEAK_ANDROID_SDK_VIEW" --ndk "$PINNED_ANDROID_NDK" \
+            --build-log "$RUNNER_TEMP/ratspeak-android-aab-build.log"
 
       - name: Validate Android JNI boundaries in final artifacts
         shell: bash

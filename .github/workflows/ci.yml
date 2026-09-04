@@ -138,7 +138,7 @@ jobs:
         run: bash scripts/ci/check-workflow-dependency-pins.sh
         working-directory: Ratspeak
       - name: Validate reviewed source set
-        run: node --test scripts/release/source-integrity.test.mjs
+        run: node --test scripts/release/*.test.mjs
         working-directory: Ratspeak
       - name: Build dashboard CSS
         run: bash dashboard/build-css.sh
@@ -390,11 +390,11 @@ jobs:
           path: lrgp-rs
           fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        if: matrix.native_android_lint
+        if: matrix.target == 'aarch64-linux-android'
         with:
           node-version: 22.22.0
       - name: Load reviewed mobile toolchains
-        if: matrix.native_android_lint
+        if: matrix.target == 'aarch64-linux-android'
         id: mobile-source
         working-directory: Ratspeak
         run: node scripts/release/source-integrity.mjs github-outputs >> "$GITHUB_OUTPUT"
@@ -408,39 +408,54 @@ jobs:
           cache-bin: false
           workspaces: Ratspeak/src-tauri
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: nttld/setup-ndk@ed92fe6cadad69be94a966a7ee3271275e62f779
-        if: matrix.target == 'aarch64-linux-android'
-        id: setup-ndk
-        with:
-          ndk-version: r27d
-          add-to-path: false
       - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
-        if: matrix.native_android_lint
+        if: matrix.target == 'aarch64-linux-android'
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ steps.mobile-source.outputs.java }}
           cache: gradle
           cache-dependency-path: Ratspeak/src-tauri/gen/android/**/*.gradle*
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
+        if: matrix.target == 'aarch64-linux-android'
+      - name: Install and isolate reviewed Android NDK
+        if: matrix.target == 'aarch64-linux-android'
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          PINNED_ANDROID_NDK: ${{ steps.mobile-source.outputs.android_ndk }}
+        run: |
+          set +e +o pipefail
+          yes | sdkmanager "ndk;$PINNED_ANDROID_NDK"
+          sdkmanager_status=${PIPESTATUS[1]}
+          set -e -o pipefail
+          test "$sdkmanager_status" -eq 0
+          node scripts/release/android-sdk-view.mjs create \
+            --sdk "$ANDROID_HOME" --ndk "$PINNED_ANDROID_NDK" \
+            --parent "$RUNNER_TEMP" --github-env "$GITHUB_ENV"
       - name: Install Tauri CLI
         if: matrix.native_android_lint
         run: cargo install tauri-cli --version "${{ steps.mobile-source.outputs.tauri_cli }}" --locked
       - name: Clippy Android
         if: matrix.target == 'aarch64-linux-android'
+        shell: bash
         working-directory: Ratspeak
         env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-          AR_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar
-          CC_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang
-          CXX_aarch64_linux_android: ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++
+          PINNED_ANDROID_NDK: ${{ steps.mobile-source.outputs.android_ndk }}
           TAURI_ANDROID_PROJECT_PATH: ${{ github.workspace }}/Ratspeak/src-tauri/gen/android
           TAURI_ANDROID_PACKAGE_UNESCAPED: org.ratspeak.android
           WRY_ANDROID_PACKAGE: org.ratspeak.android
-        run: cargo clippy --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --all-targets --all-features --locked -- -D warnings
+        run: |
+          node scripts/release/android-sdk-view.mjs verify --view "$RATSPEAK_ANDROID_SDK_VIEW" --ndk "$PINNED_ANDROID_NDK"
+          export AR_aarch64_linux_android="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar"
+          export CC_aarch64_linux_android="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
+          export CXX_aarch64_linux_android="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++"
+          cargo clippy --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --all-targets --all-features --locked -- -D warnings
       - name: Build minified Android APK and run release lint
         if: matrix.native_android_lint
+        shell: bash
         working-directory: Ratspeak/src-tauri
         env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+          PINNED_ANDROID_NDK: ${{ steps.mobile-source.outputs.android_ndk }}
           TAURI_ANDROID_PROJECT_PATH: ${{ github.workspace }}/Ratspeak/src-tauri/gen/android
           TAURI_ANDROID_PACKAGE_UNESCAPED: org.ratspeak.android
           WRY_ANDROID_PACKAGE: org.ratspeak.android
@@ -449,7 +464,10 @@ jobs:
           test -s gen/android/app/tauri.build.gradle.kts
           unset TAURI_CONFIG
           unset TAURI_DEV_HOST
-          cargo tauri android build --target aarch64 --apk -- --locked
+          cargo tauri android build --target aarch64 --apk -- --locked 2>&1 | tee "$RUNNER_TEMP/ratspeak-android-ci-build.log"
+          node ../scripts/release/android-sdk-view.mjs verify \
+            --view "$RATSPEAK_ANDROID_SDK_VIEW" --ndk "$PINNED_ANDROID_NDK" \
+            --build-log "$RUNNER_TEMP/ratspeak-android-ci-build.log"
           ./gen/android/gradlew -p gen/android :app:lintArm64Release --warning-mode all --no-daemon
           apk=gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
           test -f "$apk"
