@@ -26,6 +26,8 @@ var failNativeStart = false;
 var failNativeStopOnce = false;
 var deferNativeStopOnce = false;
 var resolveNativeStop = null;
+var deferNativeStartOnce = false;
+var resolveNativeStart = null;
 var nextLease = 1;
 var scheduledTimeouts = [];
 var rejectDesktopDecode = null;
@@ -193,12 +195,19 @@ var context = {
             if (command === 'voice_memo_playback_start') {
                 nativeStarts.push(payload.args);
                 if (failNativeStart) return Promise.reject(new Error('native output unavailable'));
-                return Promise.resolve({
+                var started = {
                     lease_id: leaseId(nextLease++),
                     position_ms: payload.args.position_ms,
                     duration_ms: 4000,
                     waveform: [30, 80, 120],
-                });
+                };
+                if (deferNativeStartOnce) {
+                    deferNativeStartOnce = false;
+                    return new Promise(function(resolve) {
+                        resolveNativeStart = function() { resolve(started); };
+                    });
+                }
+                return Promise.resolve(started);
             }
             if (command === 'voice_memo_playback_session_stop') {
                 nativeStops.push(payload.args.lease_id);
@@ -521,6 +530,88 @@ async function assertPausedSeekRendering() {
     await flush();
     assert.equal(player.dataset.playbackState, 'ended', 'persisted playback also finishes if the terminal event is lost');
     assert.equal(time.textContent, '0:04');
+
+    clickHandler();
+    await flush();
+    var seekLease = leaseId(nextLease - 1);
+    nativeEvents({ lease_id: seekLease, state: 'playing', position_ms: 1200, duration_ms: 4000 });
+    seekHandler({ clientX: 75 });
+    assert.equal(time.textContent, '0:03', 'active seek renders its target immediately');
+    await flush();
+    assert.equal(nativeStops[nativeStops.length - 1], seekLease);
+    assert.equal(nativeStarts[nativeStarts.length - 1].position_ms, 3000,
+        'the previous lease stop position must not overwrite an active seek');
+
+    seekLease = leaseId(nextLease - 1);
+    nativeEvents({ lease_id: seekLease, state: 'playing', position_ms: 3080, duration_ms: 4000 });
+    deferNativeStopOnce = true;
+    clickHandler();
+    await flush();
+    var startsBeforePendingSeek = nativeStarts.length;
+    seekHandler({ clientX: 25 });
+    assert.equal(time.textContent, '0:01');
+    resolveNativeStop({ ok: true, released: true, position_ms: 3200 });
+    await flush();
+    assert.equal(time.textContent, '0:01', 'late pause acknowledgment preserves the newer seek');
+    assert.equal(nativeStarts.length, startsBeforePendingSeek, 'seeking during pause must stay paused');
+    clickHandler();
+    await flush();
+    assert.equal(nativeStarts[nativeStarts.length - 1].position_ms, 1000);
+
+    seekLease = leaseId(nextLease - 1);
+    nativeEvents({ lease_id: seekLease, state: 'playing', position_ms: 1080, duration_ms: 4000 });
+    deferNativeStopOnce = true;
+    seekHandler({ clientX: 75 });
+    // An event already queued for the old lease must not undo newer user intent.
+    nativeEvents({ lease_id: seekLease, state: 'playing', position_ms: 1300, duration_ms: 4000 });
+    nativeEvents({ lease_id: seekLease, state: 'ended', position_ms: 4000, duration_ms: 4000 });
+    assert.equal(time.textContent, '0:03');
+    assert.notEqual(player.dataset.playbackState, 'ended', 'the retired output cannot end the replacement seek');
+    await flush();
+    seekHandler({ clientX: 25 });
+    seekHandler({ clientX: 50 });
+    var startsBeforeRepeatedSeeks = nativeStarts.length;
+    resolveNativeStop({ ok: true, released: true, position_ms: 1400 });
+    await flush();
+    assert.equal(nativeStarts.length, startsBeforeRepeatedSeeks + 1,
+        'seeks queued during retirement coalesce into one replacement output');
+    assert.equal(nativeStarts[nativeStarts.length - 1].position_ms, 2000,
+        'the last of several seeks wins');
+
+    seekLease = leaseId(nextLease - 1);
+    nativeEvents({ lease_id: seekLease, state: 'playing', position_ms: 2080, duration_ms: 4000 });
+    deferNativeStartOnce = true;
+    seekHandler({ clientX: 25 });
+    await flush();
+    var pendingSeekLease = leaseId(nextLease - 1);
+    assert.equal(nativeStarts[nativeStarts.length - 1].position_ms, 1000);
+    seekHandler({ clientX: 75 });
+    // A short obsolete output can end before its start reply arrives.
+    nativeEvents({ lease_id: pendingSeekLease, state: 'ended', position_ms: 4000, duration_ms: 4000 });
+    resolveNativeStart();
+    await flush();
+    assert.equal(nativeStops[nativeStops.length - 1], pendingSeekLease,
+        'a late start reply must retire its exact output before applying the new seek');
+    assert.equal(nativeStarts[nativeStarts.length - 1].position_ms, 3000,
+        'seeking while a start reply is pending must preserve the newer target');
+    assert.notEqual(player.dataset.playbackState, 'ended');
+
+    seekLease = leaseId(nextLease - 1);
+    nativeEvents({ lease_id: seekLease, state: 'playing', position_ms: 3080, duration_ms: 4000 });
+    failNativeStopOnce = true;
+    var startsBeforeFailedSeek = nativeStarts.length;
+    seekHandler({ clientX: 50 });
+    await flush();
+    assert.equal(nativeStarts.length, startsBeforeFailedSeek, 'a failed stop cannot admit replacement output');
+    nativeEvents({ lease_id: seekLease, state: 'playing', position_ms: 3300, duration_ms: 4000 });
+    assert.equal(time.textContent, '0:02', 'unreleased old output cannot overwrite the seek intent');
+    seekHandler({ clientX: 25 });
+    await flush();
+    assert.equal(nativeStops[nativeStops.length - 1], seekLease,
+        'a later seek retries retirement of the exact failed lease');
+    assert.equal(nativeStarts.length, startsBeforeFailedSeek + 1);
+    assert.equal(nativeStarts[nativeStarts.length - 1].position_ms, 1000);
+    await context.RS.voiceMemos.stopPlayback();
 
     context.RS.voiceMemos.releaseInactiveMedia(false);
     draftExpiry.callback();

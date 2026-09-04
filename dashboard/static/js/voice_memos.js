@@ -753,6 +753,8 @@
         var source = item.nativeSource || {};
         var leaseId = '';
         var positionMs = 0;
+        var seekRevision = 0;
+        var leaseSeekRevision = 0;
         var desiredPlaying = false;
         var transition = Promise.resolve();
         handle.nativeVoiceMemo = true;
@@ -766,12 +768,14 @@
         function stopLease() {
             if (!leaseId) return Promise.resolve(true);
             var stoppingLease = leaseId;
+            var stoppingSeekRevision = leaseSeekRevision;
             delete nativeMobilePlaybackByLease[stoppingLease];
             leaseId = '';
             return RS.invoke('voice_memo_playback_session_stop', {
                 args: { lease_id: stoppingLease },
             }).then(function(result) {
-                if (result && Number.isFinite(Number(result.position_ms))) {
+                if (stoppingSeekRevision === seekRevision && result &&
+                    result.position_ms != null && Number.isFinite(Number(result.position_ms))) {
                     positionMs = Math.max(0, Number(result.position_ms));
                     handle._emit('timeupdate');
                 }
@@ -787,6 +791,7 @@
         function startLease() {
             if (!desiredPlaying) return false;
             if (handle.duration && positionMs >= handle.duration * 1000) positionMs = 0;
+            var startingSeekRevision = seekRevision;
             var args = { position_ms: Math.max(0, Math.round(positionMs)) };
             if (source.data_base64) args.data_base64 = source.data_base64;
             else if (source.stored_name) args.stored_name = source.stored_name;
@@ -798,8 +803,11 @@
                 var startedLease = String(result && result.lease_id || '');
                 if (!startedLease) throw new Error('Native voice message playback did not return a lease');
                 leaseId = startedLease;
+                leaseSeekRevision = startingSeekRevision;
                 nativeMobilePlaybackByLease[startedLease] = handle;
-                positionMs = Math.max(0, Number(result.position_ms || positionMs));
+                if (startingSeekRevision === seekRevision && result.position_ms != null) {
+                    positionMs = Math.max(0, Number(result.position_ms));
+                }
                 if (Number(result.duration_ms) > 0) {
                     item.duration_ms = Number(result.duration_ms);
                     handle.duration = item.duration_ms / 1000;
@@ -808,6 +816,7 @@
                     item.waveform = result.waveform;
                 }
                 if (!desiredPlaying) return stopLease().then(function() { return false; });
+                if (startingSeekRevision !== seekRevision) return stopLease().then(startLease);
                 var early = earlyNativePlaybackEvents[startedLease];
                 delete earlyNativePlaybackEvents[startedLease];
                 if (early) handle._nativeUpdate(early);
@@ -833,6 +842,8 @@
             });
         };
         handle._nativeUpdate = function(data) {
+            // Progress from output that is being replaced cannot undo a newer seek.
+            if (leaseSeekRevision !== seekRevision) return;
             positionMs = Math.max(0, Number(data && data.position_ms || positionMs));
             if (Number(data && data.duration_ms) > 0) {
                 item.duration_ms = Number(data.duration_ms);
@@ -861,10 +872,12 @@
         Object.defineProperty(handle, 'currentTime', {
             get: function() { return positionMs / 1000; },
             set: function(value) {
+                seekRevision += 1;
                 positionMs = Math.max(0, Math.min(handle.duration || Infinity, Number(value) || 0)) * 1000;
                 handle._emit('timeupdate');
                 if (!leaseId) return;
                 queueTransition(function() {
+                    if (!leaseId || leaseSeekRevision === seekRevision) return true;
                     return stopLease().then(function() {
                         return desiredPlaying ? startLease() : true;
                     });
