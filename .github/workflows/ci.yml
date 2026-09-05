@@ -129,10 +129,16 @@ jobs:
             libdbus-1-dev \
             pkg-config
       - name: Validate shell scripts
-        run: bash -n dashboard/build-css.sh scripts/release/*.sh
+        run: |
+          for script in dashboard/build-css.sh scripts/release/*.sh; do
+            bash -n "$script" || exit 1
+          done
         working-directory: Ratspeak
       - name: Validate Android JNI source boundary
         run: python3 scripts/release/assert-android-jni-boundaries.py source
+        working-directory: Ratspeak
+      - name: Test Android artifact page-alignment gate
+        run: python3 -m unittest discover -s scripts/release -p 'test_android_page_alignment.py'
         working-directory: Ratspeak
       - name: Validate ordinary workflow dependency pins
         run: bash scripts/ci/check-workflow-dependency-pins.sh
@@ -472,6 +478,7 @@ jobs:
           apk=gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
           test -f "$apk"
           python3 ../scripts/release/assert-android-jni-boundaries.py archive "$apk"
+          python3 ../scripts/release/assert-android-page-alignment.py "$apk"
       - name: Clippy iOS simulator
         if: matrix.target == 'aarch64-apple-ios-sim'
         working-directory: Ratspeak

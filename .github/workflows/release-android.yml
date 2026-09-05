@@ -255,6 +255,7 @@ jobs:
           test "${#artifacts[@]}" -ge 3
           for artifact in "${artifacts[@]}"; do
             python3 scripts/release/assert-android-jni-boundaries.py archive "$artifact"
+            python3 scripts/release/assert-android-page-alignment.py "$artifact"
           done
 
       - name: Check for bundled dev URLs

@@ -1,6 +1,32 @@
 fn main() {
+    configure_android_page_size();
     build_dashboard_css();
     tauri_build::build()
+}
+
+fn configure_android_page_size() {
+    // The build script runs on the host, so cfg!(target_os) would select the
+    // wrong platform during cross-compilation. Use Cargo's target metadata.
+    let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let pointer_width = std::env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap_or_default();
+    for argument in android_page_size_link_args(&target_os, &pointer_width) {
+        println!("cargo:rustc-link-arg={argument}");
+    }
+}
+
+fn android_page_size_link_args(target_os: &str, pointer_width: &str) -> &'static [&'static str] {
+    if target_os == "android" && pointer_width == "64" {
+        // NDK r27 requires both options for 16 KiB PT_LOAD alignment and safe
+        // RELRO boundaries. Keep the reviewed NDK pin; do not depend on a newer
+        // SDK installation silently choosing different linker defaults.
+        // https://developer.android.com/guide/practices/page-sizes
+        &[
+            "-Wl,-z,max-page-size=16384",
+            "-Wl,-z,common-page-size=16384",
+        ]
+    } else {
+        &[]
+    }
 }
 
 fn build_dashboard_css() {
@@ -51,5 +77,40 @@ fn build_dashboard_css() {
     {
         fs::write(&out, bundle)
             .unwrap_or_else(|err| panic!("failed to write {}: {}", out.display(), err));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::android_page_size_link_args;
+
+    #[test]
+    fn android_64_bit_targets_get_both_page_size_linker_options() {
+        assert_eq!(
+            android_page_size_link_args("android", "64"),
+            &[
+                "-Wl,-z,max-page-size=16384",
+                "-Wl,-z,common-page-size=16384"
+            ]
+        );
+    }
+
+    #[test]
+    fn android_32_bit_targets_are_unchanged() {
+        assert!(android_page_size_link_args("android", "32").is_empty());
+    }
+
+    #[test]
+    fn desktop_and_ios_linkers_are_unchanged() {
+        for target in ["linux", "macos", "ios", "windows"] {
+            assert!(android_page_size_link_args(target, "64").is_empty());
+        }
+    }
+
+    #[test]
+    fn missing_or_unknown_target_metadata_does_not_emit_android_flags() {
+        for (target, width) in [("", "64"), ("android", ""), ("android", "128")] {
+            assert!(android_page_size_link_args(target, width).is_empty());
+        }
     }
 }
