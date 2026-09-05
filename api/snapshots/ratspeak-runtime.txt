@@ -1735,6 +1735,7 @@ pub ratspeak_runtime::mobile_platform::NativeBleRnodeRequest::tx_power: i8
 pub struct ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge
 impl ratspeak_runtime::mobile_platform::MobilePlatformBridge for ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::disconnect_ble_rnode(&self, ratspeak_runtime::mobile_platform::NativeBleRnodeDisconnect<'_>) -> bool
+pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::forget_shared_text_drafts(&self, core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::replay_platform_state(&self)
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::request_android_usb_permission(&self, u16, u16, core::option::Option<&str>) -> bool
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::request_android_usb_permission_legacy(&self, &str) -> bool
@@ -1742,6 +1743,7 @@ pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::set_android_
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::start_or_replace_ble_rnode(&self, ratspeak_runtime::mobile_platform::NativeBleRnodeRequest) -> bool
 pub trait ratspeak_runtime::mobile_platform::MobilePlatformBridge: core::marker::Send + core::marker::Sync
 pub fn ratspeak_runtime::mobile_platform::MobilePlatformBridge::disconnect_ble_rnode(&self, ratspeak_runtime::mobile_platform::NativeBleRnodeDisconnect<'_>) -> bool
+pub fn ratspeak_runtime::mobile_platform::MobilePlatformBridge::forget_shared_text_drafts(&self, core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_runtime::mobile_platform::MobilePlatformBridge::replay_platform_state(&self)
 pub fn ratspeak_runtime::mobile_platform::MobilePlatformBridge::request_android_usb_permission(&self, u16, u16, core::option::Option<&str>) -> bool
 pub fn ratspeak_runtime::mobile_platform::MobilePlatformBridge::request_android_usb_permission_legacy(&self, &str) -> bool
@@ -1749,6 +1751,7 @@ pub fn ratspeak_runtime::mobile_platform::MobilePlatformBridge::set_android_ble_
 pub fn ratspeak_runtime::mobile_platform::MobilePlatformBridge::start_or_replace_ble_rnode(&self, ratspeak_runtime::mobile_platform::NativeBleRnodeRequest) -> bool
 impl ratspeak_runtime::mobile_platform::MobilePlatformBridge for ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::disconnect_ble_rnode(&self, ratspeak_runtime::mobile_platform::NativeBleRnodeDisconnect<'_>) -> bool
+pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::forget_shared_text_drafts(&self, core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::replay_platform_state(&self)
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::request_android_usb_permission(&self, u16, u16, core::option::Option<&str>) -> bool
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::request_android_usb_permission_legacy(&self, &str) -> bool

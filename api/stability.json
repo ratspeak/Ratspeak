@@ -19,8 +19,8 @@
     "sourceCommit": "fc78e4926c696a921f308d238ef1b620e0db0078"
   },
   "snapshotSource": {
-    "commit": "699ddfc08c9670dc0288dbc156dd6fa955ccc7c7",
-    "capturedOn": "2026-08-30",
+    "commit": "4c47d379c56505669320da1094fbf14bbda75562",
+    "capturedOn": "2026-09-05",
     "review": {
       "areas": [
         "application domain and configuration",
@@ -28,7 +28,8 @@
         "Reticulum and messaging runtime",
         "Tauri commands and events",
         "desktop and mobile application shell",
-        "profile-scoped shared-stack ownership, protected credentials and transactional switching"
+        "profile-scoped shared-stack ownership, protected credentials and transactional switching",
+        "Android inbound text sharing and identity-locked native draft cleanup"
       ],
       "canonicalDependencies": [
         "lxmf_core::message_api",
@@ -37,7 +38,7 @@
       ],
       "classification": "application-internal lifecycle, persistence, mobile integration and explicit network ownership",
       "publicApiDiff": {
-        "added": 157,
+        "added": 159,
         "removed": 12
       },
       "semver": "no public-library consequence; application integration only",
@@ -49,7 +50,9 @@
         "iOS and Android serial/BLE runtime cross-checks; Windows protocol and native keyring checks (full Windows app blocked by absent MinGW SQLite compiler)",
         "Android 35 ARM64 emulator: 10 native sharing tests and 2 real Keystore instrumentation tests; release R8 DEX preserves all 49 registered JNI methods",
         "Live Python RNS 1.4.2 strict authentication, encrypted Link exchange and 65000-byte Resource verification; 380 protocol runtime and 450 transport actor tests passed",
-        "Actual production settings markup/styles/controller browser fixture with fake IPC; not native end-to-end or physical Sideband/Columba, Linux Secret Service, background, RF or audio qualification"
+        "Actual production settings markup/styles/controller browser fixture with fake IPC; not native end-to-end or physical Sideband/Columba, Linux Secret Service, background, RF or audio qualification",
+        "September 5 Android text sharing: 54 frontend suites, 1014 workspace tests (one credential-store test explicitly ignored), 33 shell tests, strict host/Android/iOS simulator all-feature Clippy and Rust 1.87 all-feature workspace check",
+        "Fresh ARM64 debug APK on isolated API35 AVD: cold/warm text intake, Unicode draft selection, no automatic send, edited draft process recovery, exact native revision/Activity/identity rejection, explicit locally queued send, repeat/recreation; three real Keystore/AtomicFile instrumentation tests. Real source apps and physical acceptance remain open."
       ]
     }
   },
@@ -61,6 +64,14 @@
     "impact": "No dependency upgrade, runtime correction, Rust API snapshot change, wire-format change, MSRV change or desktop/iOS dependency change. Existing runtime/shell JNI audio bridges and rsLXST remain unchanged.",
     "compatibility": "Application-internal manifest addition; preserves the existing Rust snapshot source, cumulative API review and compatibility floor.",
     "verification": "The reproduced manifest check differs only by this dependency record. Android native behavior requires separate target/artifact/device qualification; host API snapshots do not establish it."
+  },
+  "textShareReview": {
+    "sourceCommit": "4c47d379c56505669320da1094fbf14bbda75562",
+    "reviewedOn": "2026-09-05",
+    "rustApi": "One defaulted application-internal MobilePlatformBridge::forget_shared_text_drafts method, including its Noop implementation (two unique added API lines, three rendered occurrences); no removals. Non-Android default is inert; Android missing adapter fails closed. Existing identity lifecycle locks enclose native cleanup before identity deletion/reset.",
+    "nativeContracts": "Android text/plain ACTION_SEND; three kept JNI methods; list_text_shares and edit_text_share commands; payload-free text_shares_available event. Version 1 bounded native queue uses Android Keystore AES-GCM and AtomicFile in noBackupFilesDir. Explicit assignment/revision/identity/Activity authority, send-start recovery marker, explicit Send, exact acceptance/discard and reset cleanup.",
+    "impact": "No Reticulum/LXMF/LXST wire-format or dependency/MSRV change. No iOS Share Extension or entitlement change. Old shared-network/audio contracts retained. Reviewed separately from the earlier notification JNI manifest correction.",
+    "limits": "Eight pending items, 64 KiB UTF-8 each; text/URLs only, one recipient, no implicit send or URI dereference. Typed edits debounce for 250 ms; crash before persistence can retain the last committed draft. Hardware/OEM/source-app and final versioned artifact qualification remain separate gates."
   },
   "packages": [
     {
@@ -87,8 +98,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-runtime.txt",
-      "itemCount": 2493,
-      "sha256": "7a9c476f1f7a333c7f8b279a88152695e098809a5f393c60aed3d1be766d7a3c"
+      "itemCount": 2496,
+      "sha256": "354b83eb2d261b35b27b1325357d1da0dcbdf639c18f9511f25d8fe00dc5bf55"
     },
     {
       "name": "ratspeak-tauri",
