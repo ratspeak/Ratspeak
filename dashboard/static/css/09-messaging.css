@@ -2161,3 +2161,14 @@ html[data-input-modality="touch"] .msg-ctx-btn {
     color: var(--text-muted);
     font-family: var(--font-mono);
 }
+/* System sharing uses the canonical sheet/recipient rows and theme tokens. */
+.text-share-summary, .text-share-footer { padding: var(--space-3) var(--space-4); flex-shrink: 0; }
+.text-share-sender { color: var(--text-muted); font-size: var(--text-xs); margin: 0 0 var(--space-2); }
+.text-share-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 5em; overflow: auto; margin: 0 0 var(--space-3); font-size: var(--text-sm); color: var(--text-secondary); }
+.text-share-tabs { display: flex; gap: var(--space-2); margin-bottom: var(--space-3); }
+.text-share-tabs[hidden] { display: none; }
+.text-share-tabs button[aria-pressed="true"] { color: var(--accent); background: var(--accent-a12); }
+.text-share-labels { display: flex; flex-direction: column; min-width: 0; text-align: left; }
+.text-share-avatar { display: flex; width: 32px; height: 32px; flex-shrink: 0; }
+.text-share-pending { margin: 0 var(--space-3) var(--space-2); text-align: left; flex-shrink: 0; }
+.text-share-sheet [hidden], .text-share-pending[hidden] { display: none !important; }

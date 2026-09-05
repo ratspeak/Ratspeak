@@ -8,6 +8,7 @@ mod channel_deep_link;
 )]
 mod mobile_native;
 mod paths;
+mod text_share;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use tauri::webview::DownloadEvent;
@@ -993,6 +994,8 @@ pub fn run() {
             request_microphone_permission,
             channel_deep_link::peek_native_channel_share,
             channel_deep_link::ack_native_channel_share,
+            text_share::list_text_shares,
+            text_share::edit_text_share,
             ratspeak_tauri::commands::system::api_version,
             ratspeak_tauri::commands::system::api_startup_progress,
             ratspeak_tauri::commands::system::api_setup_status,
@@ -1365,6 +1368,8 @@ pub fn run() {
 
             let _window = window.build()?;
             channel_deep_link::install(app);
+            #[cfg(target_os = "android")]
+            text_share::install(app.handle());
 
             #[cfg(all(
                 not(any(target_os = "android", target_os = "ios")),

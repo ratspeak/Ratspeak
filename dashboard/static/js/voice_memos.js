@@ -1665,6 +1665,7 @@
 
     window.RS = window.RS || {};
     RS.voiceMemos = {
+        hasPendingRecording: function() { return recorderState !== 'idle'; },
         isAudio: isAudio,
         renderAudio: renderAudio,
         registerDraft: registerDraft,

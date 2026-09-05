@@ -199,6 +199,7 @@ mod platform {
             // The guard above is gone before any event delivery/inbox lock.
             if let Some(app) = APP.get() {
                 crate::channel_deep_link::notify_pending(app);
+                crate::text_share::notify_pending();
             }
         }
     }

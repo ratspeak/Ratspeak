@@ -3,12 +3,21 @@
   "rustSources": [
     "src-tauri/src/mobile_native.rs",
     "src-tauri/src/android_lifecycle.rs",
+    "src-tauri/src/text_share/android.rs",
     "crates/ratspeak-tauri/src/notifier.rs",
     "crates/ratspeak-runtime/src/voice.rs",
     "crates/ratspeak-runtime/src/network_secrets.rs",
     "../rsReticulum/crates/rns-interface/src/ble_peer.rs"
   ],
   "classes": [
+    {
+      "name": "org.ratspeak.android.RatspeakTextShares",
+      "methods": [
+        ["read", "()Ljava/lang/String;"],
+        ["write", "(Ljava/lang/String;)V"],
+        ["accept", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"]
+      ]
+    },
     {
       "name": "org.ratspeak.android.RatspeakNotifications",
       "methods": [

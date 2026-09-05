@@ -97,6 +97,10 @@ struct AndroidPlatformBridge;
 
 #[cfg(target_os = "android")]
 impl MobilePlatformBridge for AndroidPlatformBridge {
+    fn forget_shared_text_drafts(&self, identity: Option<&str>) -> Result<(), String> {
+        crate::text_share::forget(identity)
+    }
+
     fn start_or_replace_ble_rnode(&self, request: NativeBleRnodeRequest) -> bool {
         if !valid_ble_native_request(&request) {
             return false;
@@ -400,7 +404,7 @@ where
 }
 
 #[cfg(target_os = "android")]
-fn with_android_class<F, T>(class_name: &str, call: F) -> Option<T>
+pub(crate) fn with_android_class<F, T>(class_name: &str, call: F) -> Option<T>
 where
     F: FnOnce(&jni::JNIEnv, jni::objects::JClass) -> jni::errors::Result<T>,
 {

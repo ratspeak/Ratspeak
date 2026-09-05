@@ -1402,7 +1402,7 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
-    assert!(index.contains("/static/style.css?v=ui-20260905-1"));
+    assert!(index.contains("/static/style.css?v=ui-20260905-2"));
     assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
     assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
     assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
@@ -3838,7 +3838,7 @@ fn android_name_based_jni_boundary_is_pinned_and_final_artifacts_are_inspected()
     let classes = manifest["classes"].as_array().expect("boundary classes");
 
     assert_eq!(manifest["schemaVersion"], 1);
-    assert_eq!(classes.len(), 12);
+    assert_eq!(classes.len(), 13);
     assert!(
         classes.iter().any(|class| {
             class["name"] == "org.ratspeak.android.RatspeakNotifications"
@@ -5368,10 +5368,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("/static/js/state.js?v=ui-20260905-1"));
-    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260905-1"));
-    assert!(index.contains("/static/js/lxmf.js?v=ui-20260905-1"));
-    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260905-1"));
+    assert!(index.contains("/static/js/state.js?v=ui-20260905-2"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260905-2"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260905-2"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260905-2"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));
@@ -9216,4 +9216,46 @@ fn service_readiness_refreshes_ui_without_a_startup_toast() {
     assert!(listener.contains("loadIdentities"));
     assert!(!listener.contains("showToast"));
     assert!(!events.contains("Services ready"));
+}
+
+#[test]
+fn android_text_sharing_is_narrow_durable_and_never_a_transport_command() {
+    let root = repo_root();
+    let read = |path: &str| read_source(root.join(path)).unwrap();
+    let manifest = read("src-tauri/gen/android/app/src/main/AndroidManifest.xml");
+    let native =
+        read("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakTextShares.kt");
+    let activity =
+        read("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt");
+    let controller = read("dashboard/static/js/text_shares.js");
+    let bridge = read("src-tauri/src/text_share/android.rs");
+    let model = read("src-tauri/src/text_share/model.rs");
+    let shell = read("src-tauri/src/lib.rs");
+    assert!(manifest.contains("android.intent.action.SEND"));
+    assert!(manifest.contains("android:mimeType=\"text/plain\""));
+    assert!(!manifest.contains("android.intent.action.SEND_MULTIPLE"));
+    assert!(native.contains("noBackupFilesDir"));
+    assert!(native.contains("AES/GCM/NoPadding"));
+    assert!(native.contains("file.finishWrite(output)"));
+    assert!(native.contains("ArrayBlockingQueue<Runnable>(8)"));
+    assert!(!native.contains("coerceToText("));
+    assert!(!native.contains("Log."));
+    assert!(activity.contains("savedInstanceState?.getString(\"ratspeak.text_share_id\")"));
+    assert!(activity.contains("shareIntakeId = RatspeakTextShares.receive(intent)"));
+    assert!(bridge.contains("identity_switch_lock.lock().await"));
+    assert!(bridge.contains("current_identity_session_generation"));
+    assert!(bridge.contains("owner(Some(&args.activity_generation))"));
+    assert!(!bridge.contains("send_lxmf"));
+    assert!(model.contains("send_attempted"));
+    assert!(controller.contains("!isAndroid()"));
+    assert!(!controller.contains("localStorage"));
+    assert!(!controller.contains("navigator.clipboard"));
+    assert!(shell.contains("text_share::list_text_shares"));
+    let identities = read("crates/ratspeak-tauri/src/commands/identity.rs");
+    let system = read("crates/ratspeak-tauri/src/commands/system.rs");
+    assert!(identities.contains("forget_shared_text_drafts(&state, Some(hash_hex.clone()))"));
+    assert!(system.contains("forget_shared_text_drafts(&state, Some(identity_id.clone()))"));
+    assert!(system.contains("forget_shared_text_drafts(&state, None)"));
+    assert!(root.join("scripts/dashboard/test_text_shares.js").is_file());
+    assert!(!root.join("dashboard/scripts/test_text_shares.js").exists());
 }

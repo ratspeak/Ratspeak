@@ -24,6 +24,7 @@
 -keep class org.ratspeak.android.RatspeakBlePeerClient$Companion { *; }
 -keep class org.ratspeak.android.RatspeakBleAvailability { *; }
 -keep class org.ratspeak.android.RatspeakSharedSecrets { *; }
+-keep class org.ratspeak.android.RatspeakTextShares { *; }
 -keep class org.ratspeak.android.RatspeakNotifications { *; }
 -keep class org.ratspeak.android.RatspeakAdvertiseCallback { *; }
 

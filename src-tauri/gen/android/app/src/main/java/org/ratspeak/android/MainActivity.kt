@@ -128,6 +128,7 @@ class MainActivity : TauriActivity() {
     private var pendingBottom = 0
     private var pendingNavigate: String? = null
     private var pendingNotificationRoute: String? = null
+    private var shareIntakeId: String? = null
     private var notificationRouteDelivery = 0L
     private var notificationRouteRetry: Runnable? = null
     private var pendingIdentityExport: PendingIdentityExport? = null
@@ -263,6 +264,7 @@ class MainActivity : TauriActivity() {
         // super.onCreate(), so install the Application context first.
         RatspeakNativeBridge.beginActivitySession()
         RatspeakNativeBridge.initialize(applicationContext)
+        RatspeakTextShares.initialize(applicationContext)
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         // A retained Rust plugin is already loaded when Android creates a new
@@ -277,6 +279,7 @@ class MainActivity : TauriActivity() {
 
         // Check for notification navigation intent
         handleNavigateIntent(intent)
+        shareIntakeId = RatspeakTextShares.receive(intent, savedInstanceState?.getString("ratspeak.text_share_id"))
 
         // Match splash background to OS theme preference
         val isDarkMode = (resources.configuration.uiMode and
@@ -323,7 +326,9 @@ class MainActivity : TauriActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         handleNavigateIntent(intent)
+        shareIntakeId = RatspeakTextShares.receive(intent)
     }
 
     override fun onTrimMemory(level: Int) {
@@ -409,6 +414,7 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        shareIntakeId?.let { outState.putString("ratspeak.text_share_id", it) }
         pendingNotificationRoute?.let { outState.putString("ratspeak.pending_notification_route", it) }
         super.onSaveInstanceState(outState)
     }

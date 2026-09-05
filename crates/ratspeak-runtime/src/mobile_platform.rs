@@ -62,6 +62,17 @@ pub trait MobilePlatformBridge: Send + Sync {
     }
 
     fn replay_platform_state(&self) {}
+
+    /// Remove native pending shared text for one deleted identity, or all text
+    /// on factory reset. Called on a blocking worker while the caller retains
+    /// the identity lifecycle lock. Android must install its storage adapter;
+    /// other platforms have no inbound text-share store.
+    fn forget_shared_text_drafts(&self, _identity: Option<&str>) -> Result<(), String> {
+        #[cfg(target_os = "android")]
+        return Err("Shared drafts cleanup is unavailable. Restart Ratspeak.".into());
+        #[cfg(not(target_os = "android"))]
+        Ok(())
+    }
 }
 
 pub struct NoopMobilePlatformBridge;

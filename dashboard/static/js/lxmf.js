@@ -3883,8 +3883,9 @@ function _cancelStagedAttachmentToken(stageToken) {
     });
 }
 
-function sendLxmfMessage(deliveryMethod) {
+function sendLxmfMessage(deliveryMethod, shareContext) {
     if (!lxmfActiveContact) return;
+    if (!shareContext && RS.textShares && RS.textShares.interceptSend(deliveryMethod)) return;
     var sendOwner = _conversationOwnerSnapshot();
     var targetHash = sendOwner.hash;
     var input = document.getElementById('lxmf-input');
@@ -4015,7 +4016,14 @@ function sendLxmfMessage(deliveryMethod) {
         }
     }).then(function(resp) {
         _handleLxmfSendAccepted(resp, msgId, targetHash, sendOwner);
-    }).catch(function() {});
+        if (shareContext && RS.textShares) {
+            if (resp && resp.msg_id && !resp.cancelled) RS.textShares.accepted(shareContext);
+            else RS.textShares.failed(shareContext);
+        }
+    }).catch(function() {
+        if (shareContext && RS.textShares) RS.textShares.failed(shareContext);
+    });
+    if (shareContext && RS.textShares) RS.textShares.dispatched(shareContext);
 
     var messageWasActive = _appendConversationMessage(targetHash, {
         id: msgId,

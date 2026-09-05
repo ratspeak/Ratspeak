@@ -597,6 +597,9 @@ pub async fn api_reset_database(state: State<'_, Arc<AppState>>) -> AppResult<Va
 pub async fn api_identity_reset(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let _identity_lifecycle = state.identity_switch_lock.lock().await;
     let identity_id = active_identity_id(&state);
+    if !identity_id.is_empty() {
+        super::shared::forget_shared_text_drafts(&state, Some(identity_id.clone())).await?;
+    }
     let reset_data_dir = state
         .lxmf
         .lock()
@@ -685,6 +688,7 @@ pub async fn dismiss_alert(state: State<'_, Arc<AppState>>, index: i64) -> AppRe
 #[tracing::instrument(level = "debug", name = "command.api_factory_reset", skip_all)]
 pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let _identity_lifecycle = state.identity_switch_lock.lock().await;
+    super::shared::forget_shared_text_drafts(&state, None).await?;
     // Capture config_dir before shutdown wipes RNS.
     let rns_config_dir = active_rns_config_dir(&state);
     let app_private_rns_config_dir = state

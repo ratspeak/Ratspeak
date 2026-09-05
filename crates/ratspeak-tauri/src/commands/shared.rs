@@ -14,6 +14,19 @@ use crate::state::AppState;
 
 use ratspeak_core::LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME;
 
+/// Native share cleanup participates in the caller's existing identity lock;
+/// shell-level command wrappers would leave a switch/reset race between calls.
+pub(crate) async fn forget_shared_text_drafts(
+    state: &crate::state::AppState,
+    identity: Option<String>,
+) -> crate::error::AppResult<()> {
+    let bridge = state.mobile_platform_bridge();
+    tokio::task::spawn_blocking(move || bridge.forget_shared_text_drafts(identity.as_deref()))
+        .await
+        .map_err(|_| crate::error::AppError::internal("Shared drafts cleanup failed."))?
+        .map_err(crate::error::AppError::internal)
+}
+
 pub(crate) fn transport_sender(
     state: &AppState,
 ) -> Option<tokio::sync::mpsc::Sender<rns_transport::messages::TransportMessage>> {

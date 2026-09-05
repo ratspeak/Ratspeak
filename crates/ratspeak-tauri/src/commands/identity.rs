@@ -1079,6 +1079,7 @@ pub async fn api_delete_identity(
     if active == hash_hex || runtime_identity.as_deref() == Some(hash_hex.as_str()) {
         return Err(AppError::bad_request("Cannot delete active identity"));
     }
+    super::shared::forget_shared_text_drafts(&state, Some(hash_hex.clone())).await?;
     let file_refs = if cascade.unwrap_or(false) {
         let hash_for_refs = hash_hex.clone();
         db::spawn_db(state.db.clone(), move |p| {
