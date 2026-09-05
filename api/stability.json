@@ -53,6 +53,15 @@
       ]
     }
   },
+  "manifestReview": {
+    "sourceCommit": "0ee778256ee6b3d4503272a5675b395f737cd3f7",
+    "reviewedOn": "2026-09-05",
+    "classification": "Android-only direct dependency evidence correction",
+    "addition": "ratspeak-tauri declares jni ^0.19 for its Application-context notification adapter, introduced in 491b153; both lockfiles already resolve jni 0.19.0",
+    "impact": "No dependency upgrade, runtime correction, Rust API snapshot change, wire-format change, MSRV change or desktop/iOS dependency change. Existing runtime/shell JNI audio bridges and rsLXST remain unchanged.",
+    "compatibility": "Application-internal manifest addition; preserves the existing Rust snapshot source, cumulative API review and compatibility floor.",
+    "verification": "The reproduced manifest check differs only by this dependency record. Android native behavior requires separate target/artifact/device qualification; host API snapshots do not establish it."
+  },
   "packages": [
     {
       "name": "ratspeak-core",

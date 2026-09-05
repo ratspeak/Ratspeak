@@ -1528,6 +1528,17 @@
           "sourceKind": "registry"
         },
         {
+          "name": "jni",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"android\")",
+          "requirement": "^0.19",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
           "name": "objc2",
           "rename": null,
           "kind": null,
