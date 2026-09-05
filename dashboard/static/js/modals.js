@@ -2451,7 +2451,7 @@ function toggleLocalNetwork() {
 // stripped on mobile to keep the sheet under 75% viewport height.
 function showAutoInterfaceConfigSheet() {
     if (typeof _rsBuildSheet !== 'function') return;
-    var mobile = (typeof isMobile === 'function') ? isMobile() : false;
+    var mobile = isCompactLayout();
 
     var built = _rsBuildSheet({
         title: 'Local Network',

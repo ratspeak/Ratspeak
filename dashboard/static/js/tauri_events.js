@@ -222,7 +222,6 @@ RS.listen('stats_update', function(data) {
     renderStats(data);
 
     // path_age/hops/via change with path_table; renderer dirty-keys dedupe.
-    if (typeof renderContactList === 'function') renderContactList();
     if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
     if (typeof renderNetworkContactList === 'function') renderNetworkContactList();
     if (typeof updatePeersFromStats === 'function') updatePeersFromStats();
@@ -262,11 +261,6 @@ RS.listen('stats_update', function(data) {
                 renderConnectionsTable(v);
             }, 5000);
         }
-    }
-
-    var msgView = document.getElementById('view-message');
-    if (msgView && msgView.classList.contains('active') && typeof updateMessageReachability === 'function') {
-        updateMessageReachability();
     }
 
     if (document.getElementById('node-modal').classList.contains('open')) {
@@ -327,7 +321,6 @@ function _renderPathCacheCleared() {
         if (typeof renderStats === 'function') renderStats(lastStats);
     }
     if (typeof updatePeersFromStats === 'function') updatePeersFromStats();
-    if (typeof renderContactList === 'function') renderContactList();
     if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
     if (typeof renderNetworkContactList === 'function') renderNetworkContactList();
 }

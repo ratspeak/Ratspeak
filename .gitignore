@@ -16,6 +16,7 @@ src-tauri/target/
 
 # Maintainer-only scripts are local by default. CI still needs release helpers.
 /scripts/*
+!/scripts/dashboard/
 !/scripts/ci/
 !/scripts/ci/check-workflow-dependency-pins.sh
 !/scripts/release/

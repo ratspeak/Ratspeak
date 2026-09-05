@@ -154,7 +154,7 @@ jobs:
         working-directory: Ratspeak
       - name: Test dashboard behavior
         run: |
-          for test in dashboard/scripts/test_*.js; do
+          for test in scripts/dashboard/test_*.js; do
             node "$test"
           done
         working-directory: Ratspeak

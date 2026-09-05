@@ -6,7 +6,6 @@ var _conversationEpoch = 0;
 var _conversationIdentityGeneration = 0;
 var lxmfConversation = [];
 var lxmfPendingFile = null;
-var contactIdentityStatus = {};
 var _ghostConversationHash = null;
 var _replyTarget = null;
 var _msgReactions = {};
@@ -108,6 +107,7 @@ function _resetConversationSession(reason) {
     _conversationIdentityGeneration += 1;
     _conversationEpoch += 1;
     lxmfActiveContact = null;
+    if (RS.messageSearch) RS.messageSearch.reset();
     _notifyConversationOwnerChanged(null, reason || 'identity_replaced');
 }
 
@@ -2277,7 +2277,7 @@ function _loadConversation(hash) {
     renderConversation({ forceScrollBottom: true });
     // get_conversation fetches messages AND marks-read; broadcasts unread_total.
     RS.invoke('get_conversation', { hash: hash }).then(function(result) {
-        if (!_conversationOwnerIdentityIsCurrent(loadOwner)) return;
+        if (!_conversationOwnerIsCurrent(loadOwner)) return;
         var messages = _mergeConversationMessages(hash, (result && result.messages) || []);
         cacheSet(hash, messages);
         if (hash === lxmfActiveContact) {
@@ -2312,6 +2312,9 @@ function _ensureGhostRow(hash) {
 
     var row = document.createElement('div');
     row.className = 'conv-row active';
+    row.setAttribute('role', 'button');
+    row.tabIndex = 0;
+    if (RS.ui) RS.ui.bindKeyboardActivation(row);
     row.dataset.hash = hash;
     row.dataset.ghost = 'true';
     var avatarHtml = '<span class="conv-avatar">' + identityAvatar(hash, 36) + '</span>';
@@ -2368,6 +2371,9 @@ function _updateConversationPreview(hash, previewText, timestamp) {
         var nameInfo = _conversationNameInfo(hash, null, false);
         var newRow = document.createElement('div');
         newRow.className = 'conv-row active';
+        newRow.setAttribute('role', 'button');
+        newRow.tabIndex = 0;
+        if (RS.ui) RS.ui.bindKeyboardActivation(newRow);
         newRow.dataset.hash = hash;
         var newAvatarHtml = '<span class="conv-avatar">' + identityAvatar(hash, 36) + '</span>';
         newRow.innerHTML =
@@ -2460,65 +2466,95 @@ function renderDashboardRecentMessages() {
     var container = document.getElementById('dashboard-recent-messages');
     if (!container) return;
 
-    RS.invoke('api_lxmf_conversations').then(function(convos) {
-        if (!convos || convos.length === 0) {
-            container.innerHTML = '<div class="empty-state" style="padding:24px;">' +
-                '<span class="empty-state-primary">No messages yet</span>' +
-                '<span class="empty-state-hint">Send your first encrypted message</span>' +
-            '</div>';
-            return;
-        }
+    var convos = lxmfConversations;
+    if (!convos || convos.length === 0) {
+        container.innerHTML = '<div class="empty-state" style="padding:24px;">' +
+            '<span class="empty-state-primary">No messages yet</span>' +
+            '<span class="empty-state-hint">Send your first encrypted message</span>' +
+        '</div>';
+        return;
+    }
 
-        container.innerHTML = convos.slice(0, 5).map(function(c) {
-            var nameInfo = _conversationNameInfo(c.hash, c.display_name, c.is_contact);
-            var rawPreview = c.last_message || '';
-            var dirPrefix = c.last_direction === 'outbound' ? 'You: ' : '';
-            var preview = dirPrefix + rawPreview;
-            var time = c.timestamp ? formatConvTime(c.timestamp) : '';
-            var unreadClass = c.unread > 0 ? ' unread' : '';
-            var unreadBadge = c.unread > 0 ? '<span class="conv-unread-badge">' + c.unread + '</span>' : '';
-            var nameClass = 'conv-name' + (nameInfo.isHash ? ' is-hash' : '');
-            var avatarHtml = '<div class="conv-avatar-wrap"><span class="conv-avatar">' + identityAvatar(c.hash, 40) + '</span></div>';
+    container.innerHTML = convos.slice(0, 5).map(function(c) {
+        var nameInfo = _conversationNameInfo(c.hash, c.display_name, c.is_contact);
+        var rawPreview = c.last_message || '';
+        var dirPrefix = c.last_direction === 'outbound' ? 'You: ' : '';
+        var preview = dirPrefix + rawPreview;
+        var time = c.timestamp ? formatConvTime(c.timestamp) : '';
+        var unreadClass = c.unread > 0 ? ' unread' : '';
+        var unreadBadge = c.unread > 0 ? '<span class="conv-unread-badge">' + c.unread + '</span>' : '';
+        var nameClass = 'conv-name' + (nameInfo.isHash ? ' is-hash' : '');
+        var avatarHtml = '<div class="conv-avatar-wrap"><span class="conv-avatar">' + identityAvatar(c.hash, 40) + '</span></div>';
 
-            return '<div class="conv-row' + unreadClass + '" data-hash="' + escapeHtml(c.hash) + '">' +
-                avatarHtml +
-                '<div class="conv-row-content">' +
-                    '<div class="conv-row-top">' +
-                        '<span class="' + nameClass + '" title="' + (nameInfo.isHash ? escapeHtml(c.hash) : '') + '">' + ratspeakDisplayNameHtml(nameInfo.name, c.hash) + '</span>' +
-                        '<span class="conv-time">' + time + '</span>' +
-                    '</div>' +
-                    '<div class="conv-row-bottom">' +
-                        '<span class="conv-preview">' + escapeHtml(preview) + '</span>' +
-                        unreadBadge +
-                    '</div>' +
+        return '<div role="button" tabindex="0" class="conv-row' + unreadClass + '" data-hash="' + escapeHtml(c.hash) + '">' +
+            avatarHtml +
+            '<div class="conv-row-content">' +
+                '<div class="conv-row-top">' +
+                    '<span class="' + nameClass + '" title="' + (nameInfo.isHash ? escapeHtml(c.hash) : '') + '">' + ratspeakDisplayNameHtml(nameInfo.name, c.hash) + '</span>' +
+                    '<span class="conv-time">' + time + '</span>' +
                 '</div>' +
-            '</div>';
-        }).join('');
+                '<div class="conv-row-bottom">' +
+                    '<span class="conv-preview">' + escapeHtml(preview) + '</span>' +
+                    unreadBadge +
+                '</div>' +
+            '</div>' +
+        '</div>';
+    }).join('');
 
-        container.querySelectorAll('.conv-row').forEach(function(el) {
-            el.addEventListener('click', function() {
-                var hash = this.dataset.hash;
-                hash = _activateConversation(hash, 'navigation').hash;
-                switchView('message');
-                _loadConversation(hash);
-                loadConversations();
-            });
+    container.querySelectorAll('.conv-row').forEach(function(el) {
+        if (RS.ui) RS.ui.bindKeyboardActivation(el);
+        el.addEventListener('click', function() {
+            var hash = this.dataset.hash;
+            hash = _activateConversation(hash, 'navigation').hash;
+            switchView('message');
+            _loadConversation(hash);
+            loadConversations();
         });
-    }).catch(function() {});
+    });
 }
 
 var _loadConversationsTimer = null;
+var _conversationsRetryTimer = null;
 var _lastConversationsLoad = 0;
 var _conversationsFirstLoadDone = false;
-// Stacked fetches park spawn_blocking DB connections past the frontend
-// 5s timeout, which wedges the pool. Coalesce to a single in-flight call.
+var _conversationsRevision = 0;
+// Home and Messages share one snapshot and at most one outstanding IPC read.
 var _convFetchInFlight = false;
+var _convFetchAgain = false;
 
-// Force path bypasses debounce + in-flight guard for error-recovery.
-function loadConversationsForce() {
+function _cancelConversationsTimers() {
+    clearTimeout(_loadConversationsTimer);
+    clearTimeout(_conversationsRetryTimer);
+    _loadConversationsTimer = null;
+    _conversationsRetryTimer = null;
+}
+
+function _resetConversationList() {
+    _cancelConversationsTimers();
+    _conversationsRevision += 1;
+    _conversationsFirstLoadDone = false;
     _lastConversationsLoad = 0;
-    _convFetchInFlight = false;
-    loadConversations();
+    lxmfConversations = [];
+    // Retain the in-flight lease until the old IPC actually settles. Queue the
+    // new identity's read instead of pretending the old request was cancelled.
+    _convFetchAgain = _convFetchInFlight;
+    _renderConversationsFromCache(lxmfConversations);
+    renderDashboardRecentMessages();
+}
+
+function _acceptConversations(convos) {
+    _conversationsRevision += 1;
+    _conversationsFirstLoadDone = true;
+    lxmfConversations = Array.isArray(convos) ? convos : [];
+    _cancelConversationsTimers();
+    _renderConversationsFromCache(lxmfConversations);
+    renderDashboardRecentMessages();
+}
+
+function loadConversationsForce() {
+    _cancelConversationsTimers();
+    _lastConversationsLoad = 0;
+    _loadConversationsReal();
 }
 
 function loadConversations() {
@@ -2526,7 +2562,6 @@ function loadConversations() {
     if (convList && !convList._ptrAttached) {
         RS.gestures.attachPullToRefresh(convList, { onRefresh: loadConversations });
     }
-
     var now = Date.now();
     if (now - _lastConversationsLoad < 500) {
         if (!_loadConversationsTimer) {
@@ -2537,52 +2572,54 @@ function loadConversations() {
         }
         return;
     }
-    if (_loadConversationsTimer) {
-        clearTimeout(_loadConversationsTimer);
-        _loadConversationsTimer = null;
-    }
+    clearTimeout(_loadConversationsTimer);
+    _loadConversationsTimer = null;
     _loadConversationsReal();
 }
 
 function _loadConversationsReal(retryCount) {
-    retryCount = retryCount || 0;
-    if (_convFetchInFlight && retryCount === 0) return;
-    _convFetchInFlight = true;
-    _lastConversationsLoad = Date.now();
+    if (_convFetchInFlight) { _convFetchAgain = true; return; }
+    clearTimeout(_conversationsRetryTimer);
+    _conversationsRetryTimer = null;
     var container = document.getElementById('lxmf-conversations-list');
-    if (!container) { _convFetchInFlight = false; return; }
-
-    // Cap retries at 2 so we never park >3 spawn_blocking DB tasks at once.
-    var willRetry = false;
-    var scheduleRetry = function(delay) {
-        willRetry = true;
-        setTimeout(function() { _loadConversationsReal(retryCount + 1); }, delay);
-    };
-
+    if (!container) return;
+    retryCount = retryCount || 0;
+    _convFetchInFlight = true;
+    _convFetchAgain = false;
+    _lastConversationsLoad = Date.now();
+    var owner = _conversationOwnerSnapshot();
+    var revision = _conversationsRevision;
+    function current() {
+        return _conversationOwnerIdentityIsCurrent(owner) && revision === _conversationsRevision;
+    }
+    function scheduleRetry(delay) {
+        _conversationsRetryTimer = setTimeout(function() {
+            _conversationsRetryTimer = null;
+            if (current()) _loadConversationsReal(retryCount + 1);
+        }, delay);
+    }
     RS.invoke('api_lxmf_conversations').then(function(convos) {
+        // A mutation broadcast or identity replacement supersedes older reads.
+        if (!current()) return;
         if (!_conversationsFirstLoadDone && (!convos || convos.length === 0) && retryCount < 2) {
             scheduleRetry(1500);
             return;
         }
-        _conversationsFirstLoadDone = true;
-        lxmfConversations = Array.isArray(convos) ? convos : [];
-        _renderConversationsFromCache(lxmfConversations);
+        _acceptConversations(convos);
     }).catch(function(err) {
-        var transient = err && err.code === 'service_unavailable';
-        if (retryCount < 2 && (transient || err)) {
+        if (!current()) return;
+        if (retryCount < 2) {
             scheduleRetry(Math.min(2000, (retryCount + 1) * 1000));
             return;
         }
-        // Fall back to cache; next mutation broadcast will heal us.
-        if (lxmfConversations && lxmfConversations.length > 0) {
+        if (lxmfConversations.length > 0) {
             _renderConversationsFromCache(lxmfConversations);
-            return;
-        }
-        if (container && !container.querySelector('.conv-row')) {
-            container.innerHTML = '<div class="empty-state"><svg class="empty-state-svg empty-state-svg-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span class="empty-state-primary">Couldn\'t load conversations.</span></div>';
+        } else if (!container.querySelector('.conv-row')) {
+            container.innerHTML = '<div class="empty-state"><span class="empty-state-primary">Couldn\'t load conversations.</span></div>';
         }
     }).finally(function() {
-        if (!willRetry) _convFetchInFlight = false;
+        _convFetchInFlight = false;
+        if (_convFetchAgain) _loadConversationsReal();
     });
 }
 
@@ -2640,7 +2677,7 @@ function _renderConversationsFromCache(convos) {
                 });
             }
 
-            html += '<div class="conv-row' + activeClass + unreadClass + '" data-hash="' + escapeHtml(c.hash) + '">' +
+            html += '<div role="button" tabindex="0" class="conv-row' + activeClass + unreadClass + '" data-hash="' + escapeHtml(c.hash) + '">' +
                 '<div class="conv-avatar-wrap"><span class="conv-avatar">' + avatarHtml + '</span><span class="conv-status-dot ' + statusClass + '"></span></div>' +
                 '<div class="conv-row-content">' +
                     '<div class="conv-row-top">' +
@@ -2658,6 +2695,7 @@ function _renderConversationsFromCache(convos) {
         _refreshRenderedConversationPresence();
 
         container.querySelectorAll('.conv-row').forEach(function(el) {
+            if (RS.ui) RS.ui.bindKeyboardActivation(el);
             el.addEventListener('click', function() {
                 if (_convSwipedRecently) return;
                 var hash = this.dataset.hash;
@@ -2755,100 +2793,6 @@ function _gateClean(container, html) {
     return false;
 }
 
-function renderContactList() {
-    var container = document.getElementById('lxmf-contacts');
-    if (!container) return;
-    if (_gateHidden('view-message', container)) return;
-
-    if (lxmfContacts.length === 0) {
-        var emptyHtml = '<div class="empty-state">' +
-            '<svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>' +
-            '<span class="empty-state-primary">No contacts yet</span>' +
-            '<span class="empty-state-hint">Add a contact to start a conversation</span>' +
-        '</div>';
-        if (_gateClean(container, emptyHtml)) return;
-        container.innerHTML = emptyHtml;
-        return;
-    }
-
-    var sorted = lxmfContacts.slice().sort(function(a, b) {
-        var na = (a.display_name || '').toLowerCase();
-        var nb = (b.display_name || '').toLowerCase();
-        if (na < nb) return -1;
-        if (na > nb) return 1;
-        return 0;
-    });
-
-    var html = '';
-    var lastLetter = '';
-    sorted.forEach(function(c) {
-        var name = c.display_name || 'Anonymous';
-        var firstChar = name.charAt(0).toUpperCase();
-        var letter = /[A-Z]/.test(firstChar) ? firstChar : '#';
-        if (letter !== lastLetter) {
-            html += '<div class="contact-letter-separator">' + letter + '</div>';
-            lastLetter = letter;
-        }
-        var activeClass = (lxmfActiveContact === c.hash) ? ' active' : '';
-        // Prefer transport route/activity; fall back to identity-known.
-        var reachStatus = 'unknown';
-        var reachTitle = 'Unknown — no path data';
-        var hopBadge = '';
-        var peer = _peerInfo(c.hash);
-        if (peer) {
-            reachStatus = peer.status || 'unknown';
-            reachTitle = _peerActivityLabel(peer) + ' - ' + _peerRouteLabel(peer);
-            if (peer.hops !== null && peer.hops !== undefined) {
-                hopBadge = '<span class="contact-hop-badge">' + peer.hops + (peer.hops === 1 ? ' hop' : ' hops') + '</span>';
-            }
-        } else {
-            var idStatus = contactIdentityStatus[c.hash] || 'unknown';
-            reachStatus = idStatus === 'known' ? 'reachable' : 'unknown';
-            reachTitle = idStatus === 'known' ? 'Identity known' : 'Identity unknown — announce needed';
-        }
-        html += '<div class="lxmf-contact' + activeClass + '" data-hash="' + escapeHtml(c.hash) + '" tabindex="0" role="button">' +
-            '<span class="contact-id-status status-' + reachStatus + '" title="' + reachTitle + '" role="img" aria-label="' + reachTitle + '"></span>' +
-            '<span class="lxmf-contact-name">' + ratspeakDisplayNameHtml(name, c) + hopBadge + '</span>' +
-            '<button class="lxmf-contact-remove" data-hash="' + escapeHtml(c.hash) + '" title="Remove contact">&times;</button>' +
-        '</div>';
-    });
-    if (_gateClean(container, html)) return;
-    container.innerHTML = html;
-
-    container.querySelectorAll('.lxmf-contact').forEach(function(el) {
-        function activateContact() {
-            var hash = _activateConversation(el.dataset.hash, 'navigation').hash;
-            renderContactList();
-            _loadConversation(hash);
-        }
-        el.addEventListener('click', activateContact);
-        el.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                activateContact();
-            }
-        });
-    });
-
-    container.querySelectorAll('.lxmf-contact-remove').forEach(function(btn) {
-        btn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            var hash = this.dataset.hash;
-            var contact = lxmfContacts.find(function(c) { return c.hash === hash; });
-            var name = contact ? (contact.display_name || 'Anonymous') : (typeof shortHash === 'function' ? shortHash(hash, 8, 4) : hash.substring(0, 12));
-            rsConfirm({ message: 'Remove contact "' + name + '"?', danger: true, confirmText: 'Remove' }).then(function(ok) {
-                if (!ok) return;
-                RS.invokeOrToast('remove_contact', { hash: hash }, 'Could not remove contact');
-                if (lxmfActiveContact === hash) {
-                    _activateConversation(null, 'contact_removed');
-                    lxmfConversation = [];
-                    renderConversation();
-                }
-            });
-        });
-    });
-}
-
 function renderStandaloneContactList() {
     var container = document.getElementById('contacts-standalone-list');
     if (!container) return;
@@ -2914,7 +2858,7 @@ function renderStandaloneContactList() {
         }
         var name = c.display_name || 'Anonymous';
         var avatarHtml = '<span class="contacts-avatar">' + identityAvatar(c.hash, 40) + '</span>';
-        html += '<div class="contacts-row" data-hash="' + escapeHtml(c.hash) + '">' +
+        html += '<div role="button" tabindex="0" class="contacts-row" data-hash="' + escapeHtml(c.hash) + '">' +
             avatarHtml +
             '<div class="contacts-row-content">' +
                 '<span class="contacts-row-name">' + ratspeakDisplayNameHtml(name, c) + '</span>' +
@@ -2926,6 +2870,7 @@ function renderStandaloneContactList() {
     container.innerHTML = html;
 
     container.querySelectorAll('.contacts-row').forEach(function(el) {
+        if (RS.ui) RS.ui.bindKeyboardActivation(el);
         el.addEventListener('click', function() {
             showContactDetailSheet(this.dataset.hash);
         });
@@ -2955,7 +2900,7 @@ function renderNetworkContactList() {
         var name = c.display_name || 'Anonymous';
         var truncHash = typeof shortHash === 'function' ? shortHash(c.hash, 8, 4) : (c.hash.length > 12 ? c.hash.substring(0, 6) + '\u2026' + c.hash.substring(c.hash.length - 4) : c.hash);
         var avatarHtml = '<span class="contacts-avatar">' + identityAvatar(c.hash, 32) + '</span>';
-        html += '<div class="contacts-row" data-hash="' + escapeHtml(c.hash) + '" style="padding:8px 12px;min-height:40px;">' +
+        html += '<div role="button" tabindex="0" class="contacts-row" data-hash="' + escapeHtml(c.hash) + '" style="padding:8px 12px;min-height:40px;">' +
             avatarHtml +
             '<div class="contacts-row-content">' +
                 '<span class="contacts-row-name">' + ratspeakDisplayNameHtml(name, c) + '</span>' +
@@ -2967,6 +2912,7 @@ function renderNetworkContactList() {
     container.innerHTML = html;
 
     container.querySelectorAll('.contacts-row').forEach(function(el) {
+        if (RS.ui) RS.ui.bindKeyboardActivation(el);
         el.addEventListener('click', function() { showContactDetailSheet(this.dataset.hash); });
     });
 }
@@ -3839,62 +3785,6 @@ function renderConversation(options) {
     });
 
 }
-
-(function() {
-    var searchInput = document.getElementById('msg-search-input');
-    var searchResults = document.getElementById('msg-search-results');
-    var convoList = document.getElementById('lxmf-conversations-list');
-    if (!searchInput) return;
-
-    var searchTimer = null;
-    searchInput.addEventListener('input', function() {
-        var q = this.value.trim();
-        if (searchTimer) clearTimeout(searchTimer);
-        if (q.length < 2) {
-            if (searchResults) searchResults.style.display = 'none';
-            if (convoList) convoList.style.display = '';
-            return;
-        }
-        searchResults.innerHTML = '<div class="lxmf-empty">Searching...</div>';
-        searchResults.style.display = 'block';
-        if (convoList) convoList.style.display = 'none';
-        searchTimer = setTimeout(function() {
-            RS.invoke('api_search_messages', { q: q })
-                .then(function(results) {
-                    if (!results || results.length === 0) {
-                        searchResults.innerHTML = '<div class="lxmf-empty">No results found.</div>';
-                    } else {
-                        searchResults.innerHTML = results.map(function(msg) {
-                            var other = msg.direction === 'inbound' ? msg.source : msg.destination;
-                            var preview = (msg.content || '').substring(0, 80);
-                            var time = formatTime(msg.timestamp);
-                            var otherLabel = typeof shortHash === 'function' ? shortHash(other, 8, 4) : other.substring(0, 12) + '...';
-                            return '<div class="lxmf-convo-item" data-hash="' + escapeHtml(other) + '">' +
-                                '<div class="convo-name">' + escapeHtml(otherLabel) + '</div>' +
-                                '<div class="convo-preview">' + escapeHtml(preview) + '</div>' +
-                                '<div class="convo-time">' + time + '</div>' +
-                            '</div>';
-                        }).join('');
-                        searchResults.querySelectorAll('.lxmf-convo-item').forEach(function(item) {
-                            item.addEventListener('click', function() {
-                                var hash = this.getAttribute('data-hash');
-                                if (hash) openConversationWith(hash);
-                                searchInput.value = '';
-                                searchResults.style.display = 'none';
-                                if (convoList) convoList.style.display = '';
-                            });
-                        });
-                    }
-                }).catch(function(err) {
-                    window.RS.diag('error', 'Message search failed:', err);
-                    searchResults.innerHTML = '<div class="lxmf-empty">Search failed.</div>';
-                });
-        }, 300);
-    });
-    searchInput.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter') { e.preventDefault(); this.blur(); }
-    });
-})();
 
 // Must match backend out_<uuid> format so the round-trip preserves msg_id.
 function generateMsgId() {
@@ -5415,38 +5305,6 @@ RS.listen('reaction_update', function(data) {
     }
 })();
 
-function addLxmfContact() {
-    var hashInput = document.getElementById('lxmf-add-hash');
-    var nameInput = document.getElementById('lxmf-add-name');
-    var hash = hashInput.value.trim();
-    var name = nameInput.value.trim();
-
-    if (!hash || hash.length < 16) {
-        showPreConditionToast('Enter a valid identity hash (at least 16 hex chars)');
-        return;
-    }
-
-    if (!/^[0-9a-fA-F]+$/.test(hash)) {
-        showPreConditionToast('Hash must contain only hex characters (0-9, a-f)');
-        return;
-    }
-
-    if (hash.length > 64) {
-        showPreConditionToast('Hash is too long (maximum 64 characters)');
-        return;
-    }
-
-    RS.invokeOrToast('add_contact', {
-        args: {
-            hash: hash,
-            display_name: name || null,
-        }
-    }, 'Could not add contact');
-
-    hashInput.value = '';
-    nameInput.value = '';
-}
-
 RS.listen('lxmf_identity', function(data) {
     var nextIdentityHash = (data && (data.hash || data.identity_hash)) || null;
     if (_imageCacheIdentityHash && nextIdentityHash !== _imageCacheIdentityHash) {
@@ -5480,9 +5338,7 @@ RS.listen('lxmf_identity', function(data) {
 
 // Pre-warmed at startup; re-emitted on every conversation-touching command.
 RS.listen('conversations_update', function(data) {
-    lxmfConversations = Array.isArray(data) ? data : [];
-    _conversationsFirstLoadDone = true;
-    _renderConversationsFromCache(lxmfConversations);
+    _acceptConversations(data);
     if (typeof PeersCache !== 'undefined' && PeersCache &&
         typeof PeersCache.visibilityContextChanged === 'function') {
         PeersCache.visibilityContextChanged();
@@ -5500,7 +5356,6 @@ if (typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.subscri
 RS.listen('contacts_update', function(data) {
     lxmfContacts = normalizeContactList(data);
     // peer_updated emissions handle PeersCache; no optimistic patch needed.
-    renderContactList();
     if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
     _refreshRenderedConversationNames();
     renderVoiceUi();
@@ -5720,7 +5575,6 @@ document.addEventListener('visibilitychange', function() {
 RS.listen('contact_added', function(data) {
     var addedName = data && data.display_name;
     showToast(addedName ? 'Contact added: ' + addedName : 'Contact added', 'toast-success', 3000);
-    renderContactList();
     if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
     if (typeof refreshPeersList === 'function') refreshPeersList();
 });
@@ -5926,7 +5780,6 @@ function openConversationWith(hash) {
 }
 
 function initFabSpeedDial() {
-    if (!isMobile()) return;
     var mainFab = document.getElementById('lxmf-send-fab');
     var dialActions = document.getElementById('fab-dial-actions');
     if (!mainFab || !dialActions) return;
@@ -5962,6 +5815,9 @@ function initFabSpeedDial() {
     });
 
     scrim.addEventListener('click', closeDial);
+    window.addEventListener('resize', function() {
+        if (!isCompactLayout()) closeDial();
+    });
 
     var dialNew = document.getElementById('fab-dial-new');
     if (dialNew) {
@@ -6019,7 +5875,6 @@ function openFabContactPicker() {
     }
 
     RS.ui.openExistingSheet(sheet, overlay);
-    overlay.onclick = function() { closeFabContactPicker(); };
     history.pushState({ view: currentView, fabPicker: true }, '', '#' + currentView);
 }
 
@@ -6246,20 +6101,6 @@ document.addEventListener('DOMContentLoaded', function() {
         }, { passive: true });
     }
 
-    var addBtn = document.getElementById('add-contact-btn');
-    if (addBtn) addBtn.addEventListener('click', function() {
-        addLxmfContact();
-        var form = document.getElementById('add-contact-form');
-        if (form) form.style.display = 'none';
-    });
-
-    ['lxmf-add-hash', 'lxmf-add-name'].forEach(function(id) {
-        var el = document.getElementById(id);
-        if (el) el.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') { e.preventDefault(); addLxmfContact(); }
-        });
-    });
-
     var sendBtn = document.getElementById('send-msg-btn');
 
     var attachBtn = document.getElementById('attach-file-btn');
@@ -6438,7 +6279,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 triggerFileAttachment();
                 return;
             }
-            if (isMobile()) {
+            if (isAndroid()) {
                 actionPopover(attachBtn, [
                     { label: 'Camera', icon: ICON_CAMERA, onSelect: triggerCameraAttachment },
                     { label: 'Video', icon: ICON_VIDEO, onSelect: triggerVideoAttachment },
@@ -6471,7 +6312,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var sendMsgBtn = document.getElementById('lxmf-send-message-btn');
     if (sendMsgBtn) {
         sendMsgBtn.addEventListener('click', function(e) {
-            if (isMobile() || typeof actionPopover !== 'function') {
+            if (isCompactLayout() || typeof actionPopover !== 'function') {
                 promptNewConversationHash();
                 return;
             }
@@ -6487,33 +6328,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
     initFabSpeedDial();
 
-    var addContactTabBtn = document.getElementById('lxmf-add-contact-btn');
-    if (addContactTabBtn) {
-        addContactTabBtn.addEventListener('click', function() {
-            var form = document.getElementById('add-contact-form');
-            if (form) {
-                var visible = form.style.display !== 'none';
-                form.style.display = visible ? 'none' : 'flex';
-                if (!visible) {
-                    var hashInput = document.getElementById('lxmf-add-hash');
-                    if (hashInput && !isMobile()) hashInput.focus();
-                }
-            }
-        });
-    }
-
-    var chatAddBtn = document.getElementById('lxmf-chat-add-contact-btn');
-    if (chatAddBtn) {
-        chatAddBtn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            if (!lxmfActiveContact) return;
-            rsPrompt({ message: 'Contact name (optional):', placeholder: 'Display name' }).then(function(name) {
-                if (name === null) return;
-                RS.invokeOrToast('add_contact', { args: { hash: lxmfActiveContact, display_name: name.trim() || null } }, 'Could not save contact');
-            });
-        });
-    }
-
     // Mobile: Enter always inserts newline (avoid OSK return-key accidental sends).
     // Desktop: Enter sends, Shift+Enter inserts newline.
     var textarea = document.getElementById('lxmf-input');
@@ -6521,7 +6335,7 @@ document.addEventListener('DOMContentLoaded', function() {
         RS.composer.bindTypingPolicy(textarea);
         textarea.removeAttribute('maxlength');
         textarea.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !isMobile()) {
+            if (RS.composer.shouldSendOnEnter(e)) {
                 e.preventDefault();
                 sendLxmfMessage('auto');
             }
@@ -6541,29 +6355,6 @@ document.addEventListener('DOMContentLoaded', function() {
                     counter.style.display = 'none';
                 }
             }
-        });
-    }
-
-    var trigger = document.getElementById('add-contact-trigger');
-    if (trigger) {
-        trigger.addEventListener('click', function() {
-            var form = document.getElementById('add-contact-form');
-            if (form) {
-                var visible = form.style.display !== 'none';
-                form.style.display = visible ? 'none' : 'flex';
-                if (!visible) {
-                    var hashInput = document.getElementById('lxmf-add-hash');
-                    if (hashInput && !isMobile()) hashInput.focus();
-                }
-            }
-        });
-    }
-
-    var cancelBtn = document.getElementById('add-contact-cancel');
-    if (cancelBtn) {
-        cancelBtn.addEventListener('click', function() {
-            var form = document.getElementById('add-contact-form');
-            if (form) form.style.display = 'none';
         });
     }
 
@@ -6636,12 +6427,6 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     })();
-});
-
-RS.listen('contact_identity_status', function(data) {
-    contactIdentityStatus = data;
-    renderContactList();
-    if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
 });
 
 RS.listen('unread_total', function(data) {

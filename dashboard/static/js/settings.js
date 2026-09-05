@@ -168,7 +168,7 @@ function adoptActivityIdentityProtectionFromBackend(enabled) {
     }
 }
 
-function setActivityIdentityProtectionEnabled(enabled) {
+function saveActivityIdentityProtectionEnabled(enabled) {
     if (_settingsActivityIdentityProtectionBusy) return;
     var previous = _settingsActivityIdentityProtectionEnabled;
     _settingsActivityIdentityProtectionEnabled = !!enabled;
@@ -203,10 +203,10 @@ function initActivityIdentityProtectionToggle() {
     if (_settingsActivityIdentityProtectionBound) return;
     _settingsActivityIdentityProtectionBound = true;
     off.addEventListener('change', function() {
-        if (off.checked) setActivityIdentityProtectionEnabled(false);
+        if (off.checked) saveActivityIdentityProtectionEnabled(false);
     });
     on.addEventListener('change', function() {
-        if (on.checked) setActivityIdentityProtectionEnabled(true);
+        if (on.checked) saveActivityIdentityProtectionEnabled(true);
     });
 }
 

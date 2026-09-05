@@ -395,22 +395,13 @@ function switchView(viewId, opts) {
         active.blur();
     }
 
-    ['peers-search', 'contacts-search'].forEach(function(id) {
+    ['peers-search', 'contacts-search', 'msg-search-input'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el && el.value) {
             el.value = '';
             el.dispatchEvent(new Event('input'));
         }
     });
-    var msgSearch = document.getElementById('msg-search-input');
-    if (msgSearch && msgSearch.value) {
-        msgSearch.value = '';
-        var sr = document.getElementById('msg-search-results');
-        var cl = document.getElementById('lxmf-conversations-list');
-        if (sr) sr.style.display = 'none';
-        if (cl) cl.style.display = '';
-    }
-
     if (previousView === 'message' && viewId !== 'message') {
         if (typeof _removeGhostRow === 'function') _removeGhostRow();
         if (typeof window._closeFabDial === 'function') window._closeFabDial();
@@ -469,6 +460,7 @@ var VIEW_LIFECYCLE = {
             if (typeof refreshConnectionsTable === 'function') refreshConnectionsTable();
         });
         if (typeof renderDashboardRecentMessages === 'function') renderDashboardRecentMessages();
+        if (typeof loadConversations === 'function') loadConversations();
         if (typeof renderDashboardSummaries === 'function' && typeof lastStats !== 'undefined' && lastStats) renderDashboardSummaries(lastStats);
     },
 
@@ -525,8 +517,6 @@ var VIEW_LIFECYCLE = {
             loadConversations();
         }
         if (typeof renderMsgProfileStrip === 'function') requestAnimationFrame(renderMsgProfileStrip);
-        // Heal renders skipped while this view was hidden.
-        if (typeof renderContactList === 'function') renderContactList();
     },
 
     channels: function() {
@@ -546,11 +536,13 @@ var VIEW_LIFECYCLE = {
         if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
         // Re-fetch if contacts_update event was missed.
         if (typeof lxmfContacts !== 'undefined' && lxmfContacts.length === 0) {
+            var owner = RS.conversationOwner.snapshot();
+            var contacts = lxmfContacts;
             RS.invoke('api_contacts').then(function(data) {
-                if (Array.isArray(data) && data.length > 0) {
+                if (!RS.conversationOwner.isIdentityCurrent(owner) || lxmfContacts !== contacts) return;
+                if (Array.isArray(data)) {
                     lxmfContacts = (typeof normalizeContactList === 'function') ? normalizeContactList(data) : data;
                     if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
-                    if (typeof renderContactList === 'function') renderContactList();
                 }
             }).catch(function() {});
         }

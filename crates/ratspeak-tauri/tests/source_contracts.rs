@@ -124,21 +124,21 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     let commands = read_source(root.join("crates/ratspeak-tauri/src/commands/channels.rs"))
         .expect("channels commands");
     let snapshot_order_test =
-        read_source(root.join("dashboard/scripts/test_channels_snapshot_order.js"))
+        read_source(root.join("scripts/dashboard/test_channels_snapshot_order.js"))
             .expect("channels snapshot ordering test");
-    let history_test = read_source(root.join("dashboard/scripts/test_channels_history.js"))
+    let history_test = read_source(root.join("scripts/dashboard/test_channels_history.js"))
         .expect("channels history test");
-    let unread_test = read_source(root.join("dashboard/scripts/test_channels_unread.js"))
+    let unread_test = read_source(root.join("scripts/dashboard/test_channels_unread.js"))
         .expect("channels unread test");
     let notification_route_test =
-        read_source(root.join("dashboard/scripts/test_channels_notification_route.js"))
+        read_source(root.join("scripts/dashboard/test_channels_notification_route.js"))
             .expect("channels notification route test");
-    let share_test = read_source(root.join("dashboard/scripts/test_channels_share.js"))
+    let share_test = read_source(root.join("scripts/dashboard/test_channels_share.js"))
         .expect("channels share test");
     let hub_switcher_test =
-        read_source(root.join("dashboard/scripts/test_channels_hub_switcher.js"))
+        read_source(root.join("scripts/dashboard/test_channels_hub_switcher.js"))
             .expect("channels hub switcher test");
-    let hub_profile_test = read_source(root.join("dashboard/scripts/test_channels_hub_profile.js"))
+    let hub_profile_test = read_source(root.join("scripts/dashboard/test_channels_hub_profile.js"))
         .expect("channels hub profile test");
     let tauri_events =
         read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri event bridge");
@@ -559,7 +559,7 @@ fn native_channel_share_lifecycle_uses_rust_inbox_and_requires_preview() {
         read_source(root.join("dashboard/static/js/channels.js")).expect("channels frontend");
     let bridge = read_source(root.join("dashboard/static/js/native_channel_share.js"))
         .expect("native channel-share bridge");
-    let bridge_test = read_source(root.join("dashboard/scripts/test_channels_native_link.js"))
+    let bridge_test = read_source(root.join("scripts/dashboard/test_channels_native_link.js"))
         .expect("native channel-share test");
     let native =
         read_source(root.join("src-tauri/src/channel_deep_link.rs")).expect("native Rust bridge");
@@ -726,7 +726,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
         read_source(root.join("dashboard/static/css/09-channels.css")).expect("channels css");
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
-    let admin_ui_test = read_source(root.join("dashboard/scripts/test_channel_hub_admin.js"))
+    let admin_ui_test = read_source(root.join("scripts/dashboard/test_channel_hub_admin.js"))
         .expect("channel hub admin UI tests");
     let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("database source");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
@@ -1402,7 +1402,7 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
-    assert!(index.contains("/static/style.css?v=ui-20260904-1"));
+    assert!(index.contains("/static/style.css?v=ui-20260905-1"));
     assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
     assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
     assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
@@ -2119,7 +2119,7 @@ fn contact_list_renders_are_gated() {
     let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     assert!(lxmf_js.contains("function _gateHidden"));
     assert!(lxmf_js.contains("function _gateClean"));
-    assert!(lxmf_js.contains("_gateHidden('view-message'"));
+    assert!(!lxmf_js.contains("function renderContactList("));
     assert!(lxmf_js.contains("_gateHidden('view-contacts'"));
     assert!(lxmf_js.contains("_gateHidden('view-dashboard'"));
     // Reactions map resets on conversation switch.
@@ -2129,9 +2129,11 @@ fn contact_list_renders_are_gated() {
         read_source(root.join("dashboard/static/js/connections.js")).expect("connections js");
     assert!(connections_js.contains("if (container._rsLastHtml === mobileHtml) return;"));
 
-    // Message view heals gated skips on activation.
+    // The live Contacts view heals gated skips on activation.
     let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
-    assert!(nav_js.contains("Heal renders skipped while this view was hidden."));
+    assert!(
+        nav_js.contains("contacts: function() {\n        if (typeof renderStandaloneContactList")
+    );
 }
 
 #[test]
@@ -4751,7 +4753,7 @@ fn message_composer_send_preserves_preexisting_focus_state() {
             .expect("channel send function")
             .contains("input.focus();")
     );
-    assert!(channels.contains("!event.isComposing && !isMobile()"));
+    assert!(channels.contains("RS.composer.shouldSendOnEnter(event)"));
     assert!(nav.contains("el.id === 'lxmf-input' || el.id === 'channel-message-input'"));
     assert!(nav.contains("document.getElementById('channel-transcript')"));
 
@@ -5366,10 +5368,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("/static/js/state.js?v=ui-20260904-1"));
-    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260904-1"));
-    assert!(index.contains("/static/js/lxmf.js?v=ui-20260904-1"));
-    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260904-1"));
+    assert!(index.contains("/static/js/state.js?v=ui-20260905-1"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260905-1"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260905-1"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260905-1"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));
@@ -6496,7 +6498,14 @@ fn mobile_peers_toolbar_uses_search_plus_icon_sort_only() {
     assert!(!index.contains("<span>Contacts</span>"));
     assert!(!index.contains("<span>More</span>"));
     assert!(responsive_css.contains(".peers-toolbar {\n        padding:"));
-    assert!(responsive_css.contains(".peers-toolbar { flex-wrap: nowrap; }"));
+    let toolbar = responsive_css.split(".peers-toolbar {").nth(1).unwrap();
+    assert!(
+        toolbar
+            .split('}')
+            .next()
+            .unwrap()
+            .contains("flex-wrap: nowrap;")
+    );
     assert!(responsive_css.contains(".peers-sort-label {\n        display: none;"));
     assert!(
         responsive_css
@@ -6744,7 +6753,7 @@ fn lxmf_conversation_rows_use_peer_display_names_when_available() {
         .expect("conversation renderer");
     let render_tail = &lxmf[render_start..];
     let render_end = render_tail
-        .find("\nfunction renderContactList")
+        .find("\nfunction renderStandaloneContactList")
         .expect("conversation renderer end");
     let render_fn = &render_tail[..render_end];
     assert!(
@@ -7010,7 +7019,7 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
 fn mobile_contacts_tab_keeps_desktop_header_out_of_search_flow() {
     let root = repo_root();
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(views_css.contains(".contacts-standalone-toolbar .conn-search-input"));
+    assert!(views_css.contains(".contacts-standalone-toolbar .list-search-input"));
     assert!(views_css.contains("flex: 1 1 auto;"));
     assert!(views_css.contains("min-width: 0;"));
     assert!(views_css.contains("margin: 0;"));
@@ -8338,10 +8347,19 @@ fn android_logcat_output_is_privacy_gated() {
 }
 
 #[test]
-fn dashboard_does_not_embed_development_http_servers() {
+fn dashboard_does_not_embed_development_tools() {
     let mut files = Vec::new();
     collect_files(&repo_root().join("dashboard"), &mut files);
     for file in files {
+        assert!(
+            !file
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with("test_"),
+            "frontend tests must stay outside embedded frontendDist: {}",
+            file.display()
+        );
         if !matches!(
             file.extension().and_then(|s| s.to_str()),
             Some("js" | "mjs")

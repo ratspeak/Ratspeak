@@ -4,15 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-visual">
     <meta name="theme-color" content="#FAF7F3">
-    <script src="/static/js/theme.js?v=ui-20260904-1"></script>
-    <script src="/static/js/text_scale.js?v=ui-20260904-1"></script>
+    <script src="/static/js/theme.js?v=ui-20260905-1"></script>
+    <script src="/static/js/text_scale.js?v=ui-20260905-1"></script>
     <!-- Safe-area insets (--sat/--sab/--sal/--sar) are defined in 00-tokens.css
          via env(safe-area-inset-*). iOS feeds env() through viewport-fit=cover +
          WKWebView contentInsetAdjustmentBehavior=.never; Android MainActivity
          injects pixel values via evaluateJavascript; desktop falls back to 0. -->
     <title>Ratspeak - Dashboard</title>
-    <link rel="stylesheet" href="/static/fonts/fonts.css?v=ui-20260904-1">
-    <link rel="stylesheet" href="/static/style.css?v=ui-20260904-1">
+    <link rel="stylesheet" href="/static/fonts/fonts.css?v=ui-20260905-1">
+    <link rel="stylesheet" href="/static/style.css?v=ui-20260905-1">
 </head>
 <body class="checking-setup">
 
@@ -221,13 +221,13 @@
         <div class="bottom-sheet-items" id="iface-action-items"></div>
     </div>
 
-    <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="fab-contact-picker-overlay"></div>
-    <div class="bottom-sheet bottom-sheet--mobile-only fab-contact-picker-sheet" id="fab-contact-picker-sheet" role="dialog" aria-modal="true" aria-labelledby="fab-contact-picker-title">
+    <div class="bottom-sheet-overlay" id="fab-contact-picker-overlay"></div>
+    <div class="bottom-sheet rs-dialog-sheet fab-contact-picker-sheet" id="fab-contact-picker-sheet" role="dialog" aria-modal="true" aria-labelledby="fab-contact-picker-title">
         <div class="bottom-sheet-handle"></div>
-        <div class="fab-contact-picker-header">
-            <span class="fab-contact-picker-title" id="fab-contact-picker-title">Start Conversation</span>
+        <div class="bottom-sheet-header">
+            <span class="bottom-sheet-title" id="fab-contact-picker-title">Start Conversation</span>
         </div>
-        <div class="fab-contact-picker-list" id="fab-contact-picker-list"></div>
+        <div class="bottom-sheet-body fab-contact-picker-list" id="fab-contact-picker-list"></div>
     </div>
 
     <div class="main-content" role="main">
@@ -433,7 +433,7 @@
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
                             </button>
                         </div>
-                        <input type="text" id="msg-search-input" class="nr-input-sm msg-search" placeholder="Search..." aria-label="Search" autocorrect="off" autocapitalize="none" spellcheck="false">
+                        <input type="text" id="msg-search-input" class="nr-input-sm list-search-input msg-search" placeholder="Search..." aria-label="Search messages" autocorrect="off" autocapitalize="none" spellcheck="false">
                         <div id="msg-search-results" style="display:none;"></div>
                         <div id="lxmf-conversations-list">
                             <div class="empty-state">
@@ -751,7 +751,7 @@
                 <div class="peers-content">
                     <div class="peers-list-panel">
                         <div class="peers-toolbar">
-                            <input type="text" id="peers-search" class="conn-search-input" placeholder="Search..." autocorrect="off" autocapitalize="none" spellcheck="false">
+                            <input type="text" id="peers-search" class="nr-input-sm list-search-input" placeholder="Search..." aria-label="Search peers" autocorrect="off" autocapitalize="none" spellcheck="false">
                             <div class="toolbar-dropdown peers-sort-dropdown">
                                 <button class="toolbar-dropdown-btn" id="peers-sort-btn" type="button" aria-label="Sort peers" title="Sort peers">
                                     <span class="peers-sort-label">Sort by</span>
@@ -792,7 +792,7 @@
                     </button>
                 </div>
                 <div class="contacts-standalone-toolbar">
-                    <input type="text" id="contacts-search" class="conn-search-input msg-search" placeholder="Search..." autocorrect="off" autocapitalize="none" spellcheck="false">
+                    <input type="text" id="contacts-search" class="nr-input-sm list-search-input" placeholder="Search..." aria-label="Search contacts" autocorrect="off" autocapitalize="none" spellcheck="false">
                 </div>
                 <div class="contacts-list-scroll" id="contacts-standalone-list">
                     <div class="empty-state">
@@ -2029,44 +2029,45 @@
 <!-- Synchronous load order matters: state/constants/setup/nav before any caller
      of their module-level functions; tauri_events.js last (wires everything above).
      Reordering breaks fresh boots silently. -->
-<script src="/static/js/state.js?v=ui-20260904-1"></script>
-<script src="/static/js/constants.js?v=ui-20260904-1"></script>
-<script src="/static/js/setup.js?v=ui-20260904-1"></script>
-<script src="/static/js/nav.js?v=ui-20260904-1"></script>
-<script src="/static/js/gestures.js?v=ui-20260904-1"></script>
-<script src="/static/js/view_stack.js?v=ui-20260904-1"></script>
+<script src="/static/js/state.js?v=ui-20260905-1"></script>
+<script src="/static/js/constants.js?v=ui-20260905-1"></script>
+<script src="/static/js/setup.js?v=ui-20260905-1"></script>
+<script src="/static/js/nav.js?v=ui-20260905-1"></script>
+<script src="/static/js/gestures.js?v=ui-20260905-1"></script>
+<script src="/static/js/view_stack.js?v=ui-20260905-1"></script>
 
-<script src="/static/js/peers_cache.js?v=ui-20260904-1"></script>
-<script src="/static/js/connections.js?v=ui-20260904-1"></script>
-<script src="/static/js/peers.js?v=ui-20260904-1"></script>
-<script src="/static/js/toasts.js?v=ui-20260904-1"></script>
-<script src="/static/js/dialogs.js?v=ui-20260904-1"></script>
-<script src="/static/js/legal_documents.js?v=ui-20260904-1"></script>
-<script src="/static/js/action_popover.js?v=ui-20260904-1"></script>
-<script src="/static/js/ui_shared.js?v=ui-20260904-1"></script>
-<script src="/static/js/events.js?v=ui-20260904-1"></script>
-<script src="/static/js/activity.js?v=ui-20260904-1"></script>
-<script src="/static/js/health.js?v=ui-20260904-1"></script>
-<script src="/static/js/modals.js?v=ui-20260904-1"></script>
-<script src="/static/js/emoji_data.js?v=ui-20260904-1"></script>
-<script src="/static/js/emoji_picker.js?v=ui-20260904-1"></script>
-<script src="/static/js/voice_ringtones.js?v=ui-20260904-1"></script>
+<script src="/static/js/peers_cache.js?v=ui-20260905-1"></script>
+<script src="/static/js/connections.js?v=ui-20260905-1"></script>
+<script src="/static/js/peers.js?v=ui-20260905-1"></script>
+<script src="/static/js/toasts.js?v=ui-20260905-1"></script>
+<script src="/static/js/dialogs.js?v=ui-20260905-1"></script>
+<script src="/static/js/legal_documents.js?v=ui-20260905-1"></script>
+<script src="/static/js/action_popover.js?v=ui-20260905-1"></script>
+<script src="/static/js/ui_shared.js?v=ui-20260905-1"></script>
+<script src="/static/js/events.js?v=ui-20260905-1"></script>
+<script src="/static/js/activity.js?v=ui-20260905-1"></script>
+<script src="/static/js/health.js?v=ui-20260905-1"></script>
+<script src="/static/js/modals.js?v=ui-20260905-1"></script>
+<script src="/static/js/emoji_data.js?v=ui-20260905-1"></script>
+<script src="/static/js/emoji_picker.js?v=ui-20260905-1"></script>
+<script src="/static/js/voice_ringtones.js?v=ui-20260905-1"></script>
 <script src="/static/js/vendor/jsQR.js"></script>
-<script src="/static/js/contact_card.js?v=ui-20260904-1"></script>
-<script src="/static/js/lxmf.js?v=ui-20260904-1"></script>
-<script src="/static/js/voice_memos.js?v=ui-20260904-1"></script>
-<script src="/static/js/channels.js?v=ui-20260904-1"></script>
-<script src="/static/js/channel_hub.js?v=ui-20260904-1"></script>
-<script src="/static/js/propagation.js?v=ui-20260904-1"></script>
-<script src="/static/js/settings.js?v=ui-20260904-1"></script>
-    <script src="/static/js/network_ownership.js?v=ui-20260904-1"></script>
-<script src="/static/js/identity.js?v=ui-20260904-1"></script>
-<script src="/static/js/confetti.js?v=ui-20260904-1"></script>
-<script src="/static/js/game_registry.js?v=ui-20260904-1"></script>
-<script src="/static/js/four_in_a_row_view.js?v=ui-20260904-1"></script>
-<script src="/static/js/games_tab.js?v=ui-20260904-1"></script>
-<script src="/static/js/native_channel_share.js?v=ui-20260904-1"></script>
-<script src="/static/js/tauri_events.js?v=ui-20260904-1"></script>
-<script src="/static/js/init_dom_handlers.js?v=ui-20260904-1"></script>
+<script src="/static/js/contact_card.js?v=ui-20260905-1"></script>
+<script src="/static/js/lxmf.js?v=ui-20260905-1"></script>
+<script src="/static/js/message_search.js?v=ui-20260905-1"></script>
+<script src="/static/js/voice_memos.js?v=ui-20260905-1"></script>
+<script src="/static/js/channels.js?v=ui-20260905-1"></script>
+<script src="/static/js/channel_hub.js?v=ui-20260905-1"></script>
+<script src="/static/js/propagation.js?v=ui-20260905-1"></script>
+<script src="/static/js/settings.js?v=ui-20260905-1"></script>
+    <script src="/static/js/network_ownership.js?v=ui-20260905-1"></script>
+<script src="/static/js/identity.js?v=ui-20260905-1"></script>
+<script src="/static/js/confetti.js?v=ui-20260905-1"></script>
+<script src="/static/js/game_registry.js?v=ui-20260905-1"></script>
+<script src="/static/js/four_in_a_row_view.js?v=ui-20260905-1"></script>
+<script src="/static/js/games_tab.js?v=ui-20260905-1"></script>
+<script src="/static/js/native_channel_share.js?v=ui-20260905-1"></script>
+<script src="/static/js/tauri_events.js?v=ui-20260905-1"></script>
+<script src="/static/js/init_dom_handlers.js?v=ui-20260905-1"></script>
 </body>
 </html>

@@ -1136,8 +1136,7 @@ z`,
     }
 
     function isMobileContactFlow() {
-        if (typeof isMobile === 'function') return isMobile();
-        return window.matchMedia && window.matchMedia('(max-width: 768px)').matches;
+        return isCompactLayout();
     }
 
     function closeContactAddDial() {

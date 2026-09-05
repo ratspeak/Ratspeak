@@ -1847,7 +1847,6 @@ RS.listen('identity_switched', function(data) {
     // Clear identity-scoped frontend state so the old identity's data
     // doesn't leak. PeersCache rehydrates from the new snapshot on activation.
     if (typeof lxmfContacts !== 'undefined') lxmfContacts = [];
-    if (typeof contactIdentityStatus !== 'undefined') contactIdentityStatus = {};
 
     if (typeof lxmfConversation !== 'undefined') lxmfConversation = [];
     if (typeof _conversationCache !== 'undefined') {
@@ -1877,8 +1876,10 @@ RS.listen('identity_switched', function(data) {
     var chatHeader = document.getElementById('lxmf-chat-header');
     if (chatHeader) chatHeader.style.display = 'none';
 
-    if (typeof _conversationsFirstLoadDone !== 'undefined') _conversationsFirstLoadDone = false;
-    if (typeof _lastConversationsLoad !== 'undefined') _lastConversationsLoad = 0;
+    if (typeof _resetConversationList === 'function') _resetConversationList();
+    if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
+    if (typeof renderNetworkContactList === 'function') renderNetworkContactList();
+    if (typeof closeFabContactPicker === 'function') closeFabContactPicker();
     if (typeof loadConversations === 'function') loadConversations();
 
     if (typeof renderMergedConnections === 'function') renderMergedConnections();

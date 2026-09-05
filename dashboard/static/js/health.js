@@ -1550,7 +1550,7 @@ initNetworkSubtabs();
         var ifaceName = row.dataset.ifaceName;
         if (!ifaceType || !ifaceName) return;
         if (typeof haptic === 'function') haptic('selection');
-        if (typeof isMobile === 'function' && isMobile()) {
+        if (isCompactLayout()) {
             showInterfaceActionSheet(ifaceType, ifaceName);
         } else if (typeof actionPopover === 'function') {
             actionPopover(row, buildIfaceActionItems(ifaceType, ifaceName));

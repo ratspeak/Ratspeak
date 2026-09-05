@@ -120,22 +120,38 @@ window.RS.invoke = function(name, args) {
 window.RS.copyText = function(value) {
     var text = String(value == null ? '' : value);
     var ok = false;
+    var ta = null;
+    var previousFocus = document.activeElement;
+    var sel = document.getSelection();
+    var prevRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0).cloneRange() : null;
+    var inputSelection = previousFocus && typeof previousFocus.selectionStart === 'number'
+        ? [previousFocus.selectionStart, previousFocus.selectionEnd, previousFocus.selectionDirection]
+        : null;
     try {
-        var ta = document.createElement('textarea');
+        ta = document.createElement('textarea');
         ta.value = text;
         ta.setAttribute('readonly', '');
         ta.style.position = 'fixed';
         ta.style.top = '-1000px';
         ta.style.opacity = '0';
         document.body.appendChild(ta);
-        var sel = document.getSelection();
-        var prevRange = sel && sel.rangeCount > 0 ? sel.getRangeAt(0) : null;
         ta.select();
         ta.setSelectionRange(0, text.length);
         ok = document.execCommand('copy');
-        document.body.removeChild(ta);
-        if (prevRange && sel) { sel.removeAllRanges(); sel.addRange(prevRange); }
     } catch (_) { ok = false; }
+    finally {
+        var restoreFocus = ta && document.activeElement === ta;
+        if (ta && ta.parentNode) ta.parentNode.removeChild(ta);
+        // Preserve the composer/keyboard and selection even when execCommand
+        // throws. Never leave copied text in a hidden, still-attached textarea.
+        try {
+            if (restoreFocus && previousFocus && previousFocus.isConnected) {
+                previousFocus.focus({ preventScroll: true });
+                if (inputSelection) previousFocus.setSelectionRange.apply(previousFocus, inputSelection);
+            }
+            if (prevRange && sel) { sel.removeAllRanges(); sel.addRange(prevRange); }
+        } catch (_) {}
+    }
     if (ok) return Promise.resolve(true);
     if (navigator.clipboard && navigator.clipboard.writeText) {
         return navigator.clipboard.writeText(text).then(

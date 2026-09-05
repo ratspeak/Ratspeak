@@ -570,27 +570,6 @@ function hasRealDisplayName(c) {
     return true;
 }
 
-function updateMessageReachability() {
-    var view = _connsView();
-    if (view.length === 0) return;
-
-    var lookup = {};
-    view.forEach(function(c) {
-        lookup[c.hash] = c;
-    });
-
-    document.querySelectorAll('.lxmf-contact .contact-id-status').forEach(function(dot) {
-        var row = dot.closest('.lxmf-contact');
-        if (!row) return;
-        var hash = row.dataset.hash;
-        var info = lookup[hash];
-        if (info) {
-            dot.className = 'contact-id-status status-' + info.status;
-            dot.title = (info.activity_label || 'Never seen') + ' - ' + (info.route_label || 'No current path');
-        }
-    });
-}
-
 function refreshConnectionsTable() {
     if (_connectionsThrottleTimer) clearTimeout(_connectionsThrottleTimer);
     _connectionsRenderScheduled = false;

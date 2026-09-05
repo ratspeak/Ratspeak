@@ -125,6 +125,14 @@
         return typeof isAndroid === 'function' && isAndroid();
     };
 
+    RS.composer.shouldSendOnEnter = function(event) {
+        // Native mobile keyboards retain Return even on wide tablets. The
+        // legacy touch predicate alone stops matching above 1024px.
+        return event.key === 'Enter' && !event.shiftKey && !event.isComposing &&
+            !RS.composer.usesNativeTypingDefaults() &&
+            !(typeof isMobile === 'function' && isMobile());
+    };
+
     RS.composer.applyTypingPolicy = function(input) {
         if (!input) return false;
         var useNativeDefaults = RS.composer.usesNativeTypingDefaults();
@@ -236,6 +244,7 @@
         if (!element || element._ratspeakKeyboardActivationBound) return;
         element._ratspeakKeyboardActivationBound = true;
         element.addEventListener('keydown', function(event) {
+            if (event.target !== element || event.defaultPrevented || event.isComposing) return;
             if (event.key !== 'Enter' && event.key !== ' ') return;
             event.preventDefault();
             element.click();

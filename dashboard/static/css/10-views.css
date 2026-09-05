@@ -304,7 +304,7 @@
     flex-shrink: 0;
     padding: var(--space-5) var(--space-8) var(--space-3);
 }
-.peers-toolbar .conn-search-input { flex: 1; min-width: 0; }
+.peers-toolbar .list-search-input { flex: 1; min-width: 0; }
 .peers-sort-dropdown { margin-left: auto; }
 .peers-sort-dropdown .toolbar-dropdown-menu {
     position: fixed;
@@ -3949,7 +3949,7 @@ body.setup-active .main-content {
     flex-shrink: 0;
     width: 100%;
 }
-.contacts-standalone-toolbar .conn-search-input {
+.contacts-standalone-toolbar .list-search-input {
     flex: 1 1 auto;
     min-width: 0;
     margin: 0;

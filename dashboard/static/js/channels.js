@@ -5930,7 +5930,7 @@ function _channelsBindUI() {
             }
         });
         input.addEventListener('keydown', function(event) {
-            if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !isMobile()) {
+            if (RS.composer.shouldSendOnEnter(event)) {
                 event.preventDefault();
                 channelsSendMessage();
             }

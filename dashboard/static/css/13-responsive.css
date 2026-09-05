@@ -368,14 +368,6 @@
         flex-wrap: nowrap;
         gap: var(--space-3);
     }
-    .peers-toolbar .conn-search-input {
-        flex: 1 1 auto;
-        width: auto;
-        min-width: 0;
-        height: 44px;
-        padding: 0 var(--space-7);
-        font-size: var(--text-base);
-    }
     .peers-sort-dropdown {
         flex: 0 0 44px;
         margin-left: 0;
@@ -676,11 +668,16 @@
         border: 1.5px solid var(--border-light);
     }
 
+    /* One search control for Peers, Messages and Contacts. Use a minimum so
+       enlarged text can grow without clipping; 16px also avoids iOS zoom. */
+    input.list-search-input {
+        min-height: var(--touch-target);
+        padding: var(--space-3) var(--space-6);
+        font-size: max(16px, 1rem);
+        border: 1px solid var(--input-border);
+    }
+
     /* Search/filter inputs: 16px prevents iOS auto-zoom on focus. */
-    #conn-search,
-    #msg-search-input,
-    #peers-search,
-    #contacts-search,
     .emoji-picker-search,
     .conn-sort-select {
         min-height: 40px;
@@ -1275,8 +1272,6 @@
     }
 
     .peers-detail-panel { display: none !important; }
-    .peers-toolbar { flex-wrap: nowrap; }
-    .peers-toolbar .conn-search-input { flex: 1 1 auto; width: auto; }
 
     #toast-container {
         top: calc(8px + var(--sat));
@@ -1561,10 +1556,8 @@
 
     .panel-header-btn { min-height: 44px; min-width: 44px; padding: 6px; }
 
-    .lxmf-contact-remove,
     .conv-row-remove { opacity: 0.6; }
 
-    .lxmf-contacts-list,
     .lxmf-messages,
     .contacts-list-scroll,
     .eventlog-full,
@@ -2732,53 +2725,7 @@
     }
     .fab-dial-scrim.active { display: block; }
 
-    .fab-contact-picker-header {
-        padding: var(--space-6) var(--space-8) var(--space-4);
-        border-bottom: 1px solid var(--border-row);
-        flex-shrink: 0;
-    }
-    .fab-contact-picker-title {
-        font-size: var(--text-base);
-        font-weight: var(--type-section-label-weight);
-        color: var(--text-primary);
-    }
-    .fab-contact-picker-list { padding: 4px 0; }
-    .fab-picker-empty {
-        padding: var(--space-12) var(--space-8);
-        text-align: center;
-        color: var(--text-muted);
-        font-size: var(--text-base);
-        line-height: 1.5;
-    }
-    .fab-picker-row {
-        display: flex;
-        align-items: center;
-        gap: var(--space-5);
-        width: 100%;
-        padding: var(--space-5) var(--space-8);
-        border: 0;
-        background: transparent;
-        color: inherit;
-        font: inherit;
-        text-align: left;
-        cursor: pointer;
-        -webkit-tap-highlight-color: transparent;
-    }
-    .fab-picker-row:active { background: var(--surface-row-active); }
-    .fab-picker-row:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
-    .fab-picker-name {
-        font-size: var(--text-base);
-        color: var(--text-primary);
-        font-weight: 500;
-    }
-    .fab-picker-hash {
-        font-size: var(--text-xs);
-        color: var(--text-muted);
-        font-family: var(--font-mono);
-    }
-
-    #msg-search-input,
-    #contacts-search {
+    .msg-search {
         margin: var(--space-4) var(--space-4);
         width: auto;
     }
