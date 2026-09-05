@@ -2,11 +2,20 @@
   "schemaVersion": 1,
   "rustSources": [
     "src-tauri/src/mobile_native.rs",
+    "src-tauri/src/android_lifecycle.rs",
+    "crates/ratspeak-tauri/src/notifier.rs",
     "crates/ratspeak-runtime/src/voice.rs",
     "crates/ratspeak-runtime/src/network_secrets.rs",
     "../rsReticulum/crates/rns-interface/src/ble_peer.rs"
   ],
   "classes": [
+    {
+      "name": "org.ratspeak.android.RatspeakNotifications",
+      "methods": [
+        ["nativeInitialize", "(Landroid/content/Context;)V"],
+        ["show", "(Landroid/content/Context;Ljava/lang/String;)I"]
+      ]
+    },
     {
       "name": "org.ratspeak.android.RatspeakSharedSecrets",
       "methods": [
@@ -25,7 +34,12 @@
         ["nativeSetNetworkType", "(Ljava/lang/String;J)V"],
         ["nativeUsbDeviceEvent", "(ILjava/lang/String;IILjava/lang/String;ZJ)V"],
         ["nativeBleRnodeState", "(Ljava/lang/String;JIILjava/lang/String;)V"],
-        ["nativeMemoryPressure", "(Z)V"]
+        ["nativeMemoryPressure", "(Z)V"],
+        ["showActivityRestoreFailure", "(J)V"],
+        ["nativeActivityAttached", "(JIZ)V"],
+        ["nativeActivityDetached", "(J)V"],
+        ["nativeActivityResumed", "(JZ)V"],
+        ["nativeActivityWebviewReady", "(J)V"]
       ]
     },
     {

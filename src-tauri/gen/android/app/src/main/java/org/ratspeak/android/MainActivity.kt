@@ -120,11 +120,16 @@ class MainActivity : TauriActivity() {
         private val BLE_OPERATION_RE = Regex("^[0-9A-Fa-f]{32}$")
     }
     private var webViewRef: WebView? = null
+    private var webViewNativeReady = false
+    private var activityGeneration = 0L
     private var appBackCallback: OnBackPressedCallback? = null
     private val handler = Handler(Looper.getMainLooper())
     private var pendingTop = 0
     private var pendingBottom = 0
     private var pendingNavigate: String? = null
+    private var pendingNotificationRoute: String? = null
+    private var notificationRouteDelivery = 0L
+    private var notificationRouteRetry: Runnable? = null
     private var pendingIdentityExport: PendingIdentityExport? = null
     private var pendingGenericFileSave: PendingFileSave? = null
     private var pendingMediaRequestId: String? = null
@@ -169,6 +174,7 @@ class MainActivity : TauriActivity() {
         // Incoming call ringtones are app audio, not microphone capture.
         webView.settings.mediaPlaybackRequiresUserGesture = false
         webViewRef = webView
+        webViewNativeReady = false
         installAppBackNavigation()
         // Expose BLE permission bridge to JavaScript
         webView.addJavascriptInterface(BlePermissionBridge(), "RatspeakAndroid")
@@ -195,6 +201,15 @@ class MainActivity : TauriActivity() {
                 navigateToView(target)
             }, 3000)
         }
+        deliverPendingNotificationRoute()
+    }
+
+    override fun onWebViewReady(webView: WebView) {
+        super.onWebViewReady(webView)
+        if (webViewRef !== webView || isDestroyed || isFinishing) return
+        webViewNativeReady = true
+        RatspeakNativeBridge.activityWebviewReady(this, activityGeneration)
+        deliverPendingNotificationRoute()
     }
 
     private fun installAppBackNavigation() {
@@ -246,10 +261,19 @@ class MainActivity : TauriActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         // Tauri setup can start Rust and restore saved BLE interfaces inside
         // super.onCreate(), so install the Application context first.
+        RatspeakNativeBridge.beginActivitySession()
         RatspeakNativeBridge.initialize(applicationContext)
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        // A retained Rust plugin is already loaded when Android creates a new
+        // Activity for this ACTION_VIEW. Its one-time load hook will not read
+        // the new Intent; the native inbox coalesces any cold-start duplicate.
+        if (intent?.action == Intent.ACTION_VIEW || intent?.action == "org.chromium.arc.intent.action.VIEW") {
+            app.tauri.plugin.PluginManager.onNewIntent(intent)
+        }
+        RatspeakNotifications.initialize(applicationContext)
         RatspeakAndroidObservers.attach(this)
+        pendingNotificationRoute = savedInstanceState?.getString("ratspeak.pending_notification_route")
 
         // Check for notification navigation intent
         handleNavigateIntent(intent)
@@ -291,7 +315,10 @@ class MainActivity : TauriActivity() {
         // Start foreground service
         val serviceIntent = Intent(this, RatspeakService::class.java)
         ContextCompat.startForegroundService(this, serviceIntent)
-
+        // Wry/Tao registration and this Activity's native UI hooks are ready.
+        // If a previous task was removed, reconnect its retained Rust session
+        // to this new view without opening another identity or network stack.
+        activityGeneration = RatspeakNativeBridge.attachActivity(this, webViewNativeReady)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -315,6 +342,8 @@ class MainActivity : TauriActivity() {
 
     override fun onResume() {
         super.onResume()
+        RatspeakNativeBridge.activityResumed(activityGeneration, true)
+        deliverPendingNotificationRoute()
         RatspeakPlatformSupervisor.replay()
         // ACTION_REFRESH clears per-sender notifications in RatspeakService
         // and kicks the poll loop so lastKnownUnread is current before the
@@ -323,6 +352,7 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onPause() {
+        RatspeakNativeBridge.activityResumed(activityGeneration, false)
         super.onPause()
         refreshServicePoll()
     }
@@ -361,16 +391,37 @@ class MainActivity : TauriActivity() {
     }
 
     override fun onDestroy() {
+        notificationRouteDelivery++
+        notificationRouteRetry?.let(handler::removeCallbacks)
+        notificationRouteRetry = null
+        RatspeakNativeBridge.detachActivity(activityGeneration)
         RatspeakAndroidObservers.detach(this)
         // Ringtone is UI-owned. Rust-owned call and voice-memo sessions survive
         // Activity recreation and clean up only through their exact tokens.
         stopNativeCallRingtone()
         RatspeakCallAudio.cancelInteractivePrime(this)
         if (!RatspeakCallAudio.isActive()) RatspeakVoiceAudio.stop()
+        handler.removeCallbacksAndMessages(null)
+        webViewRef?.removeJavascriptInterface("RatspeakAndroid")
+        webViewRef = null
+        webViewNativeReady = false
         super.onDestroy()
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        pendingNotificationRoute?.let { outState.putString("ratspeak.pending_notification_route", it) }
+        super.onSaveInstanceState(outState)
+    }
+
     private fun handleNavigateIntent(intent: Intent?) {
+        RatspeakNotifications.routeFromIntent(intent)?.let { route ->
+            // Consume only the validated private route. Configuration recreation
+            // restores undelivered work from saved state, never replays a tap.
+            intent?.removeExtra(RatspeakNotifications.ROUTE_EXTRA)
+            pendingNotificationRoute = route
+            deliverPendingNotificationRoute()
+            return
+        }
         val target = intent?.getStringExtra("navigate_to") ?: return
         val destHash = intent.getStringExtra("dest_hash")
         val payload = if (!destHash.isNullOrEmpty()) "$target|$destHash" else target
@@ -379,6 +430,44 @@ class MainActivity : TauriActivity() {
         } else {
             pendingNavigate = payload
         }
+    }
+
+    private fun deliverPendingNotificationRoute() {
+        if (!webViewNativeReady) return
+        val route = pendingNotificationRoute ?: return
+        val webView = webViewRef ?: return
+        notificationRouteRetry?.let(handler::removeCallbacks)
+        val delivery = ++notificationRouteDelivery
+        val deadline = android.os.SystemClock.uptimeMillis() + 30_000L
+        val routeJs = org.json.JSONObject.quote(route)
+        val attempt = object : Runnable {
+            override fun run() {
+                if (delivery != notificationRouteDelivery || isDestroyed ||
+                    webViewRef !== webView || pendingNotificationRoute != route
+                ) return
+                val remaining = deadline - android.os.SystemClock.uptimeMillis()
+                val js = "(function(){if(typeof _receiveAndroidNotificationRoute!=='function')return false;" +
+                    "return _receiveAndroidNotificationRoute($routeJs,'$delivery',${remaining.coerceAtLeast(0)});})()"
+                webView.evaluateJavascript(js) { acknowledged ->
+                    if (delivery != notificationRouteDelivery || isDestroyed ||
+                        webViewRef !== webView || pendingNotificationRoute != route
+                    ) return@evaluateJavascript
+                    if (acknowledged == "true") {
+                        pendingNotificationRoute = null
+                        notificationRouteRetry = null
+                    } else if (android.os.SystemClock.uptimeMillis() < deadline) {
+                        handler.postDelayed(this, 100)
+                    } else {
+                        // Keep the route for the next resume/WebView attachment,
+                        // without retaining a forever-running readiness poll.
+                        notificationRouteRetry = null
+                        Log.w("Ratspeak", "Notification route is waiting for the dashboard")
+                    }
+                }
+            }
+        }
+        notificationRouteRetry = attempt
+        handler.post(attempt)
     }
 
     private fun navigateToView(payload: String) {
@@ -1719,6 +1808,15 @@ class MainActivity : TauriActivity() {
         fun isVoiceMemoAudioSessionActive(sessionToken: String): Boolean {
             return RatspeakMobilePolicy.validCallSessionToken(sessionToken) &&
                 RatspeakVoiceMemoAudio.isSessionActive(sessionToken)
+        }
+
+        @JavascriptInterface
+        fun notificationDashboardReady() {
+            // Document readiness can follow a same-WebView unlock/setup reload.
+            // This only retries a native-owned, already validated pending tap.
+            handler.post {
+                if (!isDestroyed && !isFinishing) deliverPendingNotificationRoute()
+            }
         }
 
         @JavascriptInterface

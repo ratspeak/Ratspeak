@@ -50,6 +50,13 @@ assert.deepStrictEqual(
     { hidden: false, disabled: false, label: 'Allow' },
     'an enabled app preference must surface a fresh permission request'
 );
+assert.match(context._settingsBatteryPresentation('exempt').description, /can still stop Ratspeak/,
+    'a battery exemption must not promise process survival');
+assert.match(context._settingsBatteryPresentation('optimized').description, /can delay background messages/);
+assert.match(context._settingsBatteryPresentation('unavailable').description, /could not be checked/,
+    'unknown power status must not be reported as optimized or exempt');
+assert.strictEqual(context._settingsBatteryPresentation('exempt').label, 'Review',
+    'an existing exemption must keep system settings reachable');
 assert(source.includes("document.addEventListener('rs-notification-permission-changed'"),
     'the row must refresh after the Android permission result');
 assert(source.includes("window.addEventListener('focus'"),

@@ -1,3 +1,5 @@
+#[cfg(any(target_os = "android", test))]
+mod android_lifecycle;
 mod channel_deep_link;
 #[cfg(any(target_os = "android", target_os = "ios", test))]
 #[cfg_attr(
@@ -109,6 +111,25 @@ mod process_diagnostics_tests {
 
 fn diagnostic_metadata_allowed(metadata: &tracing::Metadata<'_>) -> bool {
     ratspeak_tauri::diagnostics::metadata_allowed(metadata)
+}
+
+/// Build the same application document for cold start and Android reattachment.
+/// Reattaching a window must never initialize another protocol or database owner.
+fn main_window_builder(
+    handle: &tauri::AppHandle,
+) -> tauri::WebviewWindowBuilder<'_, tauri::Wry, tauri::AppHandle> {
+    let platform_script = if cfg!(any(target_os = "android", target_os = "ios")) {
+        "window.__RATSPEAK_MOBILE__ = true;"
+    } else {
+        "window.__RATSPEAK_DESKTOP__ = true;"
+    };
+    let diagnostics_script = if diagnostics_enabled() {
+        "window.__RATSPEAK_DIAGNOSTICS__ = true;"
+    } else {
+        ""
+    };
+    tauri::WebviewWindowBuilder::new(handle, "main", tauri::WebviewUrl::App("index.html".into()))
+        .initialization_script(format!("{platform_script}{diagnostics_script}"))
 }
 
 #[cfg(target_os = "linux")]
@@ -954,6 +975,14 @@ pub fn run() {
         b
     };
 
+    let context = tauri::generate_context!();
+    #[cfg(target_os = "android")]
+    let context = {
+        let mut context = context;
+        channel_deep_link::configure_android_runtime(context.config_mut());
+        context
+    };
+
     let app = builder
         .invoke_handler(tauri::generate_handler![
             open_external_url,
@@ -962,7 +991,8 @@ pub fn run() {
             save_image_to_photos,
             save_stored_attachment_native,
             request_microphone_permission,
-            channel_deep_link::take_native_channel_share,
+            channel_deep_link::peek_native_channel_share,
+            channel_deep_link::ack_native_channel_share,
             ratspeak_tauri::commands::system::api_version,
             ratspeak_tauri::commands::system::api_startup_progress,
             ratspeak_tauri::commands::system::api_setup_status,
@@ -1271,23 +1301,7 @@ pub fn run() {
             mobile_native::install(&state);
 
             // Programmatic window construction so we can attach on_download.
-            let platform_script = if cfg!(any(target_os = "android", target_os = "ios")) {
-                "window.__RATSPEAK_MOBILE__ = true;"
-            } else {
-                "window.__RATSPEAK_DESKTOP__ = true;"
-            };
-            let diagnostics_script = if diagnostics_enabled() {
-                "window.__RATSPEAK_DIAGNOSTICS__ = true;"
-            } else {
-                ""
-            };
-            let initialization_script = format!("{platform_script}{diagnostics_script}");
-            let window = tauri::WebviewWindowBuilder::new(
-                &handle,
-                "main",
-                tauri::WebviewUrl::App("index.html".into()),
-            )
-            .initialization_script(initialization_script);
+            let window = main_window_builder(&handle);
 
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             let window = window
@@ -1420,7 +1434,7 @@ pub fn run() {
 
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building Ratspeak");
 
     // Initialize file diagnostics only after Builder::build has completed.
@@ -1436,10 +1450,16 @@ pub fn run() {
     }
 
     app.run(|app_handle, event| {
+        #[cfg(target_os = "android")]
+        android_lifecycle::on_run_event(app_handle, &event);
+
         #[cfg(any(target_os = "ios", target_os = "android"))]
         let _ = app_handle;
 
-        #[cfg(any(target_os = "ios", target_os = "android"))]
+        // Android uses generation-scoped native Activity callbacks, including
+        // resume before its replacement WebView exists. Tao's window fanout
+        // drops that edge when no window is present.
+        #[cfg(target_os = "ios")]
         match event {
             tauri::RunEvent::WindowEvent {
                 event: tauri::WindowEvent::Suspended,

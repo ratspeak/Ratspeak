@@ -6,6 +6,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
@@ -34,12 +36,93 @@ object RatspeakNativeBridge {
     private val lock = Any()
     private var contextRef = WeakReference<Context>(null)
     private val platformSequence = AtomicLong(0)
+    private val activitySequence = AtomicLong(0)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var activitySessionStarted = false
+    // Accessed only on the Android main thread. The protocol owner must not
+    // retain an Activity after its task has been removed.
+    private var activityRef = WeakReference<MainActivity>(null)
+    private var activityGeneration = 0L
+    private var webviewReadyGeneration = 0L
+    private var restoreFailureGeneration = 0L
+
+    // Set before super.onCreate can start Rust or request a microphone service
+    // lease. Retained after UI teardown; a new process always starts false.
+    internal fun beginActivitySession() {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        activitySessionStarted = true
+    }
+
+    internal fun hasActivitySession(): Boolean = activitySessionStarted
+
+    internal fun attachActivity(activity: MainActivity, webviewReady: Boolean): Long {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        val generation = activitySequence.incrementAndGet()
+        activityRef = WeakReference(activity)
+        activityGeneration = generation
+        webviewReadyGeneration = if (webviewReady) generation else 0L
+        nativeActivityAttached(generation, activity.id, webviewReady)
+        if (!webviewReady) {
+            // Native construction is not proof that the Java WebView exists.
+            // Surface a provider/creation failure without an unbounded retry.
+            mainHandler.postDelayed({ showActivityRestoreFailure(generation) }, 30_000L)
+        }
+        return generation
+    }
+
+    internal fun detachActivity(generation: Long) {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        if (activityGeneration == generation) {
+            activityRef.clear()
+        }
+        nativeActivityDetached(generation)
+    }
+
+    internal fun activityResumed(generation: Long, resumed: Boolean) {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        nativeActivityResumed(generation, resumed)
+    }
+
+    internal fun activityWebviewReady(activity: MainActivity, generation: Long) {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        if (generation != 0L && generation == activityGeneration && activityRef.get() === activity &&
+            !activity.isDestroyed && !activity.isFinishing
+        ) {
+            webviewReadyGeneration = generation
+            nativeActivityWebviewReady(generation)
+        }
+    }
+
+    /** Failure is visible and retry recreates only the UI, not the Rust session. */
+    @JvmStatic
+    fun showActivityRestoreFailure(generation: Long) {
+        mainHandler.post {
+            val activity = activityRef.get()
+            if (activityGeneration == generation && webviewReadyGeneration != generation &&
+                restoreFailureGeneration != generation && activity != null &&
+                !activity.isDestroyed && !activity.isFinishing
+            ) {
+                restoreFailureGeneration = generation
+                android.app.AlertDialog.Builder(activity)
+                    .setTitle("Unable to reopen Ratspeak")
+                    .setMessage("The current session is still running, but its screen could not be restored. Retry reopening the screen?")
+                    .setPositiveButton("Retry") { _, _ ->
+                        if (activityGeneration == generation && !activity.isDestroyed && !activity.isFinishing) {
+                            activity.recreate()
+                        }
+                    }
+                    .setNegativeButton("Cancel", null)
+                    .show()
+            }
+        }
+    }
 
     @JvmStatic
     fun initialize(context: Context) {
         synchronized(lock) {
             contextRef = WeakReference(context.applicationContext)
         }
+        RatspeakNotifications.initialize(context.applicationContext)
     }
 
     @JvmStatic
@@ -245,4 +328,13 @@ object RatspeakNativeBridge {
         errorCode: String?,
     )
     private external fun nativeMemoryPressure(critical: Boolean)
+
+    @JvmStatic
+    private external fun nativeActivityAttached(generation: Long, activityId: Int, webviewReady: Boolean)
+    @JvmStatic
+    private external fun nativeActivityDetached(generation: Long)
+    @JvmStatic
+    private external fun nativeActivityResumed(generation: Long, resumed: Boolean)
+    @JvmStatic
+    private external fun nativeActivityWebviewReady(generation: Long)
 }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-exclude = ["src-tauri"]
+exclude = ["src-tauri", "vendor/tao-0.35.3", "vendor/wry-0.55.1", "vendor/tauri-runtime-wry-2.11.4"]
 members = [
     "crates/ratspeak-core",
     "crates/ratspeak-db",
@@ -82,3 +82,9 @@ hex = "0.4"
 image = { version = "=0.25.5", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 
 # Testing
+
+# Narrow Android Activity lifetime fixes; see vendor/README.md for provenance.
+[patch.crates-io]
+tao = { path = "vendor/tao-0.35.3" }
+wry = { path = "vendor/wry-0.55.1" }
+tauri-runtime-wry = { path = "vendor/tauri-runtime-wry-2.11.4" }

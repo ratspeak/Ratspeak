@@ -17,7 +17,7 @@ class Ipc(val webView: RustWebView, val webViewClient: RustWebViewClient) {
             // we're not using WebView::getUrl() here because it needs to be executed on the main thread
             // and it would slow down the Ipc
             // so instead we track the current URL on the webview client
-            Rust.ipc(webView.id, webViewClient.currentUrl, m)
+            Rust.ipc(webView.callbackKey, webViewClient.currentUrl, m)
         }
     }
 

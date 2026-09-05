@@ -1736,6 +1736,21 @@ function _settingsNotificationPresentation(enabled, state) {
     return _settingsNotificationActionForState(state);
 }
 
+function _settingsBatteryPresentation(state) {
+    if (state === 'exempt') return {
+        label: 'Review',
+        description: 'Battery optimization is off. Android or the device maker can still stop Ratspeak.'
+    };
+    if (state === 'optimized') return {
+        label: 'Review',
+        description: 'Battery optimization can delay background messages. Review Android settings.'
+    };
+    return {
+        label: 'Review',
+        description: 'Battery access could not be checked. Review Android settings.'
+    };
+}
+
 (function() {
     var _notifRow = document.getElementById('settings-row-notifications');
     var _notifToggle = document.getElementById('desktop-notifications-toggle');
@@ -1774,11 +1789,9 @@ function _settingsNotificationPresentation(enabled, state) {
         _keepRow.style.display = '';
         var status = 'unavailable';
         try { status = window.RatspeakAndroid.batteryOptimizationStatus(); } catch (_) {}
-        var allowed = status === 'exempt';
-        _keepAction.textContent = allowed ? 'Allowed' : 'Review';
-        _keepDesc.textContent = allowed
-            ? 'Android allows Ratspeak to stay connected in the background.'
-            : 'Android may pause background radio and message delivery.';
+        var presentation = _settingsBatteryPresentation(status);
+        _keepAction.textContent = presentation.label;
+        _keepDesc.textContent = presentation.description;
     }
 
     RS.invoke('api_notification_settings').then(function(data) {

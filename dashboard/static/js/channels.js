@@ -3905,17 +3905,19 @@ function channelsSelectHistoryRoom(hubDestinationHash, roomName) {
     setTimeout(function() { channelsPrepareVisibleRead(); }, 0);
 }
 
-function channelsOpenNotificationRoute(hubDestinationHash, roomName) {
+function channelsOpenNotificationRoute(hubDestinationHash, roomName, isCurrent) {
+    isCurrent = typeof isCurrent === 'function' ? isCurrent : function() { return true; };
     var hub = String(hubDestinationHash || '').trim().toLowerCase();
     var room = String(roomName || '').trim().toLowerCase();
     if (!/^[0-9a-f]{32}$/.test(hub) || !room ||
             _channelsUtf8Length(room) > 256 ||
-            /[\u0000-\u001f\u007f]/.test(room)) return Promise.resolve(false);
+            /[\u0000-\u001f\u007f]/.test(room) || !isCurrent()) return Promise.resolve(false);
     if (typeof switchView === 'function') switchView('channels');
     var load = typeof channelsLoad === 'function'
         ? channelsLoad(true)
         : Promise.resolve(channelsSnapshot);
     return Promise.resolve(load).then(function() {
+        if (!isCurrent()) return false;
         var activeHub = channelsSnapshot.hub &&
             String(channelsSnapshot.hub.destination_hash || '').toLowerCase();
         if (activeHub === hub && _channelsRoomByName(room)) {

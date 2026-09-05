@@ -21,7 +21,7 @@ class RustWebViewClient(webView: RustWebView, context: Context): WebViewClient()
     private var pendingUrlRedirect: String? = null
 
     private val assetLoader = WebViewAssetLoader.Builder()
-        .setDomain(Rust.assetLoaderDomain(webView.id))
+        .setDomain(Rust.assetLoaderDomain(webView.callbackKey))
         .addPathHandler("/", WebViewAssetLoader.AssetsPathHandler(context))
         .build()
 
@@ -38,10 +38,10 @@ class RustWebViewClient(webView: RustWebView, context: Context): WebViewClient()
         }
 
         lastInterceptedUrl = request.url
-        return if (Rust.withAssetLoader((view as RustWebView).id)) {
+        return if (Rust.withAssetLoader((view as RustWebView).callbackKey)) {
             assetLoader.shouldInterceptRequest(request.url)
         } else {
-            val response = Rust.handleRequest(view.id, request, view.isDocumentStartScriptEnabled)
+            val response = Rust.handleRequest(view.callbackKey, request, view.isDocumentStartScriptEnabled)
             if (response != null) {
                 if (response.responseHeaders != null) {
                     response.responseHeaders["Cache-Control"] = "no-store"
@@ -58,7 +58,7 @@ class RustWebViewClient(webView: RustWebView, context: Context): WebViewClient()
         view: WebView,
         request: WebResourceRequest
     ): Boolean {
-        return Rust.shouldOverride((view as RustWebView).id, request.url.toString())
+        return Rust.shouldOverride((view as RustWebView).callbackKey, request.url.toString())
     }
 
     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
@@ -69,11 +69,11 @@ class RustWebViewClient(webView: RustWebView, context: Context): WebViewClient()
                 view.evaluateJavascript(script, null)
             }
         }
-        return Rust.onPageLoading((view as RustWebView).id, url)
+        return Rust.onPageLoading((view as RustWebView).callbackKey, url)
     }
 
     override fun onPageFinished(view: WebView, url: String) {
-        Rust.onPageLoaded((view as RustWebView).id, url)
+        Rust.onPageLoaded((view as RustWebView).callbackKey, url)
     }
 
     override fun onReceivedError(

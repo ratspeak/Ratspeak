@@ -1,0 +1,1859 @@
+diff --git a/wry-0.55.1/src/android/binding.rs b/wry-0.55.1/src/android/binding.rs
+index 031cd09..2752038 100644
+--- a/wry-0.55.1/src/android/binding.rs
++++ b/wry-0.55.1/src/android/binding.rs
+@@ -18,9 +18,9 @@ use ndk::looper::{FdEvent, ThreadLooper};
+ use std::os::fd::{AsFd, AsRawFd};
+ 
+ use super::{
++  callbacks,
+   main_pipe::{MainPipe, MAIN_PIPE},
+-  ASSET_LOADER_DOMAIN, EVAL_CALLBACKS, IPC, ON_LOAD_HANDLER, REQUEST_HANDLER, TITLE_CHANGE_HANDLER,
+-  URL_LOADING_OVERRIDE, WITH_ASSET_LOADER,
++  EVAL_CALLBACKS,
+ };
+ 
+ use crate::PageLoadEvent;
+@@ -99,7 +99,16 @@ fn handle_request(
+   let webview_id = env.get_string(&webview_id)?;
+   let webview_id = webview_id.to_str().ok().unwrap_or_default();
+ 
+-  if let Some(handler) = REQUEST_HANDLER.lock().unwrap().get(webview_id) {
++  let Some(callbacks) = callbacks::resolve(webview_id) else {
++    return Ok(JObject::null().as_raw());
++  };
++  if let Some(handler) = &callbacks.request {
++    let handler = handler.lock().unwrap();
++    // A prior request can hold this per-handler lock until its response arrives.
++    // Do not start queued work for a view retired while we were waiting.
++    if !callbacks::is_current(webview_id, &callbacks) {
++      return Ok(JObject::null().as_raw());
++    }
+     #[cfg(feature = "tracing")]
+     let span =
+       tracing::info_span!(parent: None, "wry::custom_protocol::handle", uri = tracing::field::Empty).entered();
+@@ -163,7 +172,7 @@ fn handle_request(
+       #[cfg(feature = "tracing")]
+       let _span = tracing::info_span!("wry::custom_protocol::call_handler").entered();
+       (handler.handler)(
+-        webview_id,
++        &callbacks.logical_id,
+         final_request,
+         is_document_start_script_enabled != 0,
+       )
+@@ -261,8 +270,13 @@ pub unsafe fn wryCreate(env: JNIEnv, _: JClass) {
+       let size = std::mem::size_of::<bool>();
+       let mut wake = false;
+       if libc::read(fd.as_raw_fd(), &mut wake as *mut _ as *mut _, size) == size as libc::ssize_t {
+-        // unregister itself on errors
+-        main_pipe.recv().is_ok()
++        // A failed Java operation must not permanently remove the process-wide
++        // queue callback. A later Activity may recover with a fresh WebView.
++        if main_pipe.recv().is_err() {
++          eprintln!("Android WebView operation failed");
++          let _ = main_pipe.env.exception_clear();
++        }
++        true
+       } else {
+         // unregister itself
+         false
+@@ -291,14 +305,16 @@ pub unsafe fn onWebviewDestroy(mut env: JNIEnv, _: JClass, activity: JObject, we
+     .z()
+     .unwrap();
+ 
+-  super::MainPipe::send(
+-    activity_id,
+-    super::WebViewMessage::OnDestroy {
+-      activity_id,
+-      webview_id,
+-      is_changing_configurations,
+-    },
+-  );
++  // This JNI callback already runs on Android's main thread. Cleanup must
++  // finish before a new Activity is registered, and must not enqueue into the
++  // bounded queue that only this same thread can drain.
++  if !is_changing_configurations {
++    super::main_pipe::destroy_activity(activity_id, &webview_id);
++  } else {
++    // Keep the logical window, but retire this particular Java view before
++    // another Activity can install callbacks for the same logical label.
++    super::main_pipe::retire_activity_view(activity_id);
++  }
+ }
+ 
+ #[allow(non_snake_case)]
+@@ -340,15 +356,21 @@ pub unsafe fn shouldOverride(
+       };
+       let webview_id = webview_id.to_str().ok().unwrap_or_default();
+ 
+-      URL_LOADING_OVERRIDE
+-        .lock()
+-        .unwrap()
+-        .get(webview_id)
++      let Some(callbacks) = callbacks::resolve(webview_id) else {
++        // A retired Java view must not start another navigation.
++        return true.into();
++      };
++      callbacks
++        .navigation
++        .as_ref()
+         // We negate the result of the function because the logic for the android
+         // client is different from how the navigation_handler is defined.
+         //
+         // https://developer.android.com/reference/android/webkit/WebViewClient#shouldOverrideUrlLoading(android.webkit.WebView,%20android.webkit.WebResourceRequest)
+-        .map(|f| !(f.handler)(url))
++        .map(|f| {
++          let handler = f.lock().unwrap();
++          !callbacks::is_current(webview_id, &callbacks) || !(handler.handler)(url)
++        })
+         .unwrap_or_default()
+     }
+     Err(_e) => {
+@@ -361,15 +383,24 @@ pub unsafe fn shouldOverride(
+ }
+ 
+ #[allow(non_snake_case)]
+-pub unsafe fn onEval(mut env: JNIEnv, _: JClass, _webview_id: JString, id: jint, result: JString) {
++pub unsafe fn onEval(mut env: JNIEnv, _: JClass, webview_id: JString, id: jint, result: JString) {
++  let Ok(webview_id) = env.get_string(&webview_id) else {
++    return;
++  };
++  // Eval ids identify their original callback, but the Java view must still
++  // have authority to deliver it. Always release one-shot callback storage.
++  let active = callbacks::resolve(webview_id.to_str().ok().unwrap_or_default()).is_some();
++  let callback = EVAL_CALLBACKS
++    .get_or_init(Default::default)
++    .lock()
++    .unwrap()
++    .remove(&id);
++  if !active {
++    return;
++  }
+   match env.get_string(&result) {
+     Ok(result) => {
+-      if let Some(cb) = EVAL_CALLBACKS
+-        .get_or_init(Default::default)
+-        .lock()
+-        .unwrap()
+-        .get(&id)
+-      {
++      if let Some((_activity_id, cb)) = callback {
+         cb(result.into());
+       }
+     }
+@@ -393,7 +424,14 @@ pub unsafe fn ipc(mut env: JNIEnv, _: JClass, webview_id: JString, url: JString,
+       let url = url.to_string_lossy().to_string();
+       let body = body.to_string_lossy().to_string();
+       let webview_id = webview_id.to_string_lossy().to_string();
+-      if let Some(ipc) = IPC.lock().unwrap().get(&webview_id) {
++      let Some(callbacks) = callbacks::resolve(&webview_id) else {
++        return;
++      };
++      if let Some(ipc) = &callbacks.ipc {
++        let ipc = ipc.lock().unwrap();
++        if !callbacks::is_current(&webview_id, &callbacks) {
++          return;
++        }
+         (ipc.handler)(Request::builder().uri(url).body(body).unwrap())
+       }
+     }
+@@ -410,7 +448,14 @@ pub unsafe fn handleReceivedTitle(mut env: JNIEnv, _: JClass, webview_id: JStrin
+     (Ok(title), Ok(webview_id)) => {
+       let title = title.to_string_lossy().to_string();
+       let webview_id = webview_id.to_string_lossy().to_string();
+-      if let Some(title_handler) = TITLE_CHANGE_HANDLER.lock().unwrap().get(&webview_id) {
++      let Some(callbacks) = callbacks::resolve(&webview_id) else {
++        return;
++      };
++      if let Some(title_handler) = &callbacks.title {
++        let title_handler = title_handler.lock().unwrap();
++        if !callbacks::is_current(&webview_id, &callbacks) {
++          return;
++        }
+         (title_handler.handler)(title)
+       }
+     }
+@@ -427,12 +472,9 @@ pub unsafe fn withAssetLoader(mut env: JNIEnv, _: JClass, webview_id: JString) -
+     return false.into();
+   };
+   let webview_id = webview_id.to_str().ok().unwrap_or_default();
+-  (*WITH_ASSET_LOADER
+-    .lock()
+-    .unwrap()
+-    .get(webview_id)
+-    .unwrap_or(&false))
+-  .into()
++  callbacks::resolve(webview_id)
++    .is_some_and(|callbacks| callbacks.with_asset_loader)
++    .into()
+ }
+ 
+ #[allow(non_snake_case)]
+@@ -441,11 +483,12 @@ pub unsafe fn assetLoaderDomain(mut env: JNIEnv, _: JClass, webview_id: JString)
+     return env.new_string("wry.assets").unwrap().as_raw();
+   };
+   let webview_id = webview_id.to_str().ok().unwrap_or_default();
+-  if let Some(domain) = ASSET_LOADER_DOMAIN.lock().unwrap().get(webview_id) {
+-    env.new_string(domain).unwrap().as_raw()
+-  } else {
+-    env.new_string("wry.assets").unwrap().as_raw()
+-  }
++  let callbacks = callbacks::resolve(webview_id);
++  let domain = callbacks
++    .as_ref()
++    .map(|callbacks| callbacks.asset_loader_domain.as_str())
++    .unwrap_or("wry.assets");
++  env.new_string(domain).unwrap().as_raw()
+ }
+ 
+ #[allow(non_snake_case)]
+@@ -454,7 +497,14 @@ pub unsafe fn onPageLoading(mut env: JNIEnv, _: JClass, webview_id: JString, url
+     (Ok(url), Ok(webview_id)) => {
+       let url = url.to_string_lossy().to_string();
+       let webview_id = webview_id.to_string_lossy().to_string();
+-      if let Some(on_load) = ON_LOAD_HANDLER.lock().unwrap().get(&webview_id) {
++      let Some(callbacks) = callbacks::resolve(&webview_id) else {
++        return;
++      };
++      if let Some(on_load) = &callbacks.load {
++        let on_load = on_load.lock().unwrap();
++        if !callbacks::is_current(&webview_id, &callbacks) {
++          return;
++        }
+         (on_load.handler)(PageLoadEvent::Started, url)
+       }
+     }
+@@ -471,7 +521,14 @@ pub unsafe fn onPageLoaded(mut env: JNIEnv, _: JClass, webview_id: JString, url:
+     (Ok(url), Ok(webview_id)) => {
+       let url = url.to_string_lossy().to_string();
+       let webview_id = webview_id.to_string_lossy().to_string();
+-      if let Some(on_load) = ON_LOAD_HANDLER.lock().unwrap().get(&webview_id) {
++      let Some(callbacks) = callbacks::resolve(&webview_id) else {
++        return;
++      };
++      if let Some(on_load) = &callbacks.load {
++        let on_load = on_load.lock().unwrap();
++        if !callbacks::is_current(&webview_id, &callbacks) {
++          return;
++        }
+         (on_load.handler)(PageLoadEvent::Finished, url)
+       }
+     }
+diff --git a/wry-0.55.1/src/android/callback_registry.rs b/wry-0.55.1/src/android/callback_registry.rs
+new file mode 100644
+index 0000000..6102b67
+--- /dev/null
++++ b/wry-0.55.1/src/android/callback_registry.rs
+@@ -0,0 +1,138 @@
++// Copyright 2020-2023 Tauri Programme within The Commons Conservancy
++// SPDX-License-Identifier: Apache-2.0
++// SPDX-License-Identifier: MIT
++
++//! Native-view callback authority, independent of Android/JNI for regression tests.
++
++use std::{collections::HashMap, sync::Arc};
++
++pub(super) struct CallbackRegistry<T> {
++  serial: u64,
++  activities: HashMap<i32, String>,
++  callbacks: HashMap<String, Arc<T>>,
++}
++
++impl<T> CallbackRegistry<T> {
++  pub(super) fn new() -> Self {
++    Self {
++      serial: 0,
++      activities: HashMap::new(),
++      callbacks: HashMap::new(),
++    }
++  }
++
++  pub(super) fn register(&mut self, activity_id: i32, callbacks: T) -> String {
++    self.retire(activity_id);
++    // Never wrap into an identity used by an old Java object.
++    self.serial = self
++      .serial
++      .checked_add(1)
++      .expect("native callback identities exhausted");
++    let key = format!("wry-native-{}", self.serial);
++    self.activities.insert(activity_id, key.clone());
++    self.callbacks.insert(key.clone(), Arc::new(callbacks));
++    key
++  }
++
++  pub(super) fn resolve(&self, key: &str) -> Option<Arc<T>> {
++    self.callbacks.get(key).cloned()
++  }
++
++  pub(super) fn is_current(&self, key: &str, snapshot: &Arc<T>) -> bool {
++    self
++      .callbacks
++      .get(key)
++      .is_some_and(|current| Arc::ptr_eq(current, snapshot))
++  }
++
++  pub(super) fn retire(&mut self, activity_id: i32) {
++    if let Some(key) = self.activities.remove(&activity_id) {
++      self.callbacks.remove(&key);
++    }
++  }
++}
++
++#[cfg(test)]
++mod tests {
++  use super::*;
++
++  #[test]
++  fn retired_view_cannot_resolve_replacement_with_same_logical_label() {
++    let mut registry = CallbackRegistry::new();
++    let old = registry.register(7, ("main", "old-handler"));
++    registry.retire(7);
++    let new = registry.register(7, ("main", "new-handler"));
++    assert_ne!(old, new);
++    assert!(registry.resolve(&old).is_none());
++    assert_eq!(*registry.resolve(&new).unwrap(), ("main", "new-handler"));
++    assert!(registry.resolve("main").is_none());
++  }
++
++  #[test]
++  fn configuration_replaces_native_key_without_replacing_logical_handler() {
++    let handler = Arc::new(());
++    let mut registry = CallbackRegistry::new();
++    let old = registry.register(7, handler.clone());
++    let new = registry.register(7, handler.clone());
++    assert!(registry.resolve(&old).is_none());
++    assert!(Arc::ptr_eq(
++      registry.resolve(&new).unwrap().as_ref(),
++      &handler
++    ));
++  }
++
++  #[test]
++  fn in_flight_snapshot_never_relooks_up_a_replacement_handler() {
++    let mut registry = CallbackRegistry::new();
++    let old = registry.register(7, "old-handler");
++    let in_flight = registry.resolve(&old).unwrap();
++    let new = registry.register(7, "new-handler");
++    assert_eq!(*in_flight, "old-handler");
++    assert_eq!(*registry.resolve(&new).unwrap(), "new-handler");
++    assert!(registry.resolve(&old).is_none());
++  }
++
++  #[test]
++  fn retiring_one_activity_does_not_revoke_another() {
++    let mut registry = CallbackRegistry::new();
++    let first = registry.register(7, "first");
++    let second = registry.register(8, "second");
++    registry.retire(7);
++    registry.retire(7);
++    assert!(registry.resolve(&first).is_none());
++    assert_eq!(*registry.resolve(&second).unwrap(), "second");
++    assert_eq!(registry.activities.len(), 1);
++    assert_eq!(registry.callbacks.len(), 1);
++  }
++
++  #[test]
++  fn callback_waiting_for_handler_lock_is_rechecked_after_retirement() {
++    use std::{
++      sync::{mpsc, Mutex},
++      thread,
++      time::Duration,
++    };
++    let registry = Arc::new(Mutex::new(CallbackRegistry::new()));
++    let key = registry.lock().unwrap().register(7, Mutex::new(0));
++    let handler = registry.lock().unwrap().resolve(&key).unwrap();
++    let busy = handler.lock().unwrap();
++    let (resolved, wait_for_resolved) = mpsc::channel();
++    let worker_registry = registry.clone();
++    let worker = thread::spawn(move || {
++      let snapshot = worker_registry.lock().unwrap().resolve(&key).unwrap();
++      resolved.send(()).unwrap();
++      let mut handler = snapshot.lock().unwrap();
++      if worker_registry.lock().unwrap().is_current(&key, &snapshot) {
++        *handler += 1;
++      }
++    });
++    wait_for_resolved
++      .recv_timeout(Duration::from_secs(5))
++      .unwrap();
++    // Teardown never waits for the blocked handler or its response.
++    registry.lock().unwrap().retire(7);
++    drop(busy);
++    worker.join().unwrap();
++    assert_eq!(*handler.lock().unwrap(), 0);
++  }
++}
+diff --git a/wry-0.55.1/src/android/callbacks.rs b/wry-0.55.1/src/android/callbacks.rs
+new file mode 100644
+index 0000000..6345b7a
+--- /dev/null
++++ b/wry-0.55.1/src/android/callbacks.rs
+@@ -0,0 +1,83 @@
++// Copyright 2020-2023 Tauri Programme within The Commons Conservancy
++// SPDX-License-Identifier: Apache-2.0
++// SPDX-License-Identifier: MIT
++
++//! Each Java WebView receives a fresh opaque key, never the reusable window label.
++//! Snapshot handler Arcs before publishing that key so a callback racing retirement
++//! can finish against its original handler but cannot enter a replacement's handler.
++
++use super::{
++  handler_key::HandlerKey, main_pipe::ActivityId, UnsafeIpc, UnsafeOnPageLoadHandler,
++  UnsafeRequestHandler, UnsafeTitleHandler, UnsafeUrlLoadingOverride, ASSET_LOADER_DOMAIN, IPC,
++  ON_LOAD_HANDLER, REQUEST_HANDLER, TITLE_CHANGE_HANDLER, URL_LOADING_OVERRIDE, WITH_ASSET_LOADER,
++};
++use once_cell::sync::Lazy;
++use std::sync::{Arc, Mutex};
++
++#[path = "callback_registry.rs"]
++mod callback_registry;
++use callback_registry::CallbackRegistry;
++
++pub(super) struct NativeCallbacks {
++  pub logical_id: String,
++  pub request: Option<Arc<Mutex<UnsafeRequestHandler>>>,
++  pub ipc: Option<Arc<Mutex<UnsafeIpc>>>,
++  pub title: Option<Arc<Mutex<UnsafeTitleHandler>>>,
++  pub navigation: Option<Arc<Mutex<UnsafeUrlLoadingOverride>>>,
++  pub load: Option<Arc<Mutex<UnsafeOnPageLoadHandler>>>,
++  pub with_asset_loader: bool,
++  pub asset_loader_domain: String,
++}
++
++static CALLBACKS: Lazy<Mutex<CallbackRegistry<NativeCallbacks>>> =
++  Lazy::new(|| Mutex::new(CallbackRegistry::new()));
++
++// Called only by Android's UI-thread creation path, after Rust handler publication.
++pub(super) fn register(activity_id: ActivityId, key: &HandlerKey) -> Option<String> {
++  if key.activity_id != activity_id {
++    return None;
++  }
++  // Separate statements release each global map lock before acquiring another.
++  // This handler is always published, even without custom protocols. Missing
++  // ownership is a failed construction, never a ready-but-blank Java view.
++  let request = REQUEST_HANDLER.lock().unwrap().get(key).cloned()?;
++  let ipc = IPC.lock().unwrap().get(key).cloned();
++  let title = TITLE_CHANGE_HANDLER.lock().unwrap().get(key).cloned();
++  let navigation = URL_LOADING_OVERRIDE.lock().unwrap().get(key).cloned();
++  let load = ON_LOAD_HANDLER.lock().unwrap().get(key).cloned();
++  let with_asset_loader = WITH_ASSET_LOADER
++    .lock()
++    .unwrap()
++    .get(key)
++    .copied()
++    .unwrap_or(false);
++  let asset_loader_domain = ASSET_LOADER_DOMAIN
++    .lock()
++    .unwrap()
++    .get(key)
++    .cloned()
++    .unwrap_or_else(|| "wry.assets".to_owned());
++  let callbacks = NativeCallbacks {
++    logical_id: key.label.clone(),
++    request: Some(request),
++    ipc,
++    title,
++    navigation,
++    load,
++    with_asset_loader,
++    asset_loader_domain,
++  };
++  Some(CALLBACKS.lock().unwrap().register(activity_id, callbacks))
++}
++
++pub(super) fn retire(activity_id: ActivityId) {
++  CALLBACKS.lock().unwrap().retire(activity_id);
++}
++
++pub(super) fn resolve(key: &str) -> Option<Arc<NativeCallbacks>> {
++  CALLBACKS.lock().unwrap().resolve(key)
++}
++
++pub(super) fn is_current(key: &str, snapshot: &Arc<NativeCallbacks>) -> bool {
++  CALLBACKS.lock().unwrap().is_current(key, snapshot)
++}
+diff --git a/wry-0.55.1/src/android/handler_key.rs b/wry-0.55.1/src/android/handler_key.rs
+new file mode 100644
+index 0000000..d0775d8
+--- /dev/null
++++ b/wry-0.55.1/src/android/handler_key.rs
+@@ -0,0 +1,47 @@
++// Copyright 2020-2023 Tauri Programme within The Commons Conservancy
++// SPDX-License-Identifier: Apache-2.0
++// SPDX-License-Identifier: MIT
++
++/// Rust handler ownership is separate from its reusable public WebView label.
++/// Configuration recreation keeps this key; a new logical window never does.
++#[derive(Clone, Debug, Eq, Hash, PartialEq)]
++pub(crate) struct HandlerKey {
++  pub activity_id: i32,
++  pub generation: u64,
++  pub label: String,
++}
++
++impl HandlerKey {
++  pub fn new(activity_id: i32, generation: u64, label: String) -> Self {
++    Self {
++      activity_id,
++      generation,
++      label,
++    }
++  }
++}
++
++#[cfg(test)]
++mod tests {
++  use super::HandlerKey;
++  use std::collections::HashMap;
++
++  #[test]
++  fn late_old_cleanup_cannot_delete_already_published_replacement_handlers() {
++    let old = HandlerKey::new(1, 1, "main".into());
++    let new = HandlerKey::new(2, 2, "main".into());
++    let mut handlers = HashMap::from([(old.clone(), "old"), (new.clone(), "new")]);
++    handlers.remove(&old);
++    assert_eq!(handlers.get(&new), Some(&"new"));
++  }
++
++  #[test]
++  fn reused_activity_id_and_label_do_not_reuse_handler_ownership() {
++    let old = HandlerKey::new(1, 1, "main".into());
++    let new = HandlerKey::new(1, 2, "main".into());
++    let mut handlers = HashMap::from([(new.clone(), "new")]);
++    handlers.remove(&old);
++    assert_eq!(handlers.get(&new), Some(&"new"));
++    assert_eq!(new, new.clone()); // Physical configuration changes keep the key.
++  }
++}
+diff --git a/wry-0.55.1/src/android/kotlin/Ipc.kt b/wry-0.55.1/src/android/kotlin/Ipc.kt
+index c760375..dc31e9e 100644
+--- a/wry-0.55.1/src/android/kotlin/Ipc.kt
++++ b/wry-0.55.1/src/android/kotlin/Ipc.kt
+@@ -15,7 +15,7 @@ class Ipc(val webView: RustWebView, val webViewClient: RustWebViewClient) {
+             // we're not using WebView::getUrl() here because it needs to be executed on the main thread
+             // and it would slow down the Ipc
+             // so instead we track the current URL on the webview client
+-            Rust.ipc(webView.id, webViewClient.currentUrl, m)
++            Rust.ipc(webView.callbackKey, webViewClient.currentUrl, m)
+         }
+     }
+ 
+diff --git a/wry-0.55.1/src/android/kotlin/RustWebChromeClient.kt b/wry-0.55.1/src/android/kotlin/RustWebChromeClient.kt
+index bba26db..a27e854 100644
+--- a/wry-0.55.1/src/android/kotlin/RustWebChromeClient.kt
++++ b/wry-0.55.1/src/android/kotlin/RustWebChromeClient.kt
+@@ -486,6 +486,6 @@ class RustWebChromeClient(appActivity: WryActivity) : WebChromeClient() {
+       view: WebView,
+       title: String
+   ) {
+-    Rust.handleReceivedTitle((view as RustWebView).id, title)
++    Rust.handleReceivedTitle((view as RustWebView).callbackKey, title)
+   }
+ }
+diff --git a/wry-0.55.1/src/android/kotlin/RustWebView.kt b/wry-0.55.1/src/android/kotlin/RustWebView.kt
+index 31356c3..37b3010 100644
+--- a/wry-0.55.1/src/android/kotlin/RustWebView.kt
++++ b/wry-0.55.1/src/android/kotlin/RustWebView.kt
+@@ -14,7 +14,7 @@ import androidx.webkit.WebViewFeature
+ import kotlin.collections.Map
+ 
+ @SuppressLint("RestrictedApi")
+-class RustWebView(context: Context, val initScripts: Array<String>, val id: String): WebView(context) {
++class RustWebView(context: Context, val initScripts: Array<String>, val id: String, val callbackKey: String): WebView(context) {
+     val isDocumentStartScriptEnabled: Boolean
+ 
+     init {
+@@ -50,13 +50,13 @@ class RustWebView(context: Context, val initScripts: Array<String>, val id: Stri
+     }
+ 
+     override fun loadUrl(url: String) {
+-        if (!Rust.shouldOverride(id, url)) {
++        if (!Rust.shouldOverride(callbackKey, url)) {
+             super.loadUrl(url);
+         }
+     }
+ 
+     override fun loadUrl(url: String, additionalHttpHeaders: Map<String, String>) {
+-        if (!Rust.shouldOverride(id, url)) {
++        if (!Rust.shouldOverride(callbackKey, url)) {
+             super.loadUrl(url, additionalHttpHeaders);
+         }
+     }
+@@ -70,7 +70,7 @@ class RustWebView(context: Context, val initScripts: Array<String>, val id: Stri
+     fun evalScript(id: Int, script: String) {
+         post {
+             super.evaluateJavascript(script) { result ->
+-                Rust.onEval(this.id, id, result)
++                Rust.onEval(callbackKey, id, result)
+             }
+         }
+     }
+diff --git a/wry-0.55.1/src/android/kotlin/RustWebViewClient.kt b/wry-0.55.1/src/android/kotlin/RustWebViewClient.kt
+index 3dae460..a46068c 100644
+--- a/wry-0.55.1/src/android/kotlin/RustWebViewClient.kt
++++ b/wry-0.55.1/src/android/kotlin/RustWebViewClient.kt
+@@ -19,7 +19,7 @@ class RustWebViewClient(webView: RustWebView, context: Context): WebViewClient()
+     private var pendingUrlRedirect: String? = null
+ 
+     private val assetLoader = WebViewAssetLoader.Builder()
+-        .setDomain(Rust.assetLoaderDomain(webView.id))
++        .setDomain(Rust.assetLoaderDomain(webView.callbackKey))
+         .addPathHandler("/", WebViewAssetLoader.AssetsPathHandler(context))
+         .build()
+ 
+@@ -36,10 +36,10 @@ class RustWebViewClient(webView: RustWebView, context: Context): WebViewClient()
+         }
+ 
+         lastInterceptedUrl = request.url
+-        return if (Rust.withAssetLoader((view as RustWebView).id)) {
++        return if (Rust.withAssetLoader((view as RustWebView).callbackKey)) {
+             assetLoader.shouldInterceptRequest(request.url)
+         } else {
+-            val response = Rust.handleRequest(view.id, request, view.isDocumentStartScriptEnabled)
++            val response = Rust.handleRequest(view.callbackKey, request, view.isDocumentStartScriptEnabled)
+             if (response != null) {
+                 if (response.responseHeaders != null) {
+                     response.responseHeaders["Cache-Control"] = "no-store"
+@@ -56,7 +56,7 @@ class RustWebViewClient(webView: RustWebView, context: Context): WebViewClient()
+         view: WebView,
+         request: WebResourceRequest
+     ): Boolean {
+-        return Rust.shouldOverride((view as RustWebView).id, request.url.toString())
++        return Rust.shouldOverride((view as RustWebView).callbackKey, request.url.toString())
+     }
+ 
+     override fun onPageStarted(view: WebView, url: String, favicon: Bitmap?) {
+@@ -67,11 +67,11 @@ class RustWebViewClient(webView: RustWebView, context: Context): WebViewClient()
+                 view.evaluateJavascript(script, null)
+             }
+         }
+-        return Rust.onPageLoading((view as RustWebView).id, url)
++        return Rust.onPageLoading((view as RustWebView).callbackKey, url)
+     }
+ 
+     override fun onPageFinished(view: WebView, url: String) {
+-        Rust.onPageLoaded((view as RustWebView).id, url)
++        Rust.onPageLoaded((view as RustWebView).callbackKey, url)
+     }
+ 
+     override fun onReceivedError(
+diff --git a/wry-0.55.1/src/android/kotlin/WryActivity.kt b/wry-0.55.1/src/android/kotlin/WryActivity.kt
+index 7152e35..d4178c2 100644
+--- a/wry-0.55.1/src/android/kotlin/WryActivity.kt
++++ b/wry-0.55.1/src/android/kotlin/WryActivity.kt
+@@ -10,6 +10,7 @@ import android.os.Build
+ import android.os.Bundle
+ import android.webkit.WebView
+ import android.view.KeyEvent
++import android.view.ViewGroup
+ import androidx.activity.OnBackPressedCallback
+ import androidx.appcompat.app.AppCompatActivity
+ import androidx.lifecycle.DefaultLifecycleObserver
+@@ -52,6 +53,9 @@ abstract class WryActivity : AppCompatActivity() {
+     open val handleBackNavigation: Boolean = true
+ 
+     open fun onWebViewCreate(webView: WebView) { }
++    // Unlike the early setup hook, called only after clients, IPC, content,
++    // plugin hook and native proxy publication have all succeeded.
++    open fun onWebViewReady(webView: WebView) { }
+ 
+     fun setWebView(webView: RustWebView) {
+         mWebView = webView
+@@ -111,7 +115,9 @@ abstract class WryActivity : AppCompatActivity() {
+ 
+     override fun onCreate(savedInstanceState: Bundle?) {
+         super.onCreate(savedInstanceState)
+-        id = savedInstanceState?.getInt(ACTIVITY_ID_KEY) ?: intent.extras?.getInt(ACTIVITY_ID_KEY) ?: hashCode()
++        id = savedInstanceState?.takeIf { it.containsKey(ACTIVITY_ID_KEY) }?.getInt(ACTIVITY_ID_KEY)
++            ?: intent.extras?.takeIf { it.containsKey(ACTIVITY_ID_KEY) }?.getInt(ACTIVITY_ID_KEY)
++            ?: hashCode()
+         ProcessLifecycleOwner.get().lifecycle.addObserver(WryLifecycleObserver)
+         Rust.onActivityCreate(this)
+     }
+@@ -143,8 +149,19 @@ abstract class WryActivity : AppCompatActivity() {
+ 
+     override fun onDestroy() {
+         super.onDestroy()
+-        Rust.onActivityDestroy(this)
++        // Retire Wry ownership before Tao wakes Rust's Destroyed handling.
++        // That handler may immediately build an already-attached replacement.
+         Rust.onWebviewDestroy(this, if (::mWebView.isInitialized) { mWebView.id } else { "" })
++        Rust.onActivityDestroy(this)
++        // A retained process must not retain an executing detached WebView.
++        // Native callback authority is already retired above. Android owns
++        // these calls on its UI thread, including configuration recreation.
++        if (::mWebView.isInitialized) {
++            (mWebView.parent as? ViewGroup)?.removeView(mWebView)
++            mWebView.stopLoading()
++            mWebView.removeJavascriptInterface("ipc")
++            mWebView.destroy()
++        }
+     }
+ 
+     override fun onLowMemory() {
+diff --git a/wry-0.55.1/src/android/kotlin/proguard-wry.pro b/wry-0.55.1/src/android/kotlin/proguard-wry.pro
+index a0f19c6..a92cd94 100644
+--- a/wry-0.55.1/src/android/kotlin/proguard-wry.pro
++++ b/wry-0.55.1/src/android/kotlin/proguard-wry.pro
+@@ -10,6 +10,7 @@
+   public <init>(...);
+ 
+   void setWebView({{package-unescaped}}.RustWebView);
++  void onWebViewReady(android.webkit.WebView);
+   java.lang.Class getAppClass(...);
+   int getId();
+   java.lang.String getVersion();
+diff --git a/wry-0.55.1/src/android/main_pipe.rs b/wry-0.55.1/src/android/main_pipe.rs
+index 52308fd..13c1364 100644
+--- a/wry-0.55.1/src/android/main_pipe.rs
++++ b/wry-0.55.1/src/android/main_pipe.rs
+@@ -14,17 +14,22 @@ use std::{
+   collections::BTreeMap,
+   ffi::c_void,
+   os::unix::prelude::*,
+-  sync::{Arc, Mutex},
++  sync::{
++    atomic::{AtomicU64, Ordering},
++    Arc, Mutex,
++  },
+ };
+ 
++use super::native_creation::NativeCreation;
+ use super::{find_class, EvalCallback, WebviewId, EVAL_CALLBACKS, EVAL_ID_GENERATOR, PACKAGE};
+ 
+ pub type ActivityId = i32;
+ 
+-static CHANNEL: Lazy<(
+-  Sender<(ActivityId, WebViewMessage)>,
+-  Receiver<(ActivityId, WebViewMessage)>,
+-)> = Lazy::new(|| bounded(8));
++static NEXT_ACTIVITY_GENERATION: AtomicU64 = AtomicU64::new(1);
++
++type QueuedMessage = (ActivityId, Arc<Mutex<bool>>, WebViewMessage);
++
++static CHANNEL: Lazy<(Sender<QueuedMessage>, Receiver<QueuedMessage>)> = Lazy::new(|| bounded(8));
+ pub static MAIN_PIPE: Lazy<[OwnedFd; 2]> = Lazy::new(|| {
+   let mut pipe: [RawFd; 2] = Default::default();
+   unsafe { libc::pipe(pipe.as_mut_ptr()) };
+@@ -38,6 +43,11 @@ pub struct ActivityProxy {
+   pub webview: Option<GlobalRef>,
+   pub webchrome_client: GlobalRef,
+   pub java_vm: *mut c_void,
++  pub lifetime: Arc<Mutex<bool>>,
++  // Copyable JNI handles carry this serial to reject an old Activity even
++  // when Android reuses its integer id. Configuration changes retain it.
++  pub generation: u64,
++  pub creation: NativeCreation,
+ }
+ 
+ unsafe impl Send for ActivityProxy {}
+@@ -55,6 +65,9 @@ impl ActivityProxy {
+       webview: None,
+       webchrome_client,
+       java_vm: vm.get_java_vm_pointer() as *mut _,
++      lifetime: Arc::new(Mutex::new(true)),
++      generation: NEXT_ACTIVITY_GENERATION.fetch_add(1, Ordering::Relaxed),
++      creation: NativeCreation::new(NEXT_ACTIVITY_GENERATION.fetch_add(1, Ordering::Relaxed)),
+     }
+   }
+ }
+@@ -66,8 +79,44 @@ pub fn activity_proxy(id: ActivityId) -> Option<ActivityProxy> {
+   ACTIVITY_PROXY.lock().unwrap().get(&id).cloned()
+ }
+ 
+-fn remove_activity_proxy(id: ActivityId) {
+-  ACTIVITY_PROXY.lock().unwrap().remove(&id);
++pub(crate) fn destroy_activity(id: ActivityId, webview_id: &WebviewId) {
++  super::callbacks::retire(id);
++  clear_eval_callbacks(id);
++  if let Some(proxy) = activity_proxy(id) {
++    // Construction only holds this guard while publishing Rust handler maps,
++    // never while sending to the Android queue or invoking application JNI.
++    let mut live = proxy.lifetime.lock().unwrap();
++    *live = false;
++    super::destroy_webview(id, proxy.generation, webview_id);
++    ACTIVITY_PROXY.lock().unwrap().remove(&id);
++  }
++}
++
++pub(crate) fn retire_activity_view(id: ActivityId) {
++  super::callbacks::retire(id);
++  clear_eval_callbacks(id);
++  if let Some(proxy) = ACTIVITY_PROXY.lock().unwrap().get_mut(&id) {
++    proxy.webview = None;
++    proxy.creation.retire();
++  }
++}
++
++fn clear_eval_callbacks(activity_id: ActivityId) {
++  if let Some(callbacks) = EVAL_CALLBACKS.get() {
++    let retired = {
++      let mut callbacks = callbacks.lock().unwrap();
++      let ids: Vec<_> = callbacks
++        .iter()
++        .filter_map(|(id, (owner, _))| (*owner == activity_id).then_some(*id))
++        .collect();
++      ids
++        .into_iter()
++        .filter_map(|id| callbacks.remove(&id))
++        .collect::<Vec<_>>()
++    };
++    // Dropping callback captures can wake waiters; never do it under the map lock.
++    drop(retired);
++  }
+ }
+ 
+ pub fn register_activity_proxy(
+@@ -77,12 +126,16 @@ pub fn register_activity_proxy(
+   window_manager: GlobalRef,
+   webchrome_client: GlobalRef,
+ ) {
++  super::callbacks::retire(id);
++  clear_eval_callbacks(id);
+   let mut activity_proxy = ACTIVITY_PROXY.lock().unwrap();
+   if let Some(proxy) = activity_proxy.get_mut(&id) {
+     proxy.activity = activity;
+     proxy.window_manager = window_manager;
+     proxy.webchrome_client = webchrome_client;
+     proxy.java_vm = vm.get_java_vm_pointer() as *mut _;
++    proxy.webview = None;
++    proxy.creation = NativeCreation::new(NEXT_ACTIVITY_GENERATION.fetch_add(1, Ordering::Relaxed));
+   } else {
+     let proxy = ActivityProxy::new(vm, activity, window_manager, webchrome_client);
+     activity_proxy.insert(id, proxy.clone());
+@@ -117,8 +170,7 @@ pub fn get_webview(activity_id: ActivityId) -> Option<GlobalRef> {
+   ACTIVITY_PROXY
+     .lock()
+     .unwrap()
+-    .get(&activity_id)
+-    .unwrap()
++    .get(&activity_id)?
+     .webview
+     .as_ref()
+     .cloned()
+@@ -130,8 +182,26 @@ pub struct MainPipe<'a> {
+ 
+ impl<'a> MainPipe<'a> {
+   pub(crate) fn send(activity_id: ActivityId, message: WebViewMessage) {
++    let Some(proxy) = activity_proxy(activity_id) else {
++      return;
++    };
++    Self::send_for_lifetime(activity_id, proxy.lifetime, message);
++  }
++
++  pub(crate) fn send_for_lifetime(
++    activity_id: ActivityId,
++    lifetime: Arc<Mutex<bool>>,
++    message: WebViewMessage,
++  ) {
++    if !activity_proxy(activity_id).is_some_and(|proxy| Arc::ptr_eq(&proxy.lifetime, &lifetime))
++      || !*lifetime.lock().unwrap()
++    {
++      return;
++    }
++    // Never hold lifecycle/map locks while waiting for queue space. Receipt
++    // checks the same token again after any intervening Activity destruction.
+     let size = std::mem::size_of::<bool>();
+-    if CHANNEL.0.send((activity_id, message)).is_ok() {
++    if CHANNEL.0.send((activity_id, lifetime, message)).is_ok() {
+       unsafe {
+         libc::write(
+           MAIN_PIPE[1].as_raw_fd(),
+@@ -143,200 +213,268 @@ impl<'a> MainPipe<'a> {
+   }
+ 
+   pub fn recv(&mut self) -> JniResult<()> {
+-    if let Ok((activity_id, message)) = CHANNEL.1.recv() {
++    if let Ok((activity_id, lifetime, message)) = CHANNEL.1.recv() {
++      return self.handle_message(activity_id, &lifetime, message);
++    }
++    Ok(())
++  }
++
++  // Android's UI Looper owns this entry point. Configuration recreation can
++  // invoke it directly instead of enqueueing into its own bounded queue.
++  pub(crate) fn handle_message(
++    &mut self,
++    activity_id: ActivityId,
++    lifetime: &Arc<Mutex<bool>>,
++    message: WebViewMessage,
++  ) -> JniResult<()> {
++    // Stale messages drop their synchronous reply senders promptly, so a
++    // request cannot hang or dispatch against a replacement using the same id.
++    if activity_proxy(activity_id).is_some_and(|proxy| Arc::ptr_eq(&proxy.lifetime, lifetime))
++      && *lifetime.lock().unwrap()
++    {
+       match message {
+         WebViewMessage::CreateWebView(attrs) => {
+-          let Some((activity, web_chrome_client)) =
+-            activity_proxy(activity_id).map(|p| (p.activity.clone(), p.webchrome_client.clone()))
++          let native_generation = attrs.native_generation;
++          let Some((activity, web_chrome_client)) = ACTIVITY_PROXY
++            .lock()
++            .unwrap()
++            .get_mut(&activity_id)
++            .filter(|proxy| Arc::ptr_eq(&proxy.lifetime, &attrs.activity_lifetime))
++            .filter(|proxy| proxy.creation.epoch == native_generation)
++            .and_then(|proxy| {
++              proxy
++                .creation
++                .begin(native_generation)
++                .then(|| (proxy.activity.clone(), proxy.webchrome_client.clone()))
++            })
+           else {
+             #[cfg(debug_assertions)]
+             eprintln!("no activity found for activity id: {}", activity_id);
+             return Ok(());
+           };
+-          let CreateWebViewAttributes {
+-            url,
+-            html,
+-            #[cfg(any(debug_assertions, feature = "devtools"))]
+-            devtools,
+-            transparent,
+-            background_color,
+-            headers,
+-            on_webview_created,
+-            autoplay,
+-            user_agent,
+-            initialization_scripts,
+-            id,
+-            javascript_disabled,
+-            ..
+-          } = attrs;
+-
+-          let string_class = self.env.find_class("java/lang/String")?;
+-          let initialization_scripts_array = self.env.new_object_array(
+-            initialization_scripts.len() as i32,
+-            string_class,
+-            self.env.new_string("")?,
+-          )?;
+-          for (i, init_script) in initialization_scripts.into_iter().enumerate() {
+-            self.env.set_object_array_element(
+-              &initialization_scripts_array,
+-              i as i32,
+-              self.env.new_string(init_script.script)?,
++          let Some(callback_key) = super::callbacks::register(activity_id, &attrs.handler_key)
++          else {
++            retire_activity_view(activity_id);
++            return Err(jni::errors::Error::NullPtr(
++              "native WebView request handler",
++            ));
++          };
++          let mut phase = "constructor";
++          let result: JniResult<()> = (|| {
++            let CreateWebViewAttributes {
++              url,
++              html,
++              #[cfg(any(debug_assertions, feature = "devtools"))]
++              devtools,
++              transparent,
++              background_color,
++              headers,
++              on_webview_created,
++              autoplay,
++              user_agent,
++              initialization_scripts,
++              id,
++              javascript_disabled,
++              ..
++            } = attrs;
++
++            let string_class = self.env.find_class("java/lang/String")?;
++            let initialization_scripts_array = self.env.new_object_array(
++              initialization_scripts.len() as i32,
++              string_class,
++              self.env.new_string("")?,
+             )?;
+-          }
+-          let id = self.env.new_string(id)?;
+-          // Create webview
+-          let rust_webview_class = find_class(
+-            &mut self.env,
+-            &activity,
+-            format!("{}/RustWebView", PACKAGE.get().unwrap()),
+-          )?;
+-          let webview = self.env.new_object(
+-            &rust_webview_class,
+-            "(Landroid/content/Context;[Ljava/lang/String;Ljava/lang/String;)V",
+-            &[
+-              (&activity).into(),
+-              (&initialization_scripts_array).into(),
+-              (&id).into(),
+-            ],
+-          )?;
+-          // get settings
+-          let web_settings = self
+-            .env
+-            .call_method(
+-              &webview,
+-              "getSettings",
+-              "()Landroid/webkit/WebSettings;",
+-              &[],
+-            )?
+-            .l()?;
+-          // set media autoplay
+-          self.env.call_method(
+-            &web_settings,
+-            "setMediaPlaybackRequiresUserGesture",
+-            "(Z)V",
+-            &[(!autoplay).into()],
+-          )?;
+-          // set user-agent
+-          if let Some(user_agent) = user_agent {
+-            let user_agent = self.env.new_string(user_agent)?;
++            for (i, init_script) in initialization_scripts.into_iter().enumerate() {
++              self.env.set_object_array_element(
++                &initialization_scripts_array,
++                i as i32,
++                self.env.new_string(init_script.script)?,
++              )?;
++            }
++            let id = self.env.new_string(id)?;
++            let callback_key = self.env.new_string(callback_key)?;
++            // Create webview
++            let rust_webview_class = find_class(
++              &mut self.env,
++              &activity,
++              format!("{}/RustWebView", PACKAGE.get().unwrap()),
++            )?;
++            let webview = self.env.new_object(
++              &rust_webview_class,
++              "(Landroid/content/Context;[Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
++              &[
++                (&activity).into(),
++                (&initialization_scripts_array).into(),
++                (&id).into(),
++                (&callback_key).into(),
++              ],
++            )?;
++            // get settings
++            let web_settings = self
++              .env
++              .call_method(
++                &webview,
++                "getSettings",
++                "()Landroid/webkit/WebSettings;",
++                &[],
++              )?
++              .l()?;
++            // set media autoplay
+             self.env.call_method(
+               &web_settings,
+-              "setUserAgentString",
+-              "(Ljava/lang/String;)V",
+-              &[(&user_agent).into()],
++              "setMediaPlaybackRequiresUserGesture",
++              "(Z)V",
++              &[(!autoplay).into()],
+             )?;
+-          }
++            // set user-agent
++            if let Some(user_agent) = user_agent {
++              let user_agent = self.env.new_string(user_agent)?;
++              self.env.call_method(
++                &web_settings,
++                "setUserAgentString",
++                "(Ljava/lang/String;)V",
++                &[(&user_agent).into()],
++              )?;
++            }
++
++            // disable javascript
++            if javascript_disabled {
++              self.env.call_method(
++                &web_settings,
++                "setJavaScriptEnabled",
++                "(Z)V",
++                &[false.into()],
++              )?;
++            }
+ 
+-          // disable javascript
+-          if javascript_disabled {
++            let webview_class_name = format!("{}/RustWebView", PACKAGE.get().unwrap());
++            phase = "app_setup";
+             self.env.call_method(
+-              &web_settings,
+-              "setJavaScriptEnabled",
++              &activity,
++              "setWebView",
++              format!("(L{webview_class_name};)V"),
++              &[(&webview).into()],
++            )?;
++            // Enable devtools
++            #[cfg(any(debug_assertions, feature = "devtools"))]
++            self.env.call_static_method(
++              &rust_webview_class,
++              "setWebContentsDebuggingEnabled",
+               "(Z)V",
+-              &[false.into()],
++              &[devtools.into()],
++            )?;
++            if transparent {
++              set_background_color(&mut self.env, &webview, (0, 0, 0, 0))?;
++            } else if let Some(color) = background_color {
++              set_background_color(&mut self.env, &webview, color)?;
++            }
++            // Create and set webview client
++            phase = "webview_client";
++            let client_class_name = format!("{}/RustWebViewClient", PACKAGE.get().unwrap());
++            let rust_webview_client_class =
++              find_class(&mut self.env, &activity, client_class_name.clone())?;
++            let webview_client = self.env.new_object(
++              &rust_webview_client_class,
++              format!("(L{webview_class_name};Landroid/content/Context;)V"),
++              &[(&webview).into(), (&activity).into()],
++            )?;
++            self.env.call_method(
++              &webview,
++              "setWebViewClient",
++              "(Landroid/webkit/WebViewClient;)V",
++              &[(&webview_client).into()],
++            )?;
++            // set webchrome client
++            self.env.call_method(
++              &webview,
++              "setWebChromeClient",
++              "(Landroid/webkit/WebChromeClient;)V",
++              &[web_chrome_client.as_obj().into()],
+             )?;
+-          }
+ 
+-          let webview_class_name = format!("{}/RustWebView", PACKAGE.get().unwrap());
+-          self.env.call_method(
+-            &activity,
+-            "setWebView",
+-            format!("(L{webview_class_name};)V"),
+-            &[(&webview).into()],
+-          )?;
+-          // Navigation
+-          if let Some(u) = url {
+-            if let Ok(url) = self.env.new_string(u) {
+-              load_url(&mut self.env, &webview, &url, headers, true)?;
++            // Add javascript interface (IPC)
++            phase = "ipc";
++            let ipc_class = find_class(
++              &mut self.env,
++              &activity,
++              format!("{}/Ipc", PACKAGE.get().unwrap()),
++            )?;
++            let ipc = self.env.new_object(
++              ipc_class,
++              format!("(L{webview_class_name};L{client_class_name};)V"),
++              &[(&webview).into(), (&webview_client).into()],
++            )?;
++            let ipc_str = self.env.new_string("ipc")?;
++            self.env.call_method(
++              &webview,
++              "addJavascriptInterface",
++              "(Ljava/lang/Object;Ljava/lang/String;)V",
++              &[(&ipc).into(), (&ipc_str).into()],
++            )?;
++
++            // Set content view
++            phase = "content_view";
++            self.env.call_method(
++              &activity,
++              "setContentView",
++              "(Landroid/view/View;)V",
++              &[(&webview).into()],
++            )?;
++
++            if let Some(on_webview_created) = on_webview_created {
++              phase = "creation_hook";
++              on_webview_created(super::Context {
++                env: &mut self.env,
++                activity: &activity,
++                webview: &webview,
++              })?;
+             }
+-          } else if let Some(h) = html {
+-            if let Ok(html) = self.env.new_string(h) {
++
++            // Install the interceptor and IPC before initiating any navigation.
++            // A warm WebView can otherwise send the local asset URL to the
++            // network before its custom-protocol client has been attached.
++            phase = "navigation";
++            if let Some(u) = url {
++              let url = self.env.new_string(u)?;
++              load_url(&mut self.env, &webview, &url, headers, true)?;
++            } else if let Some(h) = html {
++              let html = self.env.new_string(h)?;
+               load_html(&mut self.env, &webview, &html)?;
+             }
+-          }
+-          // Enable devtools
+-          #[cfg(any(debug_assertions, feature = "devtools"))]
+-          self.env.call_static_method(
+-            &rust_webview_class,
+-            "setWebContentsDebuggingEnabled",
+-            "(Z)V",
+-            &[devtools.into()],
+-          )?;
+-          if transparent {
+-            set_background_color(&mut self.env, &webview, (0, 0, 0, 0))?;
+-          } else if let Some(color) = background_color {
+-            set_background_color(&mut self.env, &webview, color)?;
+-          }
+-          // Create and set webview client
+-          let client_class_name = format!("{}/RustWebViewClient", PACKAGE.get().unwrap());
+-          let rust_webview_client_class =
+-            find_class(&mut self.env, &activity, client_class_name.clone())?;
+-          let webview_client = self.env.new_object(
+-            &rust_webview_client_class,
+-            format!("(L{webview_class_name};Landroid/content/Context;)V"),
+-            &[(&webview).into(), (&activity).into()],
+-          )?;
+-          self.env.call_method(
+-            &webview,
+-            "setWebViewClient",
+-            "(Landroid/webkit/WebViewClient;)V",
+-            &[(&webview_client).into()],
+-          )?;
+-          // set webchrome client
+-          self.env.call_method(
+-            &webview,
+-            "setWebChromeClient",
+-            "(Landroid/webkit/WebChromeClient;)V",
+-            &[web_chrome_client.as_obj().into()],
+-          )?;
+-
+-          // Add javascript interface (IPC)
+-          let ipc_class = find_class(
+-            &mut self.env,
+-            &activity,
+-            format!("{}/Ipc", PACKAGE.get().unwrap()),
+-          )?;
+-          let ipc = self.env.new_object(
+-            ipc_class,
+-            format!("(L{webview_class_name};L{client_class_name};)V"),
+-            &[(&webview).into(), (&webview_client).into()],
+-          )?;
+-          let ipc_str = self.env.new_string("ipc")?;
+-          self.env.call_method(
+-            &webview,
+-            "addJavascriptInterface",
+-            "(Ljava/lang/Object;Ljava/lang/String;)V",
+-            &[(&ipc).into(), (&ipc_str).into()],
+-          )?;
+-
+-          // Set content view
+-          self.env.call_method(
+-            &activity,
+-            "setContentView",
+-            "(Landroid/view/View;)V",
+-            &[(&webview).into()],
+-          )?;
+-
+-          if let Some(on_webview_created) = on_webview_created {
+-            if let Err(_e) = on_webview_created(super::Context {
+-              env: &mut self.env,
+-              activity: &activity,
+-              webview: &webview,
+-            }) {
+-              #[cfg(feature = "tracing")]
+-              tracing::warn!("failed to run webview created hook: {_e}");
++            phase = "publication";
++            let global_webview = self.env.new_global_ref(&webview)?;
++            let published = ACTIVITY_PROXY
++              .lock()
++              .unwrap()
++              .get_mut(&activity_id)
++              .filter(|proxy| Arc::ptr_eq(&proxy.lifetime, lifetime))
++              .is_some_and(|proxy| {
++                if !proxy.creation.complete(native_generation) {
++                  return false;
++                }
++                proxy.webview = Some(global_webview);
++                true
++              });
++            if published {
++              phase = "ready_callback";
++              self.env.call_method(
++                &activity,
++                "onWebViewReady",
++                "(Landroid/webkit/WebView;)V",
++                &[(&webview).into()],
++              )?;
++            }
++            Ok(())
++          })();
++          if result.is_err() {
++            eprintln!("Android WebView creation failed at {phase}");
++            if activity_proxy(activity_id)
++              .is_some_and(|proxy| proxy.creation.epoch == native_generation)
++            {
++              retire_activity_view(activity_id);
+             }
+           }
+-
+-          let webview = self.env.new_global_ref(webview)?;
+-
+-          ACTIVITY_PROXY
+-            .lock()
+-            .unwrap()
+-            .get_mut(&activity_id)
+-            .unwrap()
+-            .webview
+-            .replace(webview);
++          result?;
+         }
+         WebViewMessage::Eval(script, callback) => {
+           if let Some(webview) = get_webview(activity_id) {
+@@ -353,14 +491,17 @@ impl<'a> MainPipe<'a> {
+               .unwrap()
+               .insert(
+                 id,
+-                Box::new(move |result| {
+-                  #[cfg(feature = "tracing")]
+-                  span.lock().unwrap().take();
+-
+-                  if let Some(callback) = &callback {
+-                    callback(result);
+-                  }
+-                }),
++                (
++                  activity_id,
++                  Box::new(move |result| {
++                    #[cfg(feature = "tracing")]
++                    span.lock().unwrap().take();
++
++                    if let Some(callback) = &callback {
++                      callback(result);
++                    }
++                  }),
++                ),
+               );
+ 
+             let s = self.env.new_string(script)?;
+@@ -391,12 +532,14 @@ impl<'a> MainPipe<'a> {
+                   .map(|v| v.to_string_lossy().to_string())
+               }) {
+               Ok(version) => {
+-                tx.send(Ok(version)).unwrap();
++                let _ = tx.send(Ok(version));
++              }
++              Err(e) => {
++                let _ = tx.send(Err(e.into()));
+               }
+-              Err(e) => tx.send(Err(e.into())).unwrap(),
+             }
+           } else {
+-            tx.send(Err(Error::ActivityNotFound)).unwrap();
++            let _ = tx.send(Err(Error::ActivityNotFound));
+           }
+         }
+         WebViewMessage::GetUrl(tx) => {
+@@ -414,7 +557,7 @@ impl<'a> MainPipe<'a> {
+               })
+               .unwrap_or_default();
+ 
+-            tx.send(url).unwrap()
++            let _ = tx.send(url);
+           }
+         }
+         WebViewMessage::Jni(f) => {
+@@ -475,25 +618,12 @@ impl<'a> MainPipe<'a> {
+               })
+               .unwrap_or_default();
+ 
+-            tx.send(
++            let _ = tx.send(
+               cookies
+                 .split("; ")
+                 .flat_map(|c| cookie::Cookie::parse(c.to_string()))
+                 .collect(),
+-            )
+-            .unwrap();
+-          }
+-        }
+-        WebViewMessage::OnDestroy {
+-          activity_id,
+-          webview_id,
+-          is_changing_configurations,
+-        } => {
+-          // keep our webview references (callbacks etc) alive if the activity is going to be recreated due to configuration changes
+-          // e.g. rotation, multi-window mode change, etc
+-          if !is_changing_configurations {
+-            super::destroy_webview(activity_id, &webview_id);
+-            remove_activity_proxy(activity_id);
++            );
+           }
+         }
+       }
+@@ -574,15 +704,13 @@ pub(crate) enum WebViewMessage {
+   LoadHtml(String),
+   Reload,
+   ClearAllBrowsingData,
+-  OnDestroy {
+-    activity_id: ActivityId,
+-    webview_id: WebviewId,
+-    is_changing_configurations: bool,
+-  },
+ }
+ 
+ #[derive(Clone)]
+ pub(crate) struct CreateWebViewAttributes {
++  pub handler_key: super::HandlerKey,
++  pub activity_lifetime: Arc<Mutex<bool>>,
++  pub native_generation: u64,
+   pub id: String,
+   pub url: Option<String>,
+   pub html: Option<String>,
+diff --git a/wry-0.55.1/src/android/mod.rs b/wry-0.55.1/src/android/mod.rs
+index 8f44c70..7407881 100644
+--- a/wry-0.55.1/src/android/mod.rs
++++ b/wry-0.55.1/src/android/mod.rs
+@@ -21,15 +21,19 @@ use raw_window_handle::HasWindowHandle;
+ use std::{
+   borrow::Cow,
+   collections::HashMap,
+-  sync::{mpsc::channel, Mutex},
++  sync::{mpsc::channel, Arc, Mutex},
+   time::Duration,
+ };
+ 
+ pub(crate) mod binding;
++mod callbacks;
++mod handler_key;
+ mod main_pipe;
++mod native_creation;
++use handler_key::HandlerKey;
+ use main_pipe::{
+-  activity_id_for_window_manager, first_activity_id, register_activity_proxy, ActivityId,
+-  CreateWebViewAttributes, MainPipe, WebViewMessage,
++  activity_id_for_window_manager, activity_proxy, first_activity_id, register_activity_proxy,
++  ActivityId, CreateWebViewAttributes, MainPipe, WebViewMessage,
+ };
+ 
+ use crate::util::Counter;
+@@ -52,15 +56,15 @@ macro_rules! define_static_handlers {
+ 
+   ($($var:ident = $type_name:ident { $($fields:ident:$types:ty),+ $(,)? });+ $(;)?) => {
+     $(
+-    static $var: Lazy<Mutex<HashMap<WebviewId, $type_name>>> = Lazy::new(||Mutex::new(HashMap::new()));
++    static $var: Lazy<Mutex<HashMap<HandlerKey, Arc<Mutex<$type_name>>>>> = Lazy::new(||Mutex::new(HashMap::new()));
+     pub struct $type_name {
+       $($fields: $types,)*
+     }
+     impl $type_name {
+-      pub fn new($($fields: $types,)*) -> Self {
+-        Self {
++      pub fn new($($fields: $types,)*) -> Arc<Mutex<Self>> {
++        Arc::new(Mutex::new(Self {
+           $($fields,)*
+-        }
++        }))
+       }
+     }
+     unsafe impl Send for $type_name {}
+@@ -76,8 +80,8 @@ define_static_handlers! {
+   ON_LOAD_HANDLER = UnsafeOnPageLoadHandler { handler: Box<dyn Fn(PageLoadEvent, String)> };
+ }
+ define_static_handlers! {
+-  WebviewId, WITH_ASSET_LOADER = bool;
+-  WebviewId, ASSET_LOADER_DOMAIN = String;
++  HandlerKey, WITH_ASSET_LOADER = bool;
++  HandlerKey, ASSET_LOADER_DOMAIN = String;
+   ActivityId, WEBVIEW_ATTRIBUTES = CreateWebViewAttributes;
+ }
+ 
+@@ -86,10 +90,34 @@ pub(crate) static PACKAGE: OnceCell<String> = OnceCell::new();
+ type EvalCallback = Box<dyn Fn(String) + Send + 'static>;
+ 
+ pub static EVAL_ID_GENERATOR: Counter = Counter::new();
+-pub static EVAL_CALLBACKS: OnceCell<Mutex<HashMap<i32, EvalCallback>>> = OnceCell::new();
++pub static EVAL_CALLBACKS: OnceCell<Mutex<HashMap<i32, (ActivityId, EvalCallback)>>> =
++  OnceCell::new();
++
++pub fn destroy_webview(activity_id: ActivityId, generation: u64, webview_id: &WebviewId) {
++  // Activity teardown can precede the queued Java WebView creation, in which
++  // case Kotlin has no WebView id yet. Retire the published Rust handlers too.
++  let attributes = {
++    let mut attributes = WEBVIEW_ATTRIBUTES.lock().unwrap();
++    if attributes
++      .get(&activity_id)
++      .is_some_and(|attrs| attrs.handler_key.generation == generation)
++    {
++      attributes.remove(&activity_id)
++    } else {
++      None
++    }
++  };
++  if let Some(attributes) = attributes {
++    destroy_webview_handlers(&attributes.handler_key);
++  }
++  destroy_webview_handlers(&HandlerKey::new(
++    activity_id,
++    generation,
++    webview_id.clone(),
++  ));
++}
+ 
+-pub fn destroy_webview(activity_id: ActivityId, webview_id: &WebviewId) {
+-  WEBVIEW_ATTRIBUTES.lock().unwrap().remove(&activity_id);
++fn destroy_webview_handlers(webview_id: &HandlerKey) {
+   IPC.lock().unwrap().remove(webview_id);
+   REQUEST_HANDLER.lock().unwrap().remove(webview_id);
+   TITLE_CHANGE_HANDLER.lock().unwrap().remove(webview_id);
+@@ -151,17 +179,38 @@ pub unsafe fn android_setup(
+ 
+   register_activity_proxy(vm, activity_id, activity, window_manager, webchrome_client);
+ 
+-  if let Some(webview_attributes) = WEBVIEW_ATTRIBUTES.lock().unwrap().get(&activity_id) {
+-    MainPipe::send(
+-      activity_id,
+-      WebViewMessage::CreateWebView(webview_attributes.clone()),
+-    );
++  let saved_attributes = WEBVIEW_ATTRIBUTES
++    .lock()
++    .unwrap()
++    .get_mut(&activity_id)
++    .map(|attrs| {
++      // Already queued copies retain their old physical epoch and are rejected.
++      attrs.native_generation = activity_proxy(activity_id).unwrap().creation.epoch;
++      attrs.clone()
++    });
++  if let Some(webview_attributes) = saved_attributes {
++    // This setup already runs on Android's main thread. Sending to its bounded
++    // queue can deadlock configuration recreation when prior work filled it.
++    let mut main_pipe = MainPipe { env };
++    if main_pipe
++      .handle_message(
++        activity_id,
++        &webview_attributes.activity_lifetime.clone(),
++        WebViewMessage::CreateWebView(webview_attributes),
++      )
++      .is_err()
++    {
++      eprintln!("Android WebView configuration recreation failed");
++      let _ = main_pipe.env.exception_clear();
++    }
+   }
+ }
+ 
+ pub(crate) struct InnerWebView {
+   id: String,
+   pub activity_id: ActivityId,
++  activity_lifetime: Arc<Mutex<bool>>,
++  pub activity_generation: u64,
+ }
+ 
+ impl InnerWebView {
+@@ -186,7 +235,12 @@ impl InnerWebView {
+     };
+     let window_manager = unsafe { JObject::from_raw(window_manager.as_ptr().cast()) };
+     let activity_id =
+-      activity_id_for_window_manager(window_manager).expect("no available activity");
++      activity_id_for_window_manager(window_manager).ok_or(Error::ActivityNotFound)?;
++    let proxy = activity_proxy(activity_id).ok_or(Error::ActivityNotFound)?;
++    let live = proxy.lifetime.lock().unwrap();
++    if !*live {
++      return Err(Error::ActivityNotFound);
++    }
+     let WebViewAttributes {
+       url,
+       html,
+@@ -229,16 +283,17 @@ impl InnerWebView {
+       .id
+       .map(|id| id.to_string())
+       .unwrap_or_else(|| COUNTER.next().to_string());
++    let handler_key = HandlerKey::new(activity_id, proxy.generation, id.clone());
+ 
+     WITH_ASSET_LOADER
+       .lock()
+       .unwrap()
+-      .insert(id.clone(), with_asset_loader);
++      .insert(handler_key.clone(), with_asset_loader);
+     if let Some(domain) = asset_loader_domain {
+       ASSET_LOADER_DOMAIN
+         .lock()
+         .unwrap()
+-        .insert(id.clone(), domain);
++        .insert(handler_key.clone(), domain);
+     }
+ 
+     let initialization_scripts_ = initialization_scripts.clone();
+@@ -246,7 +301,7 @@ impl InnerWebView {
+       .lock()
+       .unwrap()
+       .insert(
+-        id.clone(),
++        handler_key.clone(),
+         UnsafeRequestHandler::new(Box::new(
+           move |webview_id: &str, mut request, is_document_start_script_enabled| {
+             let uri = request.uri().to_string();
+@@ -291,31 +346,34 @@ impl InnerWebView {
+       IPC
+         .lock()
+         .unwrap()
+-        .insert(id.clone(), UnsafeIpc::new(Box::new(i)));
++        .insert(handler_key.clone(), UnsafeIpc::new(Box::new(i)));
+     }
+ 
+     if let Some(i) = attributes.document_title_changed_handler {
+       TITLE_CHANGE_HANDLER
+         .lock()
+         .unwrap()
+-        .insert(id.clone(), UnsafeTitleHandler::new(i));
++        .insert(handler_key.clone(), UnsafeTitleHandler::new(i));
+     }
+ 
+     if let Some(i) = attributes.navigation_handler {
+       URL_LOADING_OVERRIDE
+         .lock()
+         .unwrap()
+-        .insert(id.clone(), UnsafeUrlLoadingOverride::new(i));
++        .insert(handler_key.clone(), UnsafeUrlLoadingOverride::new(i));
+     }
+ 
+     if let Some(h) = attributes.on_page_load_handler {
+       ON_LOAD_HANDLER
+         .lock()
+         .unwrap()
+-        .insert(id.clone(), UnsafeOnPageLoadHandler::new(h));
++        .insert(handler_key.clone(), UnsafeOnPageLoadHandler::new(h));
+     }
+ 
+     let attributes = CreateWebViewAttributes {
++      handler_key,
++      activity_lifetime: proxy.lifetime.clone(),
++      native_generation: proxy.creation.epoch,
+       id: id.clone(),
+       url,
+       html,
+@@ -336,9 +394,24 @@ impl InnerWebView {
+       .unwrap()
+       .insert(activity_id, attributes.clone());
+ 
+-    MainPipe::send(activity_id, WebViewMessage::CreateWebView(attributes));
++    // Android teardown may wait for publication, but never for queue space.
++    drop(live);
++    MainPipe::send_for_lifetime(
++      activity_id,
++      proxy.lifetime.clone(),
++      WebViewMessage::CreateWebView(attributes),
++    );
++
++    Ok(Self {
++      id,
++      activity_id,
++      activity_lifetime: proxy.lifetime.clone(),
++      activity_generation: proxy.generation,
++    })
++  }
+ 
+-    Ok(Self { id, activity_id })
++  fn send(&self, message: WebViewMessage) {
++    MainPipe::send_for_lifetime(self.activity_id, self.activity_lifetime.clone(), message);
+   }
+ 
+   pub fn print(&self) -> crate::Result<()> {
+@@ -351,18 +424,15 @@ impl InnerWebView {
+ 
+   pub fn url(&self) -> crate::Result<String> {
+     let (tx, rx) = bounded(1);
+-    MainPipe::send(self.activity_id, WebViewMessage::GetUrl(tx));
++    self.send(WebViewMessage::GetUrl(tx));
+     rx.recv_timeout(MAIN_PIPE_TIMEOUT).map_err(Into::into)
+   }
+ 
+   pub fn eval(&self, js: &str, callback: Option<impl Fn(String) + Send + 'static>) -> Result<()> {
+-    MainPipe::send(
+-      self.activity_id,
+-      WebViewMessage::Eval(
+-        js.into(),
+-        callback.map(|c| Box::new(c) as Box<dyn Fn(String) + Send + 'static>),
+-      ),
+-    );
++    self.send(WebViewMessage::Eval(
++      js.into(),
++      callback.map(|c| Box::new(c) as Box<dyn Fn(String) + Send + 'static>),
++    ));
+     Ok(())
+   }
+ 
+@@ -382,50 +452,38 @@ impl InnerWebView {
+   }
+ 
+   pub fn set_background_color(&self, background_color: RGBA) -> Result<()> {
+-    MainPipe::send(
+-      self.activity_id,
+-      WebViewMessage::SetBackgroundColor(background_color),
+-    );
++    self.send(WebViewMessage::SetBackgroundColor(background_color));
+     Ok(())
+   }
+ 
+   pub fn load_url(&self, url: &str) -> Result<()> {
+-    MainPipe::send(
+-      self.activity_id,
+-      WebViewMessage::LoadUrl(url.to_string(), None),
+-    );
++    self.send(WebViewMessage::LoadUrl(url.to_string(), None));
+     Ok(())
+   }
+ 
+   pub fn load_url_with_headers(&self, url: &str, headers: http::HeaderMap) -> Result<()> {
+-    MainPipe::send(
+-      self.activity_id,
+-      WebViewMessage::LoadUrl(url.to_string(), Some(headers)),
+-    );
++    self.send(WebViewMessage::LoadUrl(url.to_string(), Some(headers)));
+     Ok(())
+   }
+ 
+   pub fn load_html(&self, html: &str) -> Result<()> {
+-    MainPipe::send(self.activity_id, WebViewMessage::LoadHtml(html.to_string()));
++    self.send(WebViewMessage::LoadHtml(html.to_string()));
+     Ok(())
+   }
+ 
+   pub fn reload(&self) -> Result<()> {
+-    MainPipe::send(self.activity_id, WebViewMessage::Reload);
++    self.send(WebViewMessage::Reload);
+     Ok(())
+   }
+ 
+   pub fn clear_all_browsing_data(&self) -> Result<()> {
+-    MainPipe::send(self.activity_id, WebViewMessage::ClearAllBrowsingData);
++    self.send(WebViewMessage::ClearAllBrowsingData);
+     Ok(())
+   }
+ 
+   pub fn cookies_for_url(&self, url: &str) -> Result<Vec<cookie::Cookie<'static>>> {
+     let (tx, rx) = bounded(1);
+-    MainPipe::send(
+-      self.activity_id,
+-      WebViewMessage::GetCookies(tx, url.to_string()),
+-    );
++    self.send(WebViewMessage::GetCookies(tx, url.to_string()));
+     rx.recv_timeout(MAIN_PIPE_TIMEOUT).map_err(Into::into)
+   }
+ 
+@@ -471,6 +529,7 @@ impl InnerWebView {
+ #[derive(Clone, Copy)]
+ pub struct JniHandle {
+   pub(crate) activity_id: ActivityId,
++  pub(crate) activity_generation: u64,
+ }
+ 
+ impl JniHandle {
+@@ -480,7 +539,15 @@ impl JniHandle {
+   where
+     F: FnOnce(&mut JNIEnv, &JObject, &JObject) + Send + 'static,
+   {
+-    MainPipe::send(self.activity_id, WebViewMessage::Jni(Box::new(func)));
++    if let Some(proxy) =
++      activity_proxy(self.activity_id).filter(|proxy| proxy.generation == self.activity_generation)
++    {
++      MainPipe::send_for_lifetime(
++        self.activity_id,
++        proxy.lifetime,
++        WebViewMessage::Jni(Box::new(func)),
++      );
++    }
+   }
+ }
+ 
+diff --git a/wry-0.55.1/src/android/native_creation.rs b/wry-0.55.1/src/android/native_creation.rs
+new file mode 100644
+index 0000000..ada42bd
+--- /dev/null
++++ b/wry-0.55.1/src/android/native_creation.rs
+@@ -0,0 +1,82 @@
++// Copyright 2020-2023 Tauri Programme within The Commons Conservancy
++// SPDX-License-Identifier: Apache-2.0
++// SPDX-License-Identifier: MIT
++
++/// Physical Activity creation state. Unlike the logical window lifetime, this
++/// epoch changes during configuration recreation and cannot replay old work.
++#[derive(Clone)]
++pub(crate) struct NativeCreation {
++  pub epoch: u64,
++  started: bool,
++  ready: bool,
++  retired: bool,
++}
++
++impl NativeCreation {
++  pub fn new(epoch: u64) -> Self {
++    Self {
++      epoch,
++      started: false,
++      ready: false,
++      retired: false,
++    }
++  }
++
++  pub fn begin(&mut self, epoch: u64) -> bool {
++    if self.epoch != epoch || self.started || self.retired {
++      return false;
++    }
++    self.started = true;
++    true
++  }
++
++  pub fn complete(&mut self, epoch: u64) -> bool {
++    if self.epoch != epoch || !self.started || self.ready || self.retired {
++      return false;
++    }
++    self.ready = true;
++    true
++  }
++
++  pub fn retire(&mut self) {
++    self.retired = true;
++    self.ready = false;
++  }
++}
++
++#[cfg(test)]
++mod tests {
++  use super::NativeCreation;
++
++  #[test]
++  fn readiness_requires_complete_creation_once() {
++    let mut state = NativeCreation::new(1);
++    assert!(!state.complete(1));
++    assert!(state.begin(1));
++    assert!(!state.begin(1));
++    assert!(state.complete(1));
++    assert!(!state.complete(1));
++  }
++
++  #[test]
++  fn inline_recreation_rejects_old_and_duplicate_queued_creation() {
++    let mut state = NativeCreation::new(2);
++    assert!(!state.begin(1));
++    assert!(state.begin(2));
++    assert!(state.complete(2));
++    assert!(!state.begin(1));
++    assert!(!state.begin(2));
++  }
++
++  #[test]
++  fn retired_and_failed_attempts_require_a_new_physical_activity() {
++    let mut state = NativeCreation::new(1);
++    assert!(state.begin(1));
++    state.retire();
++    assert!(!state.complete(1));
++    assert!(!state.begin(1));
++    let mut replacement = NativeCreation::new(2);
++    assert!(replacement.begin(2));
++    assert!(replacement.complete(2));
++  }
++}
+diff --git a/wry-0.55.1/src/lib.rs b/wry-0.55.1/src/lib.rs
+index 38fbc9e..cdd6ba3 100644
+--- a/wry-0.55.1/src/lib.rs
++++ b/wry-0.55.1/src/lib.rs
+@@ -2442,6 +2442,7 @@ impl WebViewExtAndroid for WebView {
+   fn handle(&self) -> JniHandle {
+     JniHandle {
+       activity_id: self.webview.activity_id,
++      activity_generation: self.webview.activity_generation,
+     }
+   }
+ }

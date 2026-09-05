@@ -1,0 +1,77 @@
+diff --git a/tauri-runtime-wry-2.11.4/src/lib.rs b/tauri-runtime-wry-2.11.4/src/lib.rs
+index aef855c..0d35893 100644
+--- a/tauri-runtime-wry-2.11.4/src/lib.rs
++++ b/tauri-runtime-wry-2.11.4/src/lib.rs
+@@ -304,6 +304,11 @@ impl<T: UserEvent> Context<T> {
+     after_window_creation: Option<F>,
+   ) -> Result<DetachedWindow<T, Wry<T>>> {
+     let label = pending.label.clone();
++    #[cfg(target_os = "android")]
++    let creation_error =
++      (current_thread().id() == self.main_thread_id).then(|| Arc::new(Mutex::new(None)));
++    #[cfg(target_os = "android")]
++    let capture_error = creation_error.clone();
+     let context = self.clone();
+     let window_id = self.next_window_id();
+     let (webview_id, use_https_scheme) = pending
+@@ -322,18 +327,38 @@ impl<T: UserEvent> Context<T> {
+       Message::CreateWindow(
+         window_id,
+         Box::new(move |event_loop| {
+-          create_window(
++          let result = create_window(
+             window_id,
+             webview_id.unwrap_or_default(),
+             event_loop,
+             &context,
+             pending,
+             after_window_creation,
+-          )
++          );
++          #[cfg(target_os = "android")]
++          let result = result.map_err(|error| {
++            if let Some(capture_error) = capture_error {
++              *capture_error.lock().unwrap() = Some(error);
++              Error::CreateWindow
++            } else {
++              error
++            }
++          });
++          result
+         }),
+       ),
+     )?;
+ 
++    // On the runtime thread send_user_message executes creation inline. Do
++    // not publish a detached handle after its native Activity creation failed.
++    // Off-thread asynchronous calls retain their existing dispatch semantics.
++    #[cfg(target_os = "android")]
++    if let Some(creation_error) = creation_error {
++      if let Some(error) = creation_error.lock().unwrap().take() {
++        return Err(error);
++      }
++    }
++
+     let dispatcher = WryWindowDispatcher {
+       window_id,
+       context: self.clone(),
+@@ -4648,6 +4673,7 @@ fn create_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
+       });
+   }
+ 
++  #[cfg(not(target_os = "android"))]
+   context.window_id_map.insert(window.id(), window_id);
+ 
+   if let Some(handler) = after_window_creation {
+@@ -4694,6 +4720,11 @@ fn create_window<T: UserEvent, F: Fn(RawWindow) + Send + 'static>(
+     )?);
+   }
+ 
++  // Android construction can lose its Activity between the native window and
++  // webview stages. Publish its mapping only after both stages succeeded.
++  #[cfg(target_os = "android")]
++  context.window_id_map.insert(window.id(), window_id);
++
+   let window = Arc::new(window);
+ 
+   #[cfg(windows)]

@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.webkit.WebView
 import android.view.KeyEvent
+import android.view.ViewGroup
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.DefaultLifecycleObserver
@@ -56,6 +57,9 @@ abstract class WryActivity : AppCompatActivity() {
     open val handleBackNavigation: Boolean = true
 
     open fun onWebViewCreate(webView: WebView) { }
+    // Unlike the early setup hook, called only after clients, IPC, content,
+    // plugin hook and native proxy publication have all succeeded.
+    open fun onWebViewReady(webView: WebView) { }
 
     fun setWebView(webView: RustWebView) {
         mWebView = webView
@@ -115,7 +119,9 @@ abstract class WryActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        id = savedInstanceState?.getInt(ACTIVITY_ID_KEY) ?: intent.extras?.getInt(ACTIVITY_ID_KEY) ?: hashCode()
+        id = savedInstanceState?.takeIf { it.containsKey(ACTIVITY_ID_KEY) }?.getInt(ACTIVITY_ID_KEY)
+            ?: intent.extras?.takeIf { it.containsKey(ACTIVITY_ID_KEY) }?.getInt(ACTIVITY_ID_KEY)
+            ?: hashCode()
         ProcessLifecycleOwner.get().lifecycle.addObserver(WryLifecycleObserver)
         Rust.onActivityCreate(this)
     }
@@ -147,8 +153,19 @@ abstract class WryActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        Rust.onActivityDestroy(this)
+        // Retire Wry ownership before Tao wakes Rust's Destroyed handling.
+        // That handler may immediately build an already-attached replacement.
         Rust.onWebviewDestroy(this, if (::mWebView.isInitialized) { mWebView.id } else { "" })
+        Rust.onActivityDestroy(this)
+        // A retained process must not retain an executing detached WebView.
+        // Native callback authority is already retired above. Android owns
+        // these calls on its UI thread, including configuration recreation.
+        if (::mWebView.isInitialized) {
+            (mWebView.parent as? ViewGroup)?.removeView(mWebView)
+            mWebView.stopLoading()
+            mWebView.removeJavascriptInterface("ipc")
+            mWebView.destroy()
+        }
     }
 
     override fun onLowMemory() {

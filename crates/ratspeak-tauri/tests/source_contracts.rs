@@ -634,10 +634,23 @@ fn native_channel_share_lifecycle_uses_rust_inbox_and_requires_preview() {
         "single-instance must be the first plugin for secondary-process URLs"
     );
     assert!(lib.contains("channel_deep_link::NativeChannelShareInbox::default()"));
-    assert!(lib.contains("channel_deep_link::take_native_channel_share"));
+    assert!(lib.contains("channel_deep_link::peek_native_channel_share"));
+    assert!(lib.contains("channel_deep_link::ack_native_channel_share"));
+    assert!(!lib.contains("channel_deep_link::take_native_channel_share"));
     assert!(lib.contains("channel_deep_link::install(app)"));
+    let runtime_configuration = lib
+        .find("channel_deep_link::configure_android_runtime(context.config_mut())")
+        .expect("Android runtime-only plugin filter");
+    assert!(runtime_configuration < lib.find(".build(context)").unwrap());
+    assert!(native.contains(r#""mobile": [{ "scheme": ["ratspeak"], "host": "channel" }]"#));
 
-    assert!(native.contains("Mutex<Option<ChannelShareTarget>>"));
+    assert!(native.contains("state: Mutex<InboxState>"));
+    assert!(native.contains("pending: Option<PendingShare>"));
+    assert!(native.contains("state.last_revision.checked_add(1)"));
+    assert!(native.contains("revision: pending.revision.to_string()"));
+    assert!(native.contains("activity_generation: Option<String>"));
+    assert!(native.contains("with_presentation_owner(Some(generation)"));
+    assert!(native.contains("activity_generation.as_deref().is_some_and"));
     assert!(native.contains("parse_channel_share_target(payload)"));
     assert!(native.contains("app.emit(NATIVE_CHANNEL_SHARE_AVAILABLE, ())"));
     assert!(native.contains("app.deep_link().on_open_url"));
@@ -672,7 +685,9 @@ fn native_channel_share_lifecycle_uses_rust_inbox_and_requires_preview() {
     assert!(channels.contains("hasOwnProperty.call(target, 'key')"));
     assert!(channels.contains("hasOwnProperty.call(target, 'join_key')"));
 
-    assert!(bridge.contains("RS.invoke('take_native_channel_share')"));
+    assert!(bridge.contains("RS.invoke('peek_native_channel_share')"));
+    assert!(bridge.contains("RS.invoke('ack_native_channel_share',"));
+    assert!(!bridge.contains("take_native_channel_share"));
     assert!(bridge.contains("'native_channel_share_available'"));
     assert!(bridge.contains("_isSetupActive()"));
     assert!(bridge.contains(".bottom-sheet.open"));
@@ -1387,7 +1402,7 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
-    assert!(index.contains("/static/style.css?v=ui-20260830-2"));
+    assert!(index.contains("/static/style.css?v=ui-20260904-1"));
     assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
     assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
     assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
@@ -2373,14 +2388,62 @@ fn ratspeak_commands_use_current_rns_handle_not_process_singleton() {
 
 #[test]
 fn android_service_is_not_sticky_without_runtime_ownership() {
+    let root = repo_root();
     let service =
-        read_source(repo_root().join(
+        read_source(root.join(
             "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakService.kt",
         ))
         .expect("service source");
 
     assert!(service.contains("return START_NOT_STICKY"));
     assert!(!service.contains("return START_STICKY"));
+    let create = service
+        .split("override fun onCreate()")
+        .nth(1)
+        .unwrap()
+        .split("override fun onStartCommand")
+        .next()
+        .unwrap();
+    let admission = create
+        .find("if (!RatspeakNativeBridge.hasActivitySession())")
+        .unwrap();
+    assert!(admission < create.find("startForegroundTyped(").unwrap());
+    assert!(admission < create.find("publishReady(this)").unwrap());
+    assert!(
+        admission
+            < create
+                .find("RatspeakPlatformSupervisor.start(this)")
+                .unwrap()
+    );
+    let start = service
+        .split("override fun onStartCommand")
+        .nth(1)
+        .unwrap()
+        .split("override fun onDestroy")
+        .next()
+        .unwrap();
+    assert!(
+        start.find("if (!sessionAdmitted)").unwrap() < start.find("when (intent?.action)").unwrap()
+    );
+    let activity = read_source(
+        root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),
+    )
+    .unwrap();
+    assert!(
+        activity
+            .find("RatspeakNativeBridge.beginActivitySession()")
+            .unwrap()
+            < activity.find("super.onCreate(savedInstanceState)").unwrap()
+    );
+    let bridge = read_source(root.join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakNativeBridge.kt",
+    ))
+    .unwrap();
+    assert!(bridge.contains("fun hasActivitySession(): Boolean"));
+    assert!(
+        !bridge.contains("putBoolean(\"activitySession"),
+        "bootstrap authority must never survive process death"
+    );
 }
 
 #[test]
@@ -3460,16 +3523,18 @@ fn linux_wayland_webkit_startup_keeps_blank_window_workaround() {
     let builder_pos = source
         .find("tauri::Builder::default()")
         .expect("tauri builder construction");
-    let build_pos = source
-        .find(".build(tauri::generate_context!())")
-        .expect("tauri app build");
+    let context_pos = source
+        .find("let context = tauri::generate_context!();")
+        .expect("generated Tauri application context");
+    let build_pos = source.find(".build(context)").expect("tauri app build");
     let run_pos = source.find("app.run(").expect("tauri app run");
     assert!(
         workaround_pos < builder_pos
-            && builder_pos < build_pos
+            && builder_pos < context_pos
+            && context_pos < build_pos
             && build_pos < tracing_pos
             && tracing_pos < run_pos,
-        "apply the WebKit environment workaround before build, but initialize file tracing only after single-instance build and before run"
+        "apply the WebKit environment workaround before context/build, but initialize file tracing only after single-instance build and before run"
     );
 
     // --webview-diag must exit before any webview/env mutation side effects.
@@ -3771,7 +3836,17 @@ fn android_name_based_jni_boundary_is_pinned_and_final_artifacts_are_inspected()
     let classes = manifest["classes"].as_array().expect("boundary classes");
 
     assert_eq!(manifest["schemaVersion"], 1);
-    assert_eq!(classes.len(), 11);
+    assert_eq!(classes.len(), 12);
+    assert!(
+        classes.iter().any(|class| {
+            class["name"] == "org.ratspeak.android.RatspeakNotifications"
+                && class["methods"].as_array().is_some_and(|methods| {
+                    methods.iter().any(|method| method[0] == "nativeInitialize")
+                        && methods.iter().any(|method| method[0] == "show")
+                })
+        }),
+        "Application-context notification entry points must survive R8"
+    );
     for class in classes {
         let name = class["name"].as_str().expect("boundary class name");
         assert!(
@@ -5291,10 +5366,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("/static/js/state.js?v=ui-20260830-2"));
-    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260830-2"));
-    assert!(index.contains("/static/js/lxmf.js?v=ui-20260830-2"));
-    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260830-2"));
+    assert!(index.contains("/static/js/state.js?v=ui-20260904-1"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260904-1"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260904-1"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260904-1"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));

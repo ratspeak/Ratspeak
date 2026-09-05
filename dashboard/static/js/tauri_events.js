@@ -84,8 +84,9 @@ function _decodeChannelNotificationRoute(route) {
     return { hub_destination_hash: match[1], room_name: room };
 }
 
-function _routeNotificationTap(payload) {
-    if (!payload || typeof payload !== 'object') return;
+function _routeNotificationTap(payload, isCurrent) {
+    isCurrent = typeof isCurrent === 'function' ? isCurrent : function() { return true; };
+    if (!payload || typeof payload !== 'object' || !isCurrent()) return Promise.resolve(false);
     // Android delivers {inputValue, actionId, notification:{...,extra}}; a flat
     // shape (extra at top level) is tolerated for other backends.
     var extra = (payload.notification && payload.notification.extra) || payload.extra;
@@ -94,29 +95,98 @@ function _routeNotificationTap(payload) {
         var notification = payload.notification || payload;
         route = notification && notification.actionTypeId;
     }
-    if (typeof route !== 'string') return;
+    if (typeof route !== 'string') return Promise.resolve(false);
     if (route.indexOf('channels:') === 0) {
         var channel = _decodeChannelNotificationRoute(route);
         if (channel && typeof window.channelsOpenNotificationRoute === 'function') {
-            window.channelsOpenNotificationRoute(
+            return Promise.resolve(window.channelsOpenNotificationRoute(
                 channel.hub_destination_hash,
-                channel.room_name
-            );
+                channel.room_name,
+                isCurrent
+            )).then(function(applied) { return applied === true; }).catch(function() { return false; });
         }
-        return;
+        return Promise.resolve(false);
     }
     var sep = route.indexOf(':');
-    if (sep < 0) return;
+    if (sep < 0) return Promise.resolve(false);
     var kind = route.slice(0, sep);
     var id = route.slice(sep + 1);
-    if (!id) return;
+    if (!id) return Promise.resolve(false);
     if (kind === 'lxmf') {
-        if (typeof openConversationWith === 'function') openConversationWith(id);
+        if (typeof openConversationWith === 'function') {
+            openConversationWith(id);
+            return Promise.resolve(true);
+        }
     } else if (kind === 'lrgp') {
-        if (typeof window.openGameSession === 'function') window.openGameSession(id);
+        if (typeof window.openGameSession === 'function') {
+            return Promise.resolve(window.openGameSession(id, isCurrent))
+                .then(function(applied) { return applied === true; }).catch(function() { return false; });
+        }
+    } else if (kind === 'lxst') {
+        return Promise.resolve(true);
     }
     // TODO(call menu): route kind === 'lxst' once the dedicated call menu exists;
     // for now an unhandled kind just focuses the app, which is the desired behavior.
+    return Promise.resolve(false);
+}
+
+// Android owns the pending route across document reloads. A parsed page is not
+// ready to consume it: setup/unlock and the initial navigation must settle too.
+var _androidNotificationRouteAttempt = null;
+
+function _notificationDashboardCanNavigate() {
+    return document.readyState !== 'loading' && !document.hidden &&
+        typeof _navInitialLoad !== 'undefined' && !_navInitialLoad &&
+        (typeof _navTransitioning === 'undefined' || !_navTransitioning) &&
+        !document.body.classList.contains('checking-setup') &&
+        !document.body.classList.contains('setup-active') &&
+        !document.getElementById('hw-unlock-overlay');
+}
+
+function _receiveAndroidNotificationRoute(route, token, remainingMs) {
+    if (typeof route !== 'string' || typeof token !== 'string' ||
+            !/^[1-9][0-9]{0,18}$/.test(token) ||
+            !Number.isFinite(remainingMs) || remainingMs <= 0 || remainingMs > 30000) return false;
+    var attempt = _androidNotificationRouteAttempt;
+    if (!attempt || attempt.token !== token || attempt.route !== route) {
+        attempt = { token: token, route: route, pending: false, applied: false,
+            deadline: performance.now() + remainingMs };
+        _androidNotificationRouteAttempt = attempt;
+    }
+    if (attempt.applied) return true;
+    function current() {
+        return _androidNotificationRouteAttempt === attempt &&
+            performance.now() < attempt.deadline && _notificationDashboardCanNavigate();
+    }
+    if (attempt.pending || !current()) return false;
+    attempt.pending = true;
+    Promise.all([RS.invoke('api_startup_progress'), RS.invoke('api_setup_status')])
+        .then(function(state) {
+            if (!current() || !state[0] || state[0].stage !== 'ready' ||
+                    state[0].hw_locked || !state[1] || state[1].needs_setup !== false) return false;
+            return _routeNotificationTap({ extra: { route: route } }, current);
+        }).then(function(applied) {
+            if (_androidNotificationRouteAttempt === attempt) {
+                attempt.applied = applied === true && performance.now() < attempt.deadline;
+            }
+        }).catch(function() {
+            // Keep the native pending route. Never log its destination/content.
+        }).finally(function() { attempt.pending = false; });
+    return false;
+}
+
+function _wakeAndroidNotificationRouting() {
+    if (window.RatspeakAndroid && typeof window.RatspeakAndroid.notificationDashboardReady === 'function') {
+        window.RatspeakAndroid.notificationDashboardReady();
+    }
+}
+
+// Unlock/setup reload the same WebView, so there may be no new native view or
+// onResume callback after the previous bounded readiness attempt expired.
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', function() { setTimeout(_wakeAndroidNotificationRouting, 0); });
+} else {
+    setTimeout(_wakeAndroidNotificationRouting, 0);
 }
 
 function _initNotificationTapRouting() {

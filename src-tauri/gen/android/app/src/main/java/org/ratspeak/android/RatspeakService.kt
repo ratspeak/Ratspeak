@@ -75,6 +75,10 @@ class RatspeakService : Service() {
          */
         internal fun ensureReadyForMicrophoneCapture(context: Context): Boolean {
             activeService?.let { return true }
+            if (!RatspeakNativeBridge.hasActivitySession()) {
+                reportMicrophoneFailure(MICROPHONE_FAILURE_SERVICE_START)
+                return false
+            }
             val application = context.applicationContext
             val callerIsMainThread = Looper.myLooper() == Looper.getMainLooper()
             val plan = RatspeakMobilePolicy.serviceReadinessPlan(
@@ -134,11 +138,23 @@ class RatspeakService : Service() {
     // Per-sender state: key = dest_hash, value = (notificationId, lastUnreadCount)
     private val senderState = HashMap<String, Pair<Int, Int>>()
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var sessionAdmitted = false
     @Volatile private var running = true
     @Volatile private var microphoneCaptureOwner: String? = null
 
     override fun onCreate() {
         super.onCreate()
+        // Android can redeliver a pending start even with START_NOT_STICKY.
+        // A service-only process has no Rust bootstrap or identity-unlock UI.
+        // Never leave a misleading foreground notification or observers alive
+        // after process death. An explicit Activity launch authorizes only this
+        // process lifetime; removing its task does not revoke the live session.
+        if (!RatspeakNativeBridge.hasActivitySession()) {
+            running = false
+            stopSelf()
+            return
+        }
+        sessionAdmitted = true
         createNotificationChannel()
         createMessageNotificationChannel()
         createCallNotificationChannel()
@@ -149,6 +165,10 @@ class RatspeakService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!sessionAdmitted) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         when (intent?.action) {
             ACTION_STOP -> {
                 running = false

@@ -2152,16 +2152,23 @@
 
     // Deep-link entry point for notification taps (route lrgp:<session_id>).
     // Switches to the games view, refreshes sessions, then opens the board.
-    window.openGameSession = function(sessionId) {
-        if (!sessionId) return;
+    window.openGameSession = function(sessionId, isCurrent) {
+        isCurrent = typeof isCurrent === 'function' ? isCurrent : function() { return true; };
+        if (!sessionId || !isCurrent()) return Promise.resolve(false);
         if (typeof switchView === 'function') switchView('games');
-        RS.invoke('get_all_game_sessions').then(function(sessions) {
+        function openExistingSession() {
+            if (!isCurrent() || !_findSession(sessionId)) return false;
+            selectSession(sessionId);
+            return true;
+        }
+        return RS.invoke('get_all_game_sessions').then(function(sessions) {
+            if (!isCurrent()) return false;
             if (Array.isArray(sessions)) {
                 _allSessions = sessions;
                 renderSessionList();
             }
-            selectSession(sessionId);
-        }).catch(function() { selectSession(sessionId); });
+            return openExistingSession();
+        }).catch(function() { return openExistingSession(); });
     };
 
     window.updateGamesBadge = updateGamesBadge;

@@ -1,0 +1,351 @@
+diff --git a/tao-0.35.3/src/platform_impl/android/event_queue.rs b/tao-0.35.3/src/platform_impl/android/event_queue.rs
+new file mode 100644
+index 0000000..c4d5e48
+--- /dev/null
++++ b/tao-0.35.3/src/platform_impl/android/event_queue.rs
+@@ -0,0 +1,106 @@
++// Copyright 2014-2021 The winit contributors
++// Copyright 2021-2023 Tauri Programme within The Commons Conservancy
++// SPDX-License-Identifier: Apache-2.0
++
++/// A looper result is not proof that its user-event queue is empty. In
++/// particular, native FD readiness can consume a simultaneous explicit wake.
++/// The event loop calls this after every poll result, before polling again.
++pub(super) fn dispatch_pending<T>(
++  accepting_events: bool,
++  mut next: impl FnMut() -> Option<T>,
++  mut dispatch: impl FnMut(T) -> bool,
++) {
++  if !accepting_events {
++    return;
++  }
++  while let Some(event) = next() {
++    if !dispatch(event) {
++      break;
++    }
++  }
++}
++
++#[cfg(test)]
++mod tests {
++  use super::dispatch_pending;
++  use std::{cell::RefCell, collections::VecDeque};
++
++  #[test]
++  fn queued_restore_dispatches_without_a_distinct_wake_result() {
++    // The poll returned an Activity FD, not Poll::Wake. Its queued restoration
++    // still has to execute before the event loop goes back to sleep.
++    let mut pending = VecDeque::from(["restore"]);
++    let mut delivered = Vec::new();
++    dispatch_pending(
++      true,
++      || pending.pop_front(),
++      |event| {
++        delivered.push(event);
++        true
++      },
++    );
++    assert_eq!(delivered, ["restore"]);
++    assert!(pending.is_empty());
++  }
++
++  #[test]
++  fn coalesced_user_events_keep_fifo_order_and_are_not_repeated() {
++    let mut pending = VecDeque::from([1, 2, 3]);
++    let mut delivered = Vec::new();
++    for _ in 0..2 {
++      dispatch_pending(
++        true,
++        || pending.pop_front(),
++        |event| {
++          delivered.push(event);
++          true
++        },
++      );
++    }
++    assert_eq!(delivered, [1, 2, 3]);
++  }
++
++  #[test]
++  fn event_queued_during_dispatch_does_not_need_another_poll_wake() {
++    let pending = RefCell::new(VecDeque::from([1]));
++    let mut delivered = Vec::new();
++    dispatch_pending(
++      true,
++      || pending.borrow_mut().pop_front(),
++      |event| {
++        delivered.push(event);
++        if event == 1 {
++          pending.borrow_mut().push_back(2);
++        }
++        true
++      },
++    );
++    assert_eq!(delivered, [1, 2]);
++  }
++
++  #[test]
++  fn accepted_native_exit_does_not_dispatch_a_queued_restore() {
++    let mut pending = VecDeque::from(["restore"]);
++    dispatch_pending(false, || pending.pop_front(), |_| panic!("already exiting"));
++    assert_eq!(pending.len(), 1);
++    // A prevented exit keeps normal dispatch enabled.
++    dispatch_pending(true, || pending.pop_front(), |_| true);
++    assert!(pending.is_empty());
++  }
++
++  #[test]
++  fn accepted_user_exit_stops_before_later_queued_work() {
++    let mut pending = VecDeque::from(["exit", "restore"]);
++    let mut delivered = Vec::new();
++    dispatch_pending(
++      true,
++      || pending.pop_front(),
++      |event| {
++        delivered.push(event);
++        false
++      },
++    );
++    assert_eq!(delivered, ["exit"]);
++    assert_eq!(pending, ["restore"]);
++  }
++}
+diff --git a/tao-0.35.3/src/platform_impl/android/mod.rs b/tao-0.35.3/src/platform_impl/android/mod.rs
+index b781138..850b7f2 100644
+--- a/tao-0.35.3/src/platform_impl/android/mod.rs
++++ b/tao-0.35.3/src/platform_impl/android/mod.rs
+@@ -120,6 +120,7 @@ macro_rules! jni_call_method {
+   };
+ }
+ 
++mod event_queue;
+ pub mod ndk_glue;
+ use ndk_glue::{ActivityId, Event, Rect, WindowEvent};
+ 
+@@ -156,7 +157,7 @@ fn poll(poll: Poll) -> Option<EventSource> {
+     },
+     Poll::Timeout => None,
+     Poll::Wake => Some(EventSource::User),
+-    Poll::Callback => unreachable!(),
++    Poll::Callback => Some(EventSource::User),
+   }
+ }
+ 
+@@ -413,19 +414,26 @@ impl<T: 'static> EventLoop<T> {
+             }
+           */
+         }
+-        Some(EventSource::User) => {
+-          while let Ok(event) = self.receiver.try_recv() {
+-            call_event_handler!(
+-              event_handler,
+-              self.window_target(),
+-              control_flow,
+-              event::Event::UserEvent(event)
+-            );
+-          }
+-        }
+-        None => {}
++        Some(EventSource::User) | None => {}
+       }
+ 
++      // Every ALooper_pollOnce result may include a coalesced wake, including
++      // native FD activity and callbacks. Draining only on Poll::Wake strands
++      // queued runtime work when Activity events consume that same wake.
++      event_queue::dispatch_pending(
++        !matches!(control_flow, ControlFlow::ExitWithCode(_)),
++        || self.receiver.try_recv().ok(),
++        |event| {
++          call_event_handler!(
++            event_handler,
++            self.window_target(),
++            control_flow,
++            event::Event::UserEvent(event)
++          );
++          !matches!(control_flow, ControlFlow::ExitWithCode(_))
++        },
++      );
++
+       call_event_handler!(
+         event_handler,
+         self.window_target(),
+@@ -484,13 +492,13 @@ impl<T: 'static> EventLoop<T> {
+           self.first_event = poll(
+             self
+               .looper
+-              .poll_all_timeout(Duration::from_millis(0))
++              .poll_once_timeout(Duration::from_millis(0))
+               .unwrap(),
+           );
+           self.start_cause = event::StartCause::Poll;
+         }
+         ControlFlow::Wait => {
+-          self.first_event = poll(self.looper.poll_all().unwrap());
++          self.first_event = poll(self.looper.poll_once().unwrap());
+           self.start_cause = event::StartCause::WaitCancelled {
+             start: Instant::now(),
+             requested_resume: None,
+@@ -503,7 +511,7 @@ impl<T: 'static> EventLoop<T> {
+           } else {
+             instant - start
+           };
+-          self.first_event = poll(self.looper.poll_all_timeout(duration).unwrap());
++          self.first_event = poll(self.looper.poll_once_timeout(duration).unwrap());
+           self.start_cause = if self.first_event.is_some() {
+             event::StartCause::WaitCancelled {
+               start,
+@@ -626,6 +634,9 @@ pub struct PlatformSpecificWindowBuilderAttributes {
+ pub struct Window {
+   activity_id: ActivityId,
+   activity_name: String,
++  // Raw Android handles are JVM WindowManager objects, so Window must retain
++  // the GlobalRef for every handle borrower even after Activity destruction.
++  window_manager: jni::objects::GlobalRef,
+ }
+ 
+ impl Window {
+@@ -636,6 +647,7 @@ impl Window {
+   ) -> Result<Self, error::OsError> {
+     // FIXME this ignores requested window attributes
+ 
++    let requested = ndk_glue::requested_activity();
+     let (activity_id, activity_name) = match pl_attrs.activity_name {
+       Some(activity_name) => {
+         let ctx = if let Some(created_by_activity_name) = pl_attrs.created_by_activity_name {
+@@ -654,13 +666,31 @@ impl Window {
+           .map_err(|error| os_error!(OsError::JniCallError(error)))?;
+         (activity_id, activity_name)
+       }
+-      None => ndk_glue::next_available_activity()
+-        .map(|(activity_id, ctx)| (activity_id, ctx.activity_name.clone()))
+-        .ok_or_else(|| os_error!(OsError::NoAvailableActivity))?,
++      None if requested.is_some() => {
++        let target = requested.as_ref().unwrap();
++        (target.activity_id, target.activity_name.clone())
++      }
++      None => match pl_attrs.activity_id {
++        Some(activity_id) => ndk_glue::CONTEXTS
++          .lock()
++          .unwrap()
++          .get(&activity_id)
++          .map(|ctx| (activity_id, ctx.activity_name.clone()))
++          .ok_or_else(|| os_error!(OsError::NoAvailableActivity))?,
++        None => ndk_glue::next_available_activity()
++          .map(|(activity_id, ctx)| (activity_id, ctx.activity_name.clone()))
++          .ok_or_else(|| os_error!(OsError::NoAvailableActivity))?,
++      },
+     };
++    let window_manager = requested
++      .filter(|target| target.activity_id == activity_id)
++      .map(|target| target.window_manager)
++      .or_else(|| ndk_glue::activity_window_manager(activity_id))
++      .ok_or_else(|| os_error!(OsError::NoAvailableActivity))?;
+     Ok(Self {
+       activity_id,
+       activity_name,
++      window_manager,
+     })
+   }
+ 
+@@ -878,25 +908,15 @@ impl Window {
+ 
+   #[cfg(feature = "rwh_04")]
+   pub fn raw_window_handle_rwh_04(&self) -> rwh_04::RawWindowHandle {
+-    // TODO: Use main activity instead?
+     let mut handle = rwh_04::AndroidNdkHandle::empty();
+-    if let Some(w) = ndk_glue::activity_window_manager(self.activity_id).as_ref() {
+-      handle.a_native_window = w.as_obj().as_raw() as *mut _;
+-    } else {
+-      panic!("Cannot get the native window, it's null and will always be null before Event::Resumed and after Event::Suspended. Make sure you only call this function between those events.");
+-    };
++    handle.a_native_window = self.window_manager.as_obj().as_raw() as *mut _;
+     rwh_04::RawWindowHandle::AndroidNdk(handle)
+   }
+ 
+   #[cfg(feature = "rwh_05")]
+   pub fn raw_window_handle_rwh_05(&self) -> rwh_05::RawWindowHandle {
+-    // TODO: Use main activity instead?
+     let mut handle = rwh_05::AndroidNdkWindowHandle::empty();
+-    if let Some(w) = ndk_glue::activity_window_manager(self.activity_id).as_ref() {
+-      handle.a_native_window = w.as_obj().as_raw() as *mut _;
+-    } else {
+-      panic!("Cannot get the native window, it's null and will always be null before Event::Resumed and after Event::Suspended. Make sure you only call this function between those events.");
+-    };
++    handle.a_native_window = self.window_manager.as_obj().as_raw() as *mut _;
+     rwh_05::RawWindowHandle::AndroidNdk(handle)
+   }
+ 
+@@ -907,16 +927,10 @@ impl Window {
+ 
+   #[cfg(feature = "rwh_06")]
+   pub fn raw_window_handle_rwh_06(&self) -> Result<rwh_06::RawWindowHandle, rwh_06::HandleError> {
+-    // TODO: Use main activity instead?
+-    if let Some(w) = ndk_glue::activity_window_manager(self.activity_id).as_ref() {
+-      let native_window =
+-        unsafe { std::ptr::NonNull::new_unchecked(w.as_obj().as_raw() as *mut _) };
+-      // native_window shuldn't be null
+-      let handle = rwh_06::AndroidNdkWindowHandle::new(native_window);
+-      Ok(rwh_06::RawWindowHandle::AndroidNdk(handle))
+-    } else {
+-      Err(rwh_06::HandleError::Unavailable)
+-    }
++    let native_window = std::ptr::NonNull::new(self.window_manager.as_obj().as_raw() as *mut _)
++      .ok_or(rwh_06::HandleError::Unavailable)?;
++    let handle = rwh_06::AndroidNdkWindowHandle::new(native_window);
++    Ok(rwh_06::RawWindowHandle::AndroidNdk(handle))
+   }
+ 
+   #[cfg(feature = "rwh_06")]
+diff --git a/tao-0.35.3/src/platform_impl/android/ndk_glue.rs b/tao-0.35.3/src/platform_impl/android/ndk_glue.rs
+index 95aa5b0..65b9724 100644
+--- a/tao-0.35.3/src/platform_impl/android/ndk_glue.rs
++++ b/tao-0.35.3/src/platform_impl/android/ndk_glue.rs
+@@ -257,6 +257,48 @@ pub fn next_available_activity() -> Option<(ActivityId, AndroidContext)> {
+     .map(|(id, ctx)| (*id, ctx.clone()))
+ }
+ 
++/// Owned target captured while the Activity is alive. Keeping its WindowManager
++/// distinguishes this Activity from a later Activity reusing the same integer ID.
++#[derive(Clone)]
++pub struct ActivityWindowTarget {
++  pub(crate) activity_id: ActivityId,
++  pub(crate) activity_name: String,
++  pub(crate) window_manager: GlobalRef,
++}
++
++/// Capture on Android's main thread after Activity setup, before scheduling
++/// asynchronous creation on the Rust event-loop thread.
++pub fn capture_activity(activity_id: ActivityId) -> Option<ActivityWindowTarget> {
++  let context = CONTEXTS.lock().unwrap().get(&activity_id)?.clone();
++  Some(ActivityWindowTarget {
++    activity_id,
++    activity_name: context.activity_name,
++    window_manager: activity_window_manager(activity_id)?,
++  })
++}
++
++thread_local! {
++  static REQUESTED_ACTIVITY: std::cell::RefCell<Option<ActivityWindowTarget>> = const { std::cell::RefCell::new(None) };
++}
++
++/// Scope window creation to one already registered Activity. Unlike choosing
++/// the next available Activity, a destroyed target cannot bind a replacement.
++/// Invoke on the event-loop thread that performs the actual window creation.
++pub fn with_activity<R>(target: ActivityWindowTarget, create: impl FnOnce() -> R) -> R {
++  struct Restore(Option<ActivityWindowTarget>);
++  impl Drop for Restore {
++    fn drop(&mut self) {
++      REQUESTED_ACTIVITY.with(|slot| *slot.borrow_mut() = self.0.take());
++    }
++  }
++  let _restore = Restore(REQUESTED_ACTIVITY.with(|slot| slot.replace(Some(target))));
++  create()
++}
++
++pub(crate) fn requested_activity() -> Option<ActivityWindowTarget> {
++  REQUESTED_ACTIVITY.with(|slot| slot.borrow().clone())
++}
++
+ pub static PIPE: Lazy<[OwnedFd; 2]> = Lazy::new(|| {
+   let mut pipe: [RawFd; 2] = Default::default();
+   unsafe { libc::pipe(pipe.as_mut_ptr()) };

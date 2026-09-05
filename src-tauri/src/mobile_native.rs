@@ -700,7 +700,8 @@ pub(crate) fn submit_lifecycle(foreground: bool) {
     let Some(state) = installed_state() else {
         return;
     };
-    // Tauri RunEvents are delivered only after setup has installed AppState.
+    // iOS uses Tauri RunEvents after setup. Android can receive native Activity
+    // edges earlier and replays the current generation's state at Tauri Ready.
     // Allocate authority before spawning so scheduling cannot invert two edges.
     let transition = state.begin_foreground_transition();
     // Notification attention follows the trusted platform edge immediately;

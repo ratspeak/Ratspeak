@@ -12,6 +12,7 @@
   public <init>(...);
 
   void setWebView(org.ratspeak.android.RustWebView);
+  void onWebViewReady(android.webkit.WebView);
   java.lang.Class getAppClass(...);
   int getId();
   java.lang.String getVersion();

@@ -71,3 +71,9 @@ codegen-units = 1
 # an unwinding worker panic after purging its session. Abort mode would make
 # that production recovery path unreachable.
 panic = "unwind"
+
+# Keep the standalone shell and library workspace on the same reviewed sources.
+[patch.crates-io]
+tao = { path = "../vendor/tao-0.35.3" }
+wry = { path = "../vendor/wry-0.55.1" }
+tauri-runtime-wry = { path = "../vendor/tauri-runtime-wry-2.11.4" }

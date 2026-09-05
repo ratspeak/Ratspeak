@@ -37,8 +37,9 @@ async function main() {
         window: {
             channelsOpenNotificationRoute: function(hub, room) {
                 channelRoutes.push([hub, room]);
+                return Promise.resolve(true);
             },
-            openGameSession: function(id) { gameRoutes.push(id); }
+            openGameSession: function(id) { gameRoutes.push(id); return Promise.resolve(true); }
         },
         openConversationWith: function(id) { lxmfRoutes.push(id); }
     };
@@ -46,7 +47,7 @@ async function main() {
         sourceRange(
             eventSource,
             'function _decodeChannelNotificationRoute',
-            '\nfunction _initNotificationTapRouting'
+            '\n// Android owns the pending route'
         ),
         tapContext,
         { filename: 'channels-notification-tap.js' }
@@ -71,13 +72,13 @@ async function main() {
         'notification routes use one canonical lowercase hash form'
     );
 
-    tapContext._routeNotificationTap({
+    assert.strictEqual(await tapContext._routeNotificationTap({
         notification: { extra: { route: 'channels:' + hub + ':' + roomHex } }
-    });
+    }), true);
     assert.deepStrictEqual(Array.from(channelRoutes[0]), [hub, room]);
-    tapContext._routeNotificationTap({ extra: { route: 'lxmf:abc123' } });
-    tapContext._routeNotificationTap({ extra: { route: 'lrgp:game-7' } });
-    tapContext._routeNotificationTap({ notification: { actionTypeId: 'lxmf:ios123' } });
+    assert.strictEqual(await tapContext._routeNotificationTap({ extra: { route: 'lxmf:abc123' } }), true);
+    assert.strictEqual(await tapContext._routeNotificationTap({ extra: { route: 'lrgp:game-7' } }), true);
+    assert.strictEqual(await tapContext._routeNotificationTap({ notification: { actionTypeId: 'lxmf:ios123' } }), true);
     assert.deepStrictEqual(lxmfRoutes, ['abc123', 'ios123'],
         'iOS actionTypeId must retain the same validated route behavior as Android extra');
     assert.deepStrictEqual(gameRoutes, ['game-7']);
@@ -136,6 +137,17 @@ async function main() {
     assert.strictEqual(notificationRouteSource.indexOf('connect_channel_hub'), -1);
     assert.strictEqual(notificationRouteSource.indexOf('join_with_key'), -1,
         'a notification route must never reconnect or carry a room key');
+
+    selected.length = 0;
+    var finishLoad;
+    routeContext.channelsLoad = function() { return new Promise(function(resolve) { finishLoad = resolve; }); };
+    var current = true;
+    var deferredRoute = routeContext.channelsOpenNotificationRoute(hub, room, function() { return current; });
+    current = false;
+    finishLoad({});
+    assert.strictEqual(await deferredRoute, false);
+    assert.deepStrictEqual(selected, [['view', 'channels']],
+        'an old async route must not select a room after its native tap was replaced');
 
     console.log('channel notification route tests passed');
 }

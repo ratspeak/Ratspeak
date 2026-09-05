@@ -154,8 +154,10 @@ function main() {
     assert(contactCardSource.indexOf('window.RS.qr = {') !== -1,
         'channel shares must reuse the common QR implementation');
     assert(contactCardSource.indexOf('openScanner: openContactQrScanner') !== -1);
-    assert(nativeShareSource.indexOf("RS.invoke('take_native_channel_share')") !== -1,
-        'native URLs must drain only the app-owned typed inbox');
+    assert(nativeShareSource.indexOf("RS.invoke('peek_native_channel_share')") !== -1 &&
+        nativeShareSource.indexOf("RS.invoke('ack_native_channel_share',") !== -1 &&
+        nativeShareSource.indexOf('take_native_channel_share') === -1,
+        'native URLs require a non-destructive typed preview and exact acknowledgement');
     assert(nativeShareSource.indexOf("'native_channel_share_available'") !== -1);
     assert(nativeShareSource.indexOf('_isSetupActive()') !== -1,
         'native previews must wait until first-run setup is complete');
