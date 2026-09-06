@@ -151,6 +151,14 @@ class RatspeakService : Service() {
         // process lifetime; removing its task does not revoke the live session.
         if (!RatspeakNativeBridge.hasActivitySession()) {
             running = false
+            // A pending foreground start still requires promotion, even when
+            // immediately rejected. stopSelf() alone makes Android crash this
+            // process for an unfulfilled startForegroundService obligation.
+            // Satisfy only that handshake, then remove its truthful temporary
+            // card. Never publish a session, start observers or unlock here.
+            createNotificationChannel()
+            startForegroundTyped(microphoneCapture = false)
+            stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
             return
         }
@@ -262,6 +270,7 @@ class RatspeakService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val text = when {
+            !sessionAdmitted -> "Open Ratspeak to resume"
             microphoneCaptureOwner != null -> "Microphone active"
             peerCount < 0 -> "Ratspeak is running"
             peerCount == 0 -> "Active · no peers connected"

@@ -2431,6 +2431,29 @@ fn android_service_is_not_sticky_without_runtime_ownership() {
     let admission = create
         .find("if (!RatspeakNativeBridge.hasActivitySession())")
         .unwrap();
+    let rejected = create[admission..]
+        .split("sessionAdmitted = true")
+        .next()
+        .unwrap();
+    let promote = rejected
+        .find("startForegroundTyped(microphoneCapture = false)")
+        .unwrap();
+    assert!(rejected.find("createNotificationChannel()").unwrap() < promote);
+    assert!(
+        promote
+            < rejected
+                .find("stopForeground(STOP_FOREGROUND_REMOVE)")
+                .unwrap()
+    );
+    assert!(
+        rejected
+            .find("stopForeground(STOP_FOREGROUND_REMOVE)")
+            .unwrap()
+            < rejected.rfind("stopSelf()").unwrap()
+    );
+    assert!(!rejected.contains("publishReady(this)"));
+    assert!(!rejected.contains("RatspeakPlatformSupervisor.start(this)"));
+    assert!(service.contains("!sessionAdmitted -> \"Open Ratspeak to resume\""));
     assert!(admission < create.find("startForegroundTyped(").unwrap());
     assert!(admission < create.find("publishReady(this)").unwrap());
     assert!(
