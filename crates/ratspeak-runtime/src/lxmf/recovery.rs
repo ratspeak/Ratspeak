@@ -6,10 +6,28 @@ const MAX_PENDING_RECOVERIES: usize = 256;
 const RECOVERY_WAIT_LIMIT: Duration = Duration::from_secs(10);
 
 pub(super) struct PendingPathRecovery {
-    failed_link: Option<[u8; 16]>,
+    failed_attempt: Option<Attempt>,
     started_at: Instant,
     reply: Option<oneshot::Receiver<PathRecoveryOutcome>>,
     awaiting_snapshot: Option<u64>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Attempt {
+    Link([u8; 16]),
+    Packet([u8; 32]),
+}
+
+fn admit(
+    handle: &PathRecoveryHandle,
+    dest: [u8; 16],
+    attempt: Option<Attempt>,
+) -> Result<oneshot::Receiver<PathRecoveryOutcome>, PathRecoveryError> {
+    match attempt {
+        Some(Attempt::Packet(hash)) => handle.try_recover_packet(dest, hash),
+        Some(Attempt::Link(link)) => handle.try_recover(dest, Some(link)),
+        None => handle.try_recover(dest, None),
+    }
 }
 
 impl LxmfManager {
@@ -29,6 +47,18 @@ impl LxmfManager {
     }
 
     pub(super) fn request_path_recovery(&mut self, dest: [u8; 16], failed_link: Option<[u8; 16]>) {
+        self.request_path_attempt_recovery(dest, failed_link.map(Attempt::Link));
+    }
+
+    pub(super) fn request_packet_path_recovery(
+        &mut self,
+        dest: [u8; 16],
+        packet: Option<[u8; 32]>,
+    ) {
+        self.request_path_attempt_recovery(dest, packet.map(Attempt::Packet));
+    }
+
+    fn request_path_attempt_recovery(&mut self, dest: [u8; 16], failed_attempt: Option<Attempt>) {
         if self.path_recovery.is_none() {
             // Retained embedding API: callers using only a raw mailbox may
             // discover, but cannot safely invalidate an unobserved route.
@@ -41,8 +71,8 @@ impl LxmfManager {
             return;
         }
         if let Some(pending) = self.pending_path_recoveries.get_mut(&dest) {
-            if failed_link.is_some() && pending.failed_link != failed_link {
-                pending.failed_link = failed_link;
+            if failed_attempt.is_some() && pending.failed_attempt != failed_attempt {
+                pending.failed_attempt = failed_attempt;
                 pending.reply = None;
                 pending.awaiting_snapshot = None;
             }
@@ -58,7 +88,7 @@ impl LxmfManager {
         self.pending_path_recoveries.insert(
             dest,
             PendingPathRecovery {
-                failed_link,
+                failed_attempt,
                 started_at: Instant::now(),
                 reply: None,
                 awaiting_snapshot: None,
@@ -68,7 +98,7 @@ impl LxmfManager {
         // bounded inventory once; enqueueing a batch must not rescan it O(n²).
         if let Some(handle) = &self.path_recovery {
             if let Some(pending) = self.pending_path_recoveries.get_mut(&dest) {
-                pending.reply = handle.try_recover(dest, failed_link).ok();
+                pending.reply = admit(handle, dest, failed_attempt).ok();
             }
         }
     }
@@ -105,7 +135,7 @@ impl LxmfManager {
                 continue;
             }
             if pending.reply.is_none() {
-                match handle.try_recover(dest, pending.failed_link) {
+                match admit(&handle, dest, pending.failed_attempt) {
                     Ok(reply) => pending.reply = Some(reply),
                     Err(PathRecoveryError::Full) => continue,
                     Err(_) => {

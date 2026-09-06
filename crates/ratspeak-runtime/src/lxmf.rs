@@ -49,6 +49,7 @@ const MAX_DEFERRED_STAMP_WIRE_BYTES: usize = 2 + lxmf_core::constants::STAMP_SIZ
 const OPPORTUNISTIC_MAX_CONTENT_BYTES: usize = 295;
 const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
 const BACKCHANNEL_COMMAND_BUFFER: usize = 64;
+mod packet_delivery;
 mod recovery;
 mod timing;
 const DIRECT_BACKCHANNEL_IDENTIFY_GRACE: Duration = Duration::from_secs(3);
@@ -966,6 +967,7 @@ struct PendingDirectLinkIdentification {
 struct PendingOpportunisticDelivery {
     message: LxMessage,
     retry_at: f64,
+    packet_hash: [u8; 32],
 }
 
 /// Ordered terminal notifications emitted by the responder-side Reticulum
@@ -1036,6 +1038,7 @@ pub struct LxmfManager {
     opportunistic_proof_tx:
         Option<mpsc::UnboundedSender<rns_transport::link_messages::DestinationEvent>>,
     opportunistic_in_flight: HashMap<[u8; 32], PendingOpportunisticDelivery>,
+    opportunistic_proofs: HashMap<[u8; 32], packet_delivery::ProofOwner>,
     pub propagation_sync: Option<lxmf_core::propagation_sync::PropagationSyncTask>,
     pub propagation_client: Option<lxmf_core::propagation_client::PropagationClient>,
     delivery_limit_kb: f64,
@@ -1519,6 +1522,7 @@ impl LxmfManager {
             pending_backchannel_resource_cancellations: std::collections::VecDeque::new(),
             opportunistic_proof_tx: None,
             opportunistic_in_flight: HashMap::new(),
+            opportunistic_proofs: HashMap::new(),
             propagation_sync: None,
             propagation_client: None,
             delivery_limit_kb: lxmf_core::constants::DELIVERY_LIMIT as f64,
@@ -4116,6 +4120,7 @@ impl LxmfManager {
             self.last_ratchet_clean = now;
         }
 
+        self.poll_opportunistic_proofs(&mut results);
         self.retry_due_opportunistic_deliveries(now, &mut results);
         self.poll_path_recoveries();
         self.hold_messages_for_path_recovery(now);
@@ -4358,13 +4363,21 @@ impl LxmfManager {
         let Ok(hash) = <[u8; 32]>::try_from(decoded.as_slice()) else {
             return false;
         };
-        let Some(pending) = self.opportunistic_in_flight.remove(&hash) else {
+        let Some(owner) = self.opportunistic_proofs.remove(&hash) else {
             return false;
         };
 
+        self.opportunistic_in_flight.remove(&hash);
+        self.router.cancel_outbound(&hash);
+        if let Some(delivery) = &mut self.link_delivery {
+            delivery.cancel_delivery_by_message_hash(hash);
+        }
+        self.drain_core_backchannel_resource_cancellations();
+        self.in_flight_propagation.remove(&hash);
+
         self.clear_auto_live_fallback(&hash);
         self.ephemeral_outbound.remove(&hash);
-        self.router.complete_outbound_message(pending.message);
+        self.router.complete_outbound_message(owner.message);
         true
     }
 
@@ -4410,6 +4423,7 @@ impl LxmfManager {
         cancelled |= self.ephemeral_outbound.remove(&hash);
         cancelled |= self.in_flight_propagation.remove(&hash).is_some();
         cancelled |= self.opportunistic_in_flight.remove(&hash).is_some();
+        cancelled |= self.opportunistic_proofs.remove(&hash).is_some();
 
         if self
             .link_delivery
@@ -4441,6 +4455,8 @@ impl LxmfManager {
         match result {
             DeliveryResult::Complete { msg_hash, .. } => {
                 if let Some(hash) = msg_hash {
+                    self.opportunistic_proofs.remove(&hash);
+                    self.opportunistic_in_flight.remove(&hash);
                     self.clear_auto_live_fallback(&hash);
                     if self.ephemeral_outbound.remove(&hash) {
                         return;
@@ -5285,7 +5301,10 @@ impl LxmfManager {
                     message.delivery_attempts += 1;
                     message.last_delivery_attempt = now;
                     message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
-                    self.request_path_recovery(dest_hash, None);
+                    self.request_packet_path_recovery(
+                        dest_hash,
+                        msg_hash.and_then(|hash| self.last_failed_packet(hash)),
+                    );
                     self.queue_router_message(message, "opportunistic path escalation");
                     if let Some(hash) = msg_hash.filter(|_| !is_ephemeral) {
                         results.push((hex::encode(hash), "routing"));
@@ -5481,7 +5500,7 @@ impl LxmfManager {
                 continue;
             }
 
-            let Some(ref transport_tx) = self.router.transport_tx else {
+            let Some(_) = self.router.transport_tx else {
                 tracing::error!(dest = %crate::short_id(&dest_hex), reason = "transport_unavailable", "transport unavailable; message dropped");
                 self.push_failed_outbound_state(msg_hash, &mut results);
                 continue;
@@ -5493,77 +5512,19 @@ impl LxmfManager {
                 .as_secs_f64();
             message.delivery_attempts += 1;
             message.last_delivery_attempt = now;
-            message.next_delivery_attempt = now + DELIVERY_RETRY_WAIT as f64;
+            message.next_delivery_attempt = now + self.packet_retry_window(dest_hash).as_secs_f64();
 
-            let dispatch_result = if let Some(hash) = msg_hash {
-                let opportunistic_proof_tx = self.opportunistic_proof_tx.clone();
-                // Receipt registration must precede packet dispatch, and both
-                // channel slots must be reserved before either message is
-                // visible. A fast proof can otherwise beat registration.
-                transport_tx
-                    .try_reserve()
-                    .map_err(|error| error.to_string())
-                    .and_then(|receipt_permit| {
-                        transport_tx
-                            .try_reserve()
-                            .map_err(|error| error.to_string())
-                            .map(|outbound_permit| (receipt_permit, outbound_permit))
-                    })
-                    .map(|(receipt_permit, outbound_permit)| {
-                        let (full_hash, truncated_hash) = rns_wire::hash::packet_hash_pair(
-                            &raw,
-                            rns_wire::flags::HeaderType::Header1,
-                        );
-                        let msg_id = hex::encode(hash);
-                        if let Some(proof_tx) = opportunistic_proof_tx {
-                            receipt_permit.send(TransportMessage::RegisterReceiptWithProof {
-                                truncated_hash,
-                                full_hash,
-                                destination_hash: dest_hash,
-                                destination_public_key,
-                                msg_id,
-                                timeout: Some(std::time::Duration::from_secs(15)),
-                                proof_tx,
-                            });
-                        } else {
-                            // Non-runtime unit users can omit the dedicated
-                            // proof stream; production always installs it at
-                            // destination registration time.
-                            receipt_permit.send(TransportMessage::RegisterReceipt {
-                                truncated_hash,
-                                full_hash,
-                                destination_hash: dest_hash,
-                                destination_public_key,
-                                msg_id,
-                                timeout: Some(std::time::Duration::from_secs(15)),
-                            });
-                        }
-                        outbound_permit.send(TransportMessage::Outbound(
-                            rns_transport::messages::OutboundRequest {
-                                raw: Bytes::from(raw),
-                                destination_hash: dest_hash,
-                            },
-                        ));
-                    })
-            } else {
-                transport_tx
-                    .try_send(TransportMessage::Outbound(
-                        rns_transport::messages::OutboundRequest {
-                            raw: Bytes::from(raw),
-                            destination_hash: dest_hash,
-                        },
-                    ))
-                    .map_err(|error| error.to_string())
-            };
-
+            let dispatch_result =
+                self.dispatch_opportunistic_packet(&message, raw, destination_public_key);
             match dispatch_result {
-                Ok(()) => {
+                Ok(packet_hash) => {
                     if let Some(hash) = msg_hash {
                         let msg_id_hex = hex::encode(hash);
                         self.opportunistic_in_flight.insert(
                             hash,
                             PendingOpportunisticDelivery {
                                 retry_at: message.next_delivery_attempt,
+                                packet_hash,
                                 message,
                             },
                         );
@@ -5579,6 +5540,8 @@ impl LxmfManager {
                         %error,
                         "opportunistic dispatch deferred"
                     );
+                    message.delivery_attempts = message.delivery_attempts.saturating_sub(1);
+                    message.next_delivery_attempt = now + 0.5;
                     self.queue_router_message(message, "opportunistic dispatch retry");
                     if let Some(hash) = msg_hash.filter(|_| !is_ephemeral) {
                         results.push((hex::encode(hash), "routing"));
@@ -9446,26 +9409,27 @@ mod tests {
                 .any(|(id, state)| id == &msg_id && *state == "sent"),
             "tick should move deferred stamped messages into outbound processing"
         );
-        let registered_proof_tx = match rx.try_recv() {
-            Ok(TransportMessage::RegisterReceiptWithProof { proof_tx, .. }) => proof_tx,
-            _ => panic!("expected receipt with dedicated proof owner"),
-        };
-        registered_proof_tx
-            .send(
-                rns_transport::link_messages::DestinationEvent::DeliveryProof {
-                    msg_id: msg_id.clone(),
-                    rtt: Some(Duration::from_millis(4)),
-                },
-            )
-            .unwrap();
-        match proof_rx.try_recv().unwrap() {
-            rns_transport::link_messages::DestinationEvent::DeliveryProof {
-                msg_id: proof_msg_id,
+        let (receipt, result_tx) = match rx.try_recv().unwrap() {
+            TransportMessage::SendPacket {
+                receipt: Some(receipt),
+                result_tx,
                 ..
-            } => assert_eq!(proof_msg_id, msg_id),
-            _ => panic!("expected dedicated Opportunistic delivery proof"),
-        }
-        assert!(matches!(rx.try_recv(), Ok(TransportMessage::Outbound(_))));
+            } => (receipt, result_tx),
+            _ => panic!("expected atomically tracked packet"),
+        };
+        result_tx
+            .send(rns_transport::messages::OutboundDispatchResult::Sent)
+            .unwrap();
+        receipt
+            .status_tx
+            .send_replace(rns_transport::messages::ReceiptUpdate::Delivered {
+                rtt: Duration::from_millis(4),
+            });
+        assert!(rx.try_recv().is_err());
+        assert!(
+            proof_rx.try_recv().is_err(),
+            "new packets do not use unscoped message-id proof events"
+        );
         assert_eq!(mgr.opportunistic_in_flight.len(), 1);
         let hash: [u8; 32] = hex::decode(&msg_id).unwrap().try_into().unwrap();
         mgr.auto_live_fallback.insert(hash);

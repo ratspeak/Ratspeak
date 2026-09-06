@@ -147,6 +147,19 @@ impl LxmfManager {
             .map(LinkEstablishmentTiming::from_first_hop_timeout)
             .unwrap_or_default()
     }
+
+    pub(super) fn packet_retry_window(&self, dest: [u8; 16]) -> Duration {
+        let hops = self.route_entries.get(&dest).map(|entry| entry.hops);
+        // Unknown routes use the runtime's conservative packet fallback.
+        hops.map(|hops| {
+            rns_wire::receipt::receipt_timeout_for_route(
+                self.link_timing(dest).first_hop_timeout(),
+                hops,
+            )
+        })
+        .unwrap_or(Duration::from_secs(180))
+        .max(Duration::from_secs(DELIVERY_RETRY_WAIT))
+    }
 }
 
 #[cfg(test)]
