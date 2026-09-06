@@ -1,5 +1,9 @@
-- Prevented app-managed shared Reticulum instances on Linux and Android from colliding with other local instances that use a different port, while preserving explicit operator configurations.
-- Restored mobile keyboard avoidance across Direct Messages, Channels, and input sheets, and made first-run setup dismiss the keyboard after submission.
-- Enabled iOS notification sounds when permitted by the user's device settings.
-- Hardened voice messages across Android versions, including short or silent recordings, first-time microphone permission, review and discard ownership, correct re-recorded previews, and visible waveform playback progress.
-- Aligned Channel receive-window handling with Reticulum 1.4.2 so far-future packets are rejected until a retransmission enters the valid window.
+- Added Android system sharing for text and links, with recent-chat/contact selection, protected draft recovery, and an explicit Send action.
+- Added Developer Mode network settings for choosing a Ratspeak-managed stack or an authenticated existing local Reticulum instance.
+- Corrected failed-route recovery and delayed delivery-proof handling, preserving fresh routes on the same interface and allowing slow links their protocol establishment time.
+- Improved voice-preview startup, duration and recovery handling, preserved paused seeking, and bounded playback cleanup before retries or recording.
+- Retained the Android runtime across task removal and Activity recreation, while fencing stale native callbacks and preserving explicit-stop behavior.
+- Prevented stale search, conversation and contact results from replacing newer navigation or identity state; improved tablet typing, pickers and keyboard access.
+- Protected network credentials and ownership transitions, and prevented delayed access imports from overwriting manually edited settings.
+- Enforced the pinned Android NDK, release JNI boundaries and 16 KiB native packaging alignment; excluded dashboard test scripts from embedded assets.
+- Added exact dependency-set source reconstruction and packaging guidance for reproducible downstream builds.

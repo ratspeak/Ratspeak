@@ -5,6 +5,36 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+## [1.0.32] - 2026-09-06
+
+### Added
+
+- Added Android system sharing for text and links, with recent-chat/contact
+  selection, protected draft recovery, and an explicit Send action.
+- Added Developer Mode network settings for choosing a Ratspeak-managed stack
+  or an authenticated existing local Reticulum instance.
+
+### Fixed
+
+- Corrected failed-route recovery and delayed delivery-proof handling, preserving
+  fresh routes on the same interface and allowing slow links their protocol
+  establishment time.
+- Improved voice-preview startup, duration and recovery handling, preserved paused
+  seeking, and bounded playback cleanup before retries or recording.
+- Retained the Android runtime across task removal and Activity recreation,
+  while fencing stale native callbacks and preserving explicit-stop behavior.
+- Prevented stale search, conversation and contact results from replacing newer
+  navigation or identity state; improved tablet typing, pickers and keyboard access.
+- Protected network credentials and ownership transitions, and prevented delayed
+  access imports from overwriting manually edited settings.
+
+### Build
+
+- Enforced the pinned Android NDK, release JNI boundaries and 16 KiB native
+  packaging alignment; excluded dashboard test scripts from embedded assets.
+- Added exact dependency-set source reconstruction and packaging guidance for
+  reproducible downstream builds.
+
 ## [1.0.31] - 2026-08-26
 
 ### Fixed
