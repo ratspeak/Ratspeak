@@ -114,6 +114,24 @@ fn diagnostic_metadata_allowed(metadata: &tracing::Metadata<'_>) -> bool {
     ratspeak_tauri::diagnostics::metadata_allowed(metadata)
 }
 
+#[cfg(any(target_os = "android", target_os = "ios", test))]
+const fn mobile_webview_devtools_enabled(debug_build: bool, explicit_opt_in: bool) -> bool {
+    debug_build || explicit_opt_in
+}
+
+#[cfg(test)]
+mod mobile_webview_devtools_tests {
+    use super::mobile_webview_devtools_enabled;
+
+    #[test]
+    fn release_inspection_requires_explicit_diagnostics_but_debug_builds_keep_it() {
+        assert!(!mobile_webview_devtools_enabled(false, false));
+        assert!(mobile_webview_devtools_enabled(false, true));
+        assert!(mobile_webview_devtools_enabled(true, false));
+        assert!(mobile_webview_devtools_enabled(true, true));
+    }
+}
+
 /// Build the same application document for cold start and Android reattachment.
 /// Reattaching a window must never initialize another protocol or database owner.
 fn main_window_builder(
@@ -129,8 +147,21 @@ fn main_window_builder(
     } else {
         ""
     };
-    tauri::WebviewWindowBuilder::new(handle, "main", tauri::WebviewUrl::App("index.html".into()))
-        .initialization_script(format!("{platform_script}{diagnostics_script}"))
+    let window = tauri::WebviewWindowBuilder::new(
+        handle,
+        "main",
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .initialization_script(format!("{platform_script}{diagnostics_script}"));
+    // The devtools Cargo feature is needed for desktop field diagnostics, but
+    // leaves inspection enabled by default on mobile too. Set the mobile policy
+    // explicitly for every window, including Android session reattachment.
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let window = window.devtools(mobile_webview_devtools_enabled(
+        cfg!(debug_assertions),
+        diagnostics_enabled(),
+    ));
+    window
 }
 
 #[cfg(target_os = "linux")]

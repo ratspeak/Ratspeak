@@ -27,10 +27,10 @@
       "icons/icon.ico"
     ],
     "android": {
-      "versionCode": 1000048
+      "versionCode": 1000049
     },
     "iOS": {
-      "bundleVersion": "1000048"
+      "bundleVersion": "1000049"
     },
     "linux": {
       "appimage": {

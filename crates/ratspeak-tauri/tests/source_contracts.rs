@@ -3608,6 +3608,29 @@ fn linux_window_decorations_preference_is_wired_end_to_end() {
 }
 
 #[test]
+fn mobile_window_inspection_is_explicit_on_cold_start_and_reattachment() {
+    let root = repo_root();
+    let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("app shell");
+    let lifecycle =
+        read_source(root.join("src-tauri/src/android_lifecycle.rs")).expect("Android lifecycle");
+    let builder = shell
+        .split("fn main_window_builder(")
+        .nth(1)
+        .expect("common window builder")
+        .split("#[cfg(target_os = \"linux\")]")
+        .next()
+        .unwrap();
+    assert!(builder.contains("#[cfg(any(target_os = \"android\", target_os = \"ios\"))]"));
+    assert!(builder.contains(".devtools(mobile_webview_devtools_enabled("));
+    assert!(builder.contains("cfg!(debug_assertions)"));
+    assert!(builder.contains("diagnostics_enabled()"));
+    assert!(shell.contains("let window = main_window_builder(&handle);"));
+    assert!(lifecycle.contains("crate::main_window_builder(&restore_app).build()"));
+    // Desktop field diagnostics keep their existing opt-in and feature support.
+    assert!(shell.contains(".devtools(diagnostics_enabled() || developer_mode)"));
+}
+
+#[test]
 fn modal_action_footers_use_shared_dialog_buttons() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
