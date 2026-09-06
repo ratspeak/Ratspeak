@@ -1018,7 +1018,7 @@ pub struct LxmfManager {
     route_entries: HashMap<[u8; 16], PathTableRpcEntry>,
     path_recovery: Option<rns_transport::path_recovery::PathRecoveryHandle>,
     pending_path_recoveries: HashMap<[u8; 16], recovery::PendingPathRecovery>,
-    route_snapshot_revision: u64,
+    route_snapshot_started: Instant,
     path_recovery_refresh_needed: bool,
     delivery_timing: timing::DeliveryTimingCache,
     /// Held so identity-switch can re-register with the transport actor.
@@ -1506,7 +1506,7 @@ impl LxmfManager {
             route_entries: HashMap::new(),
             path_recovery: None,
             pending_path_recoveries: HashMap::new(),
-            route_snapshot_revision: 0,
+            route_snapshot_started: Instant::now(),
             path_recovery_refresh_needed: false,
             delivery_timing: timing::DeliveryTimingCache::default(),
             delivery_tx: None,
@@ -3395,7 +3395,18 @@ impl LxmfManager {
         &mut self,
         entries: &[rns_transport::messages::PathTableRpcEntry],
     ) {
-        self.route_snapshot_revision = self.route_snapshot_revision.wrapping_add(1);
+        self.replace_routes_observed_at(entries, Instant::now());
+    }
+
+    pub(crate) fn replace_routes_observed_at(
+        &mut self,
+        entries: &[PathTableRpcEntry],
+        started: Instant,
+    ) {
+        if started < self.route_snapshot_started {
+            return;
+        }
+        self.route_snapshot_started = started;
         self.route_hops.clear();
         self.route_entries.clear();
         for entry in entries {
@@ -4378,6 +4389,12 @@ impl LxmfManager {
         self.clear_auto_live_fallback(&hash);
         self.ephemeral_outbound.remove(&hash);
         self.router.complete_outbound_message(owner.message);
+        self.pending_path_recoveries.retain(|dest, _| {
+            self.router
+                .pending_outbound
+                .iter()
+                .any(|message| message.destination_hash == *dest)
+        });
         true
     }
 

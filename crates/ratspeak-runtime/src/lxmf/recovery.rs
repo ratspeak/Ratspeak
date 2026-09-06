@@ -9,7 +9,7 @@ pub(super) struct PendingPathRecovery {
     failed_attempt: Option<Attempt>,
     started_at: Instant,
     reply: Option<oneshot::Receiver<PathRecoveryOutcome>>,
-    awaiting_snapshot: Option<u64>,
+    awaiting_snapshot: Option<Instant>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -39,6 +39,7 @@ impl LxmfManager {
         self.pending_path_recoveries.clear();
         self.route_entries.clear();
         self.route_hops.clear();
+        self.route_snapshot_started = Instant::now();
         self.path_recovery_refresh_needed = true;
     }
 
@@ -128,8 +129,8 @@ impl LxmfManager {
                 );
                 continue;
             }
-            if let Some(revision) = pending.awaiting_snapshot {
-                if revision != self.route_snapshot_revision {
+            if let Some(started) = pending.awaiting_snapshot {
+                if self.route_snapshot_started > started {
                     self.pending_path_recoveries.remove(&dest);
                 }
                 continue;
@@ -158,7 +159,7 @@ impl LxmfManager {
                         self.route_entries.remove(&dest);
                         self.route_hops.remove(&dest);
                         pending.reply = None;
-                        pending.awaiting_snapshot = Some(self.route_snapshot_revision);
+                        pending.awaiting_snapshot = Some(Instant::now());
                     } else {
                         self.pending_path_recoveries.remove(&dest);
                     }
@@ -250,6 +251,7 @@ mod tests {
         mgr.set_path_recovery_handle(actor.path_recovery_handle());
         let task = tokio::spawn(actor.run());
         let dest = [0xDD; 16];
+        let old_poll_started = Instant::now();
         mgr.request_path_recovery(dest, None);
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
@@ -268,6 +270,12 @@ mod tests {
         .unwrap();
         assert!(mgr.take_path_recovery_refresh());
         assert!(mgr.pending_path_recoveries.contains_key(&dest));
+        mgr.replace_routes_observed_at(&[], old_poll_started);
+        mgr.poll_path_recoveries();
+        assert!(
+            mgr.pending_path_recoveries.contains_key(&dest),
+            "a poll begun before recovery cannot unblock retries"
+        );
         mgr.replace_route_hops_from_path_table(&[]);
         mgr.poll_path_recoveries();
         assert!(mgr.pending_path_recoveries.is_empty());

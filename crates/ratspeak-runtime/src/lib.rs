@@ -5178,6 +5178,7 @@ async fn push_stats_once(state: &AppState) {
         return;
     };
 
+    let path_observation_started = Instant::now();
     let (iface_result, path_result, link_result) = tokio::join!(
         handle.query_control(rns_transport::messages::TransportQuery::GetInterfaceStats),
         crate::transport_observation::authoritative_path_table(&handle),
@@ -5197,7 +5198,7 @@ async fn push_stats_once(state: &AppState) {
 
     let (path_table, path_index, path_table_total, path_table_truncated) = match path_result {
         Some(entries) => {
-            cache_lxmf_route_hops_from_path_table(state, &entries);
+            cache_lxmf_route_hops_from_path_table(state, &entries, path_observation_started);
             crate::rns::path_table_stats_snapshot(entries)
         }
         _ => (
@@ -5265,10 +5266,11 @@ fn is_current_network_runtime(
 fn cache_lxmf_route_hops_from_path_table(
     state: &AppState,
     entries: &[rns_transport::messages::PathTableRpcEntry],
+    started: Instant,
 ) {
     if let Ok(mut lxmf) = state.lxmf.lock() {
         if let Some(mgr) = lxmf.as_mut() {
-            mgr.replace_route_hops_from_path_table(entries);
+            mgr.replace_routes_observed_at(entries, started);
         }
     }
 }
@@ -5480,6 +5482,7 @@ async fn poll_stats_loop(
         // Python-parity control surfaces proxy to the shared instance in
         // client mode; recent announces stay local dashboard state.
         let stats = {
+            let path_observation_started = Instant::now();
             let (iface_result, path_result, link_result, announce_result) = tokio::join!(
                 handle.query_control(rns_transport::messages::TransportQuery::GetInterfaceStats),
                 crate::transport_observation::authoritative_path_table(&handle),
@@ -5577,7 +5580,11 @@ async fn poll_stats_loop(
             let (path_table, path_index, path_table_total, path_table_truncated) = match path_result
             {
                 Some(entries) => {
-                    cache_lxmf_route_hops_from_path_table(&state, &entries);
+                    cache_lxmf_route_hops_from_path_table(
+                        &state,
+                        &entries,
+                        path_observation_started,
+                    );
                     let path_activity_ready = state
                         .path_activity_baselined
                         .load(std::sync::atomic::Ordering::Relaxed);
