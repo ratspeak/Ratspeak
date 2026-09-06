@@ -179,7 +179,13 @@
     }
     function init() {
         if (!el('mode')) return;
-        document.getElementById('network-ownership-settings').addEventListener('input', function() { dirty = true; fields(); });
+        document.getElementById('network-ownership-settings').addEventListener('input', function() {
+            // New typing supersedes pending imports and confirmations without
+            // clearing the values the user is currently entering.
+            epoch += 1;
+            dirty = true;
+            fields();
+        });
         el('mode').addEventListener('change', function() { dirty = true; invalidateSecrets(); fields(); });
         el('carrier').addEventListener('change', fields);
         el('test').addEventListener('click', test);

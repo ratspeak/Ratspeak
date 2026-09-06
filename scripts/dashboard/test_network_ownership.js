@@ -121,6 +121,41 @@ function access(port, key) {
         try { await check(); }
         catch (error) { failures.push(new Error(name + ': ' + error.message)); }
     }
+    for (const editedField of ['packet', 'control', 'name', 'carrier', 'key', 'import']) {
+        for (const outcome of ['success', 'error']) {
+            await regression('manual ' + editedField + ' edit fences pending import ' + outcome, async () => {
+                field('reset').events.click(); await settle();
+                field('mode').value = 'existing'; field('mode').events.change();
+                const pending = beginImport();
+                field(editedField).value = editedField === 'carrier' ? 'unix' : 'manually-edited-value';
+                node('network-ownership-settings').events.input();
+                const expected = ['packet', 'control', 'name', 'carrier', 'key', 'import']
+                    .map(name => field(name).value);
+                const expectedStatus = field('status').textContent;
+                if (outcome === 'success') pending.resolve(access(40000, 'obsolete-key'));
+                else pending.reject(new Error('obsolete import failure'));
+                await pending.done;
+                assert.deepEqual(['packet', 'control', 'name', 'carrier', 'key', 'import']
+                    .map(name => field(name).value), expected, 'manual values remain authoritative');
+                assert.equal(field('status').textContent, expectedStatus, 'obsolete import cannot overwrite status');
+            });
+        }
+    }
+    await regression('editing the form invalidates an outstanding Apply confirmation', async () => {
+        field('reset').events.click(); await settle();
+        field('mode').value = 'existing'; field('mode').events.change();
+        const confirmation = deferred();
+        confirmationReply = confirmation.promise;
+        const before = appliedRequests.length;
+        const applying = field('apply').events.click();
+        field('packet').value = 44000;
+        node('network-ownership-settings').events.input();
+        confirmation.resolve(true);
+        await applying;
+        confirmationReply = true;
+        assert.equal(appliedRequests.length, before, 'confirmation may not approve a replacement form');
+        assert.equal(field('packet').value, 44000);
+    });
     for (const action of ['mode', 'discard', 'apply']) {
         for (const outcome of ['success', 'error']) {
             await regression(action + ' fences a pending import ' + outcome, async () => {
