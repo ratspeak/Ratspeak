@@ -19,7 +19,7 @@
     "sourceCommit": "fc78e4926c696a921f308d238ef1b620e0db0078"
   },
   "snapshotSource": {
-    "commit": "df9bcbd48c3914bc51ec37b28303f28c80402d76",
+    "commit": "f7e853a8dbe0cc34b100f65e3301cab62e8526f1",
     "capturedOn": "2026-09-05",
     "review": {
       "areas": [
@@ -123,6 +123,13 @@
       "sha256": "034278ac95cbe749a710332e76ec105d2188a36da147738f9f852517872f38d6"
     }
   ],
+  "candidateVersionReview": {
+    "sourceCommit": "f7e853a8dbe0cc34b100f65e3301cab62e8526f1",
+    "reviewedOn": "2026-09-06",
+    "scope": "Untagged Ratspeak 1.0.32, mobile build 1000048. Five application-internal package versions and their eight internal dependency requirements advance together; no registry dependency or first-party component version is upgraded.",
+    "compatibility": "No Rust API shape, wire, database, IPC or JNI change from the previously reviewed implementation. Existing compatibility floors, native contract inventory and route-recovery review remain authoritative. Frontend cache revision advances uniformly after the reviewed manual-edit race correction.",
+    "qualification": "Final versioned source, host/MSRV, native targets, ordinary CI and pre-tag package qualification are required for this candidate. Physical acceptance and publication remain separate; this metadata update is not release approval."
+  },
   "pathRecoveryReview": {
     "sourceCommit": "df9bcbd48c3914bc51ec37b28303f28c80402d76",
     "reviewedOn": "2026-09-05",
