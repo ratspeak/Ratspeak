@@ -1641,6 +1641,8 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::update_lxmf_announce_app_data(&mut s
 pub fn ratspeak_runtime::lxmf::LxmfManager::update_remote_crypto(&mut self, &str, &[u8; 64], core::option::Option<&[u8; 32]>) -> (bool, bool)
 pub fn ratspeak_runtime::lxmf::LxmfManager::update_route_hop(&mut self, [u8; 16], u8)
 pub fn ratspeak_runtime::lxmf::LxmfManager::verify_inbound_signature(&self, &mut lxmf_core::message::LxMessage) -> core::option::Option<bool>
+impl ratspeak_runtime::lxmf::LxmfManager
+pub fn ratspeak_runtime::lxmf::LxmfManager::set_path_recovery_handle(&mut self, rns_transport::path_recovery::PathRecoveryHandle)
 pub struct ratspeak_runtime::lxmf::LxmfPersistenceDelta
 impl ratspeak_runtime::lxmf::LxmfPersistenceDelta
 pub fn ratspeak_runtime::lxmf::LxmfPersistenceDelta::artifact_count(&self) -> usize
