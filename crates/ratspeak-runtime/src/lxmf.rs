@@ -1039,6 +1039,7 @@ pub struct LxmfManager {
         Option<mpsc::UnboundedSender<rns_transport::link_messages::DestinationEvent>>,
     opportunistic_in_flight: HashMap<[u8; 32], PendingOpportunisticDelivery>,
     opportunistic_proofs: HashMap<[u8; 32], packet_delivery::ProofOwner>,
+    packet_delivery_rtts: Vec<(String, Duration)>,
     pub propagation_sync: Option<lxmf_core::propagation_sync::PropagationSyncTask>,
     pub propagation_client: Option<lxmf_core::propagation_client::PropagationClient>,
     delivery_limit_kb: f64,
@@ -1523,6 +1524,7 @@ impl LxmfManager {
             opportunistic_proof_tx: None,
             opportunistic_in_flight: HashMap::new(),
             opportunistic_proofs: HashMap::new(),
+            packet_delivery_rtts: Vec::new(),
             propagation_sync: None,
             propagation_client: None,
             delivery_limit_kb: lxmf_core::constants::DELIVERY_LIMIT as f64,
@@ -5363,11 +5365,7 @@ impl LxmfManager {
                         .as_secs_f64();
                     message.delivery_attempts += 1;
                     message.last_delivery_attempt = now;
-                    if let Some(ref tx) = self.router.transport_tx {
-                        let _ = tx.try_send(TransportMessage::RequestPath {
-                            destination_hash: dest_hash,
-                        });
-                    }
+                    self.request_path_recovery(dest_hash, None);
 
                     message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
                     tracing::warn!(

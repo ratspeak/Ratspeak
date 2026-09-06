@@ -191,4 +191,61 @@ mod tests {
             .started = Instant::now() - OBSERVATION_TTL;
         assert_eq!(mgr.link_timing(dest), LinkEstablishmentTiming::default());
     }
+
+    #[tokio::test]
+    async fn app_started_slow_link_survives_the_former_twelve_second_deadline() {
+        let mut mgr = test_manager();
+        let dest = [0xDD; 16];
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        mgr.known_identities
+            .insert(hex::encode(dest), Identity::new().get_public_key());
+        mgr.router.set_stamp_cost(dest, 0);
+        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
+            hash: dest,
+            timestamp: now,
+            via: None,
+            hops: 1,
+            expires: now + 600.0,
+            interface: "slow radio".into(),
+            interface_id: 1,
+            interface_mode: rns_transport::constants::InterfaceMode::Full,
+            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        }]);
+        mgr.delivery_timing.observations.insert(
+            dest,
+            Observation {
+                route: mgr.timing_route(dest),
+                started: Instant::now(),
+                reply: None,
+                timeout: Some(Duration::from_secs(46)),
+            },
+        );
+        let (tx, _rx) = mpsc::channel(64);
+        mgr.router.set_transport(tx);
+        let mut message = mgr
+            .create_message(&hex::encode(dest), "slow Link", "", DeliveryMethod::Direct)
+            .unwrap();
+        message.outbound_ticket = None;
+        let hash = message.hash.unwrap();
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::DeliverDirect {
+            message,
+            dest_hash: dest,
+        }]);
+        assert!(results.iter().any(|(_, step)| *step == "link_establishing"));
+        tokio::time::sleep(Duration::from_secs(13)).await;
+        mgr.tick();
+        let snapshot = mgr
+            .link_delivery
+            .as_ref()
+            .unwrap()
+            .message_delivery_snapshot(hash)
+            .unwrap();
+        assert_eq!(snapshot.delivery_state, DeliveryState::Establishing);
+        assert!(mgr.has_bounded_protocol_wait(&hex::encode(hash)));
+        assert!(mgr.cancel_outbound_message(&hex::encode(hash)));
+        assert!(!mgr.has_bounded_protocol_wait(&hex::encode(hash)));
+    }
 }

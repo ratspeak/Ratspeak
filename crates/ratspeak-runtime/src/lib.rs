@@ -2396,6 +2396,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
+                                Vec::new(),
                             )
                         };
                         let lock_wait_started = std::time::Instant::now();
@@ -2441,6 +2442,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             completed_syncs,
                             failed_syncs,
                             expired_received_ratchets,
+                            mgr.take_packet_delivery_rtts(),
                         )
                     })
                     .await;
@@ -2454,6 +2456,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         completed_propagation_syncs,
                         failed_propagation_syncs,
                         expired_received_ratchets,
+                        packet_delivery_rtts,
                     ) = match tick_result {
                         Ok(result) => result,
                         Err(_) => {
@@ -2471,9 +2474,13 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
+                                Vec::new(),
                             )
                         }
                     };
+                    let packet_delivery_rtts = packet_delivery_rtts
+                        .into_iter()
+                        .collect::<std::collections::HashMap<_, _>>();
                     if !expired_received_ratchets.is_empty() {
                         let cleanup_state = tick_state.clone();
                         tokio::spawn(async move {
@@ -2579,6 +2586,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         Option<lxmf::LxmfDeliveryFailureUpdate>,
                     )> = Vec::with_capacity(results.len());
                     for (msg_id, new_state) in &results {
+                        let rtt_ms = (*new_state == "delivered")
+                            .then(|| packet_delivery_rtts.get(msg_id))
+                            .flatten()
+                            .map(|rtt| rtt.as_secs_f64() * 1000.0);
                         if matches!(
                             *new_state,
                             "delivered" | "propagated" | "rejected" | "failed"
@@ -2611,7 +2622,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 &msg_id_for_db,
                                 &identity_for_db,
                                 &new_state_for_db,
-                                None,
+                                rtt_ms,
                             );
                             let method = db::get_message_delivery_method(
                                 &p,
@@ -2640,6 +2651,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         }
                     }
                     for (msg_id, new_state, method, failure) in &persisted {
+                        let rtt_ms = (*new_state == "delivered")
+                            .then(|| packet_delivery_rtts.get(msg_id))
+                            .flatten()
+                            .map(|rtt| rtt.as_secs_f64() * 1000.0);
                         let client_msg_id = tick_state
                             .msg_id_map
                             .lock()
@@ -2662,6 +2677,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 "msg_id": msg_id,
                                 "client_msg_id": client_msg_id,
                                 "method": method,
+                                "rtt_ms": rtt_ms,
                             })
                         };
                         tick_state.emit_to_all("lxmf_step", step_payload);
@@ -2701,7 +2717,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                         message,
                                         state: activity_state,
                                         method,
-                                        rtt_ms: None,
+                                        rtt_ms: rtt_ms.map(|value| {
+                                            value.round().clamp(0.0, u64::MAX as f64) as u64
+                                        }),
                                         failure_reason: match activity_state {
                                             producer::LxmfDeliveryState::Rejected => {
                                                 Some(producer::DeliveryFailureReason::Rejected)
@@ -6007,7 +6025,8 @@ async fn poll_stats_loop(
     }
 }
 
-// LXMF send → "failed" if no delivery proof within this window.
+// Orphan/send watchdog. Bounded active packet/Link clocks take precedence;
+// unrelated Resource and abandoned-owner cleanup retains this ceiling.
 const MESSAGE_TIMEOUT_SECS: f64 = 180.0;
 
 fn lxmf_step_starts_delivery_timeout(step: &str) -> bool {
@@ -6127,19 +6146,25 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
         .unwrap_or_default()
         .as_secs_f64();
 
-    let timed_out: Vec<String> = if let Ok(mut times) = state.message_send_times.lock() {
-        let expired: Vec<String> = times
+    let candidates: Vec<String> = if let Ok(times) = state.message_send_times.lock() {
+        times
             .iter()
             .filter(|(_, send_time)| now - **send_time > MESSAGE_TIMEOUT_SECS)
             .map(|(id, _)| id.clone())
-            .collect();
-        for id in &expired {
-            times.remove(id);
-        }
-        expired
+            .collect()
     } else {
         Vec::new()
     };
+    let protected = bounded_protocol_waits(state, &candidates);
+    let timed_out = candidates
+        .into_iter()
+        .filter(|id| !protected.contains(id))
+        .collect::<Vec<_>>();
+    if let Ok(mut times) = state.message_send_times.lock() {
+        for id in &timed_out {
+            times.remove(id);
+        }
+    }
     if timed_out.is_empty() {
         return;
     }
@@ -6319,7 +6344,51 @@ fn game_delivery_state_is_in_flight(state: &str) -> bool {
     )
 }
 
+fn bounded_protocol_waits(state: &AppState, ids: &[String]) -> std::collections::HashSet<String> {
+    state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| {
+            lxmf.as_ref().map(|manager| {
+                ids.iter()
+                    .filter(|id| manager.has_bounded_protocol_wait(id))
+                    .cloned()
+                    .collect()
+            })
+        })
+        .unwrap_or_default()
+}
+
 async fn sweep_stale_game_deliveries(state: &AppState) {
+    let pending = state
+        .lrgp_msg_to_session
+        .lock()
+        .ok()
+        .map(|map| {
+            map.iter()
+                .map(|(id, meta)| {
+                    (
+                        id.clone(),
+                        meta.session_id.clone(),
+                        meta.identity_id.clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let protected = bounded_protocol_waits(
+        state,
+        &pending
+            .iter()
+            .map(|(id, _, _)| id.clone())
+            .collect::<Vec<_>>(),
+    );
+    let protected_sessions = pending
+        .into_iter()
+        .filter(|(id, _, _)| protected.contains(id))
+        .map(|(_, session, identity)| (session, identity))
+        .collect::<std::collections::HashSet<_>>();
     let pool = state.db.clone();
     let candidates: Vec<(String, String, String)> = db::spawn_db(pool, |p| {
         let now = std::time::SystemTime::now()
@@ -6375,6 +6444,9 @@ async fn sweep_stale_game_deliveries(state: &AppState) {
     .unwrap_or_default();
 
     for (sid, iid, ch) in candidates {
+        if protected_sessions.contains(&(sid.clone(), iid.clone())) {
+            continue;
+        }
         update_game_session_delivery_state(state, &sid, &iid, &ch, "failed").await;
         tracing::info!("Recovered stale LRGP delivery after restart — Resend is now available");
     }

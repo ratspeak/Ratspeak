@@ -20,6 +20,37 @@ struct PacketAttempt {
 }
 
 impl LxmfManager {
+    /// The outer orphan watchdog must not overrule a bounded protocol clock.
+    /// Resource transfer limits remain independent; only an active Link's
+    /// establishment clock and retained packet proof windows qualify here.
+    pub(crate) fn has_bounded_protocol_wait(&self, msg_id: &str) -> bool {
+        let Ok(bytes) = hex::decode(msg_id) else {
+            return false;
+        };
+        let Ok(hash) = <[u8; 32]>::try_from(bytes.as_slice()) else {
+            return false;
+        };
+        if self.opportunistic_proofs.get(&hash).is_some_and(|owner| {
+            owner.attempts.iter().any(|attempt| {
+                attempt.started.elapsed() < attempt.lifetime
+                    && matches!(
+                        *attempt.status.borrow(),
+                        ReceiptUpdate::Sent | ReceiptUpdate::Delivered { .. }
+                    )
+            })
+        }) {
+            return true;
+        }
+        self.link_delivery
+            .as_ref()
+            .and_then(|delivery| delivery.message_delivery_snapshot(hash))
+            .is_some_and(|snapshot| {
+                !snapshot.queued && snapshot.delivery_state == DeliveryState::Establishing
+            })
+    }
+    pub(crate) fn take_packet_delivery_rtts(&mut self) -> Vec<(String, Duration)> {
+        std::mem::take(&mut self.packet_delivery_rtts)
+    }
     pub(super) fn dispatch_opportunistic_packet(
         &mut self,
         message: &LxMessage,
@@ -91,18 +122,19 @@ impl LxmfManager {
     }
 
     pub(super) fn poll_opportunistic_proofs(&mut self, results: &mut Vec<(String, &'static str)>) {
+        self.packet_delivery_rtts.clear();
         let mut delivered = Vec::new();
         let mut rejected = Vec::new();
         for (hash, owner) in &mut self.opportunistic_proofs {
-            let mut completed = false;
+            let mut completed = None;
             let retry_window = owner
                 .attempts
                 .last()
                 .map(|attempt| attempt.lifetime.saturating_sub(LATE_PROOF_GRACE));
             owner.attempts.retain_mut(|attempt| {
                 // Sample terminal proof before expiry or a queued dispatch ACK.
-                if matches!(*attempt.status.borrow(), ReceiptUpdate::Delivered { .. }) {
-                    completed = true;
+                if let ReceiptUpdate::Delivered { rtt } = *attempt.status.borrow() {
+                    completed.get_or_insert(rtt);
                     return true;
                 }
                 if let Some(dispatch) = &mut attempt.dispatch {
@@ -133,14 +165,15 @@ impl LxmfManager {
                 attempt.started.elapsed() < attempt.lifetime
                     && matches!(*attempt.status.borrow(), ReceiptUpdate::Sent)
             });
-            if completed {
-                delivered.push(*hash);
+            if let Some(rtt) = completed {
+                delivered.push((*hash, rtt));
             }
         }
-        for hash in delivered {
+        for (hash, rtt) in delivered {
             let ephemeral = self.ephemeral_outbound.contains(&hash);
             if self.complete_opportunistic_delivery(&hex::encode(hash)) && !ephemeral {
                 results.push((hex::encode(hash), "delivered"));
+                self.packet_delivery_rtts.push((hex::encode(hash), rtt));
             }
         }
         for (hash, packet_hash) in rejected {
@@ -220,6 +253,7 @@ mod tests {
         let mut updates = Vec::new();
         mgr.retry_due_opportunistic_deliveries(f64::MAX, &mut updates);
         assert!(mgr.opportunistic_in_flight.is_empty());
+        assert!(mgr.has_bounded_protocol_wait(&hex::encode(hash)));
         assert_eq!(mgr.router.pending_outbound.len(), 1);
         mgr.auto_live_fallback.insert(hash);
         proof.send_replace(ReceiptUpdate::Delivered {
@@ -227,9 +261,14 @@ mod tests {
         });
         mgr.poll_opportunistic_proofs(&mut updates);
         assert_eq!(updates, vec![(hex::encode(hash), "delivered")]);
+        assert_eq!(
+            mgr.take_packet_delivery_rtts(),
+            vec![(hex::encode(hash), Duration::from_secs(13))]
+        );
         assert!(mgr.router.pending_outbound.is_empty());
         assert!(!mgr.auto_live_fallback.contains(&hash));
         assert!(mgr.opportunistic_proofs.is_empty());
+        assert!(!mgr.has_bounded_protocol_wait(&hex::encode(hash)));
         mgr.poll_opportunistic_proofs(&mut updates);
         assert_eq!(updates.len(), 1);
     }
