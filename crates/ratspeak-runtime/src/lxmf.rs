@@ -32,7 +32,7 @@ use rns_identity::destination::Destination;
 use rns_identity::identity::Identity;
 use rns_identity::ratchet::ReceivedRatchet;
 
-use rns_transport::messages::{PathTableRpcEntry, TransportMessage, TransportQuery};
+use rns_transport::messages::{PathTableRpcEntry, TransportMessage};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::db;
@@ -49,7 +49,8 @@ const MAX_DEFERRED_STAMP_WIRE_BYTES: usize = 2 + lxmf_core::constants::STAMP_SIZ
 const OPPORTUNISTIC_MAX_CONTENT_BYTES: usize = 295;
 const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
 const BACKCHANNEL_COMMAND_BUFFER: usize = 64;
-const DIRECT_PATH_FAILURE_SUPPRESSION_SECS: f64 = 30.0;
+mod recovery;
+mod timing;
 const DIRECT_BACKCHANNEL_IDENTIFY_GRACE: Duration = Duration::from_secs(3);
 type DirectInboundResourceAcceptHandler =
     Arc<dyn Fn([u8; 16], &rns_protocol::resource_adv::ResourceAdvertisement) -> bool + Send + Sync>;
@@ -1013,6 +1014,11 @@ pub struct LxmfManager {
     peer_lxmf_compression_support: HashMap<[u8; 16], CompressionSupport>,
     route_hops: HashMap<[u8; 16], u8>,
     route_entries: HashMap<[u8; 16], PathTableRpcEntry>,
+    path_recovery: Option<rns_transport::path_recovery::PathRecoveryHandle>,
+    pending_path_recoveries: HashMap<[u8; 16], recovery::PendingPathRecovery>,
+    route_snapshot_revision: u64,
+    path_recovery_refresh_needed: bool,
+    delivery_timing: timing::DeliveryTimingCache,
     /// Held so identity-switch can re-register with the transport actor.
     pub delivery_tx:
         Option<tokio::sync::mpsc::Sender<rns_transport::link_messages::DestinationEvent>>,
@@ -1495,6 +1501,11 @@ impl LxmfManager {
             peer_lxmf_compression_support: HashMap::new(),
             route_hops: HashMap::new(),
             route_entries: HashMap::new(),
+            path_recovery: None,
+            pending_path_recoveries: HashMap::new(),
+            route_snapshot_revision: 0,
+            path_recovery_refresh_needed: false,
+            delivery_timing: timing::DeliveryTimingCache::default(),
             delivery_tx: None,
             link_delivery: None,
             lxmf_link_command_tx: None,
@@ -3380,6 +3391,7 @@ impl LxmfManager {
         &mut self,
         entries: &[rns_transport::messages::PathTableRpcEntry],
     ) {
+        self.route_snapshot_revision = self.route_snapshot_revision.wrapping_add(1);
         self.route_hops.clear();
         self.route_entries.clear();
         for entry in entries {
@@ -3670,9 +3682,10 @@ impl LxmfManager {
         }
 
         self.log_direct_route_state(dest_hash, now);
+        let timing = self.link_timing(dest_hash);
         if let Some(ref mut ld) = self.link_delivery {
             let attempts = message.delivery_attempts;
-            match ld.start_delivery_with_report(message, dest_hash, hops) {
+            match ld.start_delivery_with_report_and_timing(message, dest_hash, hops, timing) {
                 Ok(report) => {
                     let step = direct_link_start_step(report.kind);
                     tracing::info!(
@@ -3704,12 +3717,14 @@ impl LxmfManager {
                             failed_message.clone(),
                             dest_hash,
                             &reason,
+                            None,
                         )
                     } else {
                         self.requeue_direct_after_link_failure(
                             failed_message.clone(),
                             dest_hash,
                             &reason,
+                            None,
                         )
                     };
                     if requeued {
@@ -3732,70 +3747,6 @@ impl LxmfManager {
         self.drain_link_delivery_progress_updates();
     }
 
-    fn queue_path_rediscovery(
-        &mut self,
-        dest_hash: [u8; 16],
-        drop_existing: bool,
-        _reason: &str,
-        suppress_current_path: bool,
-    ) {
-        let Some(ref tx) = self.router.transport_tx else {
-            return;
-        };
-
-        if suppress_current_path {
-            let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-            if tx
-                .try_send(TransportMessage::Rpc {
-                    query: TransportQuery::SuppressCurrentPathInterface {
-                        dest: dest_hash,
-                        duration: DIRECT_PATH_FAILURE_SUPPRESSION_SECS,
-                    },
-                    response_tx,
-                })
-                .is_err()
-            {
-                tracing::warn!(
-                    dest = %crate::short_id(&hex::encode(dest_hash)),
-                    reason = "queue_suppression_failed",
-                    "failed to queue current path-interface suppression after direct link failure"
-                );
-            }
-        }
-
-        if drop_existing {
-            self.route_hops.remove(&dest_hash);
-            self.route_entries.remove(&dest_hash);
-            let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
-            if tx
-                .try_send(TransportMessage::Rpc {
-                    query: TransportQuery::DropPath { dest: dest_hash },
-                    response_tx,
-                })
-                .is_err()
-            {
-                tracing::warn!(
-                    dest = %crate::short_id(&hex::encode(dest_hash)),
-                    reason = "queue_path_drop_failed",
-                    "failed to queue path drop after direct link failure"
-                );
-            }
-        }
-
-        if tx
-            .try_send(TransportMessage::RequestPath {
-                destination_hash: dest_hash,
-            })
-            .is_err()
-        {
-            tracing::warn!(
-                dest = %crate::short_id(&hex::encode(dest_hash)),
-                reason = "queue_path_request_failed",
-                "failed to queue path request after direct link failure"
-            );
-        }
-    }
-
     /// Python `handle_outbound` pre-emptively requests an unknown path for
     /// Opportunistic messages and defers the first attempt by
     /// `PATH_REQUEST_WAIT` (LXMRouter.py:1675-1679). No-op when a path is
@@ -3811,7 +3762,7 @@ impl LxmfManager {
         if self.direct_route_entry(msg.destination_hash, now).is_some() {
             return;
         }
-        self.queue_path_rediscovery(msg.destination_hash, false, "opportunistic preempt", false);
+        self.request_path_recovery(msg.destination_hash, None);
         msg.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
     }
 
@@ -3820,6 +3771,7 @@ impl LxmfManager {
         mut message: LxMessage,
         dest_hash: [u8; 16],
         reason: &str,
+        failed_link: Option<[u8; 16]>,
     ) -> bool {
         let retryable = is_retryable_link_delivery_failure(reason);
         if !matches!(
@@ -3832,7 +3784,7 @@ impl LxmfManager {
         }
 
         let drop_existing = matches!(reason, "link establishment timeout" | "link closed");
-        self.queue_path_rediscovery(dest_hash, drop_existing, reason, drop_existing);
+        self.request_path_recovery(dest_hash, failed_link.filter(|_| drop_existing));
         // Python sets next_delivery_attempt = now + PATH_REQUEST_WAIT in the
         // closed/never-activated branch (LXMRouter.py:2640/2669).
         let now = SystemTime::now()
@@ -3866,9 +3818,10 @@ impl LxmfManager {
         message: LxMessage,
         dest_hash: [u8; 16],
         reason: &str,
+        failed_link: Option<[u8; 16]>,
     ) -> bool {
         let Some(hash) = message.hash else {
-            return self.requeue_direct_after_link_failure(message, dest_hash, reason);
+            return self.requeue_direct_after_link_failure(message, dest_hash, reason, failed_link);
         };
         let router_owned = self
             .router
@@ -3876,7 +3829,7 @@ impl LxmfManager {
             .iter()
             .any(|pending| pending.hash == Some(hash));
         if !router_owned {
-            return self.requeue_direct_after_link_failure(message, dest_hash, reason);
+            return self.requeue_direct_after_link_failure(message, dest_hash, reason, failed_link);
         }
 
         let retryable = is_retryable_link_delivery_failure(reason);
@@ -3891,7 +3844,7 @@ impl LxmfManager {
         }
 
         let drop_existing = matches!(reason, "link establishment timeout" | "link closed");
-        self.queue_path_rediscovery(dest_hash, drop_existing, reason, drop_existing);
+        self.request_path_recovery(dest_hash, failed_link.filter(|_| drop_existing));
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -4164,6 +4117,9 @@ impl LxmfManager {
         }
 
         self.retry_due_opportunistic_deliveries(now, &mut results);
+        self.poll_path_recoveries();
+        self.hold_messages_for_path_recovery(now);
+        self.hold_messages_for_timing(now);
         self.drain_backchannel_events(&mut results);
         self.router.process_deferred_stamps();
         let known_identities = self
@@ -4467,6 +4423,13 @@ impl LxmfManager {
             cancelled = true;
         }
 
+        self.pending_path_recoveries.retain(|dest, _| {
+            self.router
+                .pending_outbound
+                .iter()
+                .any(|message| message.destination_hash == *dest)
+        });
+
         cancelled
     }
 
@@ -4520,6 +4483,7 @@ impl LxmfManager {
                 }
             }
             DeliveryResult::Failed {
+                link_id,
                 msg_hash,
                 dest_hash,
                 message,
@@ -4546,6 +4510,7 @@ impl LxmfManager {
                         message.clone(),
                         dest_hash,
                         &reason,
+                        Some(link_id),
                     ) {
                         results.push((hex::encode(hash), "routing"));
                         return;
@@ -4556,8 +4521,12 @@ impl LxmfManager {
                     self.clear_auto_live_fallback(&hash);
                     results.push((hex::encode(hash), "failed"));
                 } else {
-                    let _ = self
-                        .requeue_or_defer_direct_after_link_failure(message, dest_hash, &reason);
+                    let _ = self.requeue_or_defer_direct_after_link_failure(
+                        message,
+                        dest_hash,
+                        &reason,
+                        Some(link_id),
+                    );
                 }
             }
         }
@@ -4747,10 +4716,19 @@ impl LxmfManager {
 
     fn start_propagation_delivery(
         &mut self,
-        message: LxMessage,
+        mut message: LxMessage,
         prop_hash: [u8; 16],
         results: &mut Vec<(String, &'static str)>,
     ) {
+        if !self.timing_ready(prop_hash) {
+            message.next_delivery_attempt = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64()
+                + 0.5;
+            self.queue_router_message(message, "propagation timing observation");
+            return;
+        }
         let msg_hash = message.hash;
         let dest_hex = hex::encode(message.destination_hash);
         let prop_hex = hex::encode(prop_hash);
@@ -4841,8 +4819,12 @@ impl LxmfManager {
 
         let _ = self.ensure_link_delivery_manager();
 
+        let timing = self.link_timing(prop_hash);
+        let hops = self.delivery_link_hops(prop_hash);
         if let Some(ref mut ld) = self.link_delivery {
-            match ld.start_packed_delivery(message, prop_hash, 1, packed, false) {
+            match ld
+                .start_packed_delivery_with_timing(message, prop_hash, hops, packed, false, timing)
+            {
                 Ok(_) => {
                     if let Some(hash) = msg_hash {
                         self.in_flight_propagation.insert(hash, prop_hash);
@@ -5206,12 +5188,7 @@ impl LxmfManager {
                 match plan {
                     DirectDeliveryPlan::RequestPath { drop_existing } => {
                         let drop_existing = drop_existing || had_expired_snapshot;
-                        let reason = if identity_known {
-                            "no current path"
-                        } else {
-                            "destination identity unknown"
-                        };
-                        self.queue_path_rediscovery(dest_hash, drop_existing, reason, false);
+                        self.request_path_recovery(dest_hash, None);
                         tracing::warn!(
                             dest = %crate::short_id(&dest_hex),
                             attempts = message.delivery_attempts,
@@ -5301,18 +5278,14 @@ impl LxmfManager {
                     .unwrap_or_default()
                     .as_secs_f64();
                 let has_path = self.direct_route_entry(dest_hash, now).is_some();
-                let escalate = if message.delivery_attempts >= MAX_PATHLESS_TRIES && !has_path {
-                    Some(("opportunistic pathless", false))
-                } else if message.delivery_attempts == MAX_PATHLESS_TRIES + 1 && has_path {
-                    Some(("opportunistic rediscover", true))
-                } else {
-                    None
-                };
-                if let Some((reason, drop_existing)) = escalate {
+                let needs_discovery = (message.delivery_attempts >= MAX_PATHLESS_TRIES
+                    && !has_path)
+                    || (message.delivery_attempts == MAX_PATHLESS_TRIES + 1 && has_path);
+                if needs_discovery {
                     message.delivery_attempts += 1;
                     message.last_delivery_attempt = now;
                     message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
-                    self.queue_path_rediscovery(dest_hash, drop_existing, reason, false);
+                    self.request_path_recovery(dest_hash, None);
                     self.queue_router_message(message, "opportunistic path escalation");
                     if let Some(hash) = msg_hash.filter(|_| !is_ephemeral) {
                         results.push((hex::encode(hash), "routing"));
@@ -5438,12 +5411,7 @@ impl LxmfManager {
                 match plan {
                     DirectDeliveryPlan::RequestPath { drop_existing } => {
                         let drop_existing = drop_existing || had_expired_snapshot;
-                        self.queue_path_rediscovery(
-                            dest_hash,
-                            drop_existing,
-                            "oversized Link delivery path request",
-                            false,
-                        );
+                        self.request_path_recovery(dest_hash, None);
                         tracing::warn!(
                             dest = %crate::short_id(&dest_hex),
                             attempts = message.delivery_attempts,
@@ -5688,7 +5656,7 @@ mod tests {
         pool
     }
 
-    fn test_manager() -> LxmfManager {
+    pub(super) fn test_manager() -> LxmfManager {
         let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp = std::env::temp_dir().join(format!(
             "ratspeak-lxmf-policy-test-{}-{}-{unique}",
@@ -7732,7 +7700,7 @@ mod tests {
     }
 
     #[test]
-    fn establishment_failure_drops_path_requests_path_and_requeues() {
+    fn establishment_failure_without_recovery_handle_only_discovers_and_requeues() {
         let mut mgr = test_manager();
         let dest = [0x44; 16];
         let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
@@ -7748,30 +7716,14 @@ mod tests {
         msg.delivery_attempts = 1;
         msg.last_delivery_attempt = 1.0;
 
-        assert!(mgr.requeue_direct_after_link_failure(msg, dest, "link establishment timeout"));
+        assert!(mgr.requeue_direct_after_link_failure(
+            msg,
+            dest,
+            "link establishment timeout",
+            None
+        ));
         assert_eq!(mgr.router.pending_outbound.len(), 1);
 
-        match rx.try_recv().unwrap() {
-            TransportMessage::Rpc {
-                query:
-                    TransportQuery::SuppressCurrentPathInterface {
-                        dest: suppressed,
-                        duration,
-                    },
-                ..
-            } => {
-                assert_eq!(suppressed, dest);
-                assert_eq!(duration, DIRECT_PATH_FAILURE_SUPPRESSION_SECS);
-            }
-            other => panic!("expected SuppressCurrentPathInterface RPC, got {other:?}"),
-        }
-        match rx.try_recv().unwrap() {
-            TransportMessage::Rpc {
-                query: TransportQuery::DropPath { dest: dropped },
-                ..
-            } => assert_eq!(dropped, dest),
-            other => panic!("expected DropPath RPC, got {other:?}"),
-        }
         match rx.try_recv().unwrap() {
             TransportMessage::RequestPath { destination_hash } => {
                 assert_eq!(destination_hash, dest)
@@ -7794,7 +7746,7 @@ mod tests {
     }
 
     #[test]
-    fn establishment_failure_suppresses_failed_route_owner() {
+    fn unobserved_establishment_failure_preserves_cached_route_owner() {
         let mut mgr = test_manager();
         let dest = [0x46; 16];
         let now = SystemTime::now()
@@ -7826,31 +7778,15 @@ mod tests {
         msg.delivery_attempts = 1;
         msg.last_delivery_attempt = 1.0;
 
-        assert!(mgr.requeue_direct_after_link_failure(msg, dest, "link establishment timeout"));
-        assert!(!mgr.route_entries.contains_key(&dest));
-        assert!(!mgr.route_hops.contains_key(&dest));
+        assert!(mgr.requeue_direct_after_link_failure(
+            msg,
+            dest,
+            "link establishment timeout",
+            None
+        ));
+        assert!(mgr.route_entries.contains_key(&dest));
+        assert!(mgr.route_hops.contains_key(&dest));
 
-        match rx.try_recv().unwrap() {
-            TransportMessage::Rpc {
-                query:
-                    TransportQuery::SuppressCurrentPathInterface {
-                        dest: suppressed,
-                        duration,
-                    },
-                ..
-            } => {
-                assert_eq!(suppressed, dest);
-                assert_eq!(duration, DIRECT_PATH_FAILURE_SUPPRESSION_SECS);
-            }
-            other => panic!("expected SuppressCurrentPathInterface RPC, got {other:?}"),
-        }
-        match rx.try_recv().unwrap() {
-            TransportMessage::Rpc {
-                query: TransportQuery::DropPath { dest: dropped },
-                ..
-            } => assert_eq!(dropped, dest),
-            other => panic!("expected DropPath RPC, got {other:?}"),
-        }
         match rx.try_recv().unwrap() {
             TransportMessage::RequestPath { destination_hash } => {
                 assert_eq!(destination_hash, dest)
@@ -8735,7 +8671,7 @@ mod tests {
     /// causes Python to drop and rediscover once before resuming best-effort
     /// opportunistic sends (LXMRouter.py:2574-2583).
     #[test]
-    fn opportunistic_rediscovery_branch_drops_path_and_defers() {
+    fn opportunistic_rediscovery_without_attempt_owner_only_requests_and_defers() {
         let mut mgr = test_manager();
         let dest = [0x57; 16];
         let dest_hex = hex::encode(dest);
@@ -8790,13 +8726,6 @@ mod tests {
             nda - now
         );
 
-        match rx.try_recv().unwrap() {
-            TransportMessage::Rpc {
-                query: TransportQuery::DropPath { dest: dropped },
-                ..
-            } => assert_eq!(dropped, dest),
-            other => panic!("expected DropPath RPC, got {other:?}"),
-        }
         match rx.try_recv().unwrap() {
             TransportMessage::RequestPath { destination_hash } => {
                 assert_eq!(destination_hash, dest)

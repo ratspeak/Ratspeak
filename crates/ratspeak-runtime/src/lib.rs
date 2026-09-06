@@ -1658,6 +1658,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 if let Ok(mut lxmf) = state.lxmf.lock() {
                     if let Some(mgr) = lxmf.as_mut() {
                         mgr.delivery_tx = Some(delivery_tx);
+                        mgr.set_path_recovery_handle(rns_mgr.handle.path_recovery_handle());
+                        mgr.set_delivery_timing_owner(rns_mgr.handle.clone());
                         mgr.set_opportunistic_proof_sender(opportunistic_proof_tx);
                     }
                 }
@@ -2413,6 +2415,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         let hold_started = std::time::Instant::now();
                         let results = mgr
                             .tick_with_auto_propagation_download_ready(auto_inbox_download_ready);
+                        if mgr.take_path_recovery_refresh() {
+                            tick_state_for_lxmf.poll_now.notify_one();
+                        }
                         let tick_held = hold_started.elapsed();
                         if tick_held > Duration::from_secs(1) {
                             tracing::warn!(
