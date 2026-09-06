@@ -2603,9 +2603,11 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         let msg_id_for_db = msg_id.clone();
                         let identity_for_db = identity_for_db.clone();
                         let new_state_for_db = new_state.to_string();
-                        let delivery_method_for_db =
-                            matches!(*new_state, "propagating" | "propagated")
-                                .then_some("propagated".to_string());
+                        let delivery_method_for_db = polled_delivery_method_override(
+                            new_state,
+                            packet_delivery_rtts.contains_key(msg_id),
+                        )
+                        .map(str::to_owned);
                         // Same blocking-pool hop also reads the method back
                         // for the emit below.
                         match db::spawn_db(tick_state.db.clone(), move |p| {
@@ -6029,6 +6031,14 @@ async fn poll_stats_loop(
 // unrelated Resource and abandoned-owner cleanup retains this ceiling.
 const MESSAGE_TIMEOUT_SECS: f64 = 180.0;
 
+fn polled_delivery_method_override(step: &str, has_packet_proof: bool) -> Option<&'static str> {
+    match step {
+        "delivered" if has_packet_proof => Some("opportunistic"),
+        "propagating" | "propagated" => Some("propagated"),
+        _ => None,
+    }
+}
+
 fn lxmf_step_starts_delivery_timeout(step: &str) -> bool {
     matches!(
         step,
@@ -6083,6 +6093,22 @@ mod delivery_timeout_policy_tests {
         lxmf_step_ends_delivery_timeout, lxmf_step_starts_delivery_timeout,
         update_message_delivery_timeout_at,
     };
+
+    #[test]
+    fn late_packet_proof_records_actual_method_even_after_propagation_fallback() {
+        assert_eq!(
+            super::polled_delivery_method_override("delivered", true),
+            Some("opportunistic")
+        );
+        assert_eq!(
+            super::polled_delivery_method_override("delivered", false),
+            None
+        );
+        assert_eq!(
+            super::polled_delivery_method_override("propagated", false),
+            Some("propagated")
+        );
+    }
 
     #[test]
     fn direct_link_setup_starts_the_bounded_delivery_clock() {

@@ -96,20 +96,21 @@ impl LxmfManager {
             result_tx,
         })
         .map_err(|_| "backpressure")?;
-        self.opportunistic_proofs
+        let owner = self
+            .opportunistic_proofs
             .entry(hash)
             .or_insert_with(|| ProofOwner {
                 message: message.clone(),
                 attempts: Vec::new(),
-            })
-            .attempts
-            .push(PacketAttempt {
-                packet_hash: full_hash,
-                status,
-                dispatch: Some(dispatch),
-                started: Instant::now(),
-                lifetime,
             });
+        owner.message = message.clone();
+        owner.attempts.push(PacketAttempt {
+            packet_hash: full_hash,
+            status,
+            dispatch: Some(dispatch),
+            started: Instant::now(),
+            lifetime,
+        });
         Ok(full_hash)
     }
 
@@ -162,8 +163,27 @@ impl LxmfManager {
                         }
                     }
                 }
+                if matches!(
+                    *attempt.status.borrow(),
+                    ReceiptUpdate::TimedOut | ReceiptUpdate::Failed | ReceiptUpdate::Culled
+                ) {
+                    if let Some(pending) = self
+                        .opportunistic_in_flight
+                        .get_mut(hash)
+                        .filter(|pending| pending.packet_hash == attempt.packet_hash)
+                    {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs_f64();
+                        pending.retry_at = now;
+                        pending.message.next_delivery_attempt = now;
+                    }
+                }
+                // A concluded receipt can no longer prove delivery, but its
+                // exact failed-route identity remains useful to the next
+                // discovery step. Keep only bounded metadata/message ownership.
                 attempt.started.elapsed() < attempt.lifetime
-                    && matches!(*attempt.status.borrow(), ReceiptUpdate::Sent)
             });
             if let Some(rtt) = completed {
                 delivered.push((*hash, rtt));
@@ -335,5 +355,26 @@ mod tests {
         );
         let mgr = test_manager();
         assert_eq!(mgr.packet_retry_window([1; 16]), Duration::from_secs(180));
+    }
+
+    #[test]
+    fn culled_receipt_retries_promptly_without_losing_exact_failed_route_owner() {
+        let (mut mgr, hash, mut rx) = packet();
+        let proof = accept(&mut rx);
+        mgr.poll_opportunistic_proofs(&mut Vec::new());
+        let packet_hash = mgr.opportunistic_in_flight[&hash].packet_hash;
+        proof.send_replace(ReceiptUpdate::Culled);
+        mgr.poll_opportunistic_proofs(&mut Vec::new());
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        assert!(mgr.opportunistic_in_flight[&hash].retry_at <= now);
+        assert_eq!(mgr.last_failed_packet(hash), Some(packet_hash));
+        assert!(!mgr.has_bounded_protocol_wait(&hex::encode(hash)));
+        assert_eq!(
+            mgr.opportunistic_in_flight[&hash].message.delivery_attempts,
+            1
+        );
     }
 }
