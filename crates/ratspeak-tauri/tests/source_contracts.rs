@@ -1156,10 +1156,32 @@ fn activity_lxmf_progress_is_typed_and_content_free() {
     assert!(!progress_adapter.contains("update.reason"));
     assert!(!progress_adapter.contains("from_code(update.method)"));
     assert!(runtime.contains("lxmf_progress_supersedes_state"));
+    let method_policy = runtime
+        .split("fn polled_delivery_method_override(")
+        .nth(1)
+        .and_then(|tail| tail.split("fn lxmf_step_starts_delivery_timeout").next())
+        .expect("polled delivery method policy");
+    assert!(method_policy.contains("\"propagating\" | \"propagated\" => Some(\"propagated\")"));
+    assert!(method_policy.contains("\"delivered\" if has_packet_proof => Some(\"opportunistic\")"));
+    let persist_loop = runtime
+        .split("let mut persisted:")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("for (msg_id, new_state, method, failure) in &persisted")
+                .next()
+        })
+        .expect("persist-before-emit delivery loop");
+    let selected = persist_loop
+        .find("polled_delivery_method_override(")
+        .unwrap();
+    let method_write = persist_loop
+        .find("db::update_message_delivery_method(")
+        .unwrap();
+    let state_write = persist_loop.find("db::update_message_state(").unwrap();
+    let accepted = persist_loop.find("persisted.push(").unwrap();
     assert!(
-        runtime.contains("matches!(*new_state, \"propagating\" | \"propagated\")")
-            && runtime.contains(".then_some(\"propagated\".to_string())"),
-        "an Auto fallback must persist the observable Propagated method before UI emission"
+        selected < method_write && method_write < state_write && state_write < accepted,
+        "persist fallback or actual late-proof method before the accepted UI/Activity emission"
     );
     assert!(runtime.contains("producer::LxmfDeliveryState::Propagating"));
     assert!(runtime.contains("producer::LxmfDeliveryState::Propagated"));
