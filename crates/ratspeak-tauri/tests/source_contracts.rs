@@ -5756,11 +5756,15 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "Prevented app-managed shared Reticulum instances on Linux and Android",
-        "Restored mobile keyboard avoidance across Direct Messages",
-        "Enabled iOS notification sounds when permitted",
-        "Hardened voice messages across Android versions",
-        "Aligned Channel receive-window handling with Reticulum 1.4.2",
+        "Added Android system sharing for text and links",
+        "Added Developer Mode network settings",
+        "Corrected failed-route recovery and delayed delivery-proof handling",
+        "Improved voice-preview startup, duration and recovery handling",
+        "Retained the Android runtime across task removal and Activity recreation",
+        "Prevented stale search, conversation and contact results",
+        "Protected network credentials and ownership transitions",
+        "Enforced the pinned Android NDK, release JNI boundaries",
+        "Added exact dependency-set source reconstruction and packaging guidance",
     ];
 
     for workflow_path in [
