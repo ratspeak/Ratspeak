@@ -54,7 +54,7 @@
       "name": "rsLXST",
       "repository": "https://github.com/ratspeak/rsLXST.git",
       "path": "../rsLXST",
-      "commit": "8bbc037d86db8190349929273799188dc11f84de",
+      "commit": "65b6961a5c6ffdc697a488e488c83ca6add32a31",
       "version": "0.2.0",
       "integrationTag": "ratspeak-v1.0.32"
     },
