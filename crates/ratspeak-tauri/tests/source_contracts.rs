@@ -5804,7 +5804,10 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     let release_note_fragments = [
         "Added Android system sharing for text and links",
         "Added Developer Mode network settings",
-        "Corrected failed-route recovery and delayed delivery-proof handling",
+        "Corrected same-radio relaying, bounded discovery retries and slow-link timing",
+        "Separated local send-capacity waits from delivery-proof timeouts",
+        "Kept cancellation and delayed completion tied to their original messages",
+        "Corrected Android USB radio readiness and late write-completion accounting",
         "Improved voice-preview startup, duration and recovery handling",
         "Retained the Android runtime across task removal and Activity recreation",
         "Prevented stale search, conversation and contact results",
@@ -7937,8 +7940,8 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
         .and_then(|tail| tail.split("tracing::info!(").next())
         .expect("link inbound loop");
     let link_select = link_inbound
-        .find("let (data, link_id) = tokio::select!")
-        .unwrap();
+        .find("let (data, link_id, resource_lease) = tokio::select!")
+        .expect("fair packet/Resource receive with an owned attachment lease");
     let link_origin = link_inbound
         .find("link_inbound_state.activity_request_fence()")
         .unwrap();
@@ -7946,6 +7949,18 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
         .find("if link_inbound_shutdown.is_triggered()")
         .unwrap();
     assert!(link_select < link_origin && link_origin < link_shutdown);
+    assert!(link_inbound.contains("Some(delivery.lease)"));
+    let link_handler = link_inbound
+        .find("handle_decrypted_lxmf_from_origin(")
+        .expect("origin-bound Link payload handler");
+    let link_handler_wait = link_inbound[link_handler..]
+        .find(".await;")
+        .map(|offset| link_handler + offset)
+        .expect("awaited Link payload handling");
+    let lease_release = link_inbound
+        .find("drop(resource_lease);")
+        .expect("attachment memory retained through payload processing");
+    assert!(link_shutdown < link_handler && link_handler_wait < lease_release);
 
     let decrypt_from_origin = runtime
         .split("async fn handle_decrypted_lxmf_from_origin(")
