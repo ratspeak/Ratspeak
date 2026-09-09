@@ -17,6 +17,7 @@ pub mod hardware;
 pub mod helpers;
 pub mod identity_prune;
 pub mod image_attachment;
+mod link_accounting;
 pub mod lxmf;
 pub mod lxmf_persistence;
 pub mod messaging;
@@ -2041,6 +2042,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             LXMF_DELIVERY_APP_NAME,
                             signing_key,
                         );
+                    lxmf_link_mgr.set_link_endpoint_dispatch_handle(
+                        rns_mgr.handle.link_endpoint_dispatch_handle(),
+                    );
                     let admission_state = state.clone();
                     lxmf_link_mgr
                         .set_resource_strategy(rns_runtime::prelude::ResourceStrategy::AcceptApp);
@@ -2051,8 +2055,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
 
                     let (link_pkt_tx, mut link_pkt_rx) =
                         tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, [u8; 16])>();
-                    let (link_res_tx, mut link_res_rx) =
-                        tokio::sync::mpsc::channel::<(Vec<u8>, [u8; 16])>(CHANNEL_BUFFER_SIZE);
+                    let (link_res_tx, mut link_res_rx) = tokio::sync::mpsc::unbounded_channel::<
+                        link_accounting::InboundResourceDelivery,
+                    >();
                     let (link_accounting_tx, mut link_accounting_rx) =
                         tokio::sync::mpsc::unbounded_channel::<
                             rns_runtime::link_manager::LinkManagerAccountingEvent,
@@ -2075,6 +2080,8 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
 
                     let direct_admission_state = state.clone();
                     let direct_conclusion_state = state.clone();
+                    let direct_completion_state = state.clone();
+                    let direct_completion_tx = link_res_tx.clone();
                     if let Ok(mut lxmf) = state.lxmf.lock() {
                         if let Some(mgr) = lxmf.as_mut() {
                             mgr.set_direct_inbound_resource_handlers(
@@ -2085,9 +2092,26 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                         advertisement,
                                     )
                                 },
-                                move |_link_id, resource_id| {
-                                    direct_conclusion_state
-                                        .complete_inbound_attachment_resource(resource_id);
+                                move |link_id, resource_id| {
+                                    drop(
+                                        direct_conclusion_state
+                                            .take_inbound_attachment_resource(link_id, resource_id),
+                                    );
+                                },
+                            );
+                            mgr.set_direct_inbound_resource_completion_handler(
+                                move |link_id, resource_id, data| {
+                                    if let Some(lease) = direct_completion_state
+                                        .take_inbound_attachment_resource(link_id, resource_id)
+                                    {
+                                        let _ = direct_completion_tx.send(
+                                            link_accounting::InboundResourceDelivery {
+                                                data,
+                                                link_id,
+                                                lease,
+                                            },
+                                        );
+                                    }
                                 },
                             );
                             mgr.set_lxmf_link_control(
@@ -2106,10 +2130,6 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         .unwrap_or_else(|error| error.into_inner())
                         .clone();
                     tokio::spawn(async move {
-                        use rns_runtime::link_manager::{
-                            LinkManagerAccountingEvent, LinkResourceConclusion,
-                            LinkResourceDirection, LinkResourceEvent,
-                        };
                         loop {
                             let event = tokio::select! {
                                 biased;
@@ -2119,57 +2139,18 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                     None => break,
                                 },
                             };
-                            match event {
-                                LinkManagerAccountingEvent::LinkPacketProof(proof) => {
-                                    let _ = backchannel_event_tx
-                                        .send(lxmf::BackchannelLinkEvent::PacketProof(proof));
-                                }
-                                LinkManagerAccountingEvent::ResourceCompletion(completion) => {
-                                    accounting_state.complete_inbound_attachment_resource(
-                                        completion.resource_hash,
-                                    );
-                                    if link_res_tx
-                                        .send((completion.data, completion.link_id))
-                                        .await
-                                        .is_err()
-                                    {
-                                        break;
-                                    }
-                                }
-                                LinkManagerAccountingEvent::ResourceEvent(
-                                    LinkResourceEvent::Concluded {
-                                        resource_id,
-                                        direction: LinkResourceDirection::Inbound,
-                                        conclusion,
-                                        ..
-                                    },
-                                ) if !matches!(conclusion, LinkResourceConclusion::Complete) => {
+                            link_accounting::forward(
+                                event,
+                                &link_res_tx,
+                                &backchannel_event_tx,
+                                |link_id, resource_id| {
                                     accounting_state
-                                        .complete_inbound_attachment_resource(resource_id);
-                                }
-                                LinkManagerAccountingEvent::ResourceEvent(
-                                    LinkResourceEvent::Concluded {
-                                        link_id,
-                                        resource_id,
-                                        direction: LinkResourceDirection::Outbound,
-                                        conclusion,
-                                    },
-                                ) => {
-                                    let _ = backchannel_event_tx.send(
-                                        lxmf::BackchannelLinkEvent::ResourceConclusion {
-                                            link_id,
-                                            resource_hash: resource_id,
-                                            conclusion,
-                                        },
-                                    );
-                                }
-                                LinkManagerAccountingEvent::LinkClosed { link_id } => {
+                                        .take_inbound_attachment_resource(link_id, resource_id)
+                                },
+                                |link_id| {
                                     accounting_state.release_inbound_attachment_link(link_id);
-                                    let _ = backchannel_event_tx
-                                        .send(lxmf::BackchannelLinkEvent::LinkClosed { link_id });
-                                }
-                                _ => {}
-                            }
+                                },
+                            );
                         }
                     });
 
@@ -2194,15 +2175,17 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         .clone();
                     tokio::spawn(async move {
                         loop {
-                            let (data, link_id) = tokio::select! {
-                                biased;
+                            // Fair packet/Resource receive prevents a packet
+                            // stream from starving completed attachments. The
+                            // shutdown check below still fences received work.
+                            let (data, link_id, resource_lease) = tokio::select! {
                                 _ = link_inbound_shutdown.wait() => break,
                                 item = link_pkt_rx.recv() => match item {
-                                    Some((data, link_id)) => (data, link_id),
+                                    Some((data, link_id)) => (data, link_id, None),
                                     None => break,
                                 },
                                 item = link_res_rx.recv() => match item {
-                                    Some((data, link_id)) => (data, link_id),
+                                    Some(delivery) => (delivery.data, delivery.link_id, Some(delivery.lease)),
                                     None => break,
                                 },
                             };
@@ -2232,6 +2215,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 activity_origin,
                             )
                             .await;
+                            // Keep completed attachment memory admitted through
+                            // decoding, validation, and durable message handling.
+                            drop(resource_lease);
                         }
                     });
 
@@ -2805,10 +2791,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         .await;
                     }
 
-                    // Check delivery deadlines every ~5s. Resource progress can
-                    // otherwise cross its three-minute deadline just after a
-                    // coarse maintenance pass and remain apparently pending
-                    // for another 30 seconds.
+                    // Check orphan deadlines every ~5s in foreground (~20s in
+                    // background), after the protocol managers have ticked.
+                    // Healthy slow Resource progress owns its finite protocol
+                    // clock; this absolute ceiling only cleans up unowned work.
                     timeout_check_counter += 1;
                     if timeout_check_counter.is_multiple_of(10) {
                         check_message_timeouts(&tick_state, tick_activity_origin).await;
@@ -6027,8 +6013,8 @@ async fn poll_stats_loop(
     }
 }
 
-// Orphan/send watchdog. Bounded active packet/Link clocks take precedence;
-// unrelated Resource and abandoned-owner cleanup retains this ceiling.
+// Orphan/send watchdog. Actual bounded packet/Link/Resource clocks take
+// precedence; queued, expired and abandoned owners retain this ceiling.
 const MESSAGE_TIMEOUT_SECS: f64 = 180.0;
 
 fn polled_delivery_method_override(step: &str, has_packet_proof: bool) -> Option<&'static str> {

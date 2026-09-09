@@ -23,6 +23,10 @@ struct Observation {
 
 impl LxmfManager {
     pub(crate) fn set_delivery_timing_owner(&mut self, owner: ReticulumHandle) {
+        self.set_link_endpoint_dispatch_handle(owner.link_endpoint_dispatch_handle());
+        self.shared_recovery_owner = (owner.instance_mode
+            == rns_runtime::reticulum::InstanceMode::Client)
+            .then(|| owner.clone());
         self.delivery_timing = DeliveryTimingCache {
             owner: Some(owner),
             observations: HashMap::new(),

@@ -21,8 +21,12 @@ struct PacketAttempt {
 
 impl LxmfManager {
     /// The outer orphan watchdog must not overrule a bounded protocol clock.
-    /// Resource transfer limits remain independent; only an active Link's
-    /// establishment clock and retained packet proof windows qualify here.
+    /// Only a finite, unexpired owner envelope qualifies: retained packet proof,
+    /// Link establishment/admission, or request-driven Resource progress. An
+    /// externally observed Resource includes its core-owned finite observation
+    /// allowance, measured from the original deadline, not notification time. Queue
+    /// entries, terminal messages and expired/orphaned owners remain bounded by
+    /// the outer watchdog. Message age never cuts short a healthy slow Resource.
     pub(crate) fn has_bounded_protocol_wait(&self, msg_id: &str) -> bool {
         let Ok(bytes) = hex::decode(msg_id) else {
             return false;
@@ -43,10 +47,8 @@ impl LxmfManager {
         }
         self.link_delivery
             .as_ref()
-            .and_then(|delivery| delivery.message_delivery_snapshot(hash))
-            .is_some_and(|snapshot| {
-                !snapshot.queued && snapshot.delivery_state == DeliveryState::Establishing
-            })
+            .and_then(|delivery| delivery.message_timeout_window(hash))
+            .is_some_and(|(started, timeout)| started.elapsed() < timeout)
     }
     pub(crate) fn take_packet_delivery_rtts(&mut self) -> Vec<(String, Duration)> {
         std::mem::take(&mut self.packet_delivery_rtts)
@@ -227,6 +229,143 @@ impl LxmfManager {
 mod tests {
     use super::*;
     use crate::lxmf::tests::test_manager;
+
+    #[test]
+    fn slow_resource_owner_outlives_message_age_but_not_its_finite_owner_envelope() {
+        use lxmf_core::link_delivery::{BackchannelSendReceipt, LinkDeliveryManager};
+        let mut mgr = test_manager();
+        let (tx, _rx) = mpsc::channel(16);
+        let (commands, mut requests) = mpsc::channel(16);
+        let mut delivery = LinkDeliveryManager::new(tx, None, None);
+        delivery.set_backchannel_sender(commands);
+        let dest = [0xA7; 16];
+        let link = [0xB7; 16];
+        let resource = [0xC7; 32];
+        delivery.register_backchannel(dest, link);
+        let message = mgr
+            .create_message(
+                &hex::encode(dest),
+                "slow resource",
+                "",
+                DeliveryMethod::Direct,
+            )
+            .unwrap();
+        let hash = message.hash.unwrap();
+        delivery.start_backchannel_delivery(message, dest).unwrap();
+        requests
+            .try_recv()
+            .unwrap()
+            .result_tx
+            .send(Ok(BackchannelSendReceipt::Resource {
+                link_id: link,
+                resource_hash: resource,
+            }))
+            .unwrap();
+        delivery.tick();
+        assert!(delivery.observe_backchannel_resource_wait(
+            link,
+            resource,
+            Instant::now() - Duration::from_secs(500),
+            Duration::from_secs(600)
+        ));
+        mgr.link_delivery = Some(delivery);
+        assert!(
+            mgr.has_bounded_protocol_wait(&hex::encode(hash)),
+            "healthy finite slow owner survives three-minute message age"
+        );
+        assert!(
+            !mgr.has_bounded_protocol_wait(&hex::encode([0; 32])),
+            "unowned message gets no exemption"
+        );
+        let delivery = mgr.link_delivery.as_mut().unwrap();
+        assert!(!delivery.observe_backchannel_resource_wait(
+            [0xF7; 16],
+            resource,
+            Instant::now(),
+            Duration::from_secs(600)
+        ));
+        assert!(delivery.observe_backchannel_resource_wait(
+            link,
+            resource,
+            Instant::now() - Duration::from_secs(400),
+            Duration::from_secs(300)
+        ));
+        assert!(
+            mgr.has_bounded_protocol_wait(&hex::encode(hash)),
+            "finite observation allowance protects an in-transit progress renewal"
+        );
+        assert!(
+            mgr.link_delivery
+                .as_mut()
+                .unwrap()
+                .observe_backchannel_resource_wait(
+                    link,
+                    resource,
+                    Instant::now() - Duration::from_secs(300),
+                    Duration::from_secs(100)
+                )
+        );
+        assert!(
+            !mgr.has_bounded_protocol_wait(&hex::encode(hash)),
+            "expired owner must not become an infinite watchdog exemption"
+        );
+        assert!(
+            mgr.link_delivery
+                .as_mut()
+                .unwrap()
+                .observe_backchannel_resource_wait(
+                    link,
+                    resource,
+                    Instant::now(),
+                    Duration::from_secs(600)
+                )
+        );
+        assert!(mgr.has_bounded_protocol_wait(&hex::encode(hash)));
+        assert!(mgr.cancel_outbound_message(&hex::encode(hash)));
+        assert!(!mgr.has_bounded_protocol_wait(&hex::encode(hash)));
+    }
+
+    #[test]
+    fn backchannel_packet_watchdog_uses_original_proof_clock_not_observation_time() {
+        use lxmf_core::link_delivery::{BackchannelSendReceipt, LinkDeliveryManager};
+        let mut mgr = test_manager();
+        let (tx, _rx) = mpsc::channel(16);
+        let (commands, mut requests) = mpsc::channel(16);
+        let mut delivery = LinkDeliveryManager::new(tx, None, None);
+        delivery.set_backchannel_sender(commands);
+        let dest = [0xA8; 16];
+        let link = [0xB8; 16];
+        let packet = [0xC8; 32];
+        delivery.register_backchannel(dest, link);
+        let message = mgr
+            .create_message(&hex::encode(dest), "packet", "", DeliveryMethod::Direct)
+            .unwrap();
+        let hash = message.hash.unwrap();
+        delivery.start_backchannel_delivery(message, dest).unwrap();
+        requests
+            .try_recv()
+            .unwrap()
+            .result_tx
+            .send(Ok(BackchannelSendReceipt::Packet {
+                link_id: link,
+                packet_hash: packet,
+            }))
+            .unwrap();
+        delivery.tick();
+        assert!(delivery.observe_backchannel_packet_wait(
+            link,
+            packet,
+            Instant::now() - Duration::from_secs(20),
+            Duration::from_secs(12),
+            false,
+            None
+        ));
+        mgr.link_delivery = Some(delivery);
+        assert!(
+            !mgr.has_bounded_protocol_wait(&hex::encode(hash)),
+            "a delayed observation cannot restart a proof timeout"
+        );
+    }
 
     fn packet() -> (LxmfManager, [u8; 32], mpsc::Receiver<TransportMessage>) {
         let mut mgr = test_manager();

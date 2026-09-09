@@ -1665,6 +1665,25 @@ impl AppState {
         original.and_then(|id| inbound.remove(&id)).is_some()
     }
 
+    /// Move the exact completed transfer's reservation to its inbound consumer.
+    /// Link cleanup must not release memory still owned by queued payloads.
+    pub(crate) fn take_inbound_attachment_resource(
+        &self,
+        link_id: [u8; 16],
+        resource_id: [u8; 32],
+    ) -> Option<AttachmentTransferLease> {
+        let mut inbound = self
+            .inbound_attachment_transfers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let original = inbound.iter().find_map(|(original, transfer)| {
+            (transfer.link_id == link_id
+                && (*original == resource_id || transfer.resource_ids.contains(&resource_id)))
+            .then_some(*original)
+        })?;
+        inbound.remove(&original).map(|transfer| transfer._lease)
+    }
+
     pub fn release_inbound_attachment_link(&self, link_id: [u8; 16]) -> usize {
         let mut inbound = self
             .inbound_attachment_transfers
@@ -2475,12 +2494,10 @@ impl AppState {
         if let Ok(mut inbound) = self.inbound_attachment_transfers.lock() {
             inbound.clear();
         }
-        if let Ok(mut budget) = self.attachment_transfer_budget.lock() {
-            // Existing leases remain exact owners and release through
-            // saturating accounting when their cancelled work unwinds.
-            budget.small_bytes = 0;
-            budget.large_active = false;
-        }
+        // Clearing the owning collections drops their reservations. Work or
+        // completed payloads still unwinding outside those collections retain
+        // their leases until actual Drop. Resetting the counters here would
+        // admit overlapping memory and let an old Drop free a new reservation.
         self.attachment_pressure_until_ms
             .store(0, Ordering::Release);
         if let Ok(mut sessions) = self.lrgp_msg_to_session.lock() {
@@ -3716,6 +3733,62 @@ mod tests {
                 .admit_inbound_attachment_resource([7; 16], [8; 32], [8; 32], size)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn completed_attachment_lease_matches_link_and_survives_session_reset() {
+        let state = Arc::new(make_state());
+        let size = rns_protocol::resource::MAX_EFFICIENT_SIZE + 1;
+        state
+            .admit_inbound_attachment_resource([1; 16], [2; 32], [3; 32], size)
+            .unwrap();
+        assert!(
+            state
+                .take_inbound_attachment_resource([9; 16], [2; 32])
+                .is_none()
+        );
+        assert!(
+            state
+                .take_inbound_attachment_resource([1; 16], [9; 32])
+                .is_none()
+        );
+        let queued = state
+            .take_inbound_attachment_resource([1; 16], [3; 32])
+            .unwrap();
+        assert!(
+            state
+                .take_inbound_attachment_resource([1; 16], [2; 32])
+                .is_none()
+        );
+        state.clear_identity_scoped_runtime_state();
+        assert!(matches!(
+            state.reserve_attachment_transfer(size),
+            Err(AttachmentTransferAdmissionError::Busy)
+        ));
+        drop(queued);
+        let next = state.reserve_attachment_transfer(size).unwrap();
+        assert!(matches!(
+            state.reserve_attachment_transfer(size),
+            Err(AttachmentTransferAdmissionError::Busy)
+        ));
+        drop(next);
+        assert!(state.reserve_attachment_transfer(size).is_ok());
+    }
+
+    #[test]
+    fn identity_reset_retains_small_payload_reservations_until_actual_drop() {
+        let state = Arc::new(make_state());
+        let size = rns_protocol::resource::MAX_EFFICIENT_SIZE;
+        let leases: Vec<_> = (0..LXMF_SMALL_ATTACHMENT_BUDGET_BYTES / size)
+            .map(|_| state.reserve_attachment_transfer(size).unwrap())
+            .collect();
+        state.clear_identity_scoped_runtime_state();
+        assert!(matches!(
+            state.reserve_attachment_transfer(size),
+            Err(AttachmentTransferAdmissionError::MemoryPressure)
+        ));
+        drop(leases);
+        assert!(state.reserve_attachment_transfer(size).is_ok());
     }
 
     #[test]
