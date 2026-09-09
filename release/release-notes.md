@@ -1,6 +1,9 @@
 - Added Android system sharing for text and links, with recent-chat/contact selection, protected draft recovery, and an explicit Send action.
 - Added Developer Mode network settings for choosing a Ratspeak-managed stack or an authenticated existing local Reticulum instance.
-- Corrected failed-route recovery and delayed delivery-proof handling, preserving fresh routes on the same interface and allowing slow links their protocol establishment time.
+- Corrected same-radio relaying, bounded discovery retries and slow-link timing; failed-route recovery preserves freshly learned local routes and supports authenticated recovery through an existing Python stack.
+- Separated waiting for local send capacity from delivery-proof timeouts, so failed Links and stalled attachments can release following messages for retry while healthy slow transfers retain their protocol windows.
+- Kept cancellation and delayed completion tied to their original messages, and retained attachment memory reservations through inbound processing.
+- Corrected Android USB radio readiness and late write-completion accounting during reconnects.
 - Improved voice-preview startup, duration and recovery handling, preserved paused seeking, and bounded playback cleanup before retries or recording.
 - Retained the Android runtime across task removal and Activity recreation, while fencing stale native callbacks and preserving explicit-stop behavior.
 - Prevented stale search, conversation and contact results from replacing newer navigation or identity state; improved tablet typing, pickers and keyboard access.

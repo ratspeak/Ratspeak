@@ -16,9 +16,18 @@ changes that materially affect how an artifact is reproduced.
 
 ### Fixed
 
-- Corrected failed-route recovery and delayed delivery-proof handling, preserving
-  fresh routes on the same interface and allowing slow links their protocol
-  establishment time.
+- Corrected same-radio relaying, bounded discovery retries and slow-link timing.
+  Failed-route recovery preserves freshly learned local routes and supports
+  bounded authenticated recovery through an existing Python stack. Legacy
+  Python owners reset by destination; this is not an atomic remote-route check.
+- Separated local send-capacity waits from delivery-proof timeouts, allowing
+  failed Links and stalled attachments to release following messages for retry
+  while healthy slow transfers retain their protocol-owned windows.
+- Kept cancellation and delayed completion tied to their original messages,
+  and retained attachment memory reservations through inbound processing.
+  Cancellation cannot recall bytes already accepted by a driver.
+- Corrected Android USB radio readiness and late write-completion accounting
+  during reconnects.
 - Improved voice-preview startup, duration and recovery handling, preserved paused
   seeking, and bounded playback cleanup before retries or recording.
 - Retained the Android runtime across task removal and Activity recreation,
