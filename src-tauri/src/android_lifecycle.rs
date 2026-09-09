@@ -596,6 +596,72 @@ mod tests {
     }
 
     #[test]
+    fn explicit_stop_cannot_be_revived_by_delayed_ready_or_native_callbacks() {
+        let mut state = ready();
+        assert!(state.attach(1, 123, true));
+        assert!(state.set_resumed(1, true));
+        let pending_restore = state.request_restore(false).unwrap();
+        state.exit();
+
+        let mut published = Vec::new();
+        for event in [
+            NativeLifecycleEvent::Ready,
+            NativeLifecycleEvent::Resumed(1, true),
+            NativeLifecycleEvent::Resumed(1, false),
+            NativeLifecycleEvent::Detached(1),
+            NativeLifecycleEvent::Ready,
+        ] {
+            state.transition(event, |foreground| published.push(foreground));
+            assert!(!state.prevent_implicit_exit());
+            assert!(state.request_restore(false).is_none());
+            assert_eq!(state.with_presentation_owner(None, |_| true), None);
+        }
+        assert_eq!(published, vec![false, false, false]);
+        assert!(!state.begin_restore(pending_restore, false));
+        assert!(!state.attach(2, 123, true));
+    }
+
+    #[test]
+    fn late_startup_replays_replacement_state_not_retired_activity_foreground() {
+        let mut state = Lifecycle::default();
+        let mut published = Vec::new();
+        assert!(state.attach(1, 123, true));
+        state.transition(NativeLifecycleEvent::Resumed(1, true), |foreground| {
+            published.push(foreground)
+        });
+        state.transition(NativeLifecycleEvent::Detached(1), |foreground| {
+            published.push(foreground)
+        });
+        // Android may reuse the same Activity identity while generation changes.
+        assert!(state.attach(2, 123, false));
+        for stale in [
+            NativeLifecycleEvent::Resumed(1, true),
+            NativeLifecycleEvent::Resumed(1, false),
+            NativeLifecycleEvent::Detached(1),
+        ] {
+            state.transition(stale, |_| panic!("retired native edge was published"));
+        }
+        state.transition(NativeLifecycleEvent::Ready, |foreground| {
+            published.push(foreground)
+        });
+        assert_eq!(published, vec![true, false, false]);
+        assert!(state.prevent_implicit_exit());
+        assert_eq!(state.with_presentation_owner(None, |_| true), None);
+
+        state.transition(NativeLifecycleEvent::Resumed(2, true), |foreground| {
+            published.push(foreground)
+        });
+        assert_eq!(state.with_presentation_owner(None, |_| true), None);
+        assert!(!state.set_webview_ready(1));
+        assert!(state.set_webview_ready(2));
+        assert_eq!(
+            state.with_presentation_owner(Some("2"), |generation| generation),
+            Some(2)
+        );
+        assert_eq!(published, vec![true, false, false, true]);
+    }
+
+    #[test]
     fn publication_holds_authority_lock_and_ready_replays_latest_native_edge() {
         let state = std::sync::Mutex::new(Lifecycle::default());
         state.lock().unwrap().attach(1, 123, false);

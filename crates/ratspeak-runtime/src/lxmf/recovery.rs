@@ -731,6 +731,119 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancellation_after_owner_reset_starts_releases_capacity_without_discovery() {
+        let mut fixture = SharedFixture::new().await;
+        let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let reply = spawn_shared_recovery(
+            tokio::runtime::Handle::current(),
+            fixture.handle.clone(),
+            fixture.dest,
+            invalidate_attempt(
+                &fixture.handle,
+                fixture.dest,
+                Attempt::Packet(fixture.packet),
+            )
+            .unwrap(),
+            async move {
+                entered_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                Ok(())
+            },
+            slots.clone().try_acquire_owned().unwrap(),
+        );
+        tokio::time::timeout(Duration::from_secs(2), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            slots.available_permits(),
+            0,
+            "an active reset owns its slot"
+        );
+        drop(reply);
+        let reclaimed = tokio::time::timeout(Duration::from_secs(2), slots.acquire())
+            .await
+            .expect("cancellation must release capacity before the ten-second watchdog")
+            .unwrap();
+        assert!(
+            release_tx.send(()).is_err(),
+            "the in-flight reset future was dropped"
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1100), fixture.radio.recv())
+                .await
+                .is_err(),
+            "cancellation after reset begins cannot proceed to discovery"
+        );
+        drop(reclaimed);
+        fixture.stop().await;
+    }
+
+    #[tokio::test]
+    async fn transport_replacement_cancels_an_inflight_shared_reset_not_only_its_map_entry() {
+        let mut fixture = SharedFixture::new().await;
+        let mut manager = test_manager();
+        manager.set_path_recovery_handle(fixture.handle.clone());
+        let old_slots = manager.shared_recovery_slots.clone();
+        let (entered_tx, entered_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel();
+        let reply = spawn_shared_recovery(
+            tokio::runtime::Handle::current(),
+            fixture.handle.clone(),
+            fixture.dest,
+            invalidate_attempt(
+                &fixture.handle,
+                fixture.dest,
+                Attempt::Packet(fixture.packet),
+            )
+            .unwrap(),
+            async move {
+                entered_tx.send(()).unwrap();
+                release_rx.await.unwrap();
+                Ok(())
+            },
+            old_slots.clone().try_acquire_owned().unwrap(),
+        );
+        manager.pending_path_recoveries.insert(
+            fixture.dest,
+            PendingPathRecovery {
+                failed_attempt: Some(Attempt::Packet(fixture.packet)),
+                started_at: Instant::now(),
+                reply: Some(reply),
+                awaiting_snapshot: None,
+            },
+        );
+        tokio::time::timeout(Duration::from_secs(2), entered_rx)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(old_slots.available_permits(), 7);
+        let (mut replacement, _tx) = rns_transport::actor::TransportActor::new();
+        manager.set_path_recovery_handle(replacement.path_recovery_handle());
+        assert!(manager.pending_path_recoveries.is_empty());
+        assert!(!std::sync::Arc::ptr_eq(
+            &old_slots,
+            &manager.shared_recovery_slots
+        ));
+        let reclaimed = tokio::time::timeout(Duration::from_secs(2), old_slots.acquire_many(8))
+            .await
+            .expect("retired owner must release its running reset, not just disappear from the map")
+            .unwrap();
+        assert!(release_tx.send(()).is_err());
+        assert_eq!(manager.shared_recovery_slots.available_permits(), 8);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1100), fixture.radio.recv())
+                .await
+                .is_err(),
+            "retired owner must never discover after replacement"
+        );
+        drop(reclaimed);
+        fixture.stop().await;
+    }
+
+    #[tokio::test]
     async fn stalled_shared_reset_expires_without_discovery() {
         let mut fixture = SharedFixture::new().await;
         let result = tokio::time::timeout(

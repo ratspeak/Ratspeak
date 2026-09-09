@@ -18,8 +18,14 @@ function element(id) {
     };
 }
 async function settle() { for (let i = 0; i < 35; i++) await Promise.resolve(); }
+function deferred() {
+    let resolve, reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    return { promise, resolve, reject };
+}
 function fixture(android = true) {
     const nodes = {}, events = {}, timers = new Map(), calls = [], warnings = [], choices = [], sent = [];
+    const hooks = {};
     const node = id => nodes[id] ||= element(id);
     const model = { id: A, revision: '1', text: '00123\nПривет https://ozon.example', identity: null, recipient: null, send_attempted: false };
     let pending = [model], revision = 1, identity = 0, navigation = 0, failWrite = false;
@@ -50,24 +56,27 @@ function fixture(android = true) {
         listen(name, fn) { (events[name] ||= []).push(fn); return Promise.resolve(); },
         invoke(name, args) {
             calls.push({ name, args });
-            if (name === 'list_text_shares') return Promise.resolve({ items: pending.map(x => ({...x})), activity_generation: '1', identity_generation: String(identity) });
-            if (name === 'api_contacts') return Promise.resolve(context.lxmfContacts);
+            // Native commits and their IPC replies are separate events. A hook
+            // delays only publication, preserving the exact persisted revision.
+            const reply = value => hooks.reply ? hooks.reply(name, args, value) : Promise.resolve(value);
+            if (name === 'list_text_shares') return reply({ items: pending.map(x => ({...x})), activity_generation: '1', identity_generation: String(identity) });
+            if (name === 'api_contacts') return reply(context.lxmfContacts);
             assert.equal(name, 'edit_text_share');
             if (failWrite) return Promise.reject(new Error('disk full'));
             const a = args.args, item = pending.find(x => x.id === a.id);
             assert(item); assert.equal(a.revision, item.revision);
             assert.equal(a.identity_generation, String(identity));
-            if (a.operation === 'discard') { pending = pending.filter(x => x !== item); return Promise.resolve({ item: null }); }
+            if (a.operation === 'discard') { pending = pending.filter(x => x !== item); return reply({ item: null }); }
             if (a.operation === 'assign') { item.recipient = a.recipient; item.identity = C; item.send_attempted = false; }
             if (a.text !== undefined) item.text = a.text;
             if (a.operation === 'sending') item.send_attempted = true;
             item.revision = String(++revision);
-            return Promise.resolve({ item: { ...item } });
+            return reply({ item: { ...item } });
         }
     };
     node('msg-profile-name').textContent = 'Me';
     vm.runInNewContext(source, context);
-    return { context, node, sent, model, warnings, calls, choices,
+    return { context, node, sent, model, warnings, calls, choices, hooks,
         async tick() { const jobs = [...timers.values()]; timers.clear(); jobs.forEach(fn => fn()); await settle(); },
         async event(name) { for (const fn of events[name] || []) fn({}); await settle(); },
         switchIdentity() { identity++; }, failWrites() { failWrite = true; },
@@ -122,6 +131,106 @@ function fixture(android = true) {
     warm.intake(); await warm.event('text_shares_available');
     assert(warm.node('text-share-sheet').classList.contains('open'), 'a new warm share opens its picker after an earlier share was deferred');
 
+    // Qualify async ownership against the production controller, not a second
+    // implementation of the guards. Replies can arrive after native storage
+    // committed, so interruption must keep recovery without pasting or sending.
+    for (const transition of ['navigate', 'identity', 'hidden', 'pagehide', 'voice', 'file', 'reply', 'draft']) {
+        const delayed = fixture(); await settle();
+        const ack = deferred(); let committed;
+        delayed.hooks.reply = (name, args, value) => {
+            if (name === 'edit_text_share' && args.args.operation === 'assign') {
+                committed = value; return ack.promise;
+            }
+            return Promise.resolve(value);
+        };
+        const selecting = delayed.node('text-share-list').children[0].click(); await settle();
+        assert(committed, transition + ': assignment reached native storage before interruption');
+        if (transition === 'navigate') delayed.context.openConversationWith(C);
+        if (transition === 'identity') { delayed.switchIdentity(); await delayed.event('identity_switching'); }
+        if (transition === 'hidden') { delayed.context.document.visibilityState = 'hidden'; await delayed.event('visibilitychange'); }
+        if (transition === 'pagehide') await delayed.event('pagehide');
+        if (transition === 'voice') delayed.context.RS.voiceMemos.hasPendingRecording = () => true;
+        if (transition === 'file') delayed.context.lxmfPendingFile = { name: 'attachment' };
+        if (transition === 'reply') delayed.context._replyTarget = { id: 'reply' };
+        if (transition === 'draft') delayed.context._lxmfDrafts[B] = 'Typed while native storage was saving';
+        ack.resolve(committed); await selecting; await settle();
+        assert.equal(delayed.context.lxmfActiveContact, transition === 'navigate' ? C : null,
+            transition + ': a retired assignment reply must not navigate');
+        assert.equal(delayed.node('lxmf-input').value, '', transition + ': no late paste');
+        assert.equal(delayed.context._lxmfDrafts[B], transition === 'draft' ? 'Typed while native storage was saving' : undefined,
+            transition + ': preserve a replacement text draft');
+        assert.equal(delayed.pending().length, 1, transition + ': native recovery survives');
+        assert.equal(delayed.sent.length, 0, transition + ': no implicit send');
+    }
+
+    {
+        const overlap = fixture(); await settle();
+        const listed = deferred(); let oldList, listCalls = 0;
+        overlap.hooks.reply = (name, _args, value) => {
+            if (name === 'list_text_shares' && ++listCalls === 1) { oldList = value; return listed.promise; }
+            return Promise.resolve(value);
+        };
+        const refresh = overlap.context.RS.textShares.refresh(true);
+        await overlap.node('text-share-list').children[0].click(); await settle();
+        assert.equal(overlap.model.recipient, B);
+        const noticesBeforeReply = [...overlap.warnings];
+        assert.equal(oldList.items[0].recipient, null, 'the delayed inventory predates assignment');
+        listed.resolve(oldList); await refresh; await settle();
+        assert.equal(listCalls, 2, 'inventory overlapping a mutation must be read again');
+        assert.equal(overlap.node('text-share-sheet').classList.contains('open'), false,
+            'a stale unassigned inventory must not reopen the picker after selection');
+        assert.equal(overlap.node('lxmf-input').value, overlap.model.text);
+        assert.equal(overlap.context.RS.textShares.interceptSend('auto'), true);
+        await settle();
+        assert.equal(overlap.sent.length, 1, 'the selected holder retains its current native revision');
+        assert.deepEqual(overlap.warnings, noticesBeforeReply, 'no stale-revision storage error');
+    }
+
+    for (const transition of ['navigate', 'identity', 'hidden', 'voice', 'file', 'reply', 'draft']) {
+        const interrupted = fixture(); await settle();
+        await interrupted.node('text-share-list').children[0].click(); await settle();
+        const ack = deferred(); let committed;
+        interrupted.hooks.reply = (name, args, value) => {
+            if (name === 'edit_text_share' && args.args.operation === 'sending') {
+                committed = value; return ack.promise;
+            }
+            return Promise.resolve(value);
+        };
+        assert.equal(interrupted.context.RS.textShares.interceptSend('auto'), true);
+        await settle();
+        assert(committed, transition + ': sending marker committed before reply');
+        assert.equal(interrupted.context.RS.textShares.interceptSend('auto'), true);
+        assert.equal(interrupted.calls.filter(call => call.args?.args.operation === 'sending').length, 1,
+            'a second click cannot duplicate an in-flight send admission');
+        if (transition === 'navigate') interrupted.context.openConversationWith(C);
+        if (transition === 'identity') { interrupted.switchIdentity(); await interrupted.event('identity_switching'); }
+        if (transition === 'hidden') { interrupted.context.document.visibilityState = 'hidden'; await interrupted.event('visibilitychange'); }
+        if (transition === 'voice') interrupted.context.RS.voiceMemos.hasPendingRecording = () => true;
+        if (transition === 'file') interrupted.context.lxmfPendingFile = { name: 'attachment' };
+        if (transition === 'reply') interrupted.context._replyTarget = { id: 'reply' };
+        if (transition === 'draft') interrupted.node('lxmf-input').value = 'Newly typed text';
+        const input = interrupted.node('lxmf-input').value;
+        ack.resolve(committed); await settle();
+        assert.equal(interrupted.sent.length, 0, transition + ': delayed admission must not dispatch from a retired composer');
+        assert.equal(interrupted.node('lxmf-input').value, input, transition + ': late admission must not erase new text');
+        assert.equal(interrupted.pending().length, 1);
+        assert.equal(interrupted.model.send_attempted, true, 'an admitted marker remains conservative; never auto-resend');
+    }
+
+    {
+        const oldSend = fixture(); await settle();
+        await oldSend.node('text-share-list').children[0].click(); await settle();
+        oldSend.context.RS.textShares.interceptSend('auto'); await settle();
+        assert.equal(oldSend.sent.length, 1);
+        const holder = oldSend.sent[0].holder;
+        oldSend.switchIdentity(); await oldSend.event('identity_switching');
+        const callsBefore = oldSend.calls.length;
+        oldSend.context.RS.textShares.accepted(holder); await settle();
+        assert.equal(oldSend.calls.length, callsBefore, 'acceptance for an old identity cannot mutate the replacement identity store');
+        assert.equal(oldSend.pending().length, 1);
+        assert.equal(oldSend.node('text-share-pending').hidden, true, 'late acceptance must not repopulate reset UI');
+    }
+
     // Execute the actual normal send adapter, not only this fixture's sender.
     const lxmf = fs.readFileSync(path.join(root, 'dashboard/static/js/lxmf.js'), 'utf8');
     const sendSource = lxmf.slice(lxmf.indexOf('function sendLxmfMessage('), lxmf.indexOf('function sendLxmfVoiceMemo('));
@@ -145,5 +254,5 @@ function fixture(android = true) {
         await settle();
         assert.deepEqual(results, ['dispatched', response?.msg_id && !response.cancelled ? 'accepted' : 'failed']);
     }
-    console.log('Text shares: platform gating, ordering, explicit send, draft merge, recovery, storage and identity/media fences passed');
+    console.log('Text shares: platform gating, ordering, explicit send, recovery, delayed assignment/send, refresh revision and identity/media/lifecycle fences passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

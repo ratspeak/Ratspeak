@@ -105,6 +105,56 @@ async function main() {
         loading.resolve(true); await flush();
         assert.equal(d.receive(route), true);
     }
+    for (const transition of ['hidden', 'navigation', 'setup', 'unlock']) {
+        const d = dashboard();
+        const startup = deferred(), setup = deferred();
+        const invoke = d.context.RS.invoke;
+        d.context.RS.invoke = command => command === 'api_startup_progress' ? startup.promise : setup.promise;
+        assert.equal(d.receive(), false);
+        if (transition === 'hidden') d.context.document.hidden = true;
+        if (transition === 'navigation') d.context._navTransitioning = true;
+        if (transition === 'setup') d.classes.add('setup-active');
+        if (transition === 'unlock') d.controls.overlay = true;
+        startup.resolve({ stage: 'ready', hw_locked: false });
+        setup.resolve({ needs_setup: false }); await flush();
+        assert.deepEqual(d.opens, [], transition + ': an old ready reply cannot bypass a newer presentation fence');
+        assert.equal(d.receive(), false, transition + ': native polling must retain, not acknowledge, the pending route');
+        d.context.document.hidden = false; d.context._navTransitioning = false;
+        d.classes.clear(); d.controls.overlay = false; d.context.RS.invoke = invoke;
+        assert.equal(d.receive(), false); await flush();
+        assert.equal(d.receive(), true, transition + ': the same route remains usable after its fence clears');
+        assert.deepEqual(d.opens, ['abc'], 'restored readiness navigates exactly once');
+    }
+    {
+        const d = dashboard();
+        const startup = deferred();
+        const invoke = d.context.RS.invoke;
+        d.context.RS.invoke = command => command === 'api_startup_progress' ? startup.promise : invoke(command);
+        assert.equal(d.receive(), false);
+        for (const now of [10000, 20000, 29999]) {
+            d.controls.now = now;
+            assert.equal(d.receive('lxmf:abc', '1', 30000), false);
+        }
+        d.controls.now = 30001;
+        startup.resolve({ stage: 'ready', hw_locked: false }); await flush();
+        assert.deepEqual(d.opens, [], 'repeat polling cannot renew the original native route deadline');
+        d.context.RS.invoke = invoke;
+        assert.equal(d.receive('lxmf:abc', '1', 30000), false, 'an expired token cannot restart itself');
+        assert.equal(d.receive('lxmf:abc', '2', 30000), false); await flush();
+        assert.equal(d.receive('lxmf:abc', '2', 30000), true, 'a genuinely new native token receives its own deadline');
+        assert.deepEqual(d.opens, ['abc']);
+    }
+    {
+        const d = dashboard();
+        const invoke = d.context.RS.invoke;
+        d.context.RS.invoke = () => Promise.reject(new Error('runtime not available yet'));
+        assert.equal(d.receive(), false); await flush();
+        assert.deepEqual(d.opens, [], 'transient readiness failure is never route acceptance');
+        d.context.RS.invoke = invoke;
+        assert.equal(d.receive(), false); await flush();
+        assert.equal(d.receive(), true, 'readiness rejection must release the in-flight guard for bounded retry');
+        assert.deepEqual(d.opens, ['abc']);
+    }
     {
         const d = dashboard();
         const loading = deferred();

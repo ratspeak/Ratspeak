@@ -176,6 +176,23 @@ var cases = [
         await h.advance(2100); assert.equal(h.state(), 'error');
         var starts = h.starts.length; await h.advance(10000); assert.equal(h.starts.length, starts);
     }],
+    ['duplicate clock events cannot keep stalled preview alive', async function(platform) {
+        var h = harness(platform); await h.record(); await h.click('play');
+        h.event('playing', 800);
+        for (var i = 0; i < 3; i++) {
+            await h.advance(500); h.event('playing', 800);
+            assert.equal(h.state(), 'playing');
+        }
+        await h.advance(501);
+        assert.equal(h.state(), 'recovering', 'repeated status without clock movement cannot renew the progress deadline');
+        // The replacement has not advanced beyond the saved position either.
+        for (var j = 0; j < 3; j++) { h.event('playing', 800); await h.advance(500); }
+        await h.advance(501);
+        assert.equal(h.state(), 'error', 'duplicate replacement events cannot create an endless recovery');
+        if (platform !== 'desktop') assert.equal(h.starts.length, 2, 'at most one automatic recovery');
+        await h.click('send');
+        assert.equal(h.sent[0].data_base64, h.draft.data_base64, 'stall detection preserves the sendable recording');
+    }],
     ['paused preview does not time out and resumes at the same position', async function(platform) {
         var h = harness(platform); await h.record(); await h.click('play');
         h.event('playing', 800); await h.click('play'); assert.equal(h.state(), 'paused');
@@ -234,6 +251,38 @@ var cases = [
             assert.equal(h.state(), state, 'the start reply must not overwrite an earlier terminal native event');
             await h.advance(5000); assert.equal(h.starts.length, 1, 'completed/failed output must not spuriously restart');
         }
+    }],
+    ['early native terminal state wins over later playing events for the same lease', async function(platform) {
+        if (platform === 'desktop') return;
+        for (var terminal of ['ended', 'error']) {
+            var h = harness(platform), reply = deferred(); await h.record();
+            h.hooks.start = function() { return reply.promise; };
+            await h.click('play');
+            var leaseId = h.starts[0].lease;
+            h.event('playing', 800, leaseId);
+            h.event(terminal, terminal === 'ended' ? 4000 : 800, leaseId);
+            for (var position of [1000, 1500, 2000]) h.event('playing', position, leaseId);
+            assert.equal(h.state(), 'starting', 'unpublished lease events cannot mutate the visible owner');
+            reply.resolve({ lease_id: leaseId, position_ms: 0, duration_ms: 4000 }); await flush();
+            assert.equal(h.state(), terminal, 'late nonterminal status cannot overwrite an early terminal event');
+            await h.advance(10000);
+            assert.equal(h.starts.length, 1, 'terminal output never enters watchdog recovery');
+        }
+    }],
+    ['early native events are selected by exact returned lease, not arrival order', async function(platform) {
+        if (platform === 'desktop') return;
+        var h = harness(platform), reply = deferred(); await h.record();
+        h.hooks.start = function() { return reply.promise; };
+        await h.click('play');
+        h.event('playing', 800, h.starts[0].lease);
+        for (var i = 10; i < 20; i++) h.event(i % 2 ? 'ended' : 'error', 4000, 'vmp-' + String(i).padStart(16, '0'));
+        reply.resolve({ lease_id: h.starts[0].lease, position_ms: 0, duration_ms: 4000 }); await flush();
+        assert.equal(h.state(), 'playing', 'another lease terminal cannot end the installed preview');
+        assert.equal(h.timer(), '0:01', 'the installed lease uses only its own rounded 800ms progress');
+        h.event('playing', 1800); await h.advance(900);
+        assert.equal(h.state(), 'playing');
+        h.event('ended', 4000); await flush();
+        assert.equal(h.state(), 'ended');
     }],
     ['a late start reply is retired before any replacement opens native output', async function(platform) {
         if (platform === 'desktop') return;
