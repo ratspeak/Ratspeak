@@ -522,6 +522,37 @@ pub fn apply_lxmf_settings_from_state(state: &AppState, mgr: &mut lxmf::LxmfMana
         .set_stamp_requirements(pn_cost, lxmf_core::constants::PROPAGATION_COST_FLEX);
 }
 
+/// Path responses must advertise the same live node policy as our ordinary
+/// propagation announces. An empty response replaces Python peers' cached
+/// app_data and prevents them from determining the required propagation cost.
+fn install_propagation_announce_metadata(
+    manager: &mut rns_runtime::link_manager::LinkManager,
+    state: &Arc<AppState>,
+    destination_hash: [u8; 16],
+) {
+    let shutdown = state
+        .session_shutdown
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone();
+    let state = Arc::downgrade(state);
+    if let Some(destination) = manager.destination_mut() {
+        destination.set_default_app_data(rns_identity::destination::DefaultAppData::Dynamic(
+            Box::new(move || {
+                if shutdown.is_triggered() {
+                    return None;
+                }
+                let state = state.upgrade()?;
+                let owner = state.lxmf.lock().ok()?;
+                let owner = owner
+                    .as_ref()
+                    .filter(|owner| owner.propagation_dest_hash == destination_hash)?;
+                Some(owner.router.get_propagation_node_app_data())
+            }),
+        ));
+    }
+}
+
 fn short_id(s: &str) -> &str {
     helpers::diagnostic_short_protocol_id(s).unwrap_or("invalid")
 }
@@ -1824,6 +1855,7 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         LXMF_PROPAGATION_APP_NAME,
                         Some(signing_key),
                     );
+                    install_propagation_announce_metadata(&mut link_mgr, &state, prop_dest_hash);
 
                     let offer_node = prop_node.clone();
                     let get_node = prop_node.clone();
@@ -7431,6 +7463,197 @@ mod inbound_pipeline_tests {
             .lxmf_hash
             .clone();
         hex::decode(hex_hash).unwrap().try_into().unwrap()
+    }
+
+    #[tokio::test]
+    async fn propagation_path_responses_preserve_current_signed_node_metadata() {
+        use rns_transport::link_messages::{AnnounceRequest, DestinationEvent};
+        use rns_transport::messages::TransportMessage;
+
+        fn metadata(
+            raw: &[u8],
+            expected_hash: &[u8; 16],
+        ) -> lxmf_core::handlers::PropagationNodeAnnounceData {
+            let (header, offset) = rns_wire::header::PacketHeader::unpack(raw).unwrap();
+            assert_eq!(header.destination_hash, *expected_hash);
+            assert!(
+                !header.flags.context_flag,
+                "PN announcements never carry delivery ratchets"
+            );
+            let announce = rns_identity::announce::AnnounceData::unpack(
+                &raw[offset..],
+                header.flags.context_flag,
+            )
+            .unwrap();
+            announce
+                .validate(expected_hash)
+                .expect("genuine signed PN announcement");
+            lxmf_core::handlers::parse_pn_announce_data(announce.app_data.as_deref().unwrap())
+                .unwrap()
+        }
+
+        let (state, _) = pipeline_state();
+        let (transport_tx, mut outbound) = tokio::sync::mpsc::channel(16);
+        let (events, event_rx) = tokio::sync::mpsc::channel(16);
+        let (mut manager, destination) = {
+            let owner = state.lxmf.lock().unwrap();
+            let owner = owner.as_ref().unwrap();
+            (
+                rns_runtime::link_manager::LinkManager::with_destination(
+                    transport_tx,
+                    event_rx,
+                    &owner.identity,
+                    LXMF_PROPAGATION_APP_NAME,
+                    owner.identity.get_signing_key(),
+                ),
+                owner.propagation_dest_hash,
+            )
+        };
+        install_propagation_announce_metadata(&mut manager, &state, destination);
+        let worker = tokio::spawn(manager.run());
+        let mut first_response = None;
+
+        for (index, (hosting, static_only, cost, limit)) in [
+            (true, false, 13, 256),
+            (false, false, 17, 512),
+            (true, true, 21, 1024),
+            (true, false, 23, 2048),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            state
+                .propagation_node_hosting_enabled
+                .store(hosting, Ordering::Relaxed);
+            state
+                .propagation_node_stamp_cost
+                .store(cost, Ordering::Relaxed);
+            let ordinary = {
+                let mut owner = state.lxmf.lock().unwrap();
+                let owner = owner.as_mut().unwrap();
+                apply_lxmf_settings_from_state(&state, owner);
+                owner.router.config.propagation_limit_kb = limit;
+                owner.router.config.sync_limit_kb = limit * 2;
+                owner.router.config.ext.from_static_only = static_only;
+                owner.router.config.ext.name = Some(format!("current node {index}"));
+                owner.create_propagation_announce_packet().unwrap()
+            };
+            events
+                .send(DestinationEvent::AnnounceRequested(AnnounceRequest {
+                    app_name: LXMF_PROPAGATION_APP_NAME.into(),
+                    path_response: true,
+                    tag: Some(vec![index as u8 + 1; 16]),
+                    attached_interface: Some(17),
+                }))
+                .await
+                .unwrap();
+            let message = tokio::time::timeout(Duration::from_secs(2), outbound.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            let TransportMessage::OutboundAttached {
+                request,
+                interface_id,
+            } = message
+            else {
+                panic!("path response must use the requesting interface");
+            };
+            assert_eq!(interface_id, 17);
+            let (header, _) = rns_wire::header::PacketHeader::unpack(&request.raw).unwrap();
+            assert_eq!(
+                header.context,
+                rns_wire::context::PacketContext::PathResponse
+            );
+            let broadcast = metadata(&ordinary, &destination);
+            let response = metadata(&request.raw, &destination);
+            assert_eq!(response.node_state, hosting && !static_only);
+            assert_eq!(response.stamp_cost, cost);
+            assert_eq!(response.transfer_limit, limit as u64);
+            assert_eq!(response.sync_limit, (limit * 2) as u64);
+            assert_eq!(
+                response.metadata.get(&0),
+                Some(&format!("current node {index}").into_bytes())
+            );
+            assert_eq!(response.node_state, broadcast.node_state);
+            assert_eq!(response.stamp_cost, broadcast.stamp_cost);
+            assert_eq!(response.stamp_flex, broadcast.stamp_flex);
+            assert_eq!(response.peering_cost, broadcast.peering_cost);
+            assert_eq!(response.transfer_limit, broadcast.transfer_limit);
+            assert_eq!(response.sync_limit, broadcast.sync_limit);
+            assert_eq!(response.metadata, broadcast.metadata);
+            first_response.get_or_insert(request.raw);
+        }
+
+        // Preserve the destination's protocol-level duplicate-tag cache: a
+        // repeated request reuses its exact signature, not a new policy epoch.
+        events
+            .send(DestinationEvent::AnnounceRequested(AnnounceRequest {
+                app_name: LXMF_PROPAGATION_APP_NAME.into(),
+                path_response: true,
+                tag: Some(vec![1; 16]),
+                attached_interface: Some(17),
+            }))
+            .await
+            .unwrap();
+        let TransportMessage::OutboundAttached { request, .. } =
+            tokio::time::timeout(Duration::from_secs(2), outbound.recv())
+                .await
+                .unwrap()
+                .unwrap()
+        else {
+            panic!("repeated attached path response");
+        };
+        assert_eq!(Some(request.raw), first_response);
+        drop(events);
+        tokio::time::timeout(Duration::from_secs(2), worker)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn propagation_default_metadata_does_not_retain_or_cross_session_owners() {
+        let (state, _) = pipeline_state();
+        let (transport_tx, _outbound) = tokio::sync::mpsc::channel(4);
+        let (_events, event_rx) = tokio::sync::mpsc::channel(4);
+        let (mut manager, destination) = {
+            let owner = state.lxmf.lock().unwrap();
+            let owner = owner.as_ref().unwrap();
+            (
+                rns_runtime::link_manager::LinkManager::with_destination(
+                    transport_tx,
+                    event_rx,
+                    &owner.identity,
+                    LXMF_PROPAGATION_APP_NAME,
+                    owner.identity.get_signing_key(),
+                ),
+                owner.propagation_dest_hash,
+            )
+        };
+        let owners = Arc::strong_count(&state);
+        install_propagation_announce_metadata(&mut manager, &state, destination);
+        assert_eq!(
+            Arc::strong_count(&state),
+            owners,
+            "no state/worker ownership cycle"
+        );
+        assert!(manager.destination().unwrap().resolve_app_data().is_some());
+        let original = state.lxmf.lock().unwrap().take();
+        assert!(manager.destination().unwrap().resolve_app_data().is_none());
+        let (replacement, _) = pipeline_state();
+        *state.lxmf.lock().unwrap() = replacement.lxmf.lock().unwrap().take();
+        assert!(manager.destination().unwrap().resolve_app_data().is_none());
+        *state.lxmf.lock().unwrap() = original;
+        assert!(manager.destination().unwrap().resolve_app_data().is_some());
+        state.session_shutdown.read().unwrap().trigger();
+        assert!(manager.destination().unwrap().resolve_app_data().is_none());
+        *state.session_shutdown.write().unwrap() = rns_runtime::lifecycle::ShutdownSignal::new();
+        assert!(
+            manager.destination().unwrap().resolve_app_data().is_none(),
+            "old worker cannot revive on a new session"
+        );
+        drop(state);
+        assert!(manager.destination().unwrap().resolve_app_data().is_none());
     }
 
     fn local_identity(state: &AppState) -> String {
