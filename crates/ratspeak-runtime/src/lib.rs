@@ -553,6 +553,19 @@ fn install_propagation_announce_metadata(
     }
 }
 
+/// Keep the validated propagation stamp in canonical node storage. The node
+/// strips this stamp when serving a client, including after a process restart.
+/// `None` rejects invalid proof data; `Some(false)` is a valid but unaccepted
+/// deposit (for example a duplicate or a storage limit).
+fn accept_hosted_propagation_deposit(
+    node: &mut lxmf_core::propagation_node::PropagationNode,
+    entry: &[u8],
+) -> Option<bool> {
+    let (_transient_id, lxmf_data, stamp_value, stamp_data) =
+        lxmf_core::stamper::validate_pn_stamp(entry, node.min_stamp_cost())?;
+    Some(node.accept_stamped_propagated_blob(&lxmf_data, &stamp_data, stamp_value as u8))
+}
+
 fn short_id(s: &str) -> &str {
     helpers::diagnostic_short_protocol_id(s).unwrap_or("invalid")
 }
@@ -1989,19 +2002,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 continue;
                             }
                             if let Ok(mut node) = store_node.lock() {
-                                let min_cost = node.min_stamp_cost();
                                 let mut accepted = 0usize;
                                 let mut rejected = 0usize;
                                 for entry in entries {
-                                    match lxmf_core::stamper::validate_pn_stamp(&entry, min_cost) {
-                                        Some((_tid, lxmf_data, stamp_value, _stamp_data)) => {
-                                            if node.accept_propagated_blob(
-                                                &lxmf_data,
-                                                stamp_value as u8,
-                                            ) {
-                                                accepted += 1;
-                                            }
-                                        }
+                                    match accept_hosted_propagation_deposit(&mut node, &entry) {
+                                        Some(true) => accepted += 1,
+                                        Some(false) => {}
                                         None => rejected += 1,
                                     }
                                 }
@@ -7609,6 +7615,112 @@ mod inbound_pipeline_tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[test]
+    fn hosted_propagation_deposit_retains_validated_stamp_and_survives_restart() {
+        use lxmf_core::propagation_node::{PropagationNode, PropagationNodeConfig};
+        use rmpv::Value;
+
+        let storage = tempfile::tempdir().unwrap();
+        let recipient = rns_identity::identity::Identity::new();
+        let destination =
+            Destination::hash_from_name_and_identity(LXMF_DELIVERY_APP_NAME, Some(&recipient.hash));
+        // The node must treat destination+encrypted data as opaque; only the
+        // actual recipient can authenticate/decrypt it after client retrieval.
+        let plaintext = b"authenticated private body retained across PN restart".repeat(8);
+        let mut blob = destination.to_vec();
+        blob.extend(recipient.encrypt(&plaintext, None).unwrap());
+        let transient_id = rns_crypto::sha::full_hash(&blob);
+        let stamp = lxmf_core::stamper::generate_stamp_limited(
+            &transient_id,
+            1,
+            lxmf_core::constants::STAMP_WORKBLOCK_EXPAND_ROUNDS_PN,
+            1024,
+        )
+        .expect("bounded real low-cost propagation stamp");
+        let mut entry = blob.clone();
+        entry.extend(stamp);
+        let config = PropagationNodeConfig {
+            min_stamp_cost: 1,
+            ..Default::default()
+        };
+        let mut node =
+            PropagationNode::with_storage(config.clone(), [0xA1; 16], storage.path().to_path_buf())
+                .unwrap();
+        assert_eq!(
+            accept_hosted_propagation_deposit(&mut node, &entry),
+            Some(true)
+        );
+        assert_eq!(
+            accept_hosted_propagation_deposit(&mut node, &entry),
+            Some(false)
+        );
+        assert_eq!(accept_hosted_propagation_deposit(&mut node, &[0; 16]), None);
+        assert_eq!(node.message_count(), 1);
+        let files = std::fs::read_dir(storage.path())
+            .unwrap()
+            .map(|file| file.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(files.len(), 1);
+        assert_eq!(
+            std::fs::read(&files[0]).unwrap(),
+            entry,
+            "preserve exact validated stamp, not just ciphertext"
+        );
+
+        let request = Value::Array(vec![
+            Value::Array(vec![Value::Binary(transient_id.to_vec())]),
+            Value::Array(vec![]),
+        ]);
+        let mut request_bytes = Vec::new();
+        rmpv::encode::write_value(&mut request_bytes, &request).unwrap();
+        for restarted in [false, true] {
+            if restarted {
+                drop(node);
+                node = PropagationNode::with_storage(
+                    config.clone(),
+                    [0xA1; 16],
+                    storage.path().to_path_buf(),
+                )
+                .unwrap();
+            }
+            assert_eq!(node.message_count(), 1);
+            let response = node
+                .handle_get_request(&request_bytes, &destination)
+                .into_response();
+            let value = rmpv::decode::read_value(&mut response.as_slice()).unwrap();
+            let messages = value.as_array().unwrap();
+            assert_eq!(messages.len(), 1);
+            let retrieved = messages[0].as_slice().unwrap();
+            assert_eq!(
+                retrieved, blob,
+                "exact opaque data before/after restart, without node stamp"
+            );
+            assert_eq!(
+                recipient.decrypt(&retrieved[16..], None, false).unwrap(),
+                plaintext
+            );
+        }
+
+        let stamp_value = lxmf_core::stamper::validate_pn_stamp(&entry, 0).unwrap().2;
+        assert!(stamp_value < 255);
+        node.set_min_stamp_cost(stamp_value as u8 + 1);
+        assert_eq!(accept_hosted_propagation_deposit(&mut node, &entry), None);
+        let mut limited = PropagationNode::new(
+            PropagationNodeConfig {
+                max_message_size: blob.len(),
+                min_stamp_cost: 1,
+                ..Default::default()
+            },
+            [0xA2; 16],
+        );
+        assert_eq!(
+            accept_hosted_propagation_deposit(&mut limited, &entry),
+            Some(false),
+            "storage limit includes the canonical stamp bytes"
+        );
+        assert_eq!(limited.message_count(), 0);
     }
 
     #[test]
