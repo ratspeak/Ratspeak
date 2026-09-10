@@ -300,6 +300,12 @@ function markdownBullets(source) {
   return bullets;
 }
 
+// Core minor releases may break APIs under the project version policy.
+// Do not let Cargo caret compatibility admit the next core minor implicitly.
+export function componentCargoRequirement(component) {
+  return component.id === "rsreticulum" ? `~${component.version}` : component.version;
+}
+
 export function verifyProductSurfaces(set) {
   const marketing = set.product.marketingVersion;
   const display = set.product.displayVersion;
@@ -426,16 +432,17 @@ export function verifyProductSurfaces(set) {
   ]);
   for (const component of set.components) {
     for (const dependency of expectedRequirements.get(component.id) ?? []) {
-      const pattern = new RegExp(`^${dependency}\\s*=\\s*\\{[^\\n]*version\\s*=\\s*"${component.version.replaceAll(".", "\\.")}"[^\\n]*\\}`, "m");
+      const requirement = componentCargoRequirement(component);
+      const pattern = new RegExp(`^${dependency}\\s*=\\s*\\{[^\\n]*version\\s*=\\s*"${requirement.replaceAll(".", "\\.")}"[^\\n]*\\}`, "m");
       if (!pattern.test(rootManifest)) {
-        fail(`Cargo.toml: ${dependency} must declare compatible version ${component.version}`);
+        fail(`Cargo.toml: ${dependency} must declare compatible version ${requirement}`);
       }
     }
   }
 
   for (const [dependency, version] of [
     ["ratspeak-tauri", marketing],
-    ["rns-interface", set.components.find((component) => component.id === "rsreticulum").version],
+    ["rns-interface", componentCargoRequirement(set.components.find((component) => component.id === "rsreticulum"))],
   ]) {
     const pattern = new RegExp(`^${dependency}\\s*=\\s*\\{[^\\n]*version\\s*=\\s*"${version.replaceAll(".", "\\.")}"[^\\n]*\\}`, "m");
     if (!pattern.test(standaloneManifest)) {

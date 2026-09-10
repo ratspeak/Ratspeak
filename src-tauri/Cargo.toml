@@ -51,7 +51,7 @@ block2 = "0.6"
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.19"
 btleplug = "0.11"
-rns-interface = { path = "../../rsReticulum/crates/rns-interface", version = "1.2.0", features = ["ble", "mobile-throttle"] }
+rns-interface = { path = "../../rsReticulum/crates/rns-interface", version = "~1.3.0", features = ["ble", "mobile-throttle"] }
 tracing-android = "0.2"
 
 [target.'cfg(target_os = "ios")'.dependencies]

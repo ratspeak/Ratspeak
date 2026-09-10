@@ -17,15 +17,15 @@ publish = false
 
 [workspace.dependencies]
 # --- From rsReticulum (sibling directory) ---
-rns-crypto = { path = "../rsReticulum/crates/rns-crypto", version = "1.2.0" }
-rns-wire = { path = "../rsReticulum/crates/rns-wire", version = "1.2.0" }
-rns-identity = { path = "../rsReticulum/crates/rns-identity", version = "1.2.0" }
-rns-transport = { path = "../rsReticulum/crates/rns-transport", version = "1.2.0" }
-rns-link = { path = "../rsReticulum/crates/rns-link", version = "1.2.0" }
-rns-protocol = { path = "../rsReticulum/crates/rns-protocol", version = "1.2.0" }
-rns-interface = { path = "../rsReticulum/crates/rns-interface", version = "1.2.0" }
-rns-runtime = { path = "../rsReticulum/crates/rns-runtime", version = "1.2.0" }
-rns-ratkey = { path = "../rsReticulum/crates/rns-ratkey", version = "1.2.0" }
+rns-crypto = { path = "../rsReticulum/crates/rns-crypto", version = "~1.3.0" }
+rns-wire = { path = "../rsReticulum/crates/rns-wire", version = "~1.3.0" }
+rns-identity = { path = "../rsReticulum/crates/rns-identity", version = "~1.3.0" }
+rns-transport = { path = "../rsReticulum/crates/rns-transport", version = "~1.3.0" }
+rns-link = { path = "../rsReticulum/crates/rns-link", version = "~1.3.0" }
+rns-protocol = { path = "../rsReticulum/crates/rns-protocol", version = "~1.3.0" }
+rns-interface = { path = "../rsReticulum/crates/rns-interface", version = "~1.3.0" }
+rns-runtime = { path = "../rsReticulum/crates/rns-runtime", version = "~1.3.0" }
+rns-ratkey = { path = "../rsReticulum/crates/rns-ratkey", version = "~1.3.0" }
 
 # --- From rsLXMF (sibling directory) ---
 lxmf-core = { path = "../rsLXMF/crates/lxmf-core", version = "1.2.0" }
