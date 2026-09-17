@@ -11,4 +11,5 @@
 - Protected network credentials and ownership transitions, and prevented delayed access imports from overwriting manually edited settings.
 - Enforced the pinned Android NDK, release JNI boundaries and 16 KiB native packaging alignment; excluded dashboard test scripts from embedded assets.
 - Added exact dependency-set source reconstruction and packaging guidance for reproducible downstream builds.
+- Aligned networking dependencies across standalone core and packaged builds, including corrected Windows socket ownership and Wine compatibility.
 - Known interoperability limitation: some attachment transfers to NomadNet can appear delivered without being stored by the receiver due to an upstream Python Reticulum completion-state defect.

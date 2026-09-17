@@ -46,6 +46,8 @@ changes that materially affect how an artifact is reproduced.
   packaging alignment; excluded dashboard test scripts from embedded assets.
 - Added exact dependency-set source reconstruction and packaging guidance for
   reproducible downstream builds.
+- Aligned networking dependencies across standalone core and packaged builds,
+  including corrected Windows socket ownership and Wine compatibility.
 
 ### Known limitations
 
