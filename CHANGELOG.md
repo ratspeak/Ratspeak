@@ -28,6 +28,9 @@ changes that materially affect how an artifact is reproduced.
   Cancellation cannot recall bytes already accepted by a driver.
 - Corrected Android USB radio readiness and late write-completion accounting
   during reconnects.
+- Corrected propagation-node discovery metadata and preserved stored offline
+  messages across node restarts, including compatible recovery of older
+  unstamped storage.
 - Improved voice-preview startup, duration and recovery handling, preserved paused
   seeking, and bounded playback cleanup before retries or recording.
 - Retained the Android runtime across task removal and Activity recreation,
@@ -43,6 +46,12 @@ changes that materially affect how an artifact is reproduced.
   packaging alignment; excluded dashboard test scripts from embedded assets.
 - Added exact dependency-set source reconstruction and packaging guidance for
   reproducible downstream builds.
+
+### Known limitations
+
+- Known interoperability limitation: some attachment transfers to NomadNet can
+  appear delivered without being stored by the receiver due to an upstream
+  Python Reticulum completion-state defect.
 
 ## [1.0.31] - 2026-08-26
 

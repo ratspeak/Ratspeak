@@ -4,9 +4,11 @@
 - Separated local send-capacity waits from delivery-proof timeouts, allowing failed Links and stalled attachments to release following messages for retry while healthy slow transfers retain their protocol-owned windows.
 - Kept cancellation and delayed completion tied to their original messages, and retained attachment memory reservations through inbound processing. Cancellation cannot recall bytes already accepted by a driver.
 - Corrected Android USB radio readiness and late write-completion accounting during reconnects.
+- Corrected propagation-node discovery metadata and preserved stored offline messages across node restarts, including compatible recovery of older unstamped storage.
 - Improved voice-preview startup, duration and recovery handling, preserved paused seeking, and bounded playback cleanup before retries or recording.
 - Retained the Android runtime across task removal and Activity recreation, while fencing stale native callbacks and preserving explicit-stop behavior.
 - Prevented stale search, conversation and contact results from replacing newer navigation or identity state; improved tablet typing, pickers and keyboard access.
 - Protected network credentials and ownership transitions, and prevented delayed access imports from overwriting manually edited settings.
 - Enforced the pinned Android NDK, release JNI boundaries and 16 KiB native packaging alignment; excluded dashboard test scripts from embedded assets.
 - Added exact dependency-set source reconstruction and packaging guidance for reproducible downstream builds.
+- Known interoperability limitation: some attachment transfers to NomadNet can appear delivered without being stored by the receiver due to an upstream Python Reticulum completion-state defect.
