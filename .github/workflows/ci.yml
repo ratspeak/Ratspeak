@@ -423,6 +423,9 @@ jobs:
           cache-dependency-path: Ratspeak/src-tauri/gen/android/**/*.gradle*
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407
         if: matrix.target == 'aarch64-linux-android'
+        with:
+          # The legacy "tools" package is no longer published by Google's SDK repository.
+          packages: platform-tools
       - name: Install and isolate reviewed Android NDK
         if: matrix.target == 'aarch64-linux-android'
         shell: bash

@@ -168,6 +168,16 @@ test("release workflow verifies actual Tauri selection for APK and AAB and retai
   assert.doesNotMatch(workflow, /rm\s+[^\n]*(?:RATSPEAK_ANDROID_SDK_VIEW|ANDROID_HOME|ANDROID_SDK_ROOT)/);
 });
 
+test("Android CI and signed packaging do not request the removed legacy SDK tools package", () => {
+  for (const name of ["ci.yml", "release-android.yml"]) {
+    const workflow = readFileSync(join(dirname(script), "../../.github/workflows", name), "utf8");
+    const setupSteps = workflow.split(/(?=^      - )/m)
+      .filter((entry) => /uses: android-actions\/setup-android@/.test(entry));
+    assert.equal(setupSteps.length, 1, `${name}: expected one SDK setup step`);
+    assert.match(setupSteps[0], /^        with:\n(?:          #[^\n]*\n)*          packages: platform-tools$/m);
+  }
+});
+
 test("both Android CI toolchains use the reviewed SDK view while iOS skips Android setup", () => {
   const workflow = readFileSync(join(dirname(script), "../../.github/workflows/ci.yml"), "utf8");
   const mobile = workflow.slice(workflow.indexOf("\n  mobile-rust-lint:"));
