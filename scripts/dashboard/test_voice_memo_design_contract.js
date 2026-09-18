@@ -13,6 +13,19 @@ function read(relative) {
 var html = read('dashboard/index.html');
 var messaging = read('dashboard/static/css/09-messaging.css');
 var responsive = read('dashboard/static/css/13-responsive.css');
+var components = read('dashboard/static/css/07-components.css');
+
+// These actions share one bottom-aligned rail. Enlarging only the microphone
+// makes the attachment/send centres sit lower, including in iOS WKWebView.
+var mobileActions = responsive.match(/\.lxmf-compose-attach-btn,\s*\.message-send-btn,\s*\.voice-memo-record-btn,\s*\.voice-memo-action\s*\{([^}]+)\}/);
+assert(mobileActions,
+    'attachment, text/channel send, and voice actions must share mobile geometry');
+for (var dimension of ['width', 'height', 'min-width', 'min-height', 'flex-basis']) {
+    assert(new RegExp('(?:^|[;\\s])' + dimension + ':\\s*var\\(--touch-target\\);').test(mobileActions[1]),
+        'every mobile composer action must use the touch-target token for ' + dimension);
+}
+assert(/\.message-composer\s*\{[^}]*align-items:\s*flex-end;/.test(components),
+    'equal-sized composer actions must stay on one bottom rail as text grows');
 
 var leading = html.indexOf('class="voice-memo-leading-slot"');
 var signal = html.indexOf('class="voice-memo-signal"');

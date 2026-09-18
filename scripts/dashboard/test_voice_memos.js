@@ -241,7 +241,7 @@ assert(/\.voice-memo-waveform-played\s*\{[\s\S]*?clip-path:\s*inset\(0 var\(--vo
     'elapsed waveform audio must reveal the existing orange accent over the muted base');
 assert(/prefers-reduced-motion:[^)]*reduce[\s\S]*?voice-memo/.test(css),
     'voice animation must honor reduced motion');
-assert(/\.voice-memo-record-btn,[\s\S]*?width:\s*44px/.test(responsive),
+assert(/\.voice-memo-record-btn,\s*\.voice-memo-action\s*\{[^}]*width:\s*var\(--touch-target\)/.test(responsive),
     'mobile recorder controls must retain 44px touch targets');
 assert(/\.voice-memo-field\s*\{[\s\S]*?min-height:\s*44px/.test(responsive),
     'the mobile recording field must retain the composer touch-height contract');

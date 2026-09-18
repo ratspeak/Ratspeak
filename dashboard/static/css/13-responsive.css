@@ -943,7 +943,6 @@
     .lxmf-char-count { display: none !important; }
 
     .lxmf-compose-attach-btn {
-        min-width: 40px;
         box-shadow: var(--shadow-card);
     }
     .lxmf-compose-attach-btn:active {
@@ -955,12 +954,16 @@
         box-shadow: var(--shadow-card);
     }
 
+    /* Keep all composer circles on the same rail, including multiline input. */
+    .lxmf-compose-attach-btn,
+    .message-send-btn,
     .voice-memo-record-btn,
     .voice-memo-action {
-        width: 44px;
-        height: 44px;
-        min-width: 44px;
-        flex-basis: 44px;
+        width: var(--touch-target);
+        height: var(--touch-target);
+        min-width: var(--touch-target);
+        min-height: var(--touch-target);
+        flex-basis: var(--touch-target);
     }
 
     .voice-memo-recorder {
