@@ -1229,6 +1229,19 @@
         max-width: 48%;
         flex-wrap: wrap;
     }
+    .network-ownership-settings .modal-input {
+        min-height: var(--touch-target);
+        font-size: max(16px, 1rem);
+    }
+    .network-ownership-settings select.modal-input { height: var(--touch-target); }
+    .network-ownership-settings .nr-btn,
+    .network-owner-import > summary {
+        min-height: var(--touch-target);
+    }
+    .network-owner-import > summary { padding-block: var(--space-6); }
+    .network-owner-actions {
+        width: 100%;
+    }
     .settings-type-presets {
         width: 100%;
         grid-template-columns: repeat(5, minmax(0, 1fr));

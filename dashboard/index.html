@@ -1480,47 +1480,71 @@
 
                             <div class="panel settings-panel" id="panel-settings-network">
                         <div class="panel-body">
-                            <section id="network-ownership-settings" class="network-ownership-settings" hidden aria-label="Reticulum ownership">
-                                <h3 class="settings-panel-section-title">Reticulum ownership</h3>
-                                <p class="settings-row-desc">Choose who manages this identity's network interfaces. Internet/TCP connections remain ordinary interfaces in Ratspeak-managed mode.</p>
-                                <label for="network-owner-mode">Network stack</label>
-                                <select id="network-owner-mode" class="modal-input">
+                            <section id="network-ownership-settings" class="network-ownership-settings" hidden aria-labelledby="network-owner-heading">
+                                <h3 id="network-owner-heading" class="settings-panel-section-title">Network Ownership</h3>
+                                <select id="network-owner-mode" class="modal-input" aria-labelledby="network-owner-heading">
                                     <option value="managed">Managed by Ratspeak</option>
                                     <option value="existing">Use existing local instance</option>
                                 </select>
-                                <div id="network-owner-managed">
-                                    <label><input type="checkbox" id="network-owner-share"> Share Ratspeak's stack with other local apps</label>
-                                    <p class="settings-row-desc">Optional. Uses local TCP ports 37430 / 37431. This does not enable LAN discovery or a public TCP server.</p>
-                                    <button type="button" class="nr-btn nr-btn-sm" id="network-owner-export">Copy access configuration…</button>
-                                </div>
-                                <div id="network-owner-existing" hidden>
-                                    <p class="settings-row-desc">The other app owns LAN, TCP and radio interfaces. Enable its shared service and provide its RPC key. Ratspeak will not start a second stack if it disconnects.</p>
-                                    <label for="network-owner-carrier">Local connection</label>
-                                    <select id="network-owner-carrier" class="modal-input">
-                                        <option value="tcp">TCP loopback (127.0.0.1)</option>
-                                        <option value="unix" id="network-owner-unix-option" hidden>Linux abstract Unix socket</option>
-                                    </select>
-                                    <div id="network-owner-tcp" class="network-owner-ports">
-                                        <label>Packet port<input id="network-owner-packet" class="modal-input" type="number" min="1" max="65535" value="37428"></label>
-                                        <label>Control port<input id="network-owner-control" class="modal-input" type="number" min="1" max="65535" value="37429"></label>
+                                <div id="network-owner-managed" class="network-owner-fields">
+                                    <div class="settings-row network-owner-share-row">
+                                        <div class="settings-row-info">
+                                            <label class="settings-row-label" id="network-owner-share-label" for="network-owner-share">Share with local apps</label>
+                                            <span class="settings-row-desc" id="network-owner-share-help">Only apps on this device can connect.</span>
+                                        </div>
+                                        <label class="prop-toggle">
+                                            <input type="checkbox" id="network-owner-share" aria-labelledby="network-owner-share-label" aria-describedby="network-owner-share-help">
+                                            <span class="prop-slider"></span>
+                                        </label>
                                     </div>
-                                    <label id="network-owner-unix" hidden>Instance name<input id="network-owner-name" class="modal-input" value="default" maxlength="64" spellcheck="false" autocapitalize="none"></label>
-                                    <label for="network-owner-key">RPC key (hexadecimal)</label>
-                                    <input id="network-owner-key" class="modal-input" type="password" maxlength="2048" autocomplete="off" spellcheck="false" autocapitalize="none" aria-describedby="network-owner-key-help">
-                                    <p id="network-owner-key-help" class="settings-row-desc">Stored in your system's protected credential store, never in ordinary settings or logs.</p>
-                                    <details>
-                                        <summary>Paste an access configuration</summary>
-                                        <label for="network-owner-import">Shared-access JSON (contains a secret)</label>
-                                        <textarea id="network-owner-import" class="modal-input" rows="4" maxlength="8192" autocomplete="off" spellcheck="false" autocapitalize="none"></textarea>
-                                        <button type="button" class="nr-btn nr-btn-sm" id="network-owner-import-button">Use pasted configuration</button>
+                                    <button type="button" class="nr-btn nr-btn-ghost" id="network-owner-export" hidden>Copy access…</button>
+                                </div>
+                                <div id="network-owner-existing" class="network-owner-fields" hidden>
+                                    <p class="settings-row-desc">Connect to another app's local Reticulum service.</p>
+                                    <div class="network-owner-field">
+                                        <label class="settings-row-label" for="network-owner-carrier">Connection</label>
+                                        <select id="network-owner-carrier" class="modal-input">
+                                            <option value="tcp">TCP (localhost)</option>
+                                            <option value="unix" id="network-owner-unix-option" hidden>Unix socket (Linux)</option>
+                                        </select>
+                                    </div>
+                                    <div id="network-owner-tcp" class="network-owner-ports">
+                                        <div class="network-owner-field">
+                                            <label class="settings-row-label" for="network-owner-packet">Packet port</label>
+                                            <input id="network-owner-packet" class="modal-input" type="number" min="1" max="65535" value="37428">
+                                        </div>
+                                        <div class="network-owner-field">
+                                            <label class="settings-row-label" for="network-owner-control">Control port</label>
+                                            <input id="network-owner-control" class="modal-input" type="number" min="1" max="65535" value="37429">
+                                        </div>
+                                    </div>
+                                    <div id="network-owner-unix" class="network-owner-field" hidden>
+                                        <label class="settings-row-label" for="network-owner-name">Instance name</label>
+                                        <input id="network-owner-name" class="modal-input" value="default" maxlength="64" spellcheck="false" autocapitalize="none">
+                                    </div>
+                                    <div class="network-owner-field">
+                                        <label class="settings-row-label" for="network-owner-key">RPC key (hex)</label>
+                                        <input id="network-owner-key" class="modal-input" type="password" maxlength="2048" autocomplete="off" spellcheck="false" autocapitalize="none" aria-describedby="network-owner-key-help">
+                                        <p id="network-owner-key-help" class="settings-row-desc">Saved securely on this device.</p>
+                                    </div>
+                                    <details class="network-owner-import">
+                                        <summary>Import access configuration</summary>
+                                        <div class="network-owner-fields">
+                                            <div class="network-owner-field">
+                                                <label class="settings-row-label" for="network-owner-import">Access configuration (JSON)</label>
+                                                <textarea id="network-owner-import" class="modal-input" rows="4" maxlength="8192" autocomplete="off" spellcheck="false" autocapitalize="none" aria-describedby="network-owner-import-help"></textarea>
+                                                <p class="settings-row-desc" id="network-owner-import-help">Contains a secret. Only paste from an app you trust.</p>
+                                            </div>
+                                            <button type="button" class="nr-btn nr-btn-ghost" id="network-owner-import-button">Load configuration</button>
+                                        </div>
                                     </details>
-                                    <button type="button" class="nr-btn nr-btn-sm" id="network-owner-test">Test connection</button>
+                                    <button type="button" class="nr-btn nr-btn-ghost" id="network-owner-test">Test connection</button>
                                 </div>
-                                <div class="settings-row-actions">
-                                    <button type="button" class="nr-btn nr-btn-sm" id="network-owner-apply">Apply network change…</button>
-                                    <button type="button" class="nr-btn nr-btn-sm" id="network-owner-reset">Discard edits</button>
+                                <div class="network-owner-actions" id="network-owner-actions" hidden>
+                                    <button type="button" class="nr-btn nr-btn-ghost" id="network-owner-reset">Discard</button>
+                                    <button type="button" class="nr-btn nr-btn-primary" id="network-owner-apply">Apply changes</button>
                                 </div>
-                                <p id="network-owner-status" class="settings-row-desc" role="status" aria-live="polite"></p>
+                                <p id="network-owner-status" class="settings-row-desc" role="status" aria-live="polite" hidden></p>
                             </section>
                             <div class="settings-row">
                                 <div class="settings-row-info">

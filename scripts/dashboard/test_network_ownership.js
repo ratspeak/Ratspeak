@@ -4,6 +4,22 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+// Keep the compact editor on the app's standard Settings controls. Rendered
+// breakpoint/text-size checks also run in the private maintainer harness.
+const html = fs.readFileSync(path.join(__dirname, '../../dashboard/index.html'), 'utf8');
+const section = html.match(/<section id="network-ownership-settings"[\s\S]*?<\/section>/)[0];
+assert.match(section, /id="network-owner-heading"[^>]*>Network Ownership<\/h3>/);
+assert.match(section, /<label class="prop-toggle">\s*<input[^>]*id="network-owner-share"/);
+assert.match(section, /for="network-owner-share"/);
+assert.match(section, /class="network-owner-actions" id="network-owner-actions" hidden/);
+assert.doesNotMatch(section, /settings-row-actions|Reticulum ownership|Internet\/TCP connections remain/);
+assert.match(section, /class="nr-btn nr-btn-primary" id="network-owner-apply"/);
+assert.match(section, /class="nr-btn nr-btn-ghost" id="network-owner-reset"/);
+assert.match(section, /id="network-owner-status"[^>]*role="status"[^>]*aria-live="polite" hidden/);
+for (const id of ['carrier', 'packet', 'control', 'name', 'key', 'import']) {
+    assert(section.includes('for="network-owner-' + id + '"'), id + ' has an explicit label');
+}
+
 const nodes = new Map();
 function node(id) {
     if (!nodes.has(id)) nodes.set(id, { value: '', hidden: false, disabled: false, checked: false,
@@ -66,18 +82,49 @@ function access(port, key) {
 (async () => {
     await settle();
     assert.equal(node('network-ownership-settings').hidden, true);
+    assert.equal(field('status').hidden, true, 'healthy state needs no redundant status paragraph');
+    assert.equal(field('actions').hidden, true, 'no edit actions before there are edits');
+    assert.equal(field('apply').disabled, true);
+    assert.equal(field('export').hidden, true, 'no access configuration when sharing is off');
     developer = true; windowEvents['ratspeak-developer-mode-changed']();
     assert.equal(node('network-ownership-settings').hidden, false);
+    events.network_ownership({...data, configured: false});
+    assert.equal(field('status').textContent, '', 'legacy configuration does not add a routine footnote');
+    events.network_ownership({...data, share: true});
+    assert.equal(field('export').hidden, false);
+    assert.equal(field('export').disabled, false, 'ready saved sharing allows access copy');
+    const beforeEdit = calls.length;
+    node('network-ownership-settings').events.input();
+    assert.equal(field('actions').hidden, false);
+    assert.equal(field('export').disabled, true, 'do not copy saved access while edits are pending');
+    assert.equal(calls.length, beforeEdit, 'editing alone does not change the network');
+    field('reset').events.click(); await settle();
+    assert.equal(field('actions').hidden, true);
+    for (const attention of [
+        {status: 'reconnecting'},
+        {error: 'A useful connection error'},
+        {warnings: [{interface: 'Local Network', message: 'Address already in use'}]},
+    ]) {
+        events.network_ownership({...data, ...attention});
+        assert.equal(field('status').hidden, false, 'actionable network feedback remains visible');
+        assert.notEqual(field('status').textContent, '');
+        events.network_ownership({...data, error: null, warnings: []});
+        assert.equal(field('status').hidden, true);
+    }
     field('mode').value = 'existing'; field('mode').events.change();
+    assert.equal(field('actions').hidden, false);
+    assert.equal(field('apply').disabled, false);
     field('key').value = '1234';
     await field('test').events.click();
     assert.match(field('status').textContent, /rejected/);
+    assert.equal(field('status').hidden, false);
     assert.equal(data.mode, 'managed');
     assert.equal(field('unix-option').disabled, true, 'busy completion cannot enable unsupported Unix');
     events.stats_update({network_ownership: data});
     assert.equal(field('mode').value, 'existing', 'poll must not overwrite a dirty form');
     await field('apply').events.click();
     assert.equal(data.mode, 'existing');
+    assert.equal(field('actions').hidden, true, 'successful Apply closes the action footer');
     assert.equal(externalClass, true);
     assert.equal(node('transport-mode-select').disabled, true);
     assert.equal(field('key').value, '');
@@ -209,6 +256,7 @@ function access(port, key) {
                 if (firstToSettle === 'newer') await settleOlder();
                 assert.equal(field('key').value, 'newer-key');
                 assert.equal(field('packet').value, 41000);
+                assert.equal(field('actions').hidden, false, 'imported configuration can be applied');
                 assert.equal(field('status').textContent, expectedStatus);
             });
         }
@@ -246,7 +294,8 @@ function access(port, key) {
         assert.equal(duringApply.key, '');
         assert.equal(duringApply.status, expectedStatus);
         assert.equal(field('packet').value, 43000, 'the confirmed backend selection is adopted');
-        assert.match(field('status').textContent, /Ready/);
+        assert.equal(field('status').textContent, '');
+        assert.equal(field('status').hidden, true);
     });
     await regression('an obsolete refresh error cannot replace current form status', async () => {
         const reply = deferred();

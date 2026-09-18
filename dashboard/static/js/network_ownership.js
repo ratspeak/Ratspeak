@@ -7,7 +7,11 @@
     var epoch = 0;
     var editorEnabled = false;
     function el(id) { return document.getElementById('network-owner-' + id); }
-    function status(message) { if (el('status')) el('status').textContent = message || ''; }
+    function status(message) {
+        if (!el('status')) return;
+        el('status').textContent = message || '';
+        el('status').hidden = !message;
+    }
     function clearSecrets() {
         if (el('key')) el('key').value = '';
         if (el('import')) el('import').value = '';
@@ -35,7 +39,10 @@
         el('tcp').hidden = unix;
         el('unix').hidden = !unix;
         el('unix-option').disabled = busy || !current || !current.unix_supported;
-        el('export').disabled = busy || !current || !current.share || current.mode !== 'managed' || current.status !== 'ready';
+        el('export').hidden = existing || !el('share').checked;
+        el('export').disabled = busy || dirty || !current || !current.share || current.mode !== 'managed' || current.status !== 'ready';
+        el('actions').hidden = !dirty;
+        el('apply').disabled = el('reset').disabled = busy || !dirty;
     }
     function setBusy(value) {
         busy = value;
@@ -83,7 +90,10 @@
             el('key').placeholder = current.credential_saved ? 'Saved securely — leave blank to keep' : 'Key from the shared instance';
             el('unix-option').hidden = !current.unix_supported;
             el('unix-option').disabled = !current.unix_supported;
-            status(statusText(current) + (!current.configured ? '. Existing configuration-file settings are preserved until you apply a choice.' : ''));
+            if (!busy || reset) {
+                var needsAttention = current.status !== 'ready' || current.error || (current.warnings && current.warnings.length);
+                status(needsAttention ? statusText(current) : '');
+            }
         }
         gate();
         fields();
@@ -147,7 +157,8 @@
             applyEndpoint(result.endpoint);
             el('key').value = result.rpc_key;
             dirty = true;
-            status('Configuration loaded into the form. Test it, then apply when ready.');
+            fields();
+            status('Configuration loaded. Test, then apply.');
         } catch (error) { if (requestEpoch === epoch) status(error.message || String(error)); }
         finally { content = ''; if (result) result.rpc_key = null; }
     }
@@ -184,9 +195,10 @@
             // clearing the values the user is currently entering.
             epoch += 1;
             dirty = true;
+            status('');
             fields();
         });
-        el('mode').addEventListener('change', function() { dirty = true; invalidateSecrets(); fields(); });
+        el('mode').addEventListener('change', function() { dirty = true; invalidateSecrets(); status(''); fields(); });
         el('carrier').addEventListener('change', fields);
         el('test').addEventListener('click', test);
         el('apply').addEventListener('click', apply);

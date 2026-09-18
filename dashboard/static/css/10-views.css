@@ -1829,18 +1829,69 @@
 .settings-row:last-child { border-bottom: none; }
 
 .network-ownership-settings {
-    padding-bottom: var(--space-4);
-    border-bottom: 1px solid var(--border);
+    display: grid;
+    gap: var(--space-6);
+    padding-block: var(--space-4) var(--space-8);
+    border-bottom: 1px solid var(--border-row);
 }
 .network-ownership-settings[hidden],
 .network-ownership-settings [hidden] { display: none !important; }
-.network-ownership-settings > *,
-#network-owner-existing > *,
-#network-owner-managed > * { margin-block: var(--space-3); }
-.network-ownership-settings label { display: block; color: var(--text-primary); }
-.network-ownership-settings .modal-input { width: 100%; margin-top: var(--space-2); }
-.network-owner-ports { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
-.network-owner-ports > label { min-width: 0; }
+.network-ownership-settings .settings-panel-section-title,
+.network-ownership-settings .settings-row-desc { margin: 0; }
+.network-owner-fields,
+.network-owner-field {
+    display: grid;
+    min-width: 0;
+    gap: var(--space-6);
+}
+.network-owner-field { gap: var(--space-3); }
+.network-ownership-settings .modal-input { width: 100%; min-width: 0; }
+/* Native WebKit selects ignore min-height; keep the native picker and give
+   its closed control an explicit height from the existing sizing tokens. */
+.network-ownership-settings select.modal-input { height: var(--control-height-md); }
+.network-owner-ports {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-6);
+}
+.network-ownership-settings .network-owner-share-row {
+    padding: var(--space-2) 0;
+    border: 0;
+    align-items: center;
+    flex-wrap: nowrap;
+}
+.network-ownership-settings .network-owner-share-row .settings-row-info {
+    min-width: 0;
+    flex: 1;
+}
+.network-ownership-settings .prop-toggle { flex-shrink: 0; }
+.network-ownership-settings .prop-toggle:focus-within {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: var(--space-2);
+    border-radius: var(--radius-pill);
+}
+.network-ownership-settings .prop-toggle input:disabled + .prop-slider { opacity: var(--opacity-disabled); }
+.network-ownership-settings .nr-btn {
+    justify-self: start;
+    white-space: normal;
+    min-width: 0;
+}
+.network-owner-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    justify-self: end;
+    width: min(100%, 24rem);
+    gap: var(--space-4);
+}
+.network-owner-actions .nr-btn { width: 100%; }
+.network-owner-import > summary {
+    padding-block: var(--space-3);
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+    cursor: pointer;
+}
+.network-owner-import[open] > summary { margin-bottom: var(--space-6); }
+#network-owner-status { white-space: pre-line; overflow-wrap: anywhere; }
 .network-owner-notice, .network-owner-interfaces {
     padding: var(--space-4);
     color: var(--text-secondary);
