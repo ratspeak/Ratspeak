@@ -35,6 +35,12 @@
         padding-bottom: max(var(--space-5), var(--sab));
     }
 
+    /* Loading/success progress sheets have no actions footer to reserve the
+       home-indicator inset. Keep breathing room above that inset as well. */
+    .bottom-sheet.rs-dialog-sheet--footerless .bottom-sheet-body {
+        padding-bottom: calc(var(--space-12) + var(--sab));
+    }
+
     .bottom-sheet.open.channel-consent-sheet {
         max-height: min(760px, calc(100vh - var(--space-8)));
         max-height: min(760px, calc(var(--app-height, 100dvh) - max(var(--sat), var(--space-8))));

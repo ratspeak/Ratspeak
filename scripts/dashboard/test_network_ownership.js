@@ -35,11 +35,13 @@ let applyReply = null;
 let refreshReply = null;
 let confirmationReply = true;
 const appliedRequests = [];
+const toasts = [];
 let developer = false;
 let data = { mode: 'managed', share: false, status: 'ready', configured: true,
     local_interfaces_allowed: true, credential_saved: false, unix_supported: false };
 let externalClass = false;
 const context = {
+    currentView: 'message', showToast: (...args) => toasts.push(args),
     document: { readyState: 'complete', getElementById: node,
         hidden: false, addEventListener(name, fn) { documentEvents[name] = fn; },
         querySelectorAll: () => [...nodes.entries()].filter(([id]) => id.startsWith('network-owner-') && !['network-owner-notice', 'network-owner-interfaces'].includes(id)).map(([, value]) => value), createElement: () => node('remote-row'),
@@ -86,6 +88,29 @@ function access(port, key) {
     assert.equal(field('actions').hidden, true, 'no edit actions before there are edits');
     assert.equal(field('apply').disabled, true);
     assert.equal(field('export').hidden, true, 'no access configuration when sharing is off');
+    const startupWarning = {interface: 'LoRa Radio', message: 'This configured interface could not start.'};
+    data = {...data, warnings: [startupWarning]};
+    events.network_ownership(data);
+    assert.equal(field('notice').hidden, true, 'interface warnings are not permanent ownership banners');
+    assert.equal(toasts.length, 0, 'no warning while another tab is open');
+    context.currentView = 'network';
+    context.window.showNetworkStartupWarnings(); await settle();
+    assert.equal(toasts.length, 1);
+    assert.deepEqual(toasts[0], ['LoRa Radio: This configured interface could not start.', 'toast-warning', 5000]);
+    events.stats_update({network_ownership: data});
+    assert.equal(toasts.length, 1, 'polling must not resurrect dismissed toasts');
+    context.window.showNetworkStartupWarnings(); await settle();
+    assert.equal(toasts.length, 2, 'a new Network visit can remind the user');
+    data = {...data, warnings: []};
+    context.window.showNetworkStartupWarnings(); await settle();
+    assert.equal(toasts.length, 2, 'resolved failures must not be announced');
+    const pendingEntry = deferred(); refreshReply = pendingEntry.promise;
+    context.window.showNetworkStartupWarnings();
+    context.currentView = 'message';
+    pendingEntry.resolve({...data, warnings: [startupWarning]}); await settle();
+    assert.equal(toasts.length, 2, 'late Network reply must not interrupt another tab');
+    refreshReply = null;
+    events.network_ownership(data);
     developer = true; windowEvents['ratspeak-developer-mode-changed']();
     assert.equal(node('network-ownership-settings').hidden, false);
     events.network_ownership({...data, configured: false});

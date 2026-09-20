@@ -465,6 +465,7 @@ var VIEW_LIFECYCLE = {
     },
 
     network: function() {
+        if (typeof window.showNetworkStartupWarnings === 'function') window.showNetworkStartupWarnings();
         requestAnimationFrame(function() {
             if (typeof lastStats !== 'undefined' && lastStats) {
                 if (typeof renderNetworkOverview === 'function') renderNetworkOverview(lastStats);

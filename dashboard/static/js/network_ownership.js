@@ -6,6 +6,23 @@
     var busy = false;
     var epoch = 0;
     var editorEnabled = false;
+    var warningVisit = 0;
+    var warned = Object.create(null);
+    function warnOnNetwork() {
+        if (typeof currentView === 'undefined' || currentView !== 'network' || document.hidden || !current) return;
+        (current.warnings || []).forEach(function(warning) {
+            var message = warning.interface + ': ' + warning.message;
+            if (warned[message]) return;
+            warned[message] = true;
+            showToast(message, 'toast-warning', 5000);
+        });
+    }
+    window.showNetworkStartupWarnings = function() {
+        var visit = ++warningVisit;
+        warned = Object.create(null);
+        // Read current state, not an earlier poll's failed-start snapshot.
+        refresh(false).then(function() { if (visit === warningVisit) warnOnNetwork(); });
+    };
     function el(id) { return document.getElementById('network-owner-' + id); }
     function status(message) {
         if (!el('status')) return;
@@ -57,9 +74,9 @@
         el('name').value = endpoint.instance_name || 'default';
         fields();
     }
-    function statusText(data) {
+    function statusText(data, includeWarnings) {
         if (data.error) return data.error;
-        if (data.warnings && data.warnings.length) return data.warnings.map(function(warning) { return warning.interface + ': ' + warning.message; }).join('\n');
+        if (includeWarnings && data.warnings && data.warnings.length) return data.warnings.map(function(warning) { return warning.interface + ': ' + warning.message; }).join('\n');
         var states = { ready: 'Ready', reconnecting: 'Waiting for the shared instance; reconnecting automatically',
             authentication_rejected: 'The shared instance rejected the RPC key. Update it in Settings → Network.',
             control_unavailable: 'The shared control service is unavailable. No local interfaces have been started.',
@@ -72,7 +89,7 @@
         var external = current.local_interfaces_allowed === false;
         document.body.classList.toggle('network-external', external);
         var notice = el('notice');
-        notice.hidden = !external && !current.error && !current.share && !(current.warnings && current.warnings.length);
+        notice.hidden = !external && !current.error && !current.share;
         notice.textContent = statusText(current) + (external ? ' Interfaces are managed in the other app. Your saved Ratspeak interfaces are retained.' : '');
         var remote = el('interfaces');
         remote.hidden = !external;
@@ -92,11 +109,14 @@
             el('unix-option').disabled = !current.unix_supported;
             if (!busy || reset) {
                 var needsAttention = current.status !== 'ready' || current.error || (current.warnings && current.warnings.length);
-                status(needsAttention ? statusText(current) : '');
+                status(needsAttention ? statusText(current, true) : '');
             }
         }
         gate();
         fields();
+        // Startup may finish after Network is already visible. Do not repeat
+        // dismissed warnings on the statistics polling cadence.
+        if (warningVisit) warnOnNetwork();
     }
     function refresh(reset) {
         var requestEpoch = epoch;
@@ -212,7 +232,7 @@
         });
         RS.listen('network_ownership', function(data) { adopt(data, false); });
         RS.listen('stats_update', function(data) { if (data.network_ownership) adopt(data.network_ownership, false); remoteInterfaces(data); });
-        RS.listen('identity_switching', function() { epoch += 1; dirty = false; clearSecrets(); current = null; });
+        RS.listen('identity_switching', function() { epoch += 1; warningVisit += 1; warned = Object.create(null); dirty = false; clearSecrets(); current = null; });
         RS.listen('identity_switched', function() { refresh(true); });
         RS.listen('system_status', function() { refresh(false); });
         gate();

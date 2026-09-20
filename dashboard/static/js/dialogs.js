@@ -621,7 +621,8 @@ function rsProgress(opts) {
     bodyInner.appendChild(statusText);
     built.body.appendChild(bodyInner);
 
-    built.footer.style.display = 'none';
+    built.footer.hidden = true;
+    built.sheet.classList.add('rs-dialog-sheet--footerless');
 
     var _timeoutId = null;
 
@@ -633,7 +634,8 @@ function rsProgress(opts) {
             try { opts.onCancel(); } catch (_) {}
             close();
         });
-        built.footer.style.display = '';
+        built.footer.hidden = false;
+        built.sheet.classList.remove('rs-dialog-sheet--footerless');
         built.footer.appendChild(cancelBtn);
     }
 
@@ -658,7 +660,8 @@ function rsProgress(opts) {
         closeBtn.className = 'rs-dialog-confirm';
         closeBtn.textContent = 'Close';
         closeBtn.addEventListener('click', close);
-        built.footer.style.display = '';
+        built.footer.hidden = false;
+        built.sheet.classList.remove('rs-dialog-sheet--footerless');
         built.footer.appendChild(closeBtn);
         closeBtn.focus();
     }
