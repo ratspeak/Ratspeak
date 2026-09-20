@@ -19,6 +19,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import org.json.JSONArray
 
 /** Only OS intake and encrypted, app-private storage. Rust owns queue policy. */
 object RatspeakTextShares {
@@ -36,25 +37,30 @@ object RatspeakTextShares {
     private fun context(): Context = checkNotNull(appContext) { "Text sharing unavailable" }
     private fun file(): AtomicFile = AtomicFile(File(context().noBackupFilesDir, FILE))
 
-    // Only accept text representations. Never coerce an arbitrary URI to text:
-    // doing so could read an attacker-selected content/file provider.
+    // Only text or one image. Never coerce arbitrary content URIs to text.
     fun receive(intent: Intent?, restoredId: String? = null): String? {
+        if (intent?.action == Intent.ACTION_SEND_MULTIPLE) {
+            showError("Share one photo at a time.")
+            return null
+        }
         if (intent?.action != Intent.ACTION_SEND) return null
         val id = restoredId?.takeIf { it.matches(Regex("[0-9a-f]{32}")) }
             ?: UUID.randomUUID().toString().replace("-", "")
         try {
-            require(intent.type == "text/plain")
+            val image = intent.type?.startsWith("image/") == true
+            require(intent.type == "text/plain" || image)
+            val uri = if (image) RatspeakSharedImages.imageUri(intent).toString() else null
             val extra = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)
                 ?: intent.clipData?.takeIf { it.itemCount == 1 }?.getItemAt(0)?.text
-            require(extra != null && extra.length in 1..65536)
+            require((image || extra != null) && (extra?.length ?: 0) <= 65536)
             val subject = intent.getCharSequenceExtra(Intent.EXTRA_SUBJECT)
             require(subject == null || subject.length <= 2048)
-            val text = extra.toString()
+            val text = extra?.toString() ?: ""
             val title = subject?.toString() ?: ""
             require(text.toByteArray(Charsets.UTF_8).size <= 65536)
             worker.execute {
-                val error = try { accept(id, text, title) }
-                    catch (_: Exception) { "Could not save shared text. Open Ratspeak and try sharing again." }
+                val error = try { if (uri != null) acceptImage(id, text, title, uri, intent.type ?: "image/*") else accept(id, text, title) }
+                    catch (_: Exception) { "Could not save this share. Open Ratspeak and try sharing again." }
                     catch (_: UnsatisfiedLinkError) { "Ratspeak is still starting. Try sharing again." }
                 if (error.isNotEmpty()) showError(error)
                 else main.post {
@@ -63,12 +69,13 @@ object RatspeakTextShares {
                     intent.removeExtra(Intent.EXTRA_TEXT)
                     intent.removeExtra(Intent.EXTRA_SUBJECT)
                     intent.removeExtra(Intent.EXTRA_HTML_TEXT)
+                    intent.removeExtra(Intent.EXTRA_STREAM)
                     intent.clipData = null
                     intent.action = Intent.ACTION_MAIN
                 }
             }
         } catch (_: Exception) {
-            showError("Could not accept this share. Share plain text or a link up to 64 KiB, then try again.")
+            showError("Share text or a link up to 64 KiB, or one photo up to 128 MB, then try again.")
         }
         // Saved-state ID belongs to this Activity delivery, never to an extra
         // supplied by another app. Deliberate onNewIntent shares get fresh IDs.
@@ -145,4 +152,19 @@ object RatspeakTextShares {
 
     @JvmStatic
     private external fun accept(id: String, text: String, subject: String): String
+
+    @JvmStatic
+    private external fun acceptImage(id: String, text: String, subject: String, uri: String, mime: String): String
+
+    @JvmStatic
+    fun copyImage(id: String, uri: String, mime: String): String = RatspeakSharedImages(context(), ::key).copy(id, uri, mime)
+
+    @JvmStatic
+    fun readImageChunk(id: String, index: Int, size: Long): ByteArray = RatspeakSharedImages(context(), ::key).readChunk(id, index, size)
+
+    @JvmStatic
+    fun pruneImages(ids: String) {
+        val values = JSONArray(ids)
+        RatspeakSharedImages(context(), ::key).prune((0 until values.length()).map { values.getString(it) }.toSet())
+    }
 }

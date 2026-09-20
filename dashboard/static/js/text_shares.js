@@ -26,6 +26,11 @@
         return !!lxmfPendingFile || !!_replyTarget ||
             !!(RS.voiceMemos && RS.voiceMemos.hasPendingRecording && RS.voiceMemos.hasPendingRecording());
     }
+    function sharedMediaBusy(holder) {
+        return !!_replyTarget || !!(RS.voiceMemos && RS.voiceMemos.hasPendingRecording && RS.voiceMemos.hasPendingRecording()) ||
+            (holder.item.image ? !holder.attachment || lxmfPendingFile !== holder.attachment || holder.attachment.preparing
+                : !!lxmfPendingFile);
+    }
     function error(message) { showToast(String(message && message.message || message), 'toast-warning', 4200); }
     function current(owner, session) {
         return session === epoch && visible() && RS.conversationOwner.isIdentityCurrent(owner);
@@ -72,10 +77,13 @@
                 operation: operation
             }, extra || {}) }).then(function(result) {
                 mutationRevision += 1;
-                if (!RS.conversationOwner.isIdentityCurrent(identityOwner)) throw new Error('The identity changed.');
+                if (!RS.conversationOwner.isIdentityCurrent(identityOwner)) {
+                    if (result.stage) RS.invoke('cancel_attachment_stage', {token: result.stage.token}).catch(function() {});
+                    throw new Error('The identity changed.');
+                }
                 put(result.item, holder.item.id);
                 if (result.item) holder.item = result.item;
-                return result.item;
+                return result;
             });
         });
         editChain = task;
@@ -141,14 +149,15 @@
     }
     function render() {
         list.replaceChildren(); search.hidden = !selected; tabs.hidden = !selected;
-        preview.hidden = !selected; preview.textContent = selected ? selected.item.text : '';
+        preview.hidden = !selected; preview.textContent = selected
+            ? (selected.item.image ? 'Photo · ' + selected.item.image.name + (selected.item.text ? '\n' : '') : '') + selected.item.text : '';
         title.textContent = selected ? 'Share to…' : 'Shared items';
         sender.textContent = 'From ' + (document.getElementById('msg-profile-name').textContent || 'current identity');
         document.getElementById('text-share-discard').hidden = !selected;
         if (!selected) {
-            if (!items.length) status('No shared items. Share text or a link to Ratspeak from another app.');
+            if (!items.length) status('No shared items. Share text, a link or a photo to Ratspeak from another app.');
             items.forEach(function(item) {
-                list.appendChild(buttonRow(item.text.slice(0, 100), item.recipient ? 'Saved draft · tap to review' : 'Choose a recipient', function() {
+                list.appendChild(buttonRow(item.image ? 'Photo · ' + item.image.name : item.text.slice(0, 100), item.recipient ? 'Saved draft · tap to review' : 'Choose a recipient', function() {
                     selected = { item: item }; mode = 'recent'; search.value = '';
                     if (item.recipient) choose(item.recipient); else render();
                 }));
@@ -211,7 +220,7 @@
                 var choice = await rsChoice({ title: 'This chat has a draft', message: 'Keep your existing text and add the shared content?',
                     choices: [{ label: 'Add to draft', value: 'add' }, { label: 'Keep for later', value: 'later' }] });
                 if (!exact(owner, session) || selected !== holder || choice !== 'add') return;
-                text = previous + '\n\n' + text;
+                text = text ? previous + '\n\n' + text : previous;
             }
             if (!exact(owner, session) || mediaBusy()) return;
             await edit(holder, 'assign', { recipient: hash, text: text });
@@ -224,25 +233,42 @@
             _lxmfDrafts[hash] = text;
             holder.owner = RS.conversationOwner.snapshot(); holder.sending = false;
             drafts[hash] = holder;
+            if (holder.item.image) {
+                var imageOwner = holder.owner;
+                var nativeStage = edit(holder, 'stage_image').then(function(result) {
+                    var token = result.stage.token;
+                    if (!RS.conversationOwner.isCurrent(imageOwner)) {
+                        RS.invoke('cancel_attachment_stage', {token: token}).catch(function() {});
+                        throw new Error('The conversation changed. Your photo is kept in Shared items.');
+                    }
+                    return token;
+                });
+                holder.attachment = attachSharedImage(holder.item.image, nativeStage);
+            }
             input.dispatchEvent(new Event('input'));
-            showToast('Ready to review. Tap Send when you’re ready.', 'toast-success', 2600);
+            if (!holder.item.image) showToast('Ready to review. Tap Send when you’re ready.', 'toast-success', 2600);
         } catch (err) { if (current(owner, session)) error(err); }
         finally { selecting = false; }
     }
     function save(holder, text) {
-        if (!text.trim()) return Promise.resolve(); // Explicit Discard owns deletion.
+        if (!text.trim() && !holder.item.image) return Promise.resolve(); // Explicit Discard owns deletion.
         return edit(holder, 'draft', { text: text });
     }
     function interceptSend(deliveryMethod) {
         var hash = lxmfActiveContact, holder = drafts[hash];
         if (!holder) return false;
         if (holder.sending) return true;
-        if (mediaBusy()) { error('Send the shared text separately from a reply or attachment.'); return true; }
+        if (sharedMediaBusy(holder)) {
+            // Removing a shared photo leaves its recovery copy available, but
+            // must not trap the composer or turn a replacement into that share.
+            if (holder.item.image && lxmfPendingFile !== holder.attachment) { delete drafts[hash]; return false; }
+            error(holder.item.image ? 'Finish preparing the shared photo before sending.' : 'Send the shared text separately from a reply or attachment.'); return true;
+        }
         var owner = RS.conversationOwner.snapshot(), text = input.value;
-        if (!text.trim()) return true;
+        if (!text.trim() && !holder.item.image) return true;
         holder.sending = true; clearTimeout(saveTimer);
         save(holder, text).then(function() { return edit(holder, 'sending'); }).then(function() {
-            if (!RS.conversationOwner.isCurrent(owner) || !visible() || input.value !== text || mediaBusy()) {
+            if (!RS.conversationOwner.isCurrent(owner) || !visible() || input.value !== text || sharedMediaBusy(holder)) {
                 throw new Error('The conversation changed. The shared draft was kept.');
             }
             sendLxmfMessage(deliveryMethod, holder);
@@ -269,7 +295,7 @@
     document.getElementById('text-share-discard').addEventListener('click', async function() {
         if (!selected || selecting) return;
         var holder = selected, session = epoch, owner = RS.conversationOwner.snapshot();
-        var choice = await rsChoice({ title: 'Discard shared item?', message: 'This removes its saved recovery copy. Text already in a chat is not erased.',
+        var choice = await rsChoice({ title: 'Discard shared item?', message: 'This removes its saved recovery copy. Content already in a chat is not erased.',
             choices: [{ label: 'Keep item', value: 'keep' }, { label: 'Discard item', value: 'discard' }] });
         if (!current(owner, session) || choice !== 'discard') return;
         try {

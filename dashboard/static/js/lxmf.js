@@ -3932,7 +3932,12 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
             });
         }).then(function(resp) {
             _handleLxmfSendAccepted(resp, attachMsgId, targetHash, sendOwner);
+            if (shareContext && RS.textShares) {
+                if (resp && resp.msg_id && !resp.cancelled) RS.textShares.accepted(shareContext);
+                else RS.textShares.failed(shareContext);
+            }
         }).catch(function(error) {
+            if (shareContext && RS.textShares) RS.textShares.failed(shareContext);
             if (_conversationOwnerIdentityIsCurrent(sendOwner)) {
                 _markOptimisticMessageFailed(attachMsgId, error, targetHash);
             }
@@ -3969,6 +3974,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
         _updateConversationPreview(targetHash, attachPreview, Date.now() / 1000);
         loadConversations();
         _finishLxmfComposerSend(input, shouldRestoreComposerFocus, targetHash);
+        if (shareContext && RS.textShares) RS.textShares.dispatched(shareContext);
         return;
     }
 
@@ -4321,14 +4327,14 @@ function _finishPendingImageAsFile(pendingFile, stageToken) {
     });
 }
 
-function _stageSelectedImage(file, pendingFile, selectionToken) {
+function _stageSelectedImage(file, pendingFile, selectionToken, nativeStage) {
     var stageToken = null;
-    return _stageAttachmentBlob(
+    return (nativeStage || _stageAttachmentBlob(
         file,
         _pendingAttachmentName(file),
         file.type || 'application/octet-stream',
         true
-    ).then(function(token) {
+    )).then(function(token) {
         stageToken = token;
         pendingFile.staging_token = token;
         if (!_isCurrentPendingAttachment(pendingFile, selectionToken)) {
@@ -4399,6 +4405,21 @@ function _stageSelectedImage(file, pendingFile, selectionToken) {
         }
         return null;
     });
+}
+
+// System shares enter the exact same inspection/size-choice/preparation flow
+// as a photo picked in the app. Only metadata and an opaque staging token cross
+// IPC; source bytes never become a WebView File/base64/decoded image.
+function attachSharedImage(image, nativeStage) {
+    var token = ++_pendingAttachmentToken;
+    var file = {name: image.name, size: image.size, type: image.mime};
+    var pending = {name: image.name, size: image.size, mime: image.mime,
+        inline_image: false, preparing: true, status_text: 'Staging photo…',
+        preview_url: null, destination: lxmfActiveContact};
+    lxmfPendingFile = pending;
+    renderPendingFile();
+    pending.stage_promise = _stageSelectedImage(file, pending, token, nativeStage);
+    return pending;
 }
 
 function handleFileSelected(inputEl) {

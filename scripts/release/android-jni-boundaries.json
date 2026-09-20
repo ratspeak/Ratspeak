@@ -15,7 +15,11 @@
       "methods": [
         ["read", "()Ljava/lang/String;"],
         ["write", "(Ljava/lang/String;)V"],
-        ["accept", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"]
+        ["accept", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"],
+        ["acceptImage", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"],
+        ["copyImage", "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"],
+        ["readImageChunk", "(Ljava/lang/String;IJ)[B"],
+        ["pruneImages", "(Ljava/lang/String;)V"]
       ]
     },
     {

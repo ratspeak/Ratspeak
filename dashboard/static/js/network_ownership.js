@@ -236,7 +236,7 @@
         });
         RS.listen('network_ownership', function(data) { adopt(data, false); });
         RS.listen('stats_update', function(data) {
-            liveInterfaces = data.interface_stats && data.interface_stats.interfaces || [];
+            if (data.interface_stats && Array.isArray(data.interface_stats.interfaces)) liveInterfaces = data.interface_stats.interfaces;
             if (data.network_ownership) adopt(data.network_ownership, false);
             remoteInterfaces(data);
         });

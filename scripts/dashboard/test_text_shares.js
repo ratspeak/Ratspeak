@@ -23,11 +23,12 @@ function deferred() {
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
     return { promise, resolve, reject };
 }
-function fixture(android = true) {
+function fixture(android = true, image = false) {
     const nodes = {}, events = {}, timers = new Map(), calls = [], warnings = [], choices = [], sent = [];
     const hooks = {};
     const node = id => nodes[id] ||= element(id);
     const model = { id: A, revision: '1', text: '00123\nПривет https://ozon.example', identity: null, recipient: null, send_attempted: false };
+    if (image) { model.image = {name:'photo.jpg',mime:'image/jpeg',size:2_000_000}; model.text = ''; }
     let pending = [model], revision = 1, identity = 0, navigation = 0, failWrite = false;
     const context = { console, Promise, Object, String, Number, Error, RegExp,
         Event: function(type) { this.type = type; },
@@ -42,6 +43,11 @@ function fixture(android = true) {
         normalizeContactList: x => x, shortHash: x => x.slice(0, 8), identityAvatar: () => '<svg></svg>',
         showToast: text => warnings.push(text), rsChoice: async () => choices.shift() || null,
         openConversationWith(hash) { navigation++; context.lxmfActiveContact = hash; node('lxmf-input').value = context._lxmfDrafts[hash] || ''; },
+        attachSharedImage(image, stage) {
+            const pending = {name:image.name,preparing:true}; context.lxmfPendingFile = pending;
+            pending.stage_promise = stage.then(token => {pending.preparing=false;return token;}).catch(() => {context.lxmfPendingFile=null;return null;});
+            return pending;
+        },
         sendLxmfMessage(method, holder) { sent.push({ method, holder, text: node('lxmf-input').value }); context.RS.textShares.dispatched(holder); }
     };
     context.window = context;
@@ -61,11 +67,13 @@ function fixture(android = true) {
             const reply = value => hooks.reply ? hooks.reply(name, args, value) : Promise.resolve(value);
             if (name === 'list_text_shares') return reply({ items: pending.map(x => ({...x})), activity_generation: '1', identity_generation: String(identity) });
             if (name === 'api_contacts') return reply(context.lxmfContacts);
+            if (name === 'cancel_attachment_stage') return Promise.resolve({cancelled:true});
             assert.equal(name, 'edit_text_share');
             if (failWrite) return Promise.reject(new Error('disk full'));
             const a = args.args, item = pending.find(x => x.id === a.id);
             assert(item); assert.equal(a.revision, item.revision);
             assert.equal(a.identity_generation, String(identity));
+            if (a.operation === 'stage_image') return reply({item:{...item},stage:{token:'private-token',...item.image}});
             if (a.operation === 'discard') { pending = pending.filter(x => x !== item); return reply({ item: null }); }
             if (a.operation === 'assign') { item.recipient = a.recipient; item.identity = C; item.send_attempted = false; }
             if (a.text !== undefined) item.text = a.text;
@@ -85,6 +93,41 @@ function fixture(android = true) {
     };
 }
 (async () => {
+    const photo = fixture(true, true); await settle();
+    assert.equal(photo.node('text-share-preview').textContent, 'Photo · photo.jpg');
+    await photo.node('text-share-list').children[0].click(); await settle();
+    assert.equal(photo.sent.length, 0, 'selecting a photo recipient never sends');
+    assert.equal(photo.context.lxmfPendingFile.name, 'photo.jpg');
+    assert.equal(photo.node('lxmf-input').value, '', 'photo needs no placeholder caption');
+    assert.equal(photo.context.RS.textShares.interceptSend('auto'), true); await settle();
+    assert.equal(photo.sent.length, 1, 'photo without caption uses explicit Send');
+    photo.context.RS.textShares.accepted(photo.sent[0].holder); await settle();
+    assert.equal(photo.pending().length, 0);
+
+    const removedPhoto = fixture(true, true); await settle();
+    await removedPhoto.node('text-share-list').children[0].click(); await settle();
+    removedPhoto.context.lxmfPendingFile = null;
+    assert.equal(removedPhoto.context.RS.textShares.interceptSend('auto'), false, 'removed photo must not trap ordinary composer');
+    assert.equal(removedPhoto.pending().length, 1, 'removing staged attachment preserves encrypted recovery');
+
+    for (const transition of ['navigate','identity']) {
+        const stalePhoto = fixture(true, true); await settle();
+        const ack = deferred(); let staged;
+        stalePhoto.hooks.reply = (name, args, value) => {
+            if (args?.args?.operation === 'stage_image') { staged=value; return ack.promise; }
+            return Promise.resolve(value);
+        };
+        await stalePhoto.node('text-share-list').children[0].click(); await settle();
+        assert(staged);
+        assert.equal(stalePhoto.context.RS.textShares.interceptSend('auto'), true);
+        assert.equal(stalePhoto.sent.length, 0, 'preparing photo cannot send early');
+        if (transition === 'navigate') stalePhoto.context.openConversationWith(C);
+        else { stalePhoto.switchIdentity(); await stalePhoto.event('identity_switching'); }
+        ack.resolve(staged); await settle();
+        assert(stalePhoto.calls.some(call => call.name === 'cancel_attachment_stage'), transition + ': retire late native stage');
+        assert.equal(stalePhoto.sent.length, 0);
+        assert.equal(stalePhoto.pending().length, 1);
+    }
     const unsupported = fixture(false); await settle(); assert.equal(unsupported.calls.length, 0);
     const f = fixture(); await settle();
     assert.equal(f.node('text-share-preview').textContent, f.model.text);
@@ -234,10 +277,13 @@ function fixture(android = true) {
     // Execute the actual normal send adapter, not only this fixture's sender.
     const lxmf = fs.readFileSync(path.join(root, 'dashboard/static/js/lxmf.js'), 'utf8');
     const sendSource = lxmf.slice(lxmf.indexOf('function sendLxmfMessage('), lxmf.indexOf('function sendLxmfVoiceMemo('));
-    for (const response of [{ msg_id: 'queued' }, { cancelled: true }, { msg_id: 'cancelled', cancelled: true }, null]) {
+    for (const attachment of [false,true]) for (const response of [{ msg_id: 'queued' }, { cancelled: true }, { msg_id: 'cancelled', cancelled: true }, null]) {
         const results = [];
         const ctx = {
-            lxmfActiveContact: B, lxmfPendingFile: null, _replyTarget: null, lxmfLimits: {},
+            lxmfActiveContact: B, lxmfPendingFile: attachment ? {destination:B,stage_promise:Promise.resolve('token'),name:'photo.jpg',inline_image:true} : null, _replyTarget: null, lxmfLimits: {},
+            _canonicalConversationHash: x => x, _conversationOwnerIsCurrent: () => true,
+            _conversationOwnerIdentityIsCurrent: () => true, clearPendingFile: () => {},
+            _markOptimisticMessageFailed: () => {},
             document: { getElementById: () => ({ value: '00123' }) },
             _conversationOwnerSnapshot: () => ({ hash: B }), _consumeLxmfSendFocusState: () => false,
             _deliveryPrefOrAuto: () => 'auto', _utf8ByteLength: x => x.length, generateMsgId: () => 'client-id',

@@ -3,6 +3,39 @@ use serde::{Deserialize, Serialize};
 pub(super) const MAX_TEXT_BYTES: usize = 64 * 1024;
 pub(super) const MAX_ITEMS: usize = 8;
 pub(super) const MAX_STORE_BYTES: usize = 4 * 1024 * 1024;
+pub(super) const IMAGE_CHUNK_BYTES: usize = 256 * 1024;
+pub(super) const MAX_IMAGE_BYTES: usize = 128_000_000;
+
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Image {
+    pub name: String,
+    pub mime: String,
+    pub size: usize,
+}
+
+impl Image {
+    fn validate(&self) -> Result<(), String> {
+        if self.size == 0
+            || self.size > MAX_IMAGE_BYTES
+            || self.name.is_empty()
+            || self.name.len() > 255
+            || self
+                .name
+                .chars()
+                .any(|c| c.is_control() || c == '/' || c == '\\')
+            || !self.mime.starts_with("image/")
+            || self.mime.len() > 100
+            || self
+                .mime
+                .chars()
+                .any(|c| c.is_whitespace() || c.is_control())
+        {
+            return Err("Invalid shared image.".into());
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -14,6 +47,8 @@ pub(super) struct Item {
     pub recipient: Option<String>,
     #[serde(default)]
     pub send_attempted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image: Option<Image>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -57,6 +92,16 @@ fn validate_text(text: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_content(text: &str, image: Option<&Image>) -> Result<(), String> {
+    if let Some(image) = image {
+        image.validate()?;
+        if text.trim().is_empty() && text.len() <= MAX_TEXT_BYTES {
+            return Ok(());
+        }
+    }
+    validate_text(text)
+}
+
 pub(super) fn normalize(text: &str, subject: &str) -> Result<String, String> {
     validate_text(text)?;
     if subject.len() > 2048 {
@@ -87,7 +132,7 @@ impl Inbox {
         }
         let mut ids = std::collections::HashSet::new();
         for item in &inbox.items {
-            validate_text(&item.text)?;
+            validate_content(&item.text, item.image.as_ref())?;
             let revision = item
                 .revision
                 .parse::<u64>()
@@ -120,13 +165,43 @@ impl Inbox {
     }
 
     pub fn accept(&mut self, id: &str, text: &str, subject: &str) -> Result<bool, String> {
+        self.accept_content(id, normalize(text, subject)?, None)
+    }
+
+    pub fn known(&self, id: &str) -> bool {
+        self.receipts.iter().any(|seen| seen == id) || self.items.iter().any(|item| item.id == id)
+    }
+
+    pub fn accept_image(
+        &mut self,
+        id: &str,
+        text: &str,
+        subject: &str,
+        image: Image,
+    ) -> Result<bool, String> {
+        let text = if text.trim().is_empty() {
+            if subject.trim().is_empty() {
+                String::new()
+            } else {
+                normalize(subject, "")?
+            }
+        } else {
+            normalize(text, subject)?
+        };
+        self.accept_content(id, text, Some(image))
+    }
+
+    fn accept_content(
+        &mut self,
+        id: &str,
+        text: String,
+        image: Option<Image>,
+    ) -> Result<bool, String> {
         if !valid_hash(id) {
             return Err("Invalid share identifier.".into());
         }
-        let text = normalize(text, subject)?;
-        if self.receipts.iter().any(|seen| seen == id)
-            || self.items.iter().any(|item| item.id == id)
-        {
+        validate_content(&text, image.as_ref())?;
+        if self.known(id) {
             return Ok(false);
         }
         if self.items.len() >= MAX_ITEMS {
@@ -140,6 +215,7 @@ impl Inbox {
             identity: None,
             recipient: None,
             send_attempted: false,
+            image,
         });
         Ok(true)
     }
@@ -185,7 +261,7 @@ impl Inbox {
                     return Err("This draft already has a recipient.".into());
                 }
                 let text = args.text.as_deref().unwrap_or(&item.text);
-                validate_text(text)?;
+                validate_content(text, item.image.as_ref())?;
                 let text = text.to_owned();
                 let revision = self.next_revision()?;
                 let item = &mut self.items[index];
@@ -201,7 +277,7 @@ impl Inbox {
                     return Err("Choose a recipient first.".into());
                 }
                 let text = args.text.as_deref().ok_or("Draft text is missing.")?;
-                validate_text(text)?;
+                validate_content(text, item.image.as_ref())?;
                 let revision = self.next_revision()?;
                 self.items[index].text = text.into();
                 self.items[index].revision = revision;
@@ -264,6 +340,76 @@ mod tests {
     use super::*;
     const A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    fn photo() -> Image {
+        Image {
+            name: "photo.jpg".into(),
+            mime: "image/jpeg".into(),
+            size: IMAGE_CHUNK_BYTES + 123,
+        }
+    }
+    #[test]
+    fn photo_caption_optional_and_legacy_text_inbox_remains_readable() {
+        let mut q = Inbox::default();
+        q.accept(A, "old text", "").unwrap();
+        let old = serde_json::to_string(&q).unwrap();
+        assert!(!old.contains("image"));
+        let mut q = Inbox::decode(&old).unwrap();
+        q.accept_image(B, "", "", photo()).unwrap();
+        let mut q = Inbox::decode(&serde_json::to_string(&q).unwrap()).unwrap();
+        assert_eq!(q.items[1].text, "");
+        assert_eq!(q.items[1].image.as_ref().unwrap(), &photo());
+        q.edit(A, &args(&q.items[1], "assign")).unwrap();
+        let mut change = args(&q.items[1], "draft");
+        change.text = Some("A caption".into());
+        q.edit(A, &change).unwrap();
+        change = args(&q.items[1], "draft");
+        change.text = Some(String::new());
+        q.edit(A, &change).unwrap();
+        change = args(&q.items[1], "draft");
+        change.text = Some(" \n ".into());
+        q.edit(A, &change).unwrap();
+        q.edit(A, &args(&q.items[1], "sending")).unwrap();
+        assert!(q.items[1].send_attempted);
+        q.edit(A, &args(&q.items[1], "discard")).unwrap();
+        assert!(q.known(B));
+        assert_eq!(q.items.len(), 1);
+    }
+    #[test]
+    fn photo_metadata_limits_atomicity_and_identity_cleanup() {
+        for invalid in [
+            Image { size: 0, ..photo() },
+            Image {
+                size: MAX_IMAGE_BYTES + 1,
+                ..photo()
+            },
+            Image {
+                name: "../identity".into(),
+                ..photo()
+            },
+            Image {
+                mime: "text/plain".into(),
+                ..photo()
+            },
+        ] {
+            assert!(Inbox::default().accept_image(A, "", "", invalid).is_err());
+        }
+        let mut q = Inbox::default();
+        assert!(transaction(
+            &mut q,
+            |q| q.accept_image(A, "", "", photo()),
+            |_| Err("disk full".into())
+        )
+        .is_err());
+        assert!(q.items.is_empty());
+        q.accept_image(A, "https://example.org", "A photo", photo())
+            .unwrap();
+        assert_eq!(q.items[0].text, "A photo\n\nhttps://example.org");
+        q.edit(A, &args(&q.items[0], "assign")).unwrap();
+        assert!(q.edit(B, &args(&q.items[0], "discard")).is_err());
+        assert!(q.prune(&[]));
+        assert!(q.items.is_empty());
+        assert!(q.known(A));
+    }
     fn args(item: &Item, operation: &str) -> crate::text_share::TextShareEdit {
         crate::text_share::TextShareEdit {
             id: item.id.clone(),

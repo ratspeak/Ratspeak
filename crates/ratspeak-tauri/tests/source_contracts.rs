@@ -1424,7 +1424,7 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
-    assert!(index.contains("/static/style.css?v=ui-20260917-2"));
+    assert!(index.contains("/static/style.css?v=ui-20260919-1"));
     assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
     assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
     assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
@@ -5436,10 +5436,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("/static/js/state.js?v=ui-20260917-2"));
-    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260917-2"));
-    assert!(index.contains("/static/js/lxmf.js?v=ui-20260917-2"));
-    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260917-2"));
+    assert!(index.contains("/static/js/state.js?v=ui-20260919-1"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260919-1"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260919-1"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260919-1"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));
@@ -9320,6 +9320,7 @@ fn android_text_sharing_is_narrow_durable_and_never_a_transport_command() {
     let shell = read("src-tauri/src/lib.rs");
     assert!(manifest.contains("android.intent.action.SEND"));
     assert!(manifest.contains("android:mimeType=\"text/plain\""));
+    assert!(manifest.contains("android:mimeType=\"image/*\""));
     assert!(!manifest.contains("android.intent.action.SEND_MULTIPLE"));
     assert!(native.contains("noBackupFilesDir"));
     assert!(native.contains("AES/GCM/NoPadding"));
@@ -9332,6 +9333,16 @@ fn android_text_sharing_is_narrow_durable_and_never_a_transport_command() {
     assert!(bridge.contains("identity_switch_lock.lock().await"));
     assert!(bridge.contains("current_identity_session_generation"));
     assert!(bridge.contains("owner(Some(&args.activity_generation))"));
+    assert!(bridge.contains("readImageChunk"));
+    assert!(bridge.contains("begin_attachment_staging"));
+    assert!(bridge.contains("prune_images(&Inbox::default())"));
+    let images = read("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakSharedImages.kt");
+    assert!(images.contains("checkUriPermission"));
+    assert!(images.contains("provider.applicationInfo.uid != Process.myUid()"));
+    assert!(images.contains("cipher.updateAAD(aad(id, index))"));
+    assert!(images.contains("MAX_BYTES = 128_000_000"));
+    assert!(!images.contains("readBytes()"));
+    assert!(controller.contains("attachSharedImage(holder.item.image, nativeStage)"));
     assert!(!bridge.contains("send_lxmf"));
     assert!(model.contains("send_attempted"));
     assert!(controller.contains("!isAndroid()"));
