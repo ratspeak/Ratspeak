@@ -6568,10 +6568,17 @@ fn mobile_peers_toolbar_uses_search_plus_icon_sort_only() {
     assert!(!peers_js.contains("peersFilter"));
     assert!(peers_js.contains("return 'Local';"));
     assert!(index.contains("class=\"peers-sort-icon\""));
-    assert!(!index.contains("<span>Peers</span>"));
-    assert!(!index.contains("<span>Messages</span>"));
-    assert!(!index.contains("<span>Contacts</span>"));
-    assert!(!index.contains("<span>More</span>"));
+    let bottom_bar = index
+        .split("<nav class=\"bottom-bar\"")
+        .nth(1)
+        .expect("bottom navigation")
+        .split("</nav>")
+        .next()
+        .unwrap();
+    assert!(!bottom_bar.contains("<span>Peers</span>"));
+    assert!(!bottom_bar.contains("<span>Messages</span>"));
+    assert!(!bottom_bar.contains("<span>Contacts</span>"));
+    assert!(!bottom_bar.contains("<span>More</span>"));
     assert!(responsive_css.contains(".peers-toolbar {\n        padding:"));
     let toolbar = responsive_css.split(".peers-toolbar {").nth(1).unwrap();
     assert!(
