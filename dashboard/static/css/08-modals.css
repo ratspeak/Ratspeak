@@ -160,6 +160,8 @@
     flex-shrink: 0;
 }
 
+.bottom-sheet-footer[hidden] { display: none; }
+
 
 .modal-header {
     display: flex;

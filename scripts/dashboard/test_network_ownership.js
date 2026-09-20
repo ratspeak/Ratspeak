@@ -101,14 +101,20 @@ function access(port, key) {
     assert.equal(toasts.length, 1, 'polling must not resurrect dismissed toasts');
     context.window.showNetworkStartupWarnings(); await settle();
     assert.equal(toasts.length, 2, 'a new Network visit can remind the user');
+    events.stats_update({interface_stats:{interfaces:[{name:'LoRa Radio',online:true}]},network_ownership:data});
+    context.window.showNetworkStartupWarnings(); await settle();
+    assert.equal(toasts.length, 2, 'a hot-plugged, online radio must not repeat its historical startup error');
+    events.stats_update({interface_stats:{interfaces:[]},network_ownership:data});
+    // The newly failed state is announced once during this visit.
+    assert.equal(toasts.length, 3);
     data = {...data, warnings: []};
     context.window.showNetworkStartupWarnings(); await settle();
-    assert.equal(toasts.length, 2, 'resolved failures must not be announced');
+    assert.equal(toasts.length, 3, 'resolved failures must not be announced');
     const pendingEntry = deferred(); refreshReply = pendingEntry.promise;
     context.window.showNetworkStartupWarnings();
     context.currentView = 'message';
     pendingEntry.resolve({...data, warnings: [startupWarning]}); await settle();
-    assert.equal(toasts.length, 2, 'late Network reply must not interrupt another tab');
+    assert.equal(toasts.length, 3, 'late Network reply must not interrupt another tab');
     refreshReply = null;
     events.network_ownership(data);
     developer = true; windowEvents['ratspeak-developer-mode-changed']();

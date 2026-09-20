@@ -8,9 +8,13 @@
     var editorEnabled = false;
     var warningVisit = 0;
     var warned = Object.create(null);
+    var liveInterfaces = [];
     function warnOnNetwork() {
         if (typeof currentView === 'undefined' || currentView !== 'network' || document.hidden || !current) return;
         (current.warnings || []).forEach(function(warning) {
+            // Startup failures are historical. A hot-plug/retry may already
+            // have brought that configured radio online without restarting RNS.
+            if (liveInterfaces.some(function(iface) { return iface.name === warning.interface && iface.online; })) return;
             var message = warning.interface + ': ' + warning.message;
             if (warned[message]) return;
             warned[message] = true;
@@ -231,8 +235,12 @@
             if (document.hidden) invalidateSecrets();
         });
         RS.listen('network_ownership', function(data) { adopt(data, false); });
-        RS.listen('stats_update', function(data) { if (data.network_ownership) adopt(data.network_ownership, false); remoteInterfaces(data); });
-        RS.listen('identity_switching', function() { epoch += 1; warningVisit += 1; warned = Object.create(null); dirty = false; clearSecrets(); current = null; });
+        RS.listen('stats_update', function(data) {
+            liveInterfaces = data.interface_stats && data.interface_stats.interfaces || [];
+            if (data.network_ownership) adopt(data.network_ownership, false);
+            remoteInterfaces(data);
+        });
+        RS.listen('identity_switching', function() { epoch += 1; warningVisit += 1; warned = Object.create(null); liveInterfaces = []; dirty = false; clearSecrets(); current = null; });
         RS.listen('identity_switched', function() { refresh(true); });
         RS.listen('system_status', function() { refresh(false); });
         gate();
