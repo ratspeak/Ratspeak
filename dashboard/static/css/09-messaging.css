@@ -2162,13 +2162,25 @@ html[data-input-modality="touch"] .msg-ctx-btn {
     font-family: var(--font-mono);
 }
 /* System sharing uses the canonical sheet/recipient rows and theme tokens. */
-.text-share-summary, .text-share-footer { padding: var(--space-3) var(--space-4); flex-shrink: 0; }
+.text-share-body { gap: var(--space-3); }
+.text-share-sheet .bottom-sheet-header { justify-content: flex-start; gap: var(--space-3); }
+.text-share-sheet .bottom-sheet-header .bottom-sheet-title { padding: 0; }
+.text-share-back { min-height: var(--touch-target); }
 .text-share-sender { color: var(--text-muted); font-size: var(--text-xs); margin: 0 0 var(--space-2); }
-.text-share-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 5em; overflow: auto; margin: 0 0 var(--space-3); font-size: var(--text-sm); color: var(--text-secondary); }
-.text-share-tabs { display: flex; gap: var(--space-2); margin-bottom: var(--space-3); }
-.text-share-tabs[hidden] { display: none; }
-.text-share-tabs button[aria-pressed="true"] { color: var(--accent); background: var(--accent-a12); }
-.text-share-labels { display: flex; flex-direction: column; min-width: 0; text-align: left; }
+.text-share-preview { white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; margin: 0; font-size: var(--text-sm); color: var(--text-secondary); }
+.text-share-section { margin: var(--space-2) 0 0; color: var(--text-secondary); font-size: var(--text-sm); }
+.text-share-list .fab-picker-row { padding: var(--space-4) 0; min-height: var(--touch-target); }
+.text-share-list .fab-picker-empty { padding: var(--space-6) 0; text-align: left; font-size: var(--text-sm); }
+.text-share-list button[aria-pressed="true"] { background: var(--accent-bg); }
+.text-share-labels { display: flex; flex: 1; flex-direction: column; min-width: 0; text-align: left; }
 .text-share-avatar { display: flex; width: 32px; height: 32px; flex-shrink: 0; }
+.text-share-check { flex: 0 0 auto; color: var(--accent); visibility: hidden; padding-right: var(--space-2); }
+.text-share-list button[aria-pressed="true"] .text-share-check { visibility: visible; }
+.text-share-contacts { padding: var(--space-5) 0; justify-content: space-between; border-top: 1px solid var(--border-row); }
+.text-share-discard { align-self: flex-start; }
+.text-share-footer { justify-content: space-between; }
+.text-share-footer > button { min-height: var(--touch-target); min-width: 96px; }
+.text-share-footer #text-share-close { margin-left: auto; }
+.text-share-footer .nr-btn-primary:disabled { background: var(--bg-tertiary); color: var(--text-muted); border-color: var(--border); opacity: 1; cursor: default; }
 .text-share-pending { margin: 0 var(--space-3) var(--space-2); text-align: left; flex-shrink: 0; }
 .text-share-sheet [hidden], .text-share-pending[hidden] { display: none !important; }

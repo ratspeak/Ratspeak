@@ -104,9 +104,12 @@ function _setConnectSubmitBase(btn, text) {
 
 function _trapFocus(modalEl) {
     _modalPreviousFocus = document.activeElement;
-    var focusable = modalEl.querySelectorAll(
-        'button, [href], input:not([type="hidden"]), select, textarea, [tabindex]:not([tabindex="-1"])'
-    );
+    function focusableControls() {
+        return Array.prototype.filter.call(modalEl.querySelectorAll(
+            'button, [href], input:not([type="hidden"]), select, textarea, [tabindex]:not([tabindex="-1"])'
+        ), function(control) { return !control.disabled && control.getClientRects().length > 0; });
+    }
+    var focusable = focusableControls();
     var wantsKeyboardFocus = window.RS && RS.ui && typeof RS.ui.prefersKeyboardFocus === 'function'
         ? RS.ui.prefersKeyboardFocus()
         : !isMobile();
@@ -119,9 +122,7 @@ function _trapFocus(modalEl) {
 
     modalEl._focusTrapHandler = function(e) {
         if (e.key !== 'Tab') return;
-        var items = modalEl.querySelectorAll(
-            'button, [href], input:not([type="hidden"]), select, textarea, [tabindex]:not([tabindex="-1"])'
-        );
+        var items = focusableControls();
         if (items.length === 0) return;
         var first = items[0];
         var last = items[items.length - 1];

@@ -4346,20 +4346,25 @@ function _stageSelectedImage(file, pendingFile, selectionToken, nativeStage) {
         return RS.invoke('inspect_image_attachment_stage', { args: { token: token } });
     }).then(function(inspection) {
         if (!_isCurrentPendingAttachment(pendingFile, selectionToken)) throw _attachmentCancelledError();
-        if (inspection.disposition !== 'still') {
-            pendingFile.status_text = 'Choose how to attach';
+        if (inspection.disposition === 'still' && !inspection.should_prompt) return { profile: 'actual' };
+        // Both in-app photos and system shares can arrive from a focused text
+        // field. Release the IME before opening the non-editable size chooser.
+        return RS.composer.dismissForReplacement(document.activeElement).then(function() {
+            if (!_isCurrentPendingAttachment(pendingFile, selectionToken)) throw _attachmentCancelledError();
+            if (inspection.disposition !== 'still') {
+                pendingFile.status_text = 'Choose how to attach';
+                renderPendingFile();
+                return _chooseImageFileFallback(file, inspection.disposition).then(function(choice) {
+                    if (choice !== 'file') throw _attachmentCancelledError();
+                    return { as_file: true };
+                });
+            }
+            pendingFile.status_text = 'Choose an image size';
             renderPendingFile();
-            return _chooseImageFileFallback(file, inspection.disposition).then(function(choice) {
-                if (choice !== 'file') throw _attachmentCancelledError();
-                return { as_file: true };
+            return _chooseImageSize(file, inspection).then(function(profile) {
+                if (!profile) throw _attachmentCancelledError();
+                return { profile: profile };
             });
-        }
-        if (!inspection.should_prompt) return { profile: 'actual' };
-        pendingFile.status_text = 'Choose an image size';
-        renderPendingFile();
-        return _chooseImageSize(file, inspection).then(function(profile) {
-            if (!profile) throw _attachmentCancelledError();
-            return { profile: profile };
         });
     }).then(function(choice) {
         if (!_isCurrentPendingAttachment(pendingFile, selectionToken)) throw _attachmentCancelledError();
@@ -5785,7 +5790,7 @@ function showContactAbout(hash) {
     }
 }
 
-function openConversationWith(hash) {
+function openConversationWith(hash, options) {
     hash = _canonicalConversationHash(hash);
     if (_ghostConversationHash && _ghostConversationHash !== hash) {
         _removeGhostRow();
@@ -5801,7 +5806,7 @@ function openConversationWith(hash) {
     _loadConversation(hash);
     _ensureGhostRow(hash);
     var input = document.getElementById('lxmf-input');
-    if (input) input.focus();
+    if (input && (!options || options.focusComposer !== false)) input.focus();
     if (isCompactLayout()) {
         RS.viewStack.push('chat-detail', { meta: { contactHash: hash } });
         history.pushState({ view: 'message', detail: true }, '', '#message');

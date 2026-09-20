@@ -11,13 +11,17 @@ function element(id) {
         classList: { add: x => classes.add(x), remove: x => classes.delete(x), contains: x => classes.has(x) },
         addEventListener(type, fn) { (this.handlers[type] ||= []).push(fn); },
         appendChild(node) { this.children.push(node); }, replaceChildren() { this.children = []; },
-        setAttribute(k, v) { this.attrs[k] = v; }, focus() {},
+        setAttribute(k, v) { this.attrs[k] = v; }, focus() {}, blur() {},
         querySelector() { return this.children[0] || null; },
         dispatchEvent(event) { for (const fn of this.handlers[event.type] || []) fn(event); },
-        async click() { for (const fn of this.handlers.click || []) await fn({}); }
+        async click() { if (this.disabled) return; for (const fn of this.handlers.click || []) await fn({}); }
     };
 }
 async function settle() { for (let i = 0; i < 35; i++) await Promise.resolve(); }
+async function pick(f, index = 0) {
+    await f.node('text-share-list').children[index].click();
+    return f.node('text-share-confirm').click();
+}
 function deferred() {
     let resolve, reject;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
@@ -53,7 +57,8 @@ function fixture(android = true, image = false) {
     context.window = context;
     context.RS = {
         voiceMemos: { hasPendingRecording: () => false },
-        ui: { openExistingSheet: el => el.classList.add('open'), closeExistingSheet: el => el.classList.remove('open') },
+        ui: { focusAfterUpdate() {}, openExistingSheet: el => el.classList.add('open'), closeExistingSheet: el => el.classList.remove('open') },
+        gestures: { attachDragDismiss(el, options) { hooks.drag = options; } },
         conversationOwner: {
             snapshot: () => ({ identityGeneration: identity, epoch: navigation, hash: context.lxmfActiveContact }),
             isIdentityCurrent: o => o.identityGeneration === identity,
@@ -93,9 +98,70 @@ function fixture(android = true, image = false) {
     };
 }
 (async () => {
+    const selection = fixture(); await settle();
+    assert(selection.node('text-share-confirm').disabled);
+    assert(selection.node('text-share-search').hidden, 'recents have no search/filter chrome');
+    assert(selection.node('text-share-back').hidden);
+    assert(selection.node('text-share-discard').hidden, 'fresh intake is not crowded by recovery actions');
+    await selection.node('text-share-confirm').click();
+    await selection.node('text-share-list').children[0].click(); await settle();
+    assert.equal(selection.context.lxmfActiveContact, null, 'selection alone must not navigate');
+    assert.equal(selection.calls.filter(c => c.name === 'edit_text_share').length, 0, 'selection alone must not mutate native recovery');
+    assert.equal(selection.node('text-share-list').children[0].attrs['aria-pressed'], 'true');
+    assert(!selection.node('text-share-confirm').disabled);
+    await selection.node('text-share-contacts').click();
+    assert(selection.node('text-share-confirm').disabled, 'switching lists clears an otherwise invisible selection');
+    assert(!selection.node('text-share-search').hidden);
+    assert(!selection.node('text-share-back').hidden);
+    await selection.node('text-share-list').children[0].click();
+    selection.node('text-share-search').value = 'Dad';
+    selection.node('text-share-search').dispatchEvent({type:'input'});
+    assert(selection.node('text-share-confirm').disabled, 'filtering cannot keep a hidden selected contact');
+    assert.equal(selection.node('text-share-list').children.length, 1);
+    await selection.node('text-share-back').click();
+    assert(selection.node('text-share-search').hidden);
+    selection.hooks.drag.onCommit();
+    assert(!selection.node('text-share-sheet').classList.contains('open'), 'header swipe dismisses the picker');
+    assert.equal(selection.pending().length, 1, 'swipe preserves native recovery');
+    await selection.node('text-share-pending').click(); await settle();
+    assert(!selection.node('text-share-discard').hidden, 'Shared items review retains explicit discard');
+    selection.choices.push('discard'); await selection.node('text-share-discard').click(); await settle();
+    assert.equal(selection.pending().length, 0);
+
+    const recent = fixture();
+    recent.context.lxmfConversations = Array.from({length:8}, (_,i)=>({hash:(i+1).toString(16).repeat(32),timestamp:i,display_name:'Chat '+i}));
+    await settle();
+    assert.equal(recent.node('text-share-list').children.length, 5, 'only five recent chats');
+    assert.equal(recent.node('text-share-list').children[0].children[1].children[0].textContent, 'Chat 7');
+    const oldRecipient = fixture(); oldRecipient.model.recipient = 'd'.repeat(32); await settle();
+    await oldRecipient.context.RS.textShares.refresh(true); await settle();
+    await oldRecipient.node('text-share-list').children[0].click();
+    assert.equal(oldRecipient.context.lxmfActiveContact,null,'opening saved recovery does not navigate');
+    assert.equal(oldRecipient.node('text-share-list').children.length,3,'saved recipient outside recents/contacts remains visible');
+    assert.equal(oldRecipient.node('text-share-list').children[2].attrs['aria-pressed'],'true');
+    assert(!oldRecipient.node('text-share-confirm').disabled);
+    const empty = fixture(); empty.context.lxmfConversations = []; await settle();
+    assert(!empty.node('text-share-contacts').hidden, 'Contacts remains available with no recent chats');
+    assert(empty.node('text-share-confirm').disabled);
+
+    const cancelAssign = fixture(); await settle();
+    const assignAck = deferred(); let assignment;
+    cancelAssign.hooks.reply = (name,args,value) => {
+        if (args?.args?.operation === 'assign') {assignment=value;return assignAck.promise;}
+        return Promise.resolve(value);
+    };
+    const assigning = pick(cancelAssign); await settle();
+    assert(cancelAssign.node('text-share-confirm').disabled, 'in-flight Share is disabled');
+    await cancelAssign.node('text-share-confirm').click();
+    assert.equal(cancelAssign.calls.filter(c=>c.args?.args?.operation==='assign').length,1);
+    await cancelAssign.node('text-share-close').click();
+    assignAck.resolve(assignment); await assigning; await settle();
+    assert.equal(cancelAssign.context.lxmfActiveContact,null,'cancelled assignment cannot reopen the conversation');
+    assert.equal(cancelAssign.pending().length,1);
+
     const photo = fixture(true, true); await settle();
     assert.equal(photo.node('text-share-preview').textContent, 'Photo · photo.jpg');
-    await photo.node('text-share-list').children[0].click(); await settle();
+    await pick(photo); await settle();
     assert.equal(photo.sent.length, 0, 'selecting a photo recipient never sends');
     assert.equal(photo.context.lxmfPendingFile.name, 'photo.jpg');
     assert.equal(photo.node('lxmf-input').value, '', 'photo needs no placeholder caption');
@@ -105,7 +171,7 @@ function fixture(android = true, image = false) {
     assert.equal(photo.pending().length, 0);
 
     const removedPhoto = fixture(true, true); await settle();
-    await removedPhoto.node('text-share-list').children[0].click(); await settle();
+    await pick(removedPhoto); await settle();
     removedPhoto.context.lxmfPendingFile = null;
     assert.equal(removedPhoto.context.RS.textShares.interceptSend('auto'), false, 'removed photo must not trap ordinary composer');
     assert.equal(removedPhoto.pending().length, 1, 'removing staged attachment preserves encrypted recovery');
@@ -117,7 +183,7 @@ function fixture(android = true, image = false) {
             if (args?.args?.operation === 'stage_image') { staged=value; return ack.promise; }
             return Promise.resolve(value);
         };
-        await stalePhoto.node('text-share-list').children[0].click(); await settle();
+        await pick(stalePhoto); await settle();
         assert(staged);
         assert.equal(stalePhoto.context.RS.textShares.interceptSend('auto'), true);
         assert.equal(stalePhoto.sent.length, 0, 'preparing photo cannot send early');
@@ -134,8 +200,8 @@ function fixture(android = true, image = false) {
     assert.equal(f.node('text-share-list').children[0].children[1].children[0].textContent, 'Dad', 'most recent first');
     await f.node('text-share-contacts').click();
     assert.equal(f.node('text-share-list').children[0].children[1].children[0].textContent, 'Alice', 'contacts alphabetical');
-    await f.node('text-share-recent').click();
-    await f.node('text-share-list').children[0].click(); await settle();
+    await f.node('text-share-back').click();
+    await pick(f); await settle();
     assert.equal(f.context.lxmfActiveContact, B); assert.equal(f.node('lxmf-input').value, f.model.text);
     assert.equal(f.sent.length, 0, 'recipient selection does not send');
     f.node('lxmf-input').value += '\nEdited'; f.node('lxmf-input').dispatchEvent({ type: 'input' }); await f.tick();
@@ -145,17 +211,17 @@ function fixture(android = true, image = false) {
     f.context.RS.textShares.accepted(f.sent[0].holder); await settle(); assert.equal(f.pending().length, 0);
 
     const conflict = fixture(); conflict.context._lxmfDrafts[B] = 'Existing draft'; await settle();
-    conflict.choices.push('later'); await conflict.node('text-share-list').children[0].click(); await settle();
+    conflict.choices.push('later'); await pick(conflict); await settle();
     assert.equal(conflict.context.lxmfActiveContact, null); assert.equal(conflict.context._lxmfDrafts[B], 'Existing draft');
-    conflict.choices.push('add'); await conflict.node('text-share-list').children[0].click(); await settle();
+    conflict.choices.push('add'); await pick(conflict); await settle();
     assert(conflict.node('lxmf-input').value.startsWith('Existing draft\n\n00123'));
 
     const media = fixture(); await settle(); media.context.RS.voiceMemos.hasPendingRecording = () => true;
-    await media.node('text-share-list').children[0].click(); assert.equal(media.context.lxmfActiveContact, null);
+    await pick(media); assert.equal(media.context.lxmfActiveContact, null);
     assert(media.warnings.some(x => x.includes('Finish your voice'))); assert.equal(media.sent.length, 0);
 
     const disk = fixture(); await settle(); disk.failWrites();
-    await disk.node('text-share-list').children[0].click(); await settle();
+    await pick(disk); await settle();
     assert.equal(disk.context.lxmfActiveContact, null); assert.equal(disk.pending().length, 1);
 
     const stale = fixture(); await settle(); const row = stale.node('text-share-list').children[0];
@@ -164,7 +230,7 @@ function fixture(android = true, image = false) {
 
     const recovered = fixture(); recovered.model.recipient = B; recovered.model.identity = C; recovered.model.send_attempted = true;
     await settle(); await recovered.context.RS.textShares.refresh(true); await settle();
-    recovered.choices.push('view'); await recovered.node('text-share-list').children[0].click(); await settle();
+    recovered.choices.push('view'); await pick(recovered); await settle();
     assert.equal(recovered.context.lxmfActiveContact, B); assert.equal(recovered.node('lxmf-input').value, '');
     assert.equal(recovered.sent.length, 0, 'recovery never resends automatically');
     assert.equal(recovered.pending().length, 1, 'viewing does not consume a recovery copy');
@@ -186,7 +252,7 @@ function fixture(android = true, image = false) {
             }
             return Promise.resolve(value);
         };
-        const selecting = delayed.node('text-share-list').children[0].click(); await settle();
+        const selecting = pick(delayed); await settle();
         assert(committed, transition + ': assignment reached native storage before interruption');
         if (transition === 'navigate') delayed.context.openConversationWith(C);
         if (transition === 'identity') { delayed.switchIdentity(); await delayed.event('identity_switching'); }
@@ -214,7 +280,7 @@ function fixture(android = true, image = false) {
             return Promise.resolve(value);
         };
         const refresh = overlap.context.RS.textShares.refresh(true);
-        await overlap.node('text-share-list').children[0].click(); await settle();
+        await pick(overlap); await settle();
         assert.equal(overlap.model.recipient, B);
         const noticesBeforeReply = [...overlap.warnings];
         assert.equal(oldList.items[0].recipient, null, 'the delayed inventory predates assignment');
@@ -231,7 +297,7 @@ function fixture(android = true, image = false) {
 
     for (const transition of ['navigate', 'identity', 'hidden', 'voice', 'file', 'reply', 'draft']) {
         const interrupted = fixture(); await settle();
-        await interrupted.node('text-share-list').children[0].click(); await settle();
+        await pick(interrupted); await settle();
         const ack = deferred(); let committed;
         interrupted.hooks.reply = (name, args, value) => {
             if (name === 'edit_text_share' && args.args.operation === 'sending') {
@@ -262,7 +328,7 @@ function fixture(android = true, image = false) {
 
     {
         const oldSend = fixture(); await settle();
-        await oldSend.node('text-share-list').children[0].click(); await settle();
+        await pick(oldSend); await settle();
         oldSend.context.RS.textShares.interceptSend('auto'); await settle();
         assert.equal(oldSend.sent.length, 1);
         const holder = oldSend.sent[0].holder;

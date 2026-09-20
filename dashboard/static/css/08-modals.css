@@ -1356,17 +1356,9 @@
     overflow-wrap: anywhere;
 }
 .rs-dialog-recommended {
-    display: inline-flex;
-    align-items: center;
-    min-height: 18px;
-    padding: 1px var(--space-2);
-    border-radius: var(--radius-full);
-    background: rgba(var(--accent-rgb), 0.13);
     color: var(--accent);
-    font-size: var(--text-2xs);
+    font-size: var(--text-xs);
     font-weight: var(--type-weight-semibold);
-    letter-spacing: var(--tracking-wide);
-    text-transform: uppercase;
 }
 .rs-dialog-choice-meta {
     flex: 0 0 auto;

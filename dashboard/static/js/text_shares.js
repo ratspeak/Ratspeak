@@ -10,13 +10,16 @@
     var preview = document.getElementById('text-share-preview');
     var title = document.getElementById('text-share-title');
     var search = document.getElementById('text-share-search');
-    var tabs = document.getElementById('text-share-tabs');
+    var contacts = document.getElementById('text-share-contacts');
+    var back = document.getElementById('text-share-back');
+    var confirm = document.getElementById('text-share-confirm');
     var sender = document.getElementById('text-share-sender');
     var input = document.getElementById('lxmf-input');
     var items = [], selected = null, stamp = null, epoch = 0, mode = 'recent';
     var loading = false, again = false, needsRefresh = true, offered = Object.create(null);
     var refreshRevision = 0, mutationRevision = 0, editChain = Promise.resolve();
     var drafts = Object.create(null), saveTimer = null, selecting = false;
+    var recipient = null, reviewing = false;
 
     function visible() {
         return document.visibilityState === 'visible' && !window._identitySwitchInProgress &&
@@ -43,7 +46,9 @@
     function close() {
         epoch += 1;
         selected = null;
+        recipient = null;
         selecting = false;
+        confirm.disabled = true;
         search.value = '';
         preview.textContent = '';
         list.replaceChildren();
@@ -102,7 +107,7 @@
             updateButton();
             if (manual || (items.some(function(item) { return !offered[item.id]; }) && !mediaBusy() &&
                 !document.querySelector('.bottom-sheet.open, .modal-overlay.active, [role="dialog"][aria-modal="true"]:not(.bottom-sheet)'))) {
-                open();
+                open(!!manual);
             }
             return true;
         }).catch(function(err) {
@@ -141,51 +146,88 @@
             seen[hash] = true;
             return !query || ((row.display_name || '') + ' ' + hash).toLocaleLowerCase().indexOf(query) >= 0;
         });
-        return rows.sort(function(a, b) {
+        rows.sort(function(a, b) {
             var order = mode === 'recent' ? (Number(b.timestamp) || 0) - (Number(a.timestamp) || 0)
                 : String(a.display_name || '').localeCompare(String(b.display_name || ''));
             return order || a.hash.localeCompare(b.hash);
         });
+        return mode === 'recent' ? rows.slice(0, 5) : rows;
+    }
+    function selectRecipient(row) {
+        if (selecting) return;
+        if (document.activeElement === search) search.blur();
+        recipient = {hash: row.hash.toLowerCase(), display_name: row.display_name};
+        render();
+        var checked = list.querySelector('[aria-pressed="true"]');
+        if (checked) RS.ui.focusAfterUpdate(checked);
+    }
+    function setMode(next) {
+        if (!selected || selecting) return;
+        if (document.activeElement === search) search.blur();
+        mode = next; recipient = null; search.value = ''; render();
+        RS.ui.focusAfterUpdate(next === 'contacts' ? back : contacts);
     }
     function render() {
-        list.replaceChildren(); search.hidden = !selected; tabs.hidden = !selected;
+        var session = epoch;
+        list.replaceChildren(); search.hidden = !selected || mode !== 'contacts';
+        contacts.hidden = !selected || mode !== 'recent';
+        back.hidden = !selected || mode !== 'contacts';
+        contacts.disabled = back.disabled = search.disabled = selecting;
+        confirm.hidden = !selected;
+        confirm.disabled = !selected || !recipient || selecting;
+        confirm.textContent = selecting ? 'Opening…' : 'Share';
+        document.getElementById('text-share-recent-label').hidden = !selected || mode !== 'recent';
+        document.getElementById('text-share-summary').hidden = !!selected && mode === 'contacts';
         preview.hidden = !selected; preview.textContent = selected
             ? (selected.item.image ? 'Photo · ' + selected.item.image.name + (selected.item.text ? '\n' : '') : '') + selected.item.text : '';
-        title.textContent = selected ? 'Share to…' : 'Shared items';
+        title.textContent = selected ? (mode === 'contacts' ? 'Contacts' : 'Share to…') : 'Shared items';
         sender.textContent = 'From ' + (document.getElementById('msg-profile-name').textContent || 'current identity');
-        document.getElementById('text-share-discard').hidden = !selected;
+        document.getElementById('text-share-discard').hidden = !selected || !reviewing || mode === 'contacts';
+        document.getElementById('text-share-discard').disabled = selecting;
         if (!selected) {
             if (!items.length) status('No shared items. Share text, a link or a photo to Ratspeak from another app.');
             items.forEach(function(item) {
                 list.appendChild(buttonRow(item.image ? 'Photo · ' + item.image.name : item.text.slice(0, 100), item.recipient ? 'Saved draft · tap to review' : 'Choose a recipient', function() {
+                    if (session !== epoch || !visible()) return;
                     selected = { item: item }; mode = 'recent'; search.value = '';
-                    if (item.recipient) choose(item.recipient); else render();
+                    recipient = item.recipient ? {hash: item.recipient, display_name: recipientName(item.recipient)} : null;
+                    render(); RS.ui.focusAfterUpdate(confirm.disabled ? contacts : confirm);
                 }));
             });
             return;
         }
-        document.getElementById('text-share-recent').setAttribute('aria-pressed', String(mode === 'recent'));
-        document.getElementById('text-share-contacts').setAttribute('aria-pressed', String(mode === 'contacts'));
         var rows = recipients();
+        // A saved recipient need not still be a contact or one of the five
+        // recent chats. Keep that recovery destination visible before Share.
+        if (recipient && !rows.some(function(row) { return row.hash.toLowerCase() === recipient.hash; })) rows.push(recipient);
         if (!rows.length) status(search.value ? 'No matching recipients.' : mode === 'recent'
             ? 'No recent chats. Choose Contacts to start a conversation.' : 'No contacts yet. Add a contact in Ratspeak, then return to Shared items.');
-        var session = epoch;
         rows.forEach(function(row) {
             var hash = row.hash.toLowerCase();
-            list.appendChild(buttonRow(row.display_name || 'Anonymous', shortHash(hash, 8, 4), function() {
-                if (session === epoch) choose(hash);
-            }, hash));
+            var button = buttonRow(row.display_name || 'Anonymous', shortHash(hash, 8, 4), function() {
+                if (session === epoch) selectRecipient(row);
+            }, hash);
+            button.disabled = selecting;
+            button.setAttribute('aria-pressed', String(!!recipient && recipient.hash === hash));
+            var check = document.createElement('span'); check.className = 'text-share-check';
+            check.setAttribute('aria-hidden', 'true'); check.textContent = '✓'; button.appendChild(check);
+            list.appendChild(button);
         });
     }
-    function open() {
+    function recipientName(hash) {
+        var row = lxmfContacts.concat(lxmfConversations).find(function(row) { return String(row.hash || '').toLowerCase() === hash; });
+        return row && row.display_name || 'Anonymous';
+    }
+    function open(review) {
         if (!visible() || !stamp) return;
         close();
+        reviewing = review;
         items.forEach(function(item) { offered[item.id] = true; });
         selected = items.length === 1 && !items[0].recipient ? { item: items[0] } : null;
         mode = 'recent'; render();
         RS.ui.openExistingSheet(sheet, overlay);
-        var first = sheet.querySelector('button:not([hidden])');
-        if (first) first.focus({ preventScroll: true });
+        var first = list.querySelector('button') || document.getElementById('text-share-close');
+        RS.ui.focusAfterUpdate(first);
         // Contacts come from the existing identity-owned snapshot. If bootstrap
         // has not supplied them yet, hydrate without allowing an old reply back.
         if (!lxmfContacts.length) {
@@ -203,6 +245,7 @@
             error('Another shared draft is open in this chat. Send it or discard it first.'); return;
         }
         selecting = true;
+        render();
         var holder = selected, session = epoch, owner = RS.conversationOwner.snapshot();
         var previous = hash === lxmfActiveContact ? input.value : (_lxmfDrafts[hash] || '');
         var text = holder.item.text;
@@ -228,7 +271,7 @@
             var now = hash === lxmfActiveContact ? input.value : (_lxmfDrafts[hash] || '');
             if (now !== previous) { error('The draft changed. Your shared item is saved; open it again.'); return; }
             close();
-            openConversationWith(hash);
+            openConversationWith(hash, {focusComposer: !holder.item.image});
             input.value = text;
             _lxmfDrafts[hash] = text;
             holder.owner = RS.conversationOwner.snapshot(); holder.sending = false;
@@ -248,7 +291,10 @@
             input.dispatchEvent(new Event('input'));
             if (!holder.item.image) showToast('Ready to review. Tap Send when you’re ready.', 'toast-success', 2600);
         } catch (err) { if (current(owner, session)) error(err); }
-        finally { selecting = false; }
+        finally {
+            // A retired assignment must not unlock a replacement picker's work.
+            if (session === epoch) { selecting = false; render(); }
+        }
     }
     function save(holder, text) {
         if (!text.trim() && !holder.item.image) return Promise.resolve(); // Explicit Discard owns deletion.
@@ -289,7 +335,15 @@
             error('Message was not accepted. Your shared draft is kept in Shared items.');
         }
     }
-    sheet._ratspeakDismiss = close;
+    sheet._ratspeakDismiss = function() {
+        if (selected && mode === 'contacts' && !selecting) setMode('recent');
+        else close();
+    };
+    RS.gestures.attachDragDismiss(sheet, {
+        axis: 'y', blockIfScrolled: false, parallaxOverlay: overlay,
+        skipIf: function(e) { return !e.target.closest('.bottom-sheet-handle, .bottom-sheet-header') || !!e.target.closest('button'); },
+        onCommit: close
+    });
     overlay.addEventListener('click', close);
     document.getElementById('text-share-close').addEventListener('click', close);
     document.getElementById('text-share-discard').addEventListener('click', async function() {
@@ -305,9 +359,11 @@
         } catch (err) { if (current(owner, session)) error(err); }
     });
     pendingButton.addEventListener('click', function() { refresh(true); });
-    search.addEventListener('input', render);
-    ['recent', 'contacts'].forEach(function(tab) {
-        document.getElementById('text-share-' + tab).addEventListener('click', function() { mode = tab; render(); });
+    search.addEventListener('input', function() { recipient = null; render(); });
+    contacts.addEventListener('click', function() { setMode('contacts'); });
+    back.addEventListener('click', function() { setMode('recent'); });
+    confirm.addEventListener('click', function() {
+        if (recipient && !selecting) return choose(recipient.hash);
     });
     input.addEventListener('input', function() {
         var holder = drafts[lxmfActiveContact];
