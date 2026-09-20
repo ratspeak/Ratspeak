@@ -1424,7 +1424,7 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
-    assert!(index.contains("/static/style.css?v=ui-20260919-3"));
+    assert!(index.contains("/static/style.css?v=ui-20260919-4"));
     assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
     assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
     assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
@@ -1475,6 +1475,13 @@ fn appearance_families_are_durable_validated_and_native_aware() {
     assert!(interfaces.contains("pub fn set_native_theme"));
     assert!(tauri_lib.contains("set_appearance"));
     assert!(tauri_lib.contains("set_native_theme"));
+    assert!(interfaces.contains("\"auto\" => Ok(None)"));
+    assert!(interfaces.contains(".set_theme(native_theme)"));
+    assert!(!interfaces.contains(".set_theme(Some(native_theme))"));
+    assert!(theme.contains("syncNativeMode(preference, mode)"));
+    assert!(theme.contains("__RATSPEAK_NATIVE_THEME_AUTO__ === false ? mode : preference"));
+    assert!(tauri_lib.contains("__RATSPEAK_NATIVE_THEME_AUTO__ = true"));
+    assert!(tauri_lib.contains("__RATSPEAK_NATIVE_THEME_AUTO__ = false"));
     assert!(android.contains("fun setColorMode(mode: String)"));
     assert!(android.contains("applySystemBarColorMode(mode)"));
 }
@@ -5436,10 +5443,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("/static/js/state.js?v=ui-20260919-3"));
-    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260919-3"));
-    assert!(index.contains("/static/js/lxmf.js?v=ui-20260919-3"));
-    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260919-3"));
+    assert!(index.contains("/static/js/state.js?v=ui-20260919-4"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260919-4"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260919-4"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260919-4"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));

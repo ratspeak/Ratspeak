@@ -1341,23 +1341,64 @@ pub async fn set_appearance(
     Ok(payload)
 }
 
+fn native_theme_override(theme: &str) -> AppResult<Option<tauri::Theme>> {
+    match theme.trim() {
+        "light" => Ok(Some(tauri::Theme::Light)),
+        "dark" => Ok(Some(tauri::Theme::Dark)),
+        // None releases Tao's explicit override and restores Windows system
+        // events / macOS inherited appearance. Never resolve auto to Some.
+        "auto" => Ok(None),
+        _ => Err(AppError::bad_request(
+            "native theme must be light | auto | dark",
+        )),
+    }
+}
+
 #[tauri::command]
 pub fn set_native_theme(window: tauri::WebviewWindow, theme: String) -> AppResult<Value> {
     let theme_name = theme.trim();
-    let native_theme = match theme_name {
-        "light" => tauri::Theme::Light,
-        "dark" => tauri::Theme::Dark,
-        _ => return Err(AppError::bad_request("native theme must be light | dark")),
-    };
+    let native_theme = native_theme_override(theme_name)?;
+
+    // The shell advertises this capability only on Windows/macOS. Pinned
+    // GTK/Tao interprets None as light, so its existing caller sends a resolved
+    // colour; reject accidental auto calls instead of silently forcing light.
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    if native_theme.is_none() {
+        return Err(AppError::bad_request(
+            "native system theme is unsupported on this platform",
+        ));
+    }
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     window
-        .set_theme(Some(native_theme))
+        .set_theme(native_theme)
         .map_err(|error| AppError::internal(format!("Failed to update native theme: {error}")))?;
     #[cfg(any(target_os = "android", target_os = "ios"))]
     let _ = (window, native_theme);
 
     Ok(json!({ "theme": theme_name }))
+}
+
+#[cfg(test)]
+mod native_theme_tests {
+    use super::*;
+
+    #[test]
+    fn system_releases_override_and_explicit_modes_remain_explicit() {
+        assert_eq!(native_theme_override("auto").unwrap(), None);
+        assert_eq!(native_theme_override(" auto ").unwrap(), None);
+        assert_eq!(
+            native_theme_override("light").unwrap(),
+            Some(tauri::Theme::Light)
+        );
+        assert_eq!(
+            native_theme_override("dark").unwrap(),
+            Some(tauri::Theme::Dark)
+        );
+        for invalid in ["", "system", "Dark", "unknown"] {
+            assert!(native_theme_override(invalid).is_err());
+        }
+    }
 }
 
 #[tauri::command]

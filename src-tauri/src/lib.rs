@@ -139,8 +139,11 @@ fn main_window_builder(
 ) -> tauri::WebviewWindowBuilder<'_, tauri::Wry, tauri::AppHandle> {
     let platform_script = if cfg!(any(target_os = "android", target_os = "ios")) {
         "window.__RATSPEAK_MOBILE__ = true;"
+    } else if cfg!(any(target_os = "windows", target_os = "macos")) {
+        "window.__RATSPEAK_DESKTOP__ = true; window.__RATSPEAK_NATIVE_THEME_AUTO__ = true;"
     } else {
-        "window.__RATSPEAK_DESKTOP__ = true;"
+        // GTK/Tao's None means light rather than removing an override.
+        "window.__RATSPEAK_DESKTOP__ = true; window.__RATSPEAK_NATIVE_THEME_AUTO__ = false;"
     };
     let diagnostics_script = if diagnostics_enabled() {
         "window.__RATSPEAK_DIAGNOSTICS__ = true;"

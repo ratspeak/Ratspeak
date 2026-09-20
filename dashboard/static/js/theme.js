@@ -9,6 +9,8 @@
     var DEFAULT_MODE = 'auto';
     var MODES = ['light', 'auto', 'dark'];
     var lastNativeMode = null;
+    var desiredNativeMode = null;
+    var nativeModePending = false;
     var FAMILIES = [
         {
             id: 'ratspeak',
@@ -126,11 +128,40 @@
         meta.setAttribute('content', preview[0]);
     }
 
-    function syncNativeMode(mode) {
-        if (lastNativeMode === mode) return;
+    function flushNativeMode() {
+        if (nativeModePending || desiredNativeMode === lastNativeMode) return;
+        var requested = desiredNativeMode;
+        nativeModePending = true;
+        function complete(succeeded) {
+            nativeModePending = false;
+            lastNativeMode = succeeded ? requested : null;
+            if (succeeded && requested === 'auto') {
+                // Rapid native changes can coalesce into no media event when
+                // they end at the original colour (for example save rollback).
+                // Re-read after releasing the override and at the next paint;
+                // normal later OS changes still use the media-query listener.
+                refreshSystemAppearance();
+                if (typeof window.requestAnimationFrame === 'function') {
+                    window.requestAnimationFrame(refreshSystemAppearance);
+                }
+            }
+            // One owner and one latest desired value: an older IPC cannot
+            // finish after and overwrite a newer preference. Do not spin on
+            // failure; retry that value only on another explicit sync.
+            if (desiredNativeMode !== requested) flushNativeMode();
+        }
+        try {
+            Promise.resolve(window.RS.invoke('set_native_theme', { theme: requested }))
+                .then(function() { complete(true); }, function() { complete(false); });
+        } catch (_) { complete(false); }
+    }
+
+    function syncNativeMode(preference, mode) {
         if (window.RatspeakAndroid &&
             typeof window.RatspeakAndroid.setColorMode === 'function') {
+            if (lastNativeMode === mode) return;
             try {
+                // Android only paints system bars; it needs the resolved colour.
                 window.RatspeakAndroid.setColorMode(mode);
                 lastNativeMode = mode;
             } catch (_) {}
@@ -138,10 +169,12 @@
         }
         if (window.__RATSPEAK_DESKTOP__ === true && window.RS &&
             typeof window.RS.invoke === 'function') {
-            lastNativeMode = mode;
-            window.RS.invoke('set_native_theme', { theme: mode }).catch(function() {
-                lastNativeMode = null;
-            });
+            // Windows/macOS must inherit in System mode. Pinning the resolved
+            // colour overrides the same media query used to detect OS changes.
+            // Pinned GTK/Tao treats None as light, not inheritance: preserve
+            // its existing resolved-colour path via the native capability.
+            desiredNativeMode = window.__RATSPEAK_NATIVE_THEME_AUTO__ === false ? mode : preference;
+            flushNativeMode();
         }
     }
 
@@ -166,7 +199,7 @@
 
         if (committed) writePreference(family, preference);
         updateThemeColor(family, mode);
-        syncNativeMode(mode);
+        syncNativeMode(preference, mode);
 
         if (announce !== false && typeof window.CustomEvent === 'function') {
             window.dispatchEvent(new CustomEvent('ratspeak-theme-changed', {
@@ -179,6 +212,13 @@
             }));
         }
         return { family: family, preference: preference, mode: mode };
+    }
+
+    function refreshSystemAppearance() {
+        var current = window.RS.appearance.get();
+        if (current.preference === 'auto' && current.mode !== resolvedMode('auto')) {
+            apply(current.family, 'auto', false, true);
+        }
     }
 
     window.RS = window.RS || {};
@@ -234,7 +274,7 @@
     }
 
     document.addEventListener('DOMContentLoaded', function() {
-        lastNativeMode = null;
-        syncNativeMode(window.RS.appearance.get().mode);
+        var current = window.RS.appearance.get();
+        syncNativeMode(current.preference, current.mode);
     });
 })();
