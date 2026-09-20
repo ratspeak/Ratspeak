@@ -5809,7 +5809,11 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "Added Android system sharing for text and links",
+        "Added Android system sharing for text, links and single photos",
+        "Prevented telemetry-only LXMF updates from creating empty chat messages",
+        "Fixed Windows System color mode so it follows operating-system changes",
+        "Refined mobile composer alignment, Network Ownership controls, Bluetooth",
+        "Simplified share recipient selection and dismissed the keyboard before",
         "Added Developer Mode network settings",
         "Corrected same-radio relaying, bounded discovery retries and slow-link timing",
         "Separated local send-capacity waits from delivery-proof timeouts",
