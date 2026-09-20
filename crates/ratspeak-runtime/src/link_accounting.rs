@@ -168,7 +168,9 @@ mod tests {
                 &backchannel_tx,
             );
         }
-        let started_at = Instant::now() - Duration::from_secs(240);
+        // A distinct forward timestamp still proves exact clock forwarding,
+        // without relying on a minimum host uptime or elapsed wall time.
+        let started_at = Instant::now() + Duration::from_secs(240);
         let timeout = Duration::from_secs(600);
         let events = [
             LinkManagerAccountingEvent::OutboundPacketWait {

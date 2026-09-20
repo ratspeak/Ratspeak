@@ -28,6 +28,10 @@ impl LxmfManager {
     /// entries, terminal messages and expired/orphaned owners remain bounded by
     /// the outer watchdog. Message age never cuts short a healthy slow Resource.
     pub(crate) fn has_bounded_protocol_wait(&self, msg_id: &str) -> bool {
+        self.has_bounded_protocol_wait_at(msg_id, Instant::now())
+    }
+
+    fn has_bounded_protocol_wait_at(&self, msg_id: &str, now: Instant) -> bool {
         let Ok(bytes) = hex::decode(msg_id) else {
             return false;
         };
@@ -36,7 +40,7 @@ impl LxmfManager {
         };
         if self.opportunistic_proofs.get(&hash).is_some_and(|owner| {
             owner.attempts.iter().any(|attempt| {
-                attempt.started.elapsed() < attempt.lifetime
+                now.saturating_duration_since(attempt.started) < attempt.lifetime
                     && matches!(
                         *attempt.status.borrow(),
                         ReceiptUpdate::Sent | ReceiptUpdate::Delivered { .. }
@@ -48,7 +52,7 @@ impl LxmfManager {
         self.link_delivery
             .as_ref()
             .and_then(|delivery| delivery.message_timeout_window(hash))
-            .is_some_and(|(started, timeout)| started.elapsed() < timeout)
+            .is_some_and(|(started, timeout)| now.saturating_duration_since(started) < timeout)
     }
     pub(crate) fn take_packet_delivery_rtts(&mut self) -> Vec<(String, Duration)> {
         std::mem::take(&mut self.packet_delivery_rtts)
@@ -125,6 +129,14 @@ impl LxmfManager {
     }
 
     pub(super) fn poll_opportunistic_proofs(&mut self, results: &mut Vec<(String, &'static str)>) {
+        self.poll_opportunistic_proofs_at(results, Instant::now());
+    }
+
+    fn poll_opportunistic_proofs_at(
+        &mut self,
+        results: &mut Vec<(String, &'static str)>,
+        monotonic_now: Instant,
+    ) {
         self.packet_delivery_rtts.clear();
         let mut delivered = Vec::new();
         let mut rejected = Vec::new();
@@ -185,7 +197,7 @@ impl LxmfManager {
                 // A concluded receipt can no longer prove delivery, but its
                 // exact failed-route identity remains useful to the next
                 // discovery step. Keep only bounded metadata/message ownership.
-                attempt.started.elapsed() < attempt.lifetime
+                monotonic_now.saturating_duration_since(attempt.started) < attempt.lifetime
             });
             if let Some(rtt) = completed {
                 delivered.push((*hash, rtt));
@@ -262,36 +274,52 @@ mod tests {
             }))
             .unwrap();
         delivery.tick();
+        // Move the observation clock forward instead of assuming the host's
+        // monotonic epoch is already 500 seconds old (fresh Windows runners).
+        let started = Instant::now();
+        let now = started + Duration::from_secs(500);
         assert!(delivery.observe_backchannel_resource_wait(
             link,
             resource,
-            Instant::now() - Duration::from_secs(500),
+            started,
             Duration::from_secs(600)
         ));
         mgr.link_delivery = Some(delivery);
         assert!(
-            mgr.has_bounded_protocol_wait(&hex::encode(hash)),
+            mgr.has_bounded_protocol_wait_at(&hex::encode(hash), now),
             "healthy finite slow owner survives three-minute message age"
         );
+        let (owner_started, owner_timeout) = mgr
+            .link_delivery
+            .as_ref()
+            .unwrap()
+            .message_timeout_window(hash)
+            .unwrap();
+        let owner_deadline = owner_started + owner_timeout;
+        assert!(mgr.has_bounded_protocol_wait_at(
+            &hex::encode(hash),
+            owner_deadline - Duration::from_millis(1)
+        ));
+        assert!(!mgr.has_bounded_protocol_wait_at(&hex::encode(hash), owner_deadline));
         assert!(
-            !mgr.has_bounded_protocol_wait(&hex::encode([0; 32])),
+            !mgr.has_bounded_protocol_wait_at(&hex::encode([0; 32]), now),
             "unowned message gets no exemption"
         );
         let delivery = mgr.link_delivery.as_mut().unwrap();
         assert!(!delivery.observe_backchannel_resource_wait(
             [0xF7; 16],
             resource,
-            Instant::now(),
+            now,
             Duration::from_secs(600)
         ));
         assert!(delivery.observe_backchannel_resource_wait(
             link,
             resource,
-            Instant::now() - Duration::from_secs(400),
+            started + Duration::from_secs(100),
             Duration::from_secs(300)
         ));
         assert!(
-            mgr.has_bounded_protocol_wait(&hex::encode(hash)),
+            mgr.has_bounded_protocol_wait_at(&hex::encode(hash), now),
             "finite observation allowance protects an in-transit progress renewal"
         );
         assert!(
@@ -301,28 +329,23 @@ mod tests {
                 .observe_backchannel_resource_wait(
                     link,
                     resource,
-                    Instant::now() - Duration::from_secs(300),
+                    started + Duration::from_secs(200),
                     Duration::from_secs(100)
                 )
         );
         assert!(
-            !mgr.has_bounded_protocol_wait(&hex::encode(hash)),
+            !mgr.has_bounded_protocol_wait_at(&hex::encode(hash), now),
             "expired owner must not become an infinite watchdog exemption"
         );
         assert!(
             mgr.link_delivery
                 .as_mut()
                 .unwrap()
-                .observe_backchannel_resource_wait(
-                    link,
-                    resource,
-                    Instant::now(),
-                    Duration::from_secs(600)
-                )
+                .observe_backchannel_resource_wait(link, resource, now, Duration::from_secs(600))
         );
-        assert!(mgr.has_bounded_protocol_wait(&hex::encode(hash)));
+        assert!(mgr.has_bounded_protocol_wait_at(&hex::encode(hash), now));
         assert!(mgr.cancel_outbound_message(&hex::encode(hash)));
-        assert!(!mgr.has_bounded_protocol_wait(&hex::encode(hash)));
+        assert!(!mgr.has_bounded_protocol_wait_at(&hex::encode(hash), now));
     }
 
     #[test]
@@ -352,17 +375,21 @@ mod tests {
             }))
             .unwrap();
         delivery.tick();
+        let started = Instant::now();
         assert!(delivery.observe_backchannel_packet_wait(
             link,
             packet,
-            Instant::now() - Duration::from_secs(20),
+            started,
             Duration::from_secs(12),
             false,
             None
         ));
         mgr.link_delivery = Some(delivery);
         assert!(
-            !mgr.has_bounded_protocol_wait(&hex::encode(hash)),
+            !mgr.has_bounded_protocol_wait_at(
+                &hex::encode(hash),
+                started + Duration::from_secs(20)
+            ),
             "a delayed observation cannot restart a proof timeout"
         );
     }
@@ -475,9 +502,16 @@ mod tests {
         let (mut mgr, hash, mut rx) = packet();
         let _proof = accept(&mut rx);
         mgr.poll_opportunistic_proofs(&mut Vec::new());
-        let attempt = &mut mgr.opportunistic_proofs.get_mut(&hash).unwrap().attempts[0];
-        attempt.started = Instant::now() - attempt.lifetime;
-        mgr.poll_opportunistic_proofs(&mut Vec::new());
+        let attempt = &mgr.opportunistic_proofs[&hash].attempts[0];
+        let deadline = attempt.started + attempt.lifetime;
+        assert!(
+            mgr.has_bounded_protocol_wait_at(
+                &hex::encode(hash),
+                deadline - Duration::from_millis(1)
+            )
+        );
+        assert!(!mgr.has_bounded_protocol_wait_at(&hex::encode(hash), deadline));
+        mgr.poll_opportunistic_proofs_at(&mut Vec::new(), deadline);
         assert!(mgr.opportunistic_proofs.is_empty());
         assert!(!mgr.complete_opportunistic_delivery(&hex::encode(hash)));
     }
