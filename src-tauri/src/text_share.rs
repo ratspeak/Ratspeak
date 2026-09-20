@@ -1,4 +1,4 @@
-//! Text received from Android's Sharesheet is data, never a deep-link command.
+//! Text/photos received from Android's Sharesheet are data, never deep-link commands.
 //! Native persistence owns pending items; JavaScript only chooses a recipient
 //! and edits an unsent draft. This module has no transport/send capability.
 

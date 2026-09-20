@@ -76,6 +76,15 @@
     "impact": "No Reticulum/LXMF/LXST wire-format or dependency/MSRV change. No iOS Share Extension or entitlement change. Old shared-network/audio contracts retained. Reviewed separately from the earlier notification JNI manifest correction.",
     "limits": "Eight pending items, 64 KiB UTF-8 each; text/URLs only, one recipient, no implicit send or URI dereference. Typed edits debounce for 250 ms; crash before persistence can retain the last committed draft. Hardware/OEM/source-app and final versioned artifact qualification remain separate gates."
   },
+  "photoShareReview": {
+    "sourceCommit": "e9c1c29",
+    "reviewedOn": "2026-09-19",
+    "rustApi": "No public Rust API additions/removals or snapshot changes. Existing application-internal cleanup bridge now covers photo recovery as well as text.",
+    "nativeContracts": "Adds single-image image/* ACTION_SEND beside text/plain. Existing commands/events retain their names; optional image metadata and stage_image operation extend the native draft contract. Four kept JNI methods are added (63 overall). Source bytes are copied only from explicitly granted content URIs into private AES-GCM authenticated chunks; Rust-owned attachment staging performs inspection and transformation. Version 1 text-only drafts remain readable.",
+    "limits": "Eight pending shares; each accepts up to 64 KiB UTF-8 text/caption and one photo up to 128,000,000 bytes. Multiple-image/file URI/network URI and arbitrary-file shares are rejected or not advertised. Selection/compression never sends. Activity/identity/revision ownership, send-start recovery and exact discard/accepted-send cleanup remain mandatory.",
+    "verification": "Draft model, frontend send/preparation, native Keystore/chunk instrumentation, Android lint/build/JNI and release-R8 DEX gates; offline API35 ARM64 cross-UID content-provider integration covers compression, cancellation, process-death recovery and explicit local queueing. Physical OEM/source-app acceptance and final versioned/all-platform release artifacts remain separate.",
+    "impact": "App-only additive feature for the upcoming 1.0.32; no wire-format, dependency, MSRV, core version, iOS Share Extension or entitlement change. Historical textShareReview remains the earlier baseline, not the current feature limit."
+  },
   "packages": [
     {
       "name": "ratspeak-core",
