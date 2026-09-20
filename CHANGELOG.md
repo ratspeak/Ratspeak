@@ -5,17 +5,26 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
-## [1.0.32] - 2026-09-06
+## [1.0.32] - 2026-09-19
 
 ### Added
 
-- Added Android system sharing for text and links, with recent-chat/contact
-  selection, protected draft recovery, and an explicit Send action.
+- Added Android system sharing for text, links and single photos, with recent-chat
+  and contact selection, photo sizing, protected drafts, and an explicit Send action.
 - Added Developer Mode network settings for choosing a Ratspeak-managed stack
   or an authenticated existing local Reticulum instance.
 
 ### Fixed
 
+- Prevented telemetry-only LXMF updates from creating empty chat messages,
+  unread counts or notifications; preserved title-only messages and made
+  unavailable attachments explicit.
+- Fixed Windows System color mode so it follows operating-system changes
+  without remaining locked to the previous Light or Dark choice.
+- Refined mobile composer alignment, Network Ownership controls, Bluetooth
+  progress sheets, and dismissible radio startup warnings.
+- Simplified share recipient selection and dismissed the keyboard before
+  photo sizing.
 - Corrected same-radio relaying, bounded discovery retries and slow-link timing.
   Failed-route recovery preserves freshly learned local routes and supports
   bounded authenticated recovery through an existing Python stack. Legacy
@@ -152,7 +161,8 @@ changes that materially affect how an artifact is reproduced.
 - Declared every first-party Ratspeak package non-publishable and recorded
   compatible versions alongside all sibling path dependencies.
 
-[Unreleased]: https://github.com/ratspeak/Ratspeak/compare/v1.0.31...HEAD
+[Unreleased]: https://github.com/ratspeak/Ratspeak/compare/v1.0.32...HEAD
+[1.0.32]: https://github.com/ratspeak/Ratspeak/compare/v1.0.31...v1.0.32
 [1.0.31]: https://github.com/ratspeak/Ratspeak/compare/v1.0.30...v1.0.31
 [1.0.30]: https://github.com/ratspeak/Ratspeak/compare/v1.0.29...v1.0.30
 [1.0.29]: https://github.com/ratspeak/Ratspeak/compare/v1.0.28...v1.0.29
