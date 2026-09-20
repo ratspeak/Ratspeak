@@ -13,6 +13,22 @@ use crate::db;
 use crate::helpers::active_identity_id;
 use crate::state::AppState;
 
+/// Plain-text projection shared by incoming notifications and durable previews.
+/// Keep the signed title/body stored separately; do not rewrite wire content.
+pub(crate) fn message_display_text<'a>(
+    title: &'a str,
+    content: &'a str,
+) -> std::borrow::Cow<'a, str> {
+    let title = title.trim();
+    if title.is_empty() {
+        content.into()
+    } else if content.trim().is_empty() {
+        title.into()
+    } else {
+        format!("{title}\n\n{content}").into()
+    }
+}
+
 /// `Some(payload)` on success; `None` on any DB / timeout failure (already
 /// logged). The Tauri command wraps this into an `AppError`.
 pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
@@ -61,7 +77,8 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
                         m.destination,
                         substr(m.content, 1, 60) AS preview,
                         m.timestamp,
-                        m.direction
+                        m.direction,
+                        substr(m.title, 1, 60)
                  FROM messages m
                  WHERE m.identity_id = ?1
                    AND m.rowid IN (
@@ -132,10 +149,15 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
                 row.get::<_, f64>(3)?,
                 row.get::<_, String>(4)
                     .unwrap_or_else(|_| "outbound".into()),
+                row.get::<_, String>(5).unwrap_or_default(),
             ))
         }) {
             for r in rows.flatten() {
-                let (source, destination, preview, timestamp, direction) = r;
+                let (source, destination, content, timestamp, direction, title) = r;
+                let preview: String = message_display_text(&title, &content)
+                    .chars()
+                    .take(60)
+                    .collect();
                 let other = if direction == "inbound" {
                     source.clone()
                 } else {

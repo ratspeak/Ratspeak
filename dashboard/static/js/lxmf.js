@@ -2407,6 +2407,8 @@ function _updateConversationPreview(hash, previewText, timestamp) {
 
 function _conversationPreviewForMessage(message) {
     if (!message) return '';
+    var title = (message.title || '').trim();
+    if (title) return _messageDisplayContent(message, !!message.audio).trim();
     if (message.audio && Number(message.audio.mode) === 0x10) return 'Voice message';
     if (message.audio) return 'Unsupported audio';
     var content = (message.content || '').trim();
@@ -3178,6 +3180,8 @@ function _messageDisplayContent(msg, hasRenderedAudio) {
         displayContent = displayContent.replace(/\n?\[File:[^\]]*\]\s*$/, '');
     }
     if (hasRenderedAudio && displayContent.trim() === 'Voice message') displayContent = '';
+    var title = ((msg && msg.title) || '').trim();
+    if (title) return title + (displayContent.trim() ? '\n\n' + displayContent : '');
     return displayContent;
 }
 
@@ -4541,8 +4545,8 @@ function clearPendingFile() {
 }
 
 function setReplyTarget(msgData) {
-    var replyContent = (msgData.content || '').substring(0, 100);
-    if (msgData.audio) {
+    var replyContent = _messageDisplayContent(msgData, !!msgData.audio).substring(0, 100);
+    if (msgData.audio && !replyContent.trim()) {
         replyContent = Number(msgData.audio.mode) === 0x10 ? 'Voice message' : 'Unsupported audio';
     }
     _replyTarget = {
@@ -5454,7 +5458,7 @@ RS.listen('lxmf_message', function(msg) {
     // for a background browser, where the last selected chat is not visible.
     if (!window.__TAURI_INTERNALS__ && !appForeground && typeof rsNotify !== 'undefined') {
         var notifFrom = _messageSourceName(msg);
-        var notifBody = (msg.content || '').substring(0, 120) || 'New message';
+        var notifBody = _messageDisplayContent(msg, !!msg.audio).substring(0, 120) || 'New message';
         rsNotify.send({
             title: 'Message from ' + notifFrom,
             body: notifBody,

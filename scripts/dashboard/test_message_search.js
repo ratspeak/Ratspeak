@@ -43,6 +43,9 @@ const context = {
     }
 };
 vm.runInNewContext(source, context);
+const lxmfSource = fs.readFileSync(path.join(root, 'static/js/lxmf.js'), 'utf8');
+const displayStart = lxmfSource.indexOf('function _messageDisplayContent(');
+vm.runInNewContext(lxmfSource.slice(displayStart, lxmfSource.indexOf('\nfunction ', displayStart + 1)), context);
 function type(value) { input.value = value; input.handlers.input(); }
 function fire() { const batch = [...timers.values()]; timers.clear(); batch.forEach(fn => fn()); }
 async function settle() { for (let i = 0; i < 4; i++) await Promise.resolve(); }
@@ -70,6 +73,10 @@ function message(content) { return { source: 'aa', destination: 'bb', direction:
     assert(!results.innerHTML.includes('old ABA result'), 'retyping the same query cannot revive its older request');
     pending[4].resolve([message('current ABA result')]); await settle();
     assert(results.innerHTML.includes('current ABA result'));
+
+    type('important title'); fire();
+    pending.pop().resolve([{ ...message(''), title: '<Important title>' }]); await settle();
+    assert(results.innerHTML.includes('&lt;Important title>'), 'title-only search results are visible and escaped');
 
     type('private'); fire();
     identity++; context.RS.messageSearch.reset();

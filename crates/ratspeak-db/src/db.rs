@@ -2976,7 +2976,7 @@ pub fn search_messages(
             // LIKE fallback on FTS errors.
             let pattern = format!("%{query}%");
             conn.prepare(
-                "SELECT * FROM messages WHERE content LIKE ?1 AND identity_id = ?2 ORDER BY timestamp DESC LIMIT ?3"
+                "SELECT * FROM messages WHERE (content LIKE ?1 OR title LIKE ?1) AND identity_id = ?2 ORDER BY timestamp DESC LIMIT ?3"
             ).and_then(|mut stmt| {
                 stmt.query_map(params![pattern, identity_id, limit], row_to_message)
                     .map(|rows| rows.filter_map(|r| r.ok()).collect())
@@ -3028,7 +3028,8 @@ pub fn get_unread_breakdown(
         SELECT cnt.source,
                c.display_name,
                cnt.unread,
-               latest.content,
+               CASE WHEN trim(latest.title) != '' THEN trim(latest.title)
+                    ELSE latest.content END,
                latest.ts
         FROM (
             SELECT source, COUNT(*) AS unread
@@ -3039,6 +3040,7 @@ pub fn get_unread_breakdown(
         JOIN (
             SELECT source,
                    content,
+                   title,
                    timestamp AS ts,
                    ROW_NUMBER() OVER (PARTITION BY source ORDER BY timestamp DESC) AS rn
             FROM messages
@@ -9847,6 +9849,39 @@ mod unread_breakdown_tests {
         let pool = test_pool();
         let rows = get_unread_breakdown(&pool, "me");
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn title_only_search_and_fallback_are_identity_scoped() {
+        let pool = test_pool();
+        for (id, identity) in [("title-a", "meA"), ("title-b", "meB")] {
+            insert_msg(
+                &pool, id, "sender", identity, "", 1.0, "received", "inbound", identity,
+            );
+            pool.get()
+                .unwrap()
+                .execute(
+                    "UPDATE messages SET title = 'Important title' WHERE id = ?1",
+                    [id],
+                )
+                .unwrap();
+        }
+        let fts = search_messages(&pool, "Important", "meA", 10);
+        assert_eq!(fts.len(), 1);
+        assert_eq!(fts[0]["id"], "title-a");
+        // An unavailable FTS index must retain the same title/identity policy.
+        pool.get()
+            .unwrap()
+            .execute("DROP TABLE messages_fts", [])
+            .unwrap();
+        let fallback = search_messages(&pool, "Important", "meA", 10);
+        assert_eq!(fallback.len(), 1);
+        assert_eq!(fallback[0]["id"], "title-a");
+        assert!(search_messages(&pool, "Important", "meC", 10).is_empty());
+        let unread = get_unread_breakdown(&pool, "meA");
+        assert_eq!(unread.len(), 1);
+        assert_eq!(unread[0].2, 1);
+        assert_eq!(unread[0].3, "Important title");
     }
 
     #[test]

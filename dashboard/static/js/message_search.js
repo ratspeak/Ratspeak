@@ -66,7 +66,7 @@
                                 ratspeakDisplayNameHtml(name.name, hash) + '</span>' +
                             '<span class="conv-time">' + formatConvTime(message.timestamp) + '</span>' +
                         '</div><div class="conv-row-bottom"><span class="conv-preview">' +
-                            escapeHtml((message.content || '').substring(0, 80)) +
+                            escapeHtml(_messageDisplayContent(message, !!message.audio).substring(0, 80)) +
                         '</span></div></div></div>';
                 }).join('');
                 results.querySelectorAll('.conv-row').forEach(function(row) {

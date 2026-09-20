@@ -4080,7 +4080,26 @@ fn extract_and_save_attachment(
         }
     }
 
+    // A declared but malformed field is user media, not service traffic.
+    // Keep a non-playable/unavailable representation instead of a blank bubble.
+    use lxmf_core::constants::{FIELD_FILE_ATTACHMENTS, FIELD_IMAGE};
+    if msg.fields.contains_key(&FIELD_IMAGE) || msg.fields.contains_key(&FIELD_FILE_ATTACHMENTS) {
+        let is_image = msg.fields.contains_key(&FIELD_IMAGE);
+        return Some(ExtractedAttachment {
+            file_name: if is_image { "Image" } else { "Attachment" }.into(),
+            stored_name: db::ATTACHMENT_UNAVAILABLE_STORED_NAME.into(),
+            is_image,
+        });
+    }
     None
+}
+
+fn extracted_attachment_json(attachment: &ExtractedAttachment) -> Value {
+    if attachment.stored_name == db::ATTACHMENT_UNAVAILABLE_STORED_NAME {
+        json!({"filename": attachment.file_name, "unavailable": true})
+    } else {
+        json!({"filename": attachment.file_name, "stored_name": attachment.stored_name})
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -4116,8 +4135,12 @@ fn extract_and_save_audio(
     let audio = match msg.audio_field() {
         Ok(audio) => audio?,
         Err(error) => {
-            tracing::warn!(%error, "ignoring malformed inbound LXMF audio field");
-            return None;
+            tracing::warn!(%error, "unavailable malformed inbound LXMF audio field");
+            return Some(ExtractedAudio {
+                mode: lxmf_core::constants::AM_CUSTOM,
+                stored_name: db::ATTACHMENT_UNAVAILABLE_STORED_NAME.into(),
+                supported: false,
+            });
         }
     };
     let mode = audio.mode;
@@ -4820,6 +4843,22 @@ async fn handle_decrypted_lxmf(state: &Arc<AppState>, data: Vec<u8>, source: Inb
     handle_decrypted_lxmf_from_origin(state, data, source, state.activity_request_fence()).await;
 }
 
+/// Presentation policy, not LXMF validity. Field presence preserves malformed
+/// or unsupported declared media as unavailable; opaque metadata alone never
+/// invents a user message. Recognized replies retain their quoted context.
+fn inbound_has_chat_content(
+    msg: &lxmf_core::message_api::LxMessage,
+    extension: Option<&lxmf::RatspeakChatExtension>,
+) -> bool {
+    use lxmf_core::constants::{FIELD_AUDIO, FIELD_FILE_ATTACHMENTS, FIELD_IMAGE};
+    !msg.content.trim().is_empty()
+        || !msg.title.trim().is_empty()
+        || [FIELD_FILE_ATTACHMENTS, FIELD_IMAGE, FIELD_AUDIO]
+            .iter()
+            .any(|field| msg.fields.contains_key(field))
+        || matches!(extension, Some(lxmf::RatspeakChatExtension::Reply { .. }))
+}
+
 /// The one inbound LXMF pipeline. `fallback_id_material` is the unpacked
 /// wire material; its hash is the msg-id fallback when the message carries
 /// no hash — deterministic across sender retries so dedupe still works
@@ -5021,6 +5060,20 @@ async fn process_inbound_lxmf(
         return;
     }
 
+    // LXMF is also a service envelope (telemetry, commands, tickets, future
+    // extensions). Protocol acceptance/proofs and signed ticket learning above
+    // must not depend on whether this client has anything to show in a chat.
+    // No service command is executed here. Replaying an ignored envelope has
+    // no chat side effects, so it needs neither a chat row nor an unbounded
+    // second message-id cache. Ticket storage is already keyed/idempotent.
+    if !inbound_has_chat_content(&msg, chat_extension.as_ref()) {
+        tracing::debug!(
+            reason = "no_chat_content",
+            "Consumed non-chat LXMF envelope"
+        );
+        return;
+    }
+
     let received_at = next_chat_observed_timestamp(state, &source_hash, &identity_id).await;
     let attachment_file = extract_and_save_attachment(state, &msg);
     let audio_file = extract_and_save_audio(state, &msg);
@@ -5116,7 +5169,7 @@ async fn process_inbound_lxmf(
         state,
         &source_hash,
         &identity_id,
-        &msg.content,
+        &messaging::message_display_text(&msg.title, &msg.content),
         attachment_file.is_some() || audio_file.is_some(),
     )
     .await;
@@ -5140,14 +5193,11 @@ async fn process_inbound_lxmf(
     if let Some(ref att) = attachment_file {
         let obj = event_data.as_object_mut().unwrap();
         if att.is_image {
-            obj.insert(
-                "image".to_string(),
-                json!({ "stored_name": att.stored_name, "filename": att.file_name }),
-            );
+            obj.insert("image".to_string(), extracted_attachment_json(att));
         } else {
             obj.insert(
                 "attachments".to_string(),
-                json!([{ "filename": att.file_name, "stored_name": att.stored_name }]),
+                json!([extracted_attachment_json(att)]),
             );
         }
     }
@@ -7303,6 +7353,8 @@ mod inbound_pipeline_tests {
 
     static TEMP_PIPELINE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+    include!("inbound_content_tests.rs");
+
     #[derive(Default)]
     struct RecordingEmitter {
         events: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
@@ -7991,7 +8043,7 @@ mod inbound_pipeline_tests {
         let conversation = db::get_conversation(&state.db, &hex::encode([0xEC; 16]), &identity, 10);
         assert_eq!(conversation.len(), 1);
         assert_eq!(conversation[0]["content"], "text survives malformed media");
-        assert!(conversation[0]["audio"].is_null());
+        assert_eq!(conversation[0]["audio"]["unavailable"], true);
         assert_eq!(emitter.count("lxmf_message"), 1);
     }
 
