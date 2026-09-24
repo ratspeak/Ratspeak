@@ -73,7 +73,7 @@ targets:
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
         CFBundleShortVersionString: 1.0.32
-        CFBundleVersion: "1000058"
+        CFBundleVersion: "1000059"
     # AutoInterface uses raw UDP IPv6 multicast, not Bonjour. Apple approved
     # this managed capability for org.ratspeak.apple on August 15, 2026.
     entitlements:

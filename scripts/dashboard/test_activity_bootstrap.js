@@ -1376,6 +1376,23 @@ test('sampled observations are summarized without presenting them as failures', 
     );
 });
 
+test('historical transfer lifecycle details omit frozen percentages', function() {
+    var ui = loadUiHarness().context;
+    var event = {
+        kind: 'lxmf.delivery.resource_started', capture_profile: 'normal', sequence: 1,
+        attributes: [{ key: 'percent', value: {type: 'unsigned', value: 10} },
+            { key: 'attempts', value: {type: 'unsigned', value: 1} }]
+    };
+    var details = ui.activityEventDetails(event);
+    assert(!details.includes('10%'));
+    assert(!details.includes('<dt>Progress</dt>'));
+    assert(details.includes('Attempts'));
+    event.kind = 'resource.started';
+    assert(!ui.activityEventDetails(event).includes('10%'));
+    event.kind = 'lxmf.delivery.progress';
+    assert(ui.activityEventDetails(event).includes('10%'), 'explicit trace event remains a historical observation');
+});
+
 (async function run() {
     var failures = 0;
     for (var i = 0; i < tests.length; i++) {

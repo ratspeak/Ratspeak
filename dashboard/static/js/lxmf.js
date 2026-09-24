@@ -1233,7 +1233,7 @@ function _scheduleLxmfScrollToBottom(container) {
 
 function _compensateImageLoadScroll(container, img, before) {
     if (!container || !img || !before) return;
-    if (!container.isConnected) return;
+    if (!container.isConnected || !img.isConnected || !container.contains(img)) return;
     var afterHeight = container.scrollHeight;
     var delta = afterHeight - before.scrollHeight;
     if (Math.abs(delta) < 1) return;
@@ -1316,6 +1316,9 @@ function _watchLxmfImagesForBottomPin(container, shouldPin) {
             imgTop: img.getBoundingClientRect().top
         };
         img.addEventListener('load', function() {
+            // An old render may finish decoding after its nodes were replaced.
+            // It no longer owns any geometry in this transcript.
+            if (!img.isConnected || !container.contains(img)) return;
             if (shouldPin && _lxmfShouldFollowLatest(container)) {
                 _scheduleLxmfScrollToBottom(container);
                 return;
@@ -1328,6 +1331,37 @@ function _watchLxmfImagesForBottomPin(container, shouldPin) {
                 _compensateImageLoadScroll(container, img, before);
             }
         }, { once: true });
+    });
+}
+
+function _lxmfRenderedImageKey(img) {
+    var bubble = img.closest('.lxmf-msg[data-msg-id]');
+    if (!bubble) return null;
+    return JSON.stringify([bubble.getAttribute('data-msg-id'),
+        img.getAttribute('data-stored-name') || img.getAttribute('src')]);
+}
+
+function _captureLxmfRenderedImages(container) {
+    var images = new Map();
+    container.querySelectorAll('img.lxmf-clickable-img').forEach(function(img) {
+        if (!img.complete || !img.naturalWidth) return;
+        var name = img.getAttribute('data-stored-name');
+        // Respect cache retirement/memory pressure; do not keep an evicted URL
+        // alive just because the previous render still displays it.
+        if (name && _getImageBlobUrl(name) !== img.getAttribute('src')) return;
+        var key = _lxmfRenderedImageKey(img);
+        if (key) images.set(key, img);
+    });
+    return images;
+}
+
+function _restoreLxmfRenderedImages(container, images) {
+    container.querySelectorAll('img.lxmf-clickable-img').forEach(function(img) {
+        var key = _lxmfRenderedImageKey(img);
+        var previous = key && images.get(key);
+        if (!previous) return;
+        images.delete(key);
+        img.replaceWith(previous);
     });
 }
 
@@ -3376,6 +3410,7 @@ function renderConversation(options) {
     _detachMessageLongPressHandlers();
     _wireLxmfMessageScroll(container);
     var scrollState = _captureLxmfMessageScrollState(container);
+    var renderedImages = _captureLxmfRenderedImages(container);
 
     var composeBar = document.getElementById('lxmf-compose-bar');
     if (composeBar) composeBar.style.display = lxmfActiveContact ? '' : 'none';
@@ -3582,6 +3617,10 @@ function renderConversation(options) {
         '</div>');
     }
     container.innerHTML = htmlParts.join('');
+    // Preserve decoded images before restoring scroll. Replacing them with
+    // empty placeholders temporarily shrinks the transcript on every progress
+    // event and can clamp its scroll offset to a much earlier message.
+    _restoreLxmfRenderedImages(container, renderedImages);
     if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.hydratePlayers === 'function') {
         RS.voiceMemos.hydratePlayers(container);
     }
@@ -3600,7 +3639,7 @@ function renderConversation(options) {
                 if (cachedFile.filename) img.setAttribute('data-filename', cachedFile.filename);
                 if (cachedFile.mime) img.setAttribute('data-mime', cachedFile.mime);
             }
-            img.src = cachedUrl;
+            if (img.getAttribute('src') !== cachedUrl) img.src = cachedUrl;
             return;
         }
         _observeImageHydration(img, name);
@@ -3632,6 +3671,8 @@ function renderConversation(options) {
     });
 
     container.querySelectorAll('.lxmf-clickable-img').forEach(function(img) {
+        if (img._lxmfImageClickAttached) return;
+        img._lxmfImageClickAttached = true;
         img.addEventListener('click', function(e) {
             if (_consumePendingMessageHoldActivation(e, this)) return;
             e.stopPropagation();

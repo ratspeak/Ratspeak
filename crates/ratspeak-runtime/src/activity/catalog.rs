@@ -2234,7 +2234,12 @@ pub fn lxmf_delivery_progress(
         draft =
             draft.protocol_identifier(ActivityAttributeKey::Link, IdentifierKind::Link, &link.0)?;
     }
-    if let Some(percent) = input.percent {
+    // Lifecycle facts are immutable observations, not progress widgets. Keep
+    // percentages only on the explicit trace-level progress event.
+    if let Some(percent) = input
+        .percent
+        .filter(|_| input.step == LxmfProgressStep::ResourceProgress)
+    {
         draft = draft.exact(
             ActivityAttributeKey::Percent,
             ExactValue::Unsigned(u64::from(percent.min(100))),
@@ -3149,6 +3154,10 @@ mod tests {
     fn lxmf_typed_progress_uses_specific_nonterminal_kinds() {
         for (step, expected_kind) in [
             (
+                LxmfProgressStep::ResourceStarted,
+                "lxmf.delivery.resource_started",
+            ),
+            (
                 LxmfProgressStep::DirectPending,
                 "lxmf.delivery.direct_pending",
             ),
@@ -3165,7 +3174,7 @@ mod tests {
                 link: Some(LinkId::new([0x53; 16])),
                 method: LxmfDeliveryMethod::Direct,
                 step,
-                percent: None,
+                percent: Some(10),
                 attempts: 1,
             })
             .unwrap()
@@ -3176,6 +3185,12 @@ mod tests {
             })
             .unwrap();
             assert_eq!(event.kind.code(), expected_kind);
+            assert!(
+                !event
+                    .attributes
+                    .iter()
+                    .any(|attribute| attribute.key == ActivityAttributeKey::Percent)
+            );
         }
     }
 

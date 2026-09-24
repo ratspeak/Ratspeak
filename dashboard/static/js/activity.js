@@ -1770,6 +1770,9 @@ function activityEventDetails(event) {
         ]);
     }
     (event.attributes || []).forEach(function(attribute) {
+        // Older captured lifecycle rows can contain a one-time percentage.
+        // It cannot track the transfer and must not appear as live progress.
+        if (attribute.key === 'percent' && event.kind !== 'lxmf.delivery.progress' && event.kind !== 'resource.progress') return;
         if (activityIdentifierAttributeIsRevealable(attribute)) {
             rows.push([
                 activityIdentifierLabel(event, attribute.key),
