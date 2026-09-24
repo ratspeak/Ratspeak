@@ -54,7 +54,7 @@ class RatspeakBlePeerClient(private val context: Context) {
         // BLE 5.0 max ATT MTU. The peer is free to negotiate down; we keep a
         // safe fallback so writes never silently truncate.
         private const val TARGET_MTU = 517
-        private const val MTU_FALLBACK_PAYLOAD = 244
+        private const val MTU_FALLBACK_PAYLOAD = 20
         private const val GATT_TIMEOUT_SEC = 15L
 
         // Service + characteristic UUIDs — must match ble_peer.rs and
@@ -428,7 +428,7 @@ class RatspeakBlePeerClient(private val context: Context) {
         }
 
         override fun onMtuChanged(g: BluetoothGatt, mtu: Int, status: Int) {
-            if (status == BluetoothGatt.GATT_SUCCESS) negotiatedMtu = mtu - 3
+            if (status == BluetoothGatt.GATT_SUCCESS) negotiatedMtu = (mtu - 3).coerceIn(20, TARGET_MTU - 3)
             mtuLatch?.countDown()
         }
 

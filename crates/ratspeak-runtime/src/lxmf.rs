@@ -4198,6 +4198,34 @@ impl LxmfManager {
         self.tick_with_auto_propagation_download_ready(true)
     }
 
+    /// Register the router task for Direct delivery input and local receipts.
+    /// Periodic maintenance remains separately scheduled by the embedding task.
+    pub fn poll_delivery_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<()> {
+        self.link_delivery
+            .as_mut()
+            .map_or(std::task::Poll::Pending, |ld| ld.poll_ready(cx))
+    }
+
+    /// Advance Direct delivery only. Safe to call on packet readiness without
+    /// accelerating router jobs, persistence, discovery or automatic downloads.
+    pub fn process_delivery_events(&mut self) -> Vec<(String, &'static str)> {
+        let mut results = Vec::new();
+        if let Some(ref mut ld) = self.link_delivery {
+            ld.drain_events(&self.known_identities);
+        }
+
+        if let Some(ref mut ld) = self.link_delivery {
+            let delivery_results = ld.tick();
+            for result in delivery_results {
+                self.handle_link_delivery_result(result, &mut results);
+            }
+            self.drain_link_delivery_progress_updates();
+        }
+        self.drain_core_backchannel_resource_cancellations();
+
+        results
+    }
+
     /// Like [`Self::tick`], but only starts automatic Offline Inbox downloads
     /// when the selected propagation node is already reachable and metadata-ready.
     /// In-flight syncs still advance so they can finish or fail normally.
@@ -4286,18 +4314,7 @@ impl LxmfManager {
             self.last_router_cull = now;
         }
 
-        if let Some(ref mut ld) = self.link_delivery {
-            ld.drain_events(&self.known_identities);
-        }
-
-        if let Some(ref mut ld) = self.link_delivery {
-            let delivery_results = ld.tick();
-            for result in delivery_results {
-                self.handle_link_delivery_result(result, &mut results);
-            }
-            self.drain_link_delivery_progress_updates();
-        }
-        self.drain_core_backchannel_resource_cancellations();
+        results.extend(self.process_delivery_events());
 
         if let Some(ref mut ps) = self.propagation_sync {
             ps.drain_events(&self.known_identities);

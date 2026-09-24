@@ -2349,12 +2349,18 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 #[cfg(feature = "mobile-throttle")]
                 let mut was_foreground = true;
                 loop {
-                    tokio::select! {
+                    let delivery_only = tokio::select! {
                         biased;
                         _ = tick_shutdown.wait() => break,
-                        _ = interval.tick() => {},
-                        _ = tick_state.lxmf_notify.notified() => {},
-                    }
+                        _ = interval.tick() => false,
+                        _ = tick_state.lxmf_notify.notified() => false,
+                        _ = std::future::poll_fn(|cx| {
+                            tick_state.lxmf.lock().ok().and_then(|mut guard| {
+                                guard.as_mut().map(|mgr| mgr.poll_delivery_ready(cx))
+                            }).unwrap_or(std::task::Poll::Pending)
+                        }) => true,
+                    };
+                    let dispatch_started = std::time::Instant::now();
                     let tick_activity_origin = tick_state.activity_request_fence();
                     if tick_shutdown.is_triggered() {
                         break;
@@ -2385,7 +2391,9 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     }
                     let network_available =
                         crate::any_interface_online_cached(&tick_state).unwrap_or(false);
-                    let auto_inbox_check_due = if let Ok(lxmf) = tick_state.lxmf.lock() {
+                    let auto_inbox_check_due = if delivery_only {
+                        false
+                    } else if let Ok(lxmf) = tick_state.lxmf.lock() {
                         lxmf.as_ref()
                             .map(|mgr| mgr.auto_propagation_check_due(network_available))
                             .unwrap_or(false)
@@ -2405,8 +2413,11 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         } else {
                             false
                         };
-                    save_counter = save_counter.wrapping_add(1);
-                    let should_save_crypto_state = save_counter.is_multiple_of(600);
+                    if !delivery_only {
+                        save_counter = save_counter.wrapping_add(1);
+                    }
+                    let should_save_crypto_state =
+                        !delivery_only && save_counter.is_multiple_of(600);
                     let tick_state_for_lxmf = tick_state.clone();
                     let tick_result = tokio::task::spawn_blocking(move || {
                         let empty_result = || {
@@ -2438,8 +2449,19 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             );
                         }
                         let hold_started = std::time::Instant::now();
-                        let results = mgr
-                            .tick_with_auto_propagation_download_ready(auto_inbox_download_ready);
+                        let results = if delivery_only {
+                            mgr.process_delivery_events()
+                        } else {
+                            mgr.tick_with_auto_propagation_download_ready(auto_inbox_download_ready)
+                        };
+                        if delivery_only && dispatch_started.elapsed() > Duration::from_millis(100)
+                        {
+                            tracing::debug!(
+                                target: "ratspeak_runtime::delivery_dispatch",
+                                wait_ms = dispatch_started.elapsed().as_millis() as u64,
+                                "Delivery wake processing delayed"
+                            );
+                        }
                         if mgr.take_path_recovery_refresh() {
                             tick_state_for_lxmf.poll_now.notify_one();
                         }
@@ -2827,6 +2849,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             tick_activity_origin,
                         )
                         .await;
+                    }
+
+                    if delivery_only {
+                        // Drain in bounded turns, giving shutdown and unrelated work a chance.
+                        tokio::task::yield_now().await;
+                        continue;
                     }
 
                     // Check orphan deadlines every ~5s in foreground (~20s in

@@ -59,11 +59,11 @@ object RatspeakBleServer {
     private val txCharacteristics = ConcurrentHashMap<UUID, BluetoothGattCharacteristic>()
 
     // Per-central negotiated ATT payload size (MTU - 3). Populated by
-    // RatspeakGattCallback.onMtuChanged. Defaults to 244 (BLE 4.2+ baseline)
+    // RatspeakGattCallback.onMtuChanged. Defaults to 20 until ATT MTU negotiation succeeds
     // if unknown so notifyTx can size fragments without waiting for the
     // exchange (B6).
     private val centralMtu = ConcurrentHashMap<String, Int>()
-    private const val DEFAULT_PAYLOAD = 244
+    private const val DEFAULT_PAYLOAD = 20
 
     // Per-device notify gate. Android accepts only one outstanding
     // notification per device and confirms delivery via onNotificationSent;

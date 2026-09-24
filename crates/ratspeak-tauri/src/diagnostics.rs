@@ -33,6 +33,30 @@ const SAFE_BLE_LIFECYCLE_FIELDS: &[&str] = &[
     "tx_notify",
 ];
 
+// Reviewed aggregate-only throughput targets. Counts describe local native
+// admission / Resource dispatch, not recipient delivery or measured PHY speed.
+const SAFE_PEER_TRANSFER_TARGET: &str = "rns_interface::ble_peer::transfer";
+const SAFE_RESOURCE_TRANSFER_TARGET: &str = "lxmf_core::delivery::transfer";
+const SAFE_PEER_TRANSFER_FIELDS: &[&str] = &[
+    "message",
+    "role",
+    "value_limit",
+    "queued_packets",
+    "high_water",
+    "accepted_packets",
+    "rejected_packets",
+    "sent_frames",
+    "sent_bytes",
+    "backpressure",
+];
+const SAFE_RESOURCE_TRANSFER_FIELDS: &[&str] = &[
+    "message",
+    "resource_requests",
+    "part_actions",
+    "repeated_part_actions",
+    "part_bytes",
+];
+
 // Metadata-level defense in depth. Values for these field names are never
 // visited by a diagnostics subscriber, even if a future callsite is added
 // under an otherwise allowed Ratspeak target.
@@ -73,6 +97,8 @@ const PROHIBITED_FIELD_NAMES: &[&str] = &[
 /// diagnostics subscriber.
 pub fn target_allowed(target: &str) -> bool {
     target == SAFE_BLE_LIFECYCLE_TARGET
+        || target == SAFE_PEER_TRANSFER_TARGET
+        || target == SAFE_RESOURCE_TRANSFER_TARGET
         || ALLOWED_EXPLICIT_TARGETS.contains(&target)
         || ALLOWED_TARGET_ROOTS.iter().any(|root| {
             target == *root
@@ -97,10 +123,19 @@ fn safe_ble_lifecycle_metadata(metadata: &tracing::Metadata<'_>) -> bool {
 /// Apply both the immutable target boundary and the structured-field privacy
 /// boundary before a subscriber is allowed to record an event or span.
 pub fn metadata_allowed(metadata: &tracing::Metadata<'_>) -> bool {
-    let target_is_allowed = if metadata.target() == SAFE_BLE_LIFECYCLE_TARGET {
-        safe_ble_lifecycle_metadata(metadata)
-    } else {
-        target_allowed(metadata.target())
+    let target_is_allowed = match metadata.target() {
+        SAFE_BLE_LIFECYCLE_TARGET => safe_ble_lifecycle_metadata(metadata),
+        SAFE_PEER_TRANSFER_TARGET | SAFE_RESOURCE_TRANSFER_TARGET => {
+            let expected = if metadata.target() == SAFE_PEER_TRANSFER_TARGET {
+                SAFE_PEER_TRANSFER_FIELDS
+            } else {
+                SAFE_RESOURCE_TRANSFER_FIELDS
+            };
+            let fields = metadata.fields();
+            fields.len() == expected.len()
+                && fields.iter().all(|field| expected.contains(&field.name()))
+        }
+        target => target_allowed(target),
     };
 
     target_is_allowed
@@ -173,6 +208,37 @@ mod tests {
         ] {
             assert!(!target_allowed(target), "expected {target} to be rejected");
         }
+    }
+
+    #[test]
+    fn transfer_targets_require_exact_content_free_schemas() {
+        use tracing_subscriber::filter::filter_fn;
+        use tracing_subscriber::prelude::*;
+        let output = SharedWriter::default();
+        let writer = output.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish()
+            .with(filter_fn(metadata_allowed));
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(target: "rns_interface::ble_peer::transfer",
+                role = "apple_peripheral", value_limit = 512u64, queued_packets = 1u64,
+                high_water = 2u64, accepted_packets = 64u64, rejected_packets = 0u64,
+                sent_frames = 63u64, sent_bytes = 30000u64, backpressure = 1u64, "safe-native-counts");
+            tracing::info!(target: "lxmf_core::delivery::transfer",
+                resource_requests = 64u64, part_actions = 100u64,
+                repeated_part_actions = 2u64, part_bytes = 46400u64, "safe-resource-counts");
+            tracing::info!(target: "rns_interface::ble_peer::transfer", peer = "private-peer", "bad-peer");
+            tracing::info!(target: "lxmf_core::delivery::transfer", content = "private-content", "bad-content");
+            tracing::info!(target: "rns_interface::ble_peer::transfer::extra", "bad-prefix");
+        });
+        let bytes = output.0.lock().unwrap().clone();
+        let text = String::from_utf8(bytes).unwrap();
+        assert!(text.contains("safe-native-counts"));
+        assert!(text.contains("safe-resource-counts"));
+        assert!(!text.contains("private") && !text.contains("bad-"));
     }
 
     #[test]
