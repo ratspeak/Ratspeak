@@ -19,8 +19,8 @@
     "sourceCommit": "fc78e4926c696a921f308d238ef1b620e0db0078"
   },
   "snapshotSource": {
-    "commit": "f7e853a8dbe0cc34b100f65e3301cab62e8526f1",
-    "capturedOn": "2026-09-05",
+    "commit": "c6ae7f09782955021138cf3edabf7bab8bbf0a33",
+    "capturedOn": "2026-09-24",
     "review": {
       "areas": [
         "application domain and configuration",
@@ -30,7 +30,8 @@
         "desktop and mobile application shell",
         "profile-scoped shared-stack ownership, protected credentials and transactional switching",
         "Android inbound text sharing and identity-locked native draft cleanup",
-        "exact route recovery, packet proof ownership and authoritative timing"
+        "exact route recovery, packet proof ownership and authoritative timing",
+        "Direct delivery readiness and content-free BLE/Resource aggregate diagnostics (September 24)"
       ],
       "canonicalDependencies": [
         "lxmf_core::message_api",
@@ -39,7 +40,7 @@
       ],
       "classification": "application-internal lifecycle, persistence, mobile integration and explicit network ownership",
       "publicApiDiff": {
-        "added": 160,
+        "added": 162,
         "removed": 12
       },
       "semver": "no public-library consequence; application integration only",
@@ -55,7 +56,8 @@
         "September 5 Android text sharing: 54 frontend suites, 1014 workspace tests (one credential-store test explicitly ignored), 33 shell tests, strict host/Android/iOS simulator all-feature Clippy and Rust 1.87 all-feature workspace check",
         "Fresh ARM64 debug APK on isolated API35 AVD: cold/warm text intake, Unicode draft selection, no automatic send, edited draft process recovery, exact native revision/Activity/identity rejection, explicit locally queued send, repeat/recreation; three real Keystore/AtomicFile instrumentation tests. Real source apps and physical acceptance remain open.",
         "September 5 path recovery: 633 runtime tests plus actual slow-Link deadline regression, strict runtime Clippy; real manager/actor authenticated late-proof, same-radio/direct-to-relay and alternate-route regressions; live Python 1.4.2 shared recovery reconnect and payload",
-        "Rust 1.87 all-feature workspace check; Android ARM64 and iOS simulator all-feature shell Clippy checkpoint; final combined preflight recorded separately"
+        "Rust 1.87 all-feature workspace check; Android ARM64 and iOS simulator all-feature shell Clippy checkpoint; final combined preflight recorded separately",
+        "September 24: two application-internal delivery drive/readiness methods, focused runtime/diagnostic/source tests, Android Kotlin/JNI checks, and encrypted readiness-driven multi-segment probes. No phone throughput qualification or new installation."
       ]
     }
   },
@@ -110,8 +112,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-runtime.txt",
-      "itemCount": 2498,
-      "sha256": "2e3321d7e23817056c99bc16f630c645107c66e3abb25d76a0b09267e3fbb882"
+      "itemCount": 2500,
+      "sha256": "0330d36b08c93aaf7f631918ca4660015c723482af29167c7aea4949d37da1f1"
     },
     {
       "name": "ratspeak-tauri",
@@ -145,5 +147,13 @@
     "rustApi": "One application-internal LxmfManager::set_path_recovery_handle method, two rendered lines; no removals. Retained public completion and route-observation entry points remain available.",
     "bounds": "64 transport recovery operations; 1024 exact route records, one hour; 256 manager recovery/timing records, 10-second recovery wait; eight concurrent two-second timing queries, 15-second cache TTL; 512 packet attempts with route-aware receipt window and 120-second late-proof grace.",
     "compatibility": "No UI/settings or wire/crypto change. Existing Auto policy and explicit low-level interface suppression APIs retained. Compatibility floor and native/manifest reviews preserved. Physical LoRa and final release artifacts require separate qualification."
+  },
+  "bleThroughputReview": {
+    "reviewedOn": "2026-09-24",
+    "rustApi": "Two additive application-internal LxmfManager methods for readiness and delivery-only processing. No public-library breaking change, wire change, persistence change, version bump, or platform export change.",
+    "scheduling": "Foreground/background periodic maintenance cadence retained; Direct delivery input and local receipts trigger bounded fast turns with explicit cooperative yield. Shutdown remains the first select branch.",
+    "diagnostics": "Exact aggregate-only schemas allow rns_interface::ble_peer::transfer and lxmf_core::delivery::transfer. Raw dependency/peer/content traces remain forbidden. Native admission and dispatch counts do not claim receiver delivery.",
+    "native": "Android unknown ATT payload falls back to 20 until successful MTU callbacks; Apple flow control and native payload sizing are supplied by pinned rsReticulum. BLE role fan-out is preserved.",
+    "qualification": "Source, scoped host/MSRV/native compile, privacy, encrypted integrity and live Python interoperability checks; final packages and physical throughput remain separately required. Existing release integration tags are not moved or published by this implementation."
   }
 }

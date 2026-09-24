@@ -1593,6 +1593,8 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::mark_foreground_resume(&mut self)
 pub fn ratspeak_runtime::lxmf::LxmfManager::note_pending_direct_backchannel(&mut self, [u8; 16], [u8; 16])
 pub fn ratspeak_runtime::lxmf::LxmfManager::persistence_delta_snapshot(&self, bool, &[alloc::string::String], bool) -> ratspeak_runtime::lxmf::LxmfPersistenceDelta
 pub fn ratspeak_runtime::lxmf::LxmfManager::pick_delivery_method(&self, &ratspeak_db::db::DbPool, &str, ratspeak_runtime::lxmf::DeliveryPreference, ratspeak_runtime::lxmf::DeliveryProfile) -> lxmf_core::constants::DeliveryMethod
+pub fn ratspeak_runtime::lxmf::LxmfManager::poll_delivery_ready(&mut self, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<()>
+pub fn ratspeak_runtime::lxmf::LxmfManager::process_delivery_events(&mut self) -> alloc::vec::Vec<(alloc::string::String, &'static str)>
 pub fn ratspeak_runtime::lxmf::LxmfManager::propagated_deposit_pending(&self) -> bool
 pub fn ratspeak_runtime::lxmf::LxmfManager::propagation_node_ready_for_send(&self, &[u8; 16]) -> bool
 pub fn ratspeak_runtime::lxmf::LxmfManager::purge_identity_profile(&std::path::Path, &str, bool) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
