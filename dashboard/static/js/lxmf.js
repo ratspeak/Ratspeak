@@ -1723,7 +1723,11 @@ function _messageProgressPercent(msg) {
     if (!_messageShowsTransferPercent(msg)) return null;
     var progress = msg && typeof msg.delivery_progress === 'number' ? msg.delivery_progress : null;
     if (progress === null || !isFinite(progress) || progress <= 0 || progress >= 1) return null;
-    return Math.max(1, Math.min(99, Math.round(progress * 100)));
+    // LXMF reserves the first 10% for setup. Large attachment meters show
+    // the Resource payload phase, with 1% while starting and at most 99%
+    // until the receiver's proof confirms delivery.
+    var payloadProgress = Math.max(0, (progress - 0.10) / 0.90);
+    return Math.max(1, Math.min(99, Math.round(payloadProgress * 100)));
 }
 
 function _messageProgressMetaHtml(msg) {

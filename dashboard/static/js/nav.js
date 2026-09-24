@@ -1203,20 +1203,31 @@ function _scheduleFocusedFieldReveal(el) {
     });
 }
 
-function _chatMessagesNearBottomForKeyboard() {
-    var msgContainer = document.body.classList.contains('view-channel-detail')
+function _chatMessagesForKeyboard() {
+    return document.body.classList.contains('view-channel-detail')
         ? document.getElementById('channel-transcript')
         : document.getElementById('lxmf-messages');
+}
+
+function _chatMessagesNearBottomForKeyboard() {
+    var msgContainer = _chatMessagesForKeyboard();
     if (!msgContainer) return true;
     if (window.RS && RS.chatScroll) return RS.chatScroll.nearBottom(msgContainer);
     var bottomGap = Math.max(0, msgContainer.scrollHeight - msgContainer.clientHeight - msgContainer.scrollTop);
     return bottomGap <= 160;
 }
 
+function _chatMessagesFollowingForKeyboard() {
+    var msgContainer = _chatMessagesForKeyboard();
+    if (!msgContainer) return true;
+    if (window.RS && RS.chatScroll && RS.chatScroll.isFollowing) {
+        return RS.chatScroll.isFollowing(msgContainer);
+    }
+    return _chatMessagesNearBottomForKeyboard();
+}
+
 function _pinChatMessagesToBottomForKeyboard() {
-    var msgContainer = document.body.classList.contains('view-channel-detail')
-        ? document.getElementById('channel-transcript')
-        : document.getElementById('lxmf-messages');
+    var msgContainer = _chatMessagesForKeyboard();
     if (!msgContainer) return;
     if (window.RS && RS.chatScroll) RS.chatScroll.pinToBottom(msgContainer);
     else msgContainer.scrollTop = msgContainer.scrollHeight;
@@ -1244,6 +1255,12 @@ function initKeyboardDetection() {
         var inConversationDetail =
             document.body.classList.contains('view-chat-detail') ||
             document.body.classList.contains('view-channel-detail');
+        var activeComposer = document.activeElement;
+        // Capture intent before changing viewport geometry. A smaller viewport
+        // can create a large bottom gap without the user scrolling at all.
+        var followIOSChat = isIOS() && inConversationDetail && activeComposer &&
+            (activeComposer.id === 'lxmf-input' || activeComposer.id === 'channel-message-input') &&
+            _chatMessagesFollowingForKeyboard();
         var keyboardOpen = false;
 
         if (isIOS()) {
@@ -1341,6 +1358,10 @@ function initKeyboardDetection() {
         }
 
         _prevKeyboardOpen = keyboardOpen;
+        // Every iOS viewport adjustment uses the shared cancellable scroll
+        // controller, including late keyboard/accessory-bar changes. A real
+        // history scroll owns followLatest and cancels its pending pins.
+        if (followIOSChat) _pinChatMessagesToBottomForKeyboard();
     }
 
     window.visualViewport.addEventListener('resize', onResize);
@@ -1390,7 +1411,9 @@ function initKeyboardDetection() {
         }
 
         if (el.id === 'lxmf-input' || el.id === 'channel-message-input') {
-            _waitingForKeyboard = _chatMessagesNearBottomForKeyboard();
+            // iOS follows viewport changes directly. Its initial focus resize
+            // can precede keyboard opening, which cleared the old one-shot flag.
+            _waitingForKeyboard = !isIOS() && _chatMessagesNearBottomForKeyboard();
             if (isIOS()) onResize();
             return;
         }
