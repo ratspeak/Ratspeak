@@ -22,7 +22,7 @@ struct PacketAttempt {
 impl LxmfManager {
     /// The outer orphan watchdog must not overrule a bounded protocol clock.
     /// Only a finite, unexpired owner envelope qualifies: retained packet proof,
-    /// Link establishment/admission, or request-driven Resource progress. An
+    /// destination discovery, Link establishment/admission, or Resource progress. An
     /// externally observed Resource includes its core-owned finite observation
     /// allowance, measured from the original deadline, not notification time. Queue
     /// entries, terminal messages and expired/orphaned owners remain bounded by
@@ -38,6 +38,21 @@ impl LxmfManager {
         let Ok(hash) = <[u8; 32]>::try_from(bytes.as_slice()) else {
             return false;
         };
+        if self
+            .live_preparation
+            .discovery
+            .get(&hash)
+            .is_some_and(|wait| {
+                now.saturating_duration_since(wait.started) < wait.limit
+                    && self
+                        .router
+                        .pending_outbound
+                        .iter()
+                        .any(|message| message.hash == Some(hash))
+            })
+        {
+            return true;
+        }
         if self.opportunistic_proofs.get(&hash).is_some_and(|owner| {
             owner.attempts.iter().any(|attempt| {
                 now.saturating_duration_since(attempt.started) < attempt.lifetime
@@ -241,6 +256,33 @@ impl LxmfManager {
 mod tests {
     use super::*;
     use crate::lxmf::tests::test_manager;
+
+    #[test]
+    fn destination_discovery_watchdog_exemption_is_finite_and_cancelled_with_message() {
+        let mut mgr = test_manager();
+        let mut msg = LxMessage::new(
+            [9; 16],
+            mgr.lxmf_dest_hash,
+            "",
+            "cold",
+            DeliveryMethod::Direct,
+        );
+        msg.sign(&mgr.identity.get_signing_key().unwrap()).unwrap();
+        let hash = msg.hash.unwrap();
+        let id = hex::encode(hash);
+        mgr.router.pending_outbound.push(msg);
+        let at = Instant::now();
+        mgr.prepare_live_outbound(1000.0, at);
+        assert!(mgr.has_bounded_protocol_wait_at(&id, at + Duration::from_secs(179)));
+        assert!(!mgr.has_bounded_protocol_wait_at(&id, at + Duration::from_secs(180)));
+        mgr.prepare_live_outbound(1010.0, at + Duration::from_secs(10));
+        assert!(
+            !mgr.has_bounded_protocol_wait_at(&id, at + Duration::from_secs(180)),
+            "polls never renew the deadline"
+        );
+        assert!(mgr.cancel_outbound_message(&id));
+        assert!(!mgr.has_bounded_protocol_wait_at(&id, at + Duration::from_secs(10)));
+    }
 
     #[test]
     fn slow_resource_owner_outlives_message_age_but_not_its_finite_owner_envelope() {

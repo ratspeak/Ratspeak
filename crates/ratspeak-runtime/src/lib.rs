@@ -2652,6 +2652,11 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                         let delivery_method_for_db = polled_delivery_method_override(
                             new_state,
                             packet_delivery_rtts.contains_key(msg_id),
+                            delivery_progress
+                                .iter()
+                                .rev()
+                                .find(|update| update.msg_id == *msg_id)
+                                .map(|update| update.event_method),
                         )
                         .map(str::to_owned);
                         // Same blocking-pool hop also reads the method back
@@ -6133,11 +6138,19 @@ async fn poll_stats_loop(
 // precedence; queued, expired and abandoned owners retain this ceiling.
 const MESSAGE_TIMEOUT_SECS: f64 = 180.0;
 
-fn polled_delivery_method_override(step: &str, has_packet_proof: bool) -> Option<&'static str> {
+fn polled_delivery_method_override(
+    step: &str,
+    has_packet_proof: bool,
+    evidence: Option<lxmf::LxmfDeliveryProgressMethod>,
+) -> Option<&'static str> {
     match step {
+        "sent" => Some("opportunistic"),
         "delivered" if has_packet_proof => Some("opportunistic"),
         "propagating" | "propagated" => Some("propagated"),
-        _ => None,
+        _ => evidence.map(|method| match method {
+            lxmf::LxmfDeliveryProgressMethod::Direct => "direct",
+            lxmf::LxmfDeliveryProgressMethod::PropagationDeposit => "propagated",
+        }),
     }
 }
 
@@ -6199,16 +6212,53 @@ mod delivery_timeout_policy_tests {
     #[test]
     fn late_packet_proof_records_actual_method_even_after_propagation_fallback() {
         assert_eq!(
-            super::polled_delivery_method_override("delivered", true),
+            super::polled_delivery_method_override("delivered", true, None),
             Some("opportunistic")
         );
         assert_eq!(
-            super::polled_delivery_method_override("delivered", false),
+            super::polled_delivery_method_override("delivered", false, None),
             None
         );
         assert_eq!(
-            super::polled_delivery_method_override("propagated", false),
+            super::polled_delivery_method_override("propagated", false, None),
             Some("propagated")
+        );
+    }
+
+    #[test]
+    fn late_selected_method_uses_actual_dispatch_evidence() {
+        use super::lxmf::LxmfDeliveryProgressMethod;
+        assert_eq!(
+            super::polled_delivery_method_override("sent", false, None),
+            Some("opportunistic")
+        );
+        assert_eq!(
+            super::polled_delivery_method_override(
+                "link_establishing",
+                false,
+                Some(LxmfDeliveryProgressMethod::Direct)
+            ),
+            Some("direct")
+        );
+        assert_eq!(
+            super::polled_delivery_method_override(
+                "link_establishing",
+                false,
+                Some(LxmfDeliveryProgressMethod::PropagationDeposit)
+            ),
+            Some("propagated")
+        );
+        assert_eq!(
+            super::polled_delivery_method_override("routing", false, None),
+            None
+        );
+        assert_eq!(
+            super::polled_delivery_method_override(
+                "delivered",
+                true,
+                Some(LxmfDeliveryProgressMethod::PropagationDeposit)
+            ),
+            Some("opportunistic")
         );
     }
 

@@ -50,6 +50,7 @@ const OPPORTUNISTIC_MAX_CONTENT_BYTES: usize = 295;
 const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
 const BACKCHANNEL_COMMAND_BUFFER: usize = 64;
 mod packet_delivery;
+mod preparation;
 mod recovery;
 mod timing;
 const DIRECT_BACKCHANNEL_IDENTIFY_GRACE: Duration = Duration::from_secs(3);
@@ -845,8 +846,8 @@ impl DeliveryPreference {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryProfile {
-    /// Chat-like payloads. Ratspeak Auto uses Link-based Direct by default,
-    /// except for peers that explicitly advertise constrained no-bz2 support.
+    /// Chat-like payloads. Auto reuses Links, otherwise prefers ratcheted
+    /// Opportunistic delivery when the packed message fits a packet.
     Message,
     /// Payloads that usually need proof-backed link/resource delivery.
     Attachment,
@@ -971,6 +972,7 @@ struct MessageWithMethodRequest<'a> {
     identity_id: &'a str,
     delivery_method: DeliveryMethod,
     preference: DeliveryPreference,
+    profile: DeliveryProfile,
     reply_to_id: Option<&'a str>,
     reply_to_preview: Option<&'a str>,
 }
@@ -1132,6 +1134,7 @@ pub struct LxmfManager {
     /// Auto sends that began over a live LXMF method and may be retried once
     /// through the configured Offline Inbox after live delivery fails.
     auto_live_fallback: HashSet<[u8; 32]>,
+    live_preparation: preparation::LivePreparation,
 }
 
 /// Immutable known-identity artifact captured while the LXMF manager is
@@ -1622,6 +1625,7 @@ impl LxmfManager {
             ephemeral_outbound: HashSet::new(),
             last_reported_steps: HashMap::new(),
             auto_live_fallback: HashSet::new(),
+            live_preparation: preparation::LivePreparation::default(),
         })
     }
 
@@ -1871,15 +1875,6 @@ impl LxmfManager {
             .unwrap_or(CompressionSupport::Unknown)
     }
 
-    fn peer_explicitly_lacks_lxmf_compression(
-        &self,
-        db_pool: &DbPool,
-        dest_hash_hex: &str,
-    ) -> bool {
-        self.peer_lxmf_compression_support(Some(db_pool), dest_hash_hex)
-            == CompressionSupport::Unsupported
-    }
-
     fn apply_peer_lxmf_compression_support(
         &self,
         msg: &mut LxMessage,
@@ -1898,7 +1893,7 @@ impl LxmfManager {
     /// user's choice or Ratspeak's Auto policy.
     pub fn pick_delivery_method(
         &self,
-        db_pool: &DbPool,
+        _db_pool: &DbPool,
         dest_hash_hex: &str,
         preference: DeliveryPreference,
         profile: DeliveryProfile,
@@ -1907,20 +1902,7 @@ impl LxmfManager {
             DeliveryPreference::Opportunistic => DeliveryMethod::Opportunistic,
             DeliveryPreference::Direct => DeliveryMethod::Direct,
             DeliveryPreference::Propagated => DeliveryMethod::Propagated,
-            DeliveryPreference::Auto => {
-                if profile == DeliveryProfile::Message
-                    && self.peer_explicitly_lacks_lxmf_compression(db_pool, dest_hash_hex)
-                {
-                    DeliveryMethod::Opportunistic
-                } else {
-                    // Reachability is established by Reticulum paths, Links,
-                    // and authenticated proofs, never by a wall-clock
-                    // last-heard heuristic. Auto therefore starts live for
-                    // every profile and falls back to propagation only after
-                    // the live method reaches a real terminal failure.
-                    DeliveryMethod::Direct
-                }
-            }
+            DeliveryPreference::Auto => self.auto_live_method(dest_hash_hex, profile),
         }
     }
 
@@ -2030,6 +2012,7 @@ impl LxmfManager {
             identity_id: request.identity_id,
             delivery_method: method,
             preference,
+            profile: request.profile,
             reply_to_id: None,
             reply_to_preview: None,
         })
@@ -2055,6 +2038,7 @@ impl LxmfManager {
             identity_id: request.identity_id,
             delivery_method: method,
             preference,
+            profile: request.profile,
             reply_to_id: Some(request.reply_to_id),
             reply_to_preview: Some(request.reply_to_preview),
         })
@@ -2084,6 +2068,7 @@ impl LxmfManager {
                 DeliveryMethod::Propagated => DeliveryPreference::Propagated,
                 DeliveryMethod::Paper => DeliveryPreference::Auto,
             },
+            profile: DeliveryProfile::Message,
             reply_to_id: None,
             reply_to_preview: None,
         })
@@ -2102,6 +2087,7 @@ impl LxmfManager {
             identity_id,
             delivery_method,
             preference,
+            profile,
             reply_to_id,
             reply_to_preview,
         } = request;
@@ -2146,6 +2132,9 @@ impl LxmfManager {
         let method = msg.method;
         self.router.try_send(msg).ok()?;
         self.auto_live_fallback.extend(auto_fallback);
+        if preference == DeliveryPreference::Auto && profile == DeliveryProfile::Message {
+            self.live_preparation.auto_messages.extend(auto_fallback);
+        }
 
         // The manager lock is still held here, so the router cannot advance
         // this freshly accepted message before its local history row exists.
@@ -3721,6 +3710,8 @@ impl LxmfManager {
 
     fn clear_auto_live_fallback(&mut self, hash: &[u8; 32]) {
         self.auto_live_fallback.remove(hash);
+        self.live_preparation.auto_messages.remove(hash);
+        self.live_preparation.discovery.remove(hash);
         self.last_reported_steps.remove(&hex::encode(hash));
     }
 
@@ -4037,6 +4028,11 @@ impl LxmfManager {
                 }
                 CompressionSupport::Unknown => {}
             }
+            if compression_support == CompressionSupport::Unsupported {
+                if let Some(delivery) = self.link_delivery.as_mut() {
+                    delivery.disable_pending_direct_compression(dest_hash);
+                }
+            }
             return changed;
         }
         false
@@ -4268,6 +4264,7 @@ impl LxmfManager {
         self.hold_messages_for_timing(now);
         self.drain_backchannel_events(&mut results);
         self.router.process_deferred_stamps();
+        results.extend(self.prepare_live_outbound(now, Instant::now()));
         let known_identities = self
             .known_identities
             .keys()
@@ -5337,6 +5334,7 @@ impl LxmfManager {
                 .as_ref()
                 .is_some_and(|hash| self.ephemeral_outbound.contains(hash));
             let dest_hex = hex::encode(dest_hash);
+            self.apply_peer_lxmf_compression_support(&mut message, None, &dest_hex);
 
             if !is_opportunistic {
                 let waiting_for_reusable =
@@ -9186,7 +9184,7 @@ mod tests {
     }
 
     #[test]
-    fn auto_delivery_prefers_opportunistic_for_explicit_no_bz2_message_peers() {
+    fn compression_capability_does_not_choose_auto_delivery_method() {
         let pool = test_pool();
         let mut mgr = test_manager();
         let dest = "abababababababababababababababab";
@@ -9208,7 +9206,7 @@ mod tests {
                 DeliveryPreference::Auto,
                 DeliveryProfile::Message
             ),
-            DeliveryMethod::Opportunistic
+            DeliveryMethod::Direct
         );
         assert_eq!(
             mgr.pick_delivery_method(
@@ -9242,7 +9240,7 @@ mod tests {
                 DeliveryPreference::Auto,
                 DeliveryProfile::Message
             ),
-            DeliveryMethod::Opportunistic
+            DeliveryMethod::Direct
         );
     }
 
@@ -9636,7 +9634,7 @@ mod tests {
                 profile: DeliveryProfile::Message,
             })
             .expect("no-compression Auto send");
-        assert_eq!(no_compression.method, DeliveryMethod::Opportunistic);
+        assert_eq!(no_compression.method, DeliveryMethod::Direct);
         assert_eq!(mgr.auto_live_fallback.len(), 6);
     }
 
