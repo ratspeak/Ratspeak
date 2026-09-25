@@ -3074,6 +3074,22 @@ impl LxmfManager {
         self.build_delivery_announce_packet(DeliveryAnnounceKind::PathResponse { tag })
     }
 
+    pub(crate) fn create_deferred_path_response_announce_packet(
+        &mut self,
+        tag: Option<&[u8]>,
+    ) -> Result<Vec<u8>, CoordinatedDeliveryAnnounceError> {
+        let wall_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let cache_now = self.announce_cache_started.elapsed().as_secs_f64();
+        self.build_delivery_announce_packet_at_typed(
+            DeliveryAnnounceKind::PathResponse { tag },
+            wall_now,
+            cache_now,
+        )
+    }
+
     fn build_delivery_announce_packet(
         &mut self,
         kind: DeliveryAnnounceKind<'_>,

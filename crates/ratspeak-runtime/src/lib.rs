@@ -24,6 +24,7 @@ pub mod messaging;
 pub mod mobile_platform;
 pub mod network_ownership;
 mod network_secrets;
+mod path_response;
 pub mod propagation;
 mod rnode_activity;
 pub mod rns;
@@ -4336,84 +4337,39 @@ async fn apply_inbound_ratspeak_reaction(
     );
 }
 
-/// Build the transport message that answers a path request for our own LXMF
-/// delivery destination: a `PathResponse`-context announce carrying our
-/// identity + path, routed back out the interface the request arrived on
-/// (`OutboundAttached`), or broadcast (`Outbound`) when that interface is
-/// unknown. Returns `None` if the LXMF manager isn't ready or the announce
-/// can't be built. Split from the send so the routing/context choice is
-/// unit-testable without a live transport.
+/// Build a signed response without erasing the durable ordering deferral.
+/// Queue ownership and retries live in the inbound task's bounded owner.
 fn build_lxmf_path_response_message(
     state: &Arc<AppState>,
     attached_interface: Option<u64>,
     tag: Option<&[u8]>,
-) -> Option<rns_transport::messages::TransportMessage> {
-    // Build under the lxmf lock (sync), then drop it before returning.
-    let (raw, dest_hash) = match state.lxmf.lock() {
-        Ok(mut guard) => {
-            guard
-                .as_mut()
-                .and_then(|mgr| match mgr.create_path_response_announce_packet(tag) {
-                    Ok(raw) => Some((raw, mgr.lxmf_dest_hash)),
-                    Err(_) => {
-                        tracing::warn!(
-                            reason = "build_failed",
-                            "failed to build LXMF path-response announce"
-                        );
-                        None
-                    }
-                })
-        }
-        Err(_) => None,
-    }?;
+) -> Result<rns_transport::messages::TransportMessage, path_response::BuildError> {
+    use lxmf::CoordinatedDeliveryAnnounceError;
+    use path_response::BuildError;
 
+    let mut guard = match state.lxmf.try_lock() {
+        Ok(guard) => guard,
+        Err(std::sync::TryLockError::WouldBlock) => return Err(BuildError::Busy),
+        Err(std::sync::TryLockError::Poisoned(_)) => return Err(BuildError::Failed),
+    };
+    let mgr = guard.as_mut().ok_or(BuildError::Failed)?;
+    let raw = mgr
+        .create_deferred_path_response_announce_packet(tag)
+        .map_err(|error| match error {
+            CoordinatedDeliveryAnnounceError::Coalesced => BuildError::Coalesced,
+            CoordinatedDeliveryAnnounceError::Failed(_) => BuildError::Failed,
+        })?;
     let request = rns_transport::messages::OutboundRequest {
         raw: Bytes::from(raw),
-        destination_hash: dest_hash,
+        destination_hash: mgr.lxmf_dest_hash,
     };
-    Some(match attached_interface {
+    Ok(match attached_interface {
         Some(interface_id) => rns_transport::messages::TransportMessage::OutboundAttached {
             request,
             interface_id,
         },
         None => rns_transport::messages::TransportMessage::Outbound(request),
     })
-}
-
-/// Emit a path-response announce for our LXMF delivery destination on the
-/// interface a path request arrived on. The transport delegates this to us
-/// because it doesn't hold our identity keys; answering is what lets a peer
-/// that never announced learn our identity + path on first contact.
-async fn answer_lxmf_path_request(
-    state: &Arc<AppState>,
-    attached_interface: Option<u64>,
-    tag: Option<Vec<u8>>,
-) {
-    let Some(message) = build_lxmf_path_response_message(state, attached_interface, tag.as_deref())
-    else {
-        return;
-    };
-
-    let Some(tx) = state
-        .rns
-        .read()
-        .ok()
-        .and_then(|r| r.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
-    else {
-        return;
-    };
-
-    if tx.send(message).await.is_err() {
-        tracing::warn!(
-            reason = "queue_failed",
-            "failed to queue LXMF path-response announce"
-        );
-    } else {
-        tracing::debug!(
-            attached = attached_interface.is_some(),
-            "answered LXMF path request with path-response announce"
-        );
-    }
 }
 
 /// Handle authenticated Opportunistic proofs on their dedicated per-session
@@ -4565,10 +4521,17 @@ async fn handle_inbound_lxmf(
 ) {
     use rns_transport::link_messages::DestinationEvent;
 
+    let mut path_responses = path_response::PendingPathResponses::default();
+    let mut response_tick = tokio::time::interval(path_response::RETRY_INTERVAL);
+    response_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
         let event = tokio::select! {
             biased;
             _ = shutdown.wait() => break,
+            _ = response_tick.tick(), if !path_responses.is_empty() => {
+                path_responses.service(&state, &shutdown, Instant::now());
+                continue;
+            },
             ev = rx.recv() => match ev {
                 Some(e) => e,
                 None => break,
@@ -4596,7 +4559,13 @@ async fn handle_inbound_lxmf(
         // until we announced.
         if let DestinationEvent::AnnounceRequested(ref req) = event {
             if req.path_response {
-                answer_lxmf_path_request(&state, req.attached_interface, req.tag.clone()).await;
+                path_responses.admit(
+                    &state,
+                    req.attached_interface,
+                    req.tag.clone(),
+                    Instant::now(),
+                );
+                path_responses.service(&state, &shutdown, Instant::now());
             }
             continue;
         }
@@ -7434,7 +7403,7 @@ mod inbound_pipeline_tests {
     include!("inbound_content_tests.rs");
 
     #[derive(Default)]
-    struct RecordingEmitter {
+    pub(super) struct RecordingEmitter {
         events: std::sync::Mutex<Vec<(String, serde_json::Value)>>,
     }
 
@@ -7555,7 +7524,7 @@ mod inbound_pipeline_tests {
         assert_eq!(emitter.count("lxmf_step"), 0);
     }
 
-    fn pipeline_state() -> (Arc<AppState>, Arc<RecordingEmitter>) {
+    pub(super) fn pipeline_state() -> (Arc<AppState>, Arc<RecordingEmitter>) {
         let unique = TEMP_PIPELINE_COUNTER.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "ratspeak-inbound-pipeline-{}-{}-{unique}",
@@ -7589,7 +7558,7 @@ mod inbound_pipeline_tests {
         (Arc::new(state), emitter)
     }
 
-    fn local_dest(state: &AppState) -> [u8; 16] {
+    pub(super) fn local_dest(state: &AppState) -> [u8; 16] {
         let hex_hash = state
             .lxmf
             .lock()
@@ -7909,7 +7878,7 @@ mod inbound_pipeline_tests {
             .clone()
     }
 
-    fn packed_inbound(dest: [u8; 16], src: [u8; 16], content: &str) -> Vec<u8> {
+    pub(super) fn packed_inbound(dest: [u8; 16], src: [u8; 16], content: &str) -> Vec<u8> {
         let mut msg = lxmf_core::message_api::LxMessage::new(
             dest,
             src,
@@ -7941,7 +7910,7 @@ mod inbound_pipeline_tests {
         msg.pack().unwrap()
     }
 
-    fn message_rows(state: &AppState) -> i64 {
+    pub(super) fn message_rows(state: &AppState) -> i64 {
         state
             .db
             .get()
