@@ -198,11 +198,14 @@ impl PendingPathResponses {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::inbound_pipeline_tests::{local_dest, message_rows, packed_inbound, pipeline_state};
+    use crate::inbound_pipeline_tests::{
+        RecordingEmitter, local_dest, message_rows, packed_inbound, pipeline_state,
+    };
     use rns_transport::link_messages::{AnnounceRequest, DestinationEvent};
 
     struct Fixture {
         state: Arc<AppState>,
+        emitter: Arc<RecordingEmitter>,
         outbound: tokio::sync::mpsc::Receiver<TransportMessage>,
         shutdown: ShutdownSignal,
         network: rns_runtime::reticulum::ReticulumHandle,
@@ -211,7 +214,7 @@ mod tests {
 
     impl Fixture {
         async fn new(capacity: usize) -> Self {
-            let (state, _) = pipeline_state();
+            let (state, emitter) = pipeline_state();
             let root = tempfile::tempdir().unwrap();
             std::fs::write(
                 root.path().join("config"),
@@ -231,6 +234,7 @@ mod tests {
             *state.rns.write().unwrap() = Some(manager);
             Self {
                 state,
+                emitter,
                 outbound,
                 shutdown: ShutdownSignal::new(),
                 network,
@@ -476,12 +480,16 @@ mod tests {
             f.shutdown.clone(),
         ));
         tokio::time::timeout(Duration::from_secs(5), async {
-            while message_rows(&f.state) == 0 {
-                tokio::task::yield_now().await;
+            // Observe the post-commit event instead of continuously reading the
+            // shared-memory SQLite table while the blocking worker writes it.
+            // The observer must not introduce table-lock contention itself.
+            while f.emitter.count("lxmf_message") == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await
         .expect("inbound processing cannot await path-response transport credit");
+        assert_eq!(message_rows(&f.state), 1);
         assert!(raw(&f.outbound.try_recv().unwrap()).is_empty());
         let response = tokio::time::timeout(Duration::from_secs(3), f.outbound.recv())
             .await

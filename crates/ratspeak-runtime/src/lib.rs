@@ -7422,7 +7422,7 @@ mod inbound_pipeline_tests {
     }
 
     impl RecordingEmitter {
-        fn count(&self, name: &str) -> usize {
+        pub(super) fn count(&self, name: &str) -> usize {
             self.events
                 .lock()
                 .unwrap()
