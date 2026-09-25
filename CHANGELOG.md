@@ -5,6 +5,24 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+## [1.0.33] - 2026-09-24
+
+### Fixed and improved
+
+- Restored large file and photo staging by accepting valid full attachment chunks without mistaking Base64 padding for excess data.
+- Kept automatic photo preparation within its size budget while preserving explicit image-size choices.
+- Fixed attachment replacement and cancellation, long or Unicode filenames, and simultaneous large-image previews.
+- Improved Bluetooth Peer packet sizing, flow control, and delivery scheduling, and kept active transfers alive while data is moving.
+- Made transfer progress reflect payload bytes and removed repetitive chunk and progress details from Activity.
+- Kept mobile chats at the intended scroll position when images load and when the iPhone keyboard opens.
+- Removed stale startup warnings after a radio interface is removed or paused.
+- Improved first-contact delivery to handhelds, bounded path recovery, and compression selection as peer capabilities become known.
+- Retained deferred path-response announces through transport pressure and announce timing limits so discovery can recover without a manual announce.
+
+### Known issue
+
+- Some attachment transfers to NomadNet can appear delivered without being stored by the receiver due to an upstream Python Reticulum completion-state defect.
+
 ## [1.0.32] - 2026-09-19
 
 ### Added

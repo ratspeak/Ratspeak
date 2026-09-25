@@ -1,19 +1,10 @@
-- Added Android system sharing for text, links and single photos, with recent-chat and contact selection, photo sizing, protected drafts, and an explicit Send action.
-- Added Developer Mode network settings for choosing a Ratspeak-managed stack or an authenticated existing local Reticulum instance.
-- Prevented telemetry-only LXMF updates from creating empty chat messages, unread counts or notifications; preserved title-only messages and made unavailable attachments explicit.
-- Fixed Windows System color mode so it follows operating-system changes without remaining locked to the previous Light or Dark choice.
-- Refined mobile composer alignment, Network Ownership controls, Bluetooth progress sheets, and dismissible radio startup warnings.
-- Simplified share recipient selection and dismissed the keyboard before photo sizing.
-- Corrected same-radio relaying, bounded discovery retries and slow-link timing. Failed-route recovery preserves freshly learned local routes and supports bounded authenticated recovery through an existing Python stack. Legacy Python owners reset by destination; this is not an atomic remote-route check.
-- Separated local send-capacity waits from delivery-proof timeouts, allowing failed Links and stalled attachments to release following messages for retry while healthy slow transfers retain their protocol-owned windows.
-- Kept cancellation and delayed completion tied to their original messages, and retained attachment memory reservations through inbound processing. Cancellation cannot recall bytes already accepted by a driver.
-- Corrected Android USB radio readiness and late write-completion accounting during reconnects.
-- Corrected propagation-node discovery metadata and preserved stored offline messages across node restarts, including compatible recovery of older unstamped storage.
-- Improved voice-preview startup, duration and recovery handling, preserved paused seeking, and bounded playback cleanup before retries or recording.
-- Retained the Android runtime across task removal and Activity recreation, while fencing stale native callbacks and preserving explicit-stop behavior.
-- Prevented stale search, conversation and contact results from replacing newer navigation or identity state; improved tablet typing, pickers and keyboard access.
-- Protected network credentials and ownership transitions, and prevented delayed access imports from overwriting manually edited settings.
-- Enforced the pinned Android NDK, release JNI boundaries and 16 KiB native packaging alignment; excluded dashboard test scripts from embedded assets.
-- Added exact dependency-set source reconstruction and packaging guidance for reproducible downstream builds.
-- Aligned networking dependencies across standalone core and packaged builds, including corrected Windows socket ownership and Wine compatibility.
-- Known interoperability limitation: some attachment transfers to NomadNet can appear delivered without being stored by the receiver due to an upstream Python Reticulum completion-state defect.
+- Restored large file and photo staging by accepting valid full attachment chunks without mistaking Base64 padding for excess data.
+- Kept automatic photo preparation within its size budget while preserving explicit image-size choices.
+- Fixed attachment replacement and cancellation, long or Unicode filenames, and simultaneous large-image previews.
+- Improved Bluetooth Peer packet sizing, flow control, and delivery scheduling, and kept active transfers alive while data is moving.
+- Made transfer progress reflect payload bytes and removed repetitive chunk and progress details from Activity.
+- Kept mobile chats at the intended scroll position when images load and when the iPhone keyboard opens.
+- Removed stale startup warnings after a radio interface is removed or paused.
+- Improved first-contact delivery to handhelds, bounded path recovery, and compression selection as peer capabilities become known.
+- Retained deferred path-response announces through transport pressure and announce timing limits so discovery can recover without a manual announce.
+- Some attachment transfers to NomadNet can appear delivered without being stored by the receiver due to an upstream Python Reticulum completion-state defect.
