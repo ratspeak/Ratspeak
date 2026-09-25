@@ -11,6 +11,7 @@ import {
   generateBom,
   githubOutputs,
   loadDependencySet,
+  releaseNotesFromChangelog,
   validateDependencySet,
   verifyComponentIntegrationTag,
   verifyImmutableActions,
@@ -19,6 +20,25 @@ import {
   verifyReleaseRef,
   withTemporaryDirectory,
 } from "./source-integrity.mjs";
+
+test("published notes retain the current release's headings and complete wording", () => {
+  const body = "### Fixed and improved\n\n- Fixed a transfer error.\n  Preserved a useful continuation.\n\n### Known issue\n\n- A receiver limitation remains.";
+  const changelog = `# Changelog\n\n## [Unreleased]\n\n## [1.0.33] - 2026-09-24\n\n${body}\n\n## [1.0.32]\n\n- Historical copy.\n`;
+  assert.equal(releaseNotesFromChangelog(changelog, "1.0.33"), `## v1.0.33\n\n${body}\n`);
+  assert.throws(() => releaseNotesFromChangelog(changelog, "1.0.34"), /missing/);
+});
+
+test("published notes reject flat lists and drift from the documented section order", () => {
+  for (const body of [
+    "- A flat list.",
+    "### Fixed\n\n- Wrong heading.",
+    "### Known issue\n\n- A limitation.\n\n### Added\n\n- A feature.",
+    "### Added\n\n- A feature.\n\n### Added\n\n- A duplicate section.",
+    "### Known issue\n\n- One.\n\n### Known issues\n\n- Two.",
+  ]) {
+    assert.throws(() => releaseNotesFromChangelog(`## [1.0.33]\n\n${body}\n`, "1.0.33"));
+  }
+});
 
 test("core compatibility is restricted to the reviewed patch line", () => {
   assert.equal(componentCargoRequirement({ id: "rsreticulum", version: "1.3.0" }), "~1.3.0");

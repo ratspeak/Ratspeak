@@ -282,22 +282,24 @@ function expectContains(source, fragment, label) {
   if (!source.includes(fragment)) fail(`${label}: missing ${fragment}`);
 }
 
-function markdownBullets(source) {
-  const bullets = [];
-  let current = null;
-  for (const line of source.split("\n")) {
-    if (line.startsWith("- ")) {
-      if (current !== null) bullets.push(current);
-      current = line.slice(2).trim();
-    } else if (current !== null && line.startsWith("  ")) {
-      current += ` ${line.trim()}`;
-    } else if (current !== null) {
-      bullets.push(current);
-      current = null;
-    }
+export function releaseNotesFromChangelog(changelog, displayVersion) {
+  const marker = `## [${displayVersion}]`;
+  const lines = changelog.split("\n");
+  const start = lines.findIndex((line) => line === marker || line.startsWith(`${marker} `));
+  if (start < 0) fail(`changelog is missing ${marker}`);
+  const next = lines.findIndex((line, index) => index > start && line.startsWith("## "));
+  const body = lines.slice(start + 1, next < 0 ? undefined : next).join("\n").trim();
+  const sections = [...body.matchAll(/^### (.+)$/gm)].map((match) => match[1]);
+  const order = ["Added", "Fixed and improved", "Build and compatibility", "Known issue", "Known issues"];
+  if (!body.startsWith("### ") || sections.length === 0) fail("release notes require grouped sections");
+  let previous = -1;
+  for (const section of sections) {
+    const position = order.indexOf(section);
+    if (position <= previous) fail(`invalid release-note section or order: ${section}`);
+    if (previous === 3 && position === 4) fail("use one known-issue section");
+    previous = position;
   }
-  if (current !== null) bullets.push(current);
-  return bullets;
+  return `## v${displayVersion}\n\n${body}\n`;
 }
 
 // Core minor releases may break APIs under the project version policy.
@@ -349,16 +351,8 @@ export function verifyProductSurfaces(set) {
 
   const changelog = readUtf8(join(repoRoot, "CHANGELOG.md"));
   expectContains(changelog, "## [Unreleased]", "changelog policy");
-  const releaseSectionMarker = `## [${display}]`;
-  const releaseSectionStart = changelog.indexOf(releaseSectionMarker);
-  if (releaseSectionStart < 0) fail(`changelog is missing ${releaseSectionMarker}`);
-  const releaseSectionTail = changelog.slice(releaseSectionStart + releaseSectionMarker.length);
-  const nextReleaseSection = releaseSectionTail.search(/^## \[/m);
-  const releaseSection = nextReleaseSection < 0
-    ? releaseSectionTail
-    : releaseSectionTail.slice(0, nextReleaseSection);
   const releaseNotes = readUtf8(join(repoRoot, "release/release-notes.md"));
-  const expectedReleaseNotes = `${markdownBullets(releaseSection).map((bullet) => `- ${bullet}`).join("\n")}\n`;
+  const expectedReleaseNotes = releaseNotesFromChangelog(changelog, display);
   expectEqual(releaseNotes, expectedReleaseNotes, "shared release notes must match the current changelog section");
   for (const lockfile of ["Cargo.lock", "src-tauri/Cargo.lock"]) {
     if (!existsSync(join(repoRoot, lockfile))) fail(`missing committed release lockfile ${lockfile}`);

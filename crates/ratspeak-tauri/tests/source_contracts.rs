@@ -5814,16 +5814,16 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "Restored large file and photo staging",
-        "Kept automatic photo preparation within its size budget",
+        "errors when sending large files or photos",
+        "Kept automatically prepared photos within their size limit",
         "Fixed attachment replacement and cancellation",
-        "Improved Bluetooth Peer packet sizing",
-        "Made transfer progress reflect payload bytes",
-        "Kept mobile chats at the intended scroll position",
+        "Improved Bluetooth Peer transfers",
+        "Corrected file transfer progress",
+        "Prevented chats from jumping when images load",
         "Removed stale startup warnings",
-        "Improved first-contact delivery to handhelds",
-        "Retained deferred path-response announces",
-        "Some attachment transfers to NomadNet can appear delivered",
+        "Improved first-message delivery to handhelds",
+        "Improved discovery on busy or slow connections",
+        "Some attachments sent to NomadNet may appear delivered",
     ];
 
     for workflow_path in [
