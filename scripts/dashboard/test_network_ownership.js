@@ -110,6 +110,29 @@ function access(port, key) {
     data = {...data, warnings: []};
     context.window.showNetworkStartupWarnings(); await settle();
     assert.equal(toasts.length, 3, 'resolved failures must not be announced');
+    for (const outcome of ['success', 'error']) {
+        const staleRead = deferred(); refreshReply = staleRead.promise;
+        context.window.showNetworkStartupWarnings();
+        // Removal is now reflected by a newer backend snapshot while the
+        // earlier Network-entry read is still crossing the native bridge.
+        events.stats_update({network_ownership: data});
+        if (outcome === 'success') staleRead.resolve({...data, warnings: [startupWarning]});
+        else staleRead.reject(new Error('Obsolete read failed'));
+        await settle();
+        assert.equal(toasts.length, 3, 'a superseded read cannot revive a deleted radio warning');
+        assert.equal(field('status').hidden, true, 'superseded reads cannot replace current status');
+        refreshReply = null;
+        context.currentView = 'message';
+        context.currentView = 'network';
+        context.window.showNetworkStartupWarnings(); await settle();
+        assert.equal(toasts.length, 3, 'returning to Network after removal stays quiet');
+    }
+    const olderVisit = deferred(); refreshReply = olderVisit.promise;
+    context.window.showNetworkStartupWarnings();
+    refreshReply = null;
+    context.window.showNetworkStartupWarnings(); await settle();
+    olderVisit.resolve({...data, warnings: [startupWarning]}); await settle();
+    assert.equal(toasts.length, 3, 'an older Network visit cannot override the latest read');
     const pendingEntry = deferred(); refreshReply = pendingEntry.promise;
     context.window.showNetworkStartupWarnings();
     context.currentView = 'message';

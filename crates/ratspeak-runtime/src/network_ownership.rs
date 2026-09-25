@@ -332,7 +332,24 @@ pub fn snapshot(state: &AppState) -> Value {
         })
         .unwrap_or(json!("unavailable"));
     let warnings: Vec<Value> = handle.as_ref().map(|handle| {
-        handle.startup_interface_failures().iter().map(|(name, error)| {
+        if handle.startup_interface_failures().is_empty() {
+            return Vec::new();
+        }
+        // The runtime retains startup diagnostics for its whole lifetime.
+        // Only a currently enabled saved interface still needs that warning;
+        // removing or pausing one does not restart the runtime.
+        let _config_guard = state.rns_config_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let current_config = crate::rns_config::read_config(&handle.config_dir)
+            .and_then(|content| rns_runtime::config::Config::parse(&content).ok());
+        handle.startup_interface_failures().iter().filter(|(name, _)| {
+            // A read/parse failure is not evidence that an interface was removed.
+            current_config.as_ref().is_none_or(|config| {
+                config.subsection("interfaces", name)
+                    .is_some_and(|section| section.get_bool("enabled")
+                        .or_else(|| section.get_bool("interface_enabled"))
+                        .unwrap_or(true))
+            })
+        }).map(|(name, error)| {
             let auto_port = handle.interface_configs.iter().find_map(|config| match config {
                 rns_runtime::interface_factory::InterfaceConfig::Auto(auto) if &auto.name == name => Some(auto.data_port),
                 _ => None,
@@ -815,6 +832,114 @@ mod tests {
             endpoint: Some(endpoint),
             rpc_key: Some("1234".into()),
         }
+    }
+
+    #[tokio::test]
+    async fn startup_warnings_follow_current_interface_configuration() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("rns");
+        // Genuine startup failures without radio hardware: both configured
+        // listeners attempt to bind a port that this test already owns.
+        let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = occupied.local_addr().unwrap().port();
+        let interface = |name: &str, flags: &str| {
+            format!(
+                "[[{name}]]\ntype = TCPServerInterface\nlisten_ip = 127.0.0.1\nlisten_port = {port}\n{flags}\n"
+            )
+        };
+        let original = format!(
+            "[reticulum]\nshare_instance = No\n[interfaces]\n{}{}",
+            interface("Failed A", "enabled = yes"),
+            interface("Failed B", "enabled = yes"),
+        );
+        assert!(crate::rns_config::write_config(&config_dir, &original));
+        let runtime = crate::rns::RnsManager::init_with_policy(
+            config_dir.to_str().unwrap(),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            InstancePolicy::Standalone,
+        )
+        .await
+        .unwrap();
+        let handle = runtime.handle.clone();
+        assert_eq!(handle.startup_interface_failures().len(), 2);
+        let pool = db::init_pool(dir.path()).unwrap();
+        db::init_schema(&pool).unwrap();
+        let state = AppState::new(
+            crate::config::DashboardConfig::from_env_and_defaults(dir.path().into()),
+            pool,
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        );
+        state.set_rns(runtime);
+        let warning_names = || {
+            snapshot(&state)["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|warning| warning["interface"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(warning_names(), ["Failed A", "Failed B"]);
+        assert!(crate::rns_config::set_interface_enabled(
+            &config_dir,
+            "Failed A",
+            false
+        ));
+        assert_eq!(
+            warning_names(),
+            ["Failed B"],
+            "paused interface stays quiet"
+        );
+        assert!(crate::rns_config::set_interface_enabled(
+            &config_dir,
+            "Failed A",
+            true
+        ));
+        assert_eq!(warning_names(), ["Failed A", "Failed B"]);
+        let revision =
+            crate::rns_config::snapshot_interface_block(&config_dir, "Failed A").unwrap();
+        assert_eq!(
+            crate::rns_config::remove_interface_block_if_revision(&config_dir, &revision),
+            crate::rns_config::InterfaceBlockCasOutcome::Applied,
+        );
+        for _ in 0..3 {
+            assert_eq!(
+                warning_names(),
+                ["Failed B"],
+                "later Network reads must not revive a removed interface"
+            );
+        }
+        assert_eq!(
+            handle.startup_interface_failures().len(),
+            2,
+            "runtime diagnostics remain intact"
+        );
+        assert!(crate::rns_config::remove_interface(&config_dir, "Failed B"));
+        assert!(warning_names().is_empty());
+
+        for (flags, enabled) in [
+            ("", true),
+            ("interface_enabled = yes", true),
+            ("interface_enabled = off", false),
+            ("enabled = 0", false),
+            ("enabled = False", false),
+            ("enabled = yes\ninterface_enabled = no", true),
+            ("enabled = no\ninterface_enabled = yes", false),
+        ] {
+            let content = format!("[interfaces]\n{}", interface("Failed A", flags));
+            assert!(crate::rns_config::write_config(&config_dir, &content));
+            assert_eq!(warning_names().len(), usize::from(enabled), "{flags}");
+        }
+        // Invalid/unreadable configuration must not pretend failures resolved.
+        assert!(crate::rns_config::write_config(
+            &config_dir,
+            "[[invalid]]\n"
+        ));
+        assert_eq!(warning_names(), ["Failed A", "Failed B"]);
+        std::fs::remove_file(config_dir.join("config")).unwrap();
+        assert_eq!(warning_names(), ["Failed A", "Failed B"]);
+        handle.shutdown_and_wait().await;
     }
 
     #[test]

@@ -5,6 +5,7 @@
     var dirty = false;
     var busy = false;
     var epoch = 0;
+    var snapshotEpoch = 0;
     var editorEnabled = false;
     var warningVisit = 0;
     var warned = Object.create(null);
@@ -89,6 +90,7 @@
     }
     function adopt(data, reset) {
         if (!data) return;
+        snapshotEpoch += 1;
         current = Object.assign({}, current || {}, data);
         var external = current.local_interfaces_allowed === false;
         document.body.classList.toggle('network-external', external);
@@ -124,9 +126,12 @@
     }
     function refresh(reset) {
         var requestEpoch = epoch;
+        var requestSnapshot = ++snapshotEpoch;
         return RS.invoke('api_network_ownership').then(function(data) {
-            if (requestEpoch === epoch) adopt(data, reset);
-        }).catch(function(error) { if (requestEpoch === epoch) status(error.message || 'Cannot read network ownership'); });
+            // A newer poll/event or Network visit supersedes this read. In
+            // particular, an old reply must not restore a removed radio's warning.
+            if (requestEpoch === epoch && requestSnapshot === snapshotEpoch) adopt(data, reset);
+        }).catch(function(error) { if (requestEpoch === epoch && requestSnapshot === snapshotEpoch) status(error.message || 'Cannot read network ownership'); });
     }
     function request() {
         var existing = el('mode').value === 'existing';
