@@ -1424,7 +1424,7 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("\"text_scale_percent\""));
     assert!(interfaces.contains("(percent.clamp(100, 140) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
-    assert!(index.contains("/static/style.css?v=ui-20260924-2"));
+    assert!(index.contains("/static/style.css?v=ui-20260924-4"));
     assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
     assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
     assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
@@ -4881,7 +4881,12 @@ fn conversation_view_scrolls_to_recent_messages_without_yanking_history() {
     assert!(nav.contains("function _pinChatMessagesToBottomForKeyboard()"));
     assert!(nav.contains("RS.chatScroll.nearBottom(msgContainer)"));
     assert!(nav.contains("RS.chatScroll.pinToBottom(msgContainer)"));
-    assert!(nav.contains("_waitingForKeyboard = _chatMessagesNearBottomForKeyboard();"));
+    assert!(
+        nav.contains("_waitingForKeyboard = !isIOS() && _chatMessagesNearBottomForKeyboard();")
+    );
+    assert!(nav.contains("function _chatMessagesFollowingForKeyboard()"));
+    assert!(nav.contains("return RS.chatScroll.isFollowing(msgContainer);"));
+    assert!(nav.contains("if (followIOSChat) _pinChatMessagesToBottomForKeyboard();"));
     assert!(nav.contains(
         "document.documentElement.classList.contains('keyboard-open') && _chatMessagesNearBottomForKeyboard()"
     ));
@@ -5443,10 +5448,10 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(activity.contains("track.setLoopPoints(0, frameCount, -1)"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("/static/js/state.js?v=ui-20260924-2"));
-    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260924-2"));
-    assert!(index.contains("/static/js/lxmf.js?v=ui-20260924-2"));
-    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260924-2"));
+    assert!(index.contains("/static/js/state.js?v=ui-20260924-4"));
+    assert!(index.contains("/static/js/voice_ringtones.js?v=ui-20260924-4"));
+    assert!(index.contains("/static/js/lxmf.js?v=ui-20260924-4"));
+    assert!(index.contains("/static/js/tauri_events.js?v=ui-20260924-4"));
     assert!(index.contains("id=\"lxst-call-global-mute-btn\""));
     assert!(index.contains("id=\"lxst-call-global-speaker-btn\""));
     assert!(index.contains("id=\"lxst-call-mute-btn\""));
@@ -5809,22 +5814,16 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "Added Android system sharing for text, links and single photos",
-        "Prevented telemetry-only LXMF updates from creating empty chat messages",
-        "Fixed Windows System color mode so it follows operating-system changes",
-        "Refined mobile composer alignment, Network Ownership controls, Bluetooth",
-        "Simplified share recipient selection and dismissed the keyboard before",
-        "Added Developer Mode network settings",
-        "Corrected same-radio relaying, bounded discovery retries and slow-link timing",
-        "Separated local send-capacity waits from delivery-proof timeouts",
-        "Kept cancellation and delayed completion tied to their original messages",
-        "Corrected Android USB radio readiness and late write-completion accounting",
-        "Improved voice-preview startup, duration and recovery handling",
-        "Retained the Android runtime across task removal and Activity recreation",
-        "Prevented stale search, conversation and contact results",
-        "Protected network credentials and ownership transitions",
-        "Enforced the pinned Android NDK, release JNI boundaries",
-        "Added exact dependency-set source reconstruction and packaging guidance",
+        "Restored large file and photo staging",
+        "Kept automatic photo preparation within its size budget",
+        "Fixed attachment replacement and cancellation",
+        "Improved Bluetooth Peer packet sizing",
+        "Made transfer progress reflect payload bytes",
+        "Kept mobile chats at the intended scroll position",
+        "Removed stale startup warnings",
+        "Improved first-contact delivery to handhelds",
+        "Retained deferred path-response announces",
+        "Some attachment transfers to NomadNet can appear delivered",
     ];
 
     for workflow_path in [
