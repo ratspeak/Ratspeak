@@ -423,7 +423,7 @@ mod tests {
         // straddles the wall-clock second. No simulated wire timestamp is used.
         let mut deferred_fixture = None;
         for _ in 0..8 {
-            let f = Fixture::new(4).await;
+            let f = Fixture::new(1).await;
             f.state
                 .lxmf
                 .lock()
@@ -441,8 +441,11 @@ mod tests {
             }
         }
         let mut f = deferred_fixture.expect("must exercise the actual ordering deferral");
-        // Put that request through the actual task as well; normal ingress
-        // must complete before the deferred response can be constructed.
+        // Put a request through the actual task as well. Hold the outbound
+        // credit until ingress completes: this proves response waiting cannot
+        // block ingestion without assuming SQLite and the host scheduler finish
+        // within half a wall-clock second during the parallel workspace suite.
+        f.fill_transport();
         let (events, rx) = tokio::sync::mpsc::channel(4);
         events
             .send(DestinationEvent::AnnounceRequested(AnnounceRequest {
@@ -472,13 +475,14 @@ mod tests {
             rx,
             f.shutdown.clone(),
         ));
-        tokio::time::timeout(Duration::from_millis(500), async {
+        tokio::time::timeout(Duration::from_secs(5), async {
             while message_rows(&f.state) == 0 {
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("inbound processing cannot await the response's second");
+        .expect("inbound processing cannot await path-response transport credit");
+        assert!(raw(&f.outbound.try_recv().unwrap()).is_empty());
         let response = tokio::time::timeout(Duration::from_secs(3), f.outbound.recv())
             .await
             .unwrap()
