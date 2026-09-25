@@ -9,8 +9,8 @@
       "x86_64"
     ],
     "platformBuilds": {
-      "androidVersionCode": 1000061,
-      "iosBundleVersion": "1000061"
+      "androidVersionCode": 1000062,
+      "iosBundleVersion": "1000062"
     },
     "predecessor": {
       "displayVersion": "1.0.31",
