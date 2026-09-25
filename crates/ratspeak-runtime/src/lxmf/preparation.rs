@@ -82,11 +82,15 @@ impl LxmfManager {
             ) {
                 continue;
             }
-            // An active/pending Link retains its own progress-aware lifecycle.
-            if matches!(
-                self.direct_reusable_link_state_for_router(dest),
-                DirectReusableLinkState::Active | DirectReusableLinkState::Pending
-            ) {
+            let auto = self.live_preparation.auto_messages.contains(&hash) && attempts == 0;
+            // Only a send that can use this Link inherits its lifecycle.
+            // Explicit Opportunistic still needs the recipient's encryption key.
+            if (method == DeliveryMethod::Direct || auto)
+                && matches!(
+                    self.direct_reusable_link_state_for_router(dest),
+                    DirectReusableLinkState::Active | DirectReusableLinkState::Pending
+                )
+            {
                 let was_waiting = self.live_preparation.discovery.remove(&hash).is_some();
                 if self.live_preparation.auto_messages.contains(&hash) && attempts == 0 {
                     if let Some(message) = self
@@ -104,7 +108,6 @@ impl LxmfManager {
                 continue;
             }
             let dest_hex = hex::encode(dest);
-            let auto = self.live_preparation.auto_messages.contains(&hash) && attempts == 0;
             let missing_identity = !self.known_identities.contains_key(&dest_hex);
             let missing_route = (method == DeliveryMethod::Direct || auto)
                 && !self.has_live_direct_route(dest, now);
@@ -380,6 +383,12 @@ mod tests {
         assert_eq!(
             mgr.auto_live_method(&dest_hex, DeliveryProfile::Message),
             DeliveryMethod::Direct
+        );
+        let explicit = queued(&mut mgr, DeliveryMethod::Opportunistic, false, 12);
+        mgr.prepare_live_outbound(1000.0, Instant::now());
+        assert!(
+            mgr.live_preparation.discovery.contains_key(&explicit),
+            "explicit packet needs identity discovery despite an unrelated usable Link"
         );
         mgr.link_delivery = None;
         mgr.received_ratchets
