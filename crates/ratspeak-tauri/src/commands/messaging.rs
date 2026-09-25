@@ -228,6 +228,15 @@ fn base64_decoded_len_upper_bound(encoded_len: usize) -> Option<usize> {
     encoded_len.checked_add(3)?.checked_div(4)?.checked_mul(3)
 }
 
+fn base64_encoded_len_within_limit(encoded_len: usize, decoded_limit: usize) -> bool {
+    // Bound allocation before decoding without treating padding as payload.
+    // A decoded-length estimate can exceed the actual size by two bytes, so
+    // comparing that estimate to the limit rejects valid full chunks. This
+    // encoded guard permits up to two extra decoded bytes; callers must also
+    // enforce the exact decoded limit after strict Base64 decoding.
+    base64::encoded_len(decoded_limit, true).is_some_and(|limit| encoded_len <= limit)
+}
+
 fn extension_for_mime(mime: &str) -> &'static str {
     match mime.trim().to_ascii_lowercase().as_str() {
         "image/jpeg" | "image/jpg" => "jpg",
@@ -1524,9 +1533,7 @@ pub async fn send_lxmf_with_attachment(
         );
         return Err(AppError::new("attachment_missing", "No file data provided"));
     }
-    if base64_decoded_len_upper_bound(file_data_b64.len()).unwrap_or(usize::MAX)
-        > LEGACY_BASE64_ATTACHMENT_MAX_BYTES
-    {
+    if !base64_encoded_len_within_limit(file_data_b64.len(), LEGACY_BASE64_ATTACHMENT_MAX_BYTES) {
         emit_lxmf_send_error(
             &state,
             client_msg_id.as_deref(),
@@ -1696,15 +1703,16 @@ pub async fn append_attachment_stage(
     state: State<'_, Arc<AppState>>,
     args: AppendAttachmentStageArgs,
 ) -> AppResult<Value> {
-    let decoded_bound = base64_decoded_len_upper_bound(args.data_base64.len())
-        .ok_or_else(|| AppError::bad_request("Invalid attachment chunk"))?;
-    if decoded_bound > ATTACHMENT_IPC_CHUNK_BYTES {
+    if !base64_encoded_len_within_limit(args.data_base64.len(), ATTACHMENT_IPC_CHUNK_BYTES) {
         return Err(AppError::bad_request("Attachment chunk is too large"));
     }
     let bytes = B64
         .decode(args.data_base64)
         .map_err(|_| AppError::bad_request("Invalid attachment chunk"))?;
-    if bytes.is_empty() || bytes.len() > ATTACHMENT_IPC_CHUNK_BYTES {
+    if bytes.len() > ATTACHMENT_IPC_CHUNK_BYTES {
+        return Err(AppError::bad_request("Attachment chunk is too large"));
+    }
+    if bytes.is_empty() {
         return Err(AppError::bad_request("Invalid attachment chunk"));
     }
     let st = Arc::clone(&state);
@@ -1799,6 +1807,8 @@ pub async fn inspect_image_attachment_stage(
 pub struct PrepareImageAttachmentStageArgs {
     pub token: String,
     pub profile: ImageSizeProfile,
+    #[serde(default)]
+    pub automatic: bool,
 }
 
 #[tauri::command]
@@ -1806,6 +1816,11 @@ pub async fn prepare_image_attachment_stage(
     state: State<'_, Arc<AppState>>,
     args: PrepareImageAttachmentStageArgs,
 ) -> AppResult<Value> {
+    if args.automatic && args.profile != ImageSizeProfile::Actual {
+        return Err(AppError::bad_request(
+            "Automatic image preparation requires the Actual profile",
+        ));
+    }
     let _preparation = state.image_preparation_lock.lock().await;
     let snapshot = state
         .begin_staged_image_preparation(&args.token)
@@ -1817,15 +1832,31 @@ pub async fn prepare_image_attachment_stage(
     let source_path = snapshot.path.clone();
     let source_name = snapshot.file_name.clone();
     let profile = args.profile;
+    let automatic = args.automatic;
     let prepared_path = output_path.clone();
     let result = tokio::task::spawn_blocking(move || {
-        prepare_image_attachment(
-            &source_path,
-            &prepared_path,
-            &source_name,
-            profile,
-            ratspeak_runtime::state::LXMF_DELIVERY_LIMIT_MAX_BYTES,
-        )
+        // Automatic selection must leave room for a normal LXMF envelope.
+        // An explicit Actual choice keeps its full-size semantics. Retain the
+        // source until a successful result is committed, including fallback.
+        let limit = if automatic {
+            ImageSizeProfile::Medium
+                .byte_ceiling()
+                .expect("Medium has a byte ceiling")
+        } else {
+            ratspeak_runtime::state::LXMF_DELIVERY_LIMIT_MAX_BYTES
+        };
+        let prepared =
+            prepare_image_attachment(&source_path, &prepared_path, &source_name, profile, limit);
+        match prepared {
+            Err(ImageAttachmentError::OutputTooLarge) if automatic => prepare_image_attachment(
+                &source_path,
+                &prepared_path,
+                &source_name,
+                ImageSizeProfile::Medium,
+                limit,
+            ),
+            result => result,
+        }
     })
     .await
     .map_err(|_| AppError::internal("image preparation task panicked"));
@@ -2661,6 +2692,24 @@ mod tests {
                 > rns_protocol::resource::MAX_RESOURCE_SIZE
         );
         assert_eq!(base64_decoded_len_upper_bound(4), Some(3));
+        assert_eq!(base64_decoded_len_upper_bound(usize::MAX), None);
+    }
+
+    #[test]
+    fn base64_encoded_guard_is_checked_and_leaves_padding_to_the_decoder() {
+        for limit in [
+            1,
+            2,
+            3,
+            ATTACHMENT_IPC_CHUNK_BYTES,
+            LEGACY_BASE64_ATTACHMENT_MAX_BYTES,
+        ] {
+            let encoded = B64.encode(vec![0; limit]);
+            assert!(base64_encoded_len_within_limit(encoded.len(), limit));
+            assert!(!base64_encoded_len_within_limit(encoded.len() + 1, limit));
+            assert!(!base64_encoded_len_within_limit(usize::MAX, limit));
+        }
+        assert!(!base64_encoded_len_within_limit(0, usize::MAX));
     }
 
     #[test]

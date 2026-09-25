@@ -516,6 +516,7 @@ pub ratspeak_tauri::commands::messaging::FileMetadata::size: u64
 pub struct ratspeak_tauri::commands::messaging::ImageAttachmentStageArgs
 pub ratspeak_tauri::commands::messaging::ImageAttachmentStageArgs::token: alloc::string::String
 pub struct ratspeak_tauri::commands::messaging::PrepareImageAttachmentStageArgs
+pub ratspeak_tauri::commands::messaging::PrepareImageAttachmentStageArgs::automatic: bool
 pub ratspeak_tauri::commands::messaging::PrepareImageAttachmentStageArgs::profile: ratspeak_runtime::image_attachment::ImageSizeProfile
 pub ratspeak_tauri::commands::messaging::PrepareImageAttachmentStageArgs::token: alloc::string::String
 pub struct ratspeak_tauri::commands::messaging::SendLxmfArgs

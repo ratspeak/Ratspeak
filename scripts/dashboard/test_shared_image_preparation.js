@@ -47,7 +47,10 @@ function fixture(disposition='still',prompt=true,choice='medium') {
         assert.equal(await pending.stage_promise,'native-token');
         assert(f.calls.some(c=>c.name===expected));
         assert.equal(pending.preparing,false);
-        if(disposition==='still')assert.equal(pending.size,321);
+        if(disposition==='still'){
+            assert.equal(pending.size,321);
+            assert.equal(f.calls.find(c=>c.name==='prepare_image_attachment_stage').args.args.automatic,!prompt);
+        }
         assert.deepEqual(f.choices, prompt || disposition !== 'still' ? ['dismiss-keyboard', disposition==='still'?'size':'fallback'] : []);
     }
     const cancelled=fixture('still',true,null);

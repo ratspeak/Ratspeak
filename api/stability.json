@@ -31,6 +31,7 @@
         "profile-scoped shared-stack ownership, protected credentials and transactional switching",
         "Android inbound text sharing and identity-locked native draft cleanup",
         "exact route recovery, packet proof ownership and authoritative timing",
+        "bounded automatic photo preparation request and exact attachment storage keys",
         "Direct delivery readiness and content-free BLE/Resource aggregate diagnostics (September 24)"
       ],
       "canonicalDependencies": [
@@ -40,7 +41,7 @@
       ],
       "classification": "application-internal lifecycle, persistence, mobile integration and explicit network ownership",
       "publicApiDiff": {
-        "added": 162,
+        "added": 163,
         "removed": 12
       },
       "semver": "no public-library consequence; application integration only",
@@ -87,6 +88,12 @@
     "verification": "Draft model, frontend send/preparation, native Keystore/chunk instrumentation, Android lint/build/JNI and release-R8 DEX gates; offline API35 ARM64 cross-UID content-provider integration covers compression, cancellation, process-death recovery and explicit local queueing. Physical OEM/source-app acceptance and final versioned/all-platform release artifacts remain separate.",
     "impact": "App-only additive feature for the upcoming 1.0.32; no wire-format, dependency, MSRV, core version, iOS Share Extension or entitlement change. Historical textShareReview remains the earlier baseline, not the current feature limit."
   },
+  "attachmentTransferReview": {
+    "reviewedOn": "2026-09-24",
+    "rustApi": "One application-internal PrepareImageAttachmentStageArgs::automatic bool field; JSON defaults to false, preserving existing explicit profile requests. No public-library API or wire-format change. Stored-name validation keeps its existing signature and now resolves exact keys instead of silently rewriting them.",
+    "behavior": "Implicit Actual photo preparation uses the Medium 750,000-byte ceiling and falls back to Medium from the original source when required. Explicit profiles retain their limits. Replacement staging waits for prior cleanup; large WebView downloads queue under the existing single-large-transfer budget. Complete new storage names fit 255 UTF-8 bytes and old valid keys remain readable and removable.",
+    "scope": "Application correction layered on the existing snapshot; snapshotSource identity, compatibility floor, runtime dependencies and historical reviews are preserved. Workspace tests, dashboard regressions, strict scoped Clippy, rendered API snapshots, and manifest/compatibility checks pass; physical mobile and final release qualification remain separate."
+  },
   "packages": [
     {
       "name": "ratspeak-core",
@@ -121,8 +128,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-tauri.txt",
-      "itemCount": 800,
-      "sha256": "d2fe81ea56e1583c7935ef32912952d111b5422705b5ee5d8b48a90e1c06d589"
+      "itemCount": 801,
+      "sha256": "5527e44c2440923100ef829ab245af97330962c6a2d10669e4c7809a303ebff9"
     },
     {
       "name": "ratspeak",

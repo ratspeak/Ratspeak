@@ -30,6 +30,7 @@ var _imageCacheIdentityHash = null;
 var _lxmfMessageScrollStates = new WeakMap();
 var _messageLongPressDetachFns = [];
 var _pendingAttachmentToken = 0;
+var _attachmentRetirement = Promise.resolve();
 var _pendingLxmfCancelByClientId = {};
 var _deferredConversationRenderOptions = null;
 var _deferredConversationRenderOwnerHash = null;
@@ -4226,25 +4227,34 @@ function _readBlobBase64(blob) {
     });
 }
 
-function _stageAttachmentBlob(blob, name, mime, isImage, destinationHash) {
+function _stageAttachmentBlob(blob, name, mime, isImage, destinationHash, pending) {
     var stageToken = null;
+    function checkCancelled() {
+        if (pending && pending.cancelled) throw _attachmentCancelledError();
+    }
     destinationHash = _canonicalConversationHash(destinationHash || lxmfActiveContact);
-    return RS.invoke('begin_attachment_stage', {
-        args: {
-            file_name: name,
-            mime: mime || 'application/octet-stream',
-            declared_size: blob.size,
-            dest_hash: destinationHash || null,
-            is_image: !!isImage,
-        }
+    return Promise.resolve().then(function() {
+        checkCancelled();
+        return RS.invoke('begin_attachment_stage', {
+            args: {
+                file_name: name,
+                mime: mime || 'application/octet-stream',
+                declared_size: blob.size,
+                dest_hash: destinationHash || null,
+                is_image: !!isImage,
+            }
+        });
     }).then(function(start) {
         stageToken = start.token;
+        if (pending) pending.staging_token = stageToken;
         var chunkBytes = Math.min(Number(start.chunk_bytes) || (256 * 1024), 256 * 1024);
         var offset = 0;
         function appendNext() {
+            checkCancelled();
             if (offset >= blob.size) return Promise.resolve(stageToken);
             var chunk = blob.slice(offset, Math.min(offset + chunkBytes, blob.size));
             return _readBlobBase64(chunk).then(function(base64) {
+                checkCancelled();
                 return RS.invoke('append_attachment_stage', {
                     args: {
                         token: stageToken,
@@ -4253,17 +4263,21 @@ function _stageAttachmentBlob(blob, name, mime, isImage, destinationHash) {
                     }
                 });
             }).then(function(result) {
-                offset = Number(result && result.written);
-                if (!Number.isFinite(offset) || offset <= 0 || offset > blob.size) {
+                var written = Number(result && result.written);
+                if (!Number.isSafeInteger(written) || written <= offset || written !== offset + chunk.size) {
                     throw new Error('Attachment staging returned an invalid offset');
                 }
+                offset = written;
                 return appendNext();
             });
         }
         return appendNext();
     }).catch(function(error) {
         if (stageToken) {
-            RS.invoke('cancel_attachment_stage', { token: stageToken }).catch(function() {});
+            return RS.invoke('cancel_attachment_stage', { token: stageToken }).then(function() {
+                if (pending && pending.staging_token === stageToken) pending.staging_token = null;
+                throw error;
+            });
         }
         throw error;
     });
@@ -4395,7 +4409,7 @@ function _stageSelectedImage(file, pendingFile, selectionToken, nativeStage) {
         return RS.invoke('inspect_image_attachment_stage', { args: { token: token } });
     }).then(function(inspection) {
         if (!_isCurrentPendingAttachment(pendingFile, selectionToken)) throw _attachmentCancelledError();
-        if (inspection.disposition === 'still' && !inspection.should_prompt) return { profile: 'actual' };
+        if (inspection.disposition === 'still' && !inspection.should_prompt) return { profile: 'actual', automatic: true };
         // Both in-app photos and system shares can arrive from a focused text
         // field. Release the IME before opening the non-editable size chooser.
         return RS.composer.dismissForReplacement(document.activeElement).then(function() {
@@ -4421,7 +4435,7 @@ function _stageSelectedImage(file, pendingFile, selectionToken, nativeStage) {
         pendingFile.status_text = 'Preparing ' + _imageProfileLabel(choice.profile).toLowerCase() + '…';
         renderPendingFile();
         return RS.invoke('prepare_image_attachment_stage', {
-            args: { token: stageToken, profile: choice.profile }
+            args: { token: stageToken, profile: choice.profile, automatic: !!choice.automatic }
         }).then(function(prepared) {
             if (!_isCurrentPendingAttachment(pendingFile, selectionToken)) {
                 RS.invoke('cancel_attachment_stage', { token: stageToken }).catch(function() {});
@@ -4465,6 +4479,7 @@ function _stageSelectedImage(file, pendingFile, selectionToken, nativeStage) {
 // as a photo picked in the app. Only metadata and an opaque staging token cross
 // IPC; source bytes never become a WebView File/base64/decoded image.
 function attachSharedImage(image, nativeStage) {
+    var ready = clearPendingFile();
     var token = ++_pendingAttachmentToken;
     var file = {name: image.name, size: image.size, type: image.mime};
     var pending = {name: image.name, size: image.size, mime: image.mime,
@@ -4472,7 +4487,11 @@ function attachSharedImage(image, nativeStage) {
         preview_url: null, destination: lxmfActiveContact};
     lxmfPendingFile = pending;
     renderPendingFile();
-    pending.stage_promise = _stageSelectedImage(file, pending, token, nativeStage);
+    pending.source_stage_promise = Promise.resolve(ready).then(function() {
+        if (pending.cancelled) throw _attachmentCancelledError();
+        return typeof nativeStage === 'function' ? nativeStage() : nativeStage;
+    });
+    pending.stage_promise = _stageSelectedImage(file, pending, token, pending.source_stage_promise);
     return pending;
 }
 
@@ -4492,6 +4511,7 @@ function handleFileSelected(inputEl) {
         showToast('Large attachment — transfer may take a while on slow links', 'toast-info', 3500);
     }
 
+    var ready = clearPendingFile();
     var token = ++_pendingAttachmentToken;
     var pendingFile = {
         name: _pendingAttachmentName(file),
@@ -4506,18 +4526,17 @@ function handleFileSelected(inputEl) {
     lxmfPendingFile = pendingFile;
     renderPendingFile();
 
+    pendingFile.source_stage_promise = Promise.resolve(ready).then(function() {
+        if (pendingFile.cancelled) throw _attachmentCancelledError();
+        return _stageAttachmentBlob(file, pendingFile.name, pendingFile.mime,
+            imageCandidate, pendingFile.destination, pendingFile);
+    });
     if (imageCandidate) {
-        pendingFile.stage_promise = _stageSelectedImage(file, pendingFile, token);
+        pendingFile.stage_promise = _stageSelectedImage(file, pendingFile, token, pendingFile.source_stage_promise);
     } else {
-        pendingFile.stage_promise = _stageAttachmentBlob(
-            file,
-            pendingFile.name,
-            pendingFile.mime,
-            false
-        ).then(function(stageToken) {
+        pendingFile.stage_promise = pendingFile.source_stage_promise.then(function(stageToken) {
             if (pendingFile.cancelled) {
-                RS.invoke('cancel_attachment_stage', { token: stageToken }).catch(function() {});
-                return null;
+                return RS.invoke('cancel_attachment_stage', { token: stageToken }).then(function() { return null; });
             }
             pendingFile.staging_token = stageToken;
             return stageToken;
@@ -4573,8 +4592,20 @@ function clearPendingFile() {
     lxmfPendingFile = null;
     if (pending) {
         pending.cancelled = !pending.detached_for_send;
-        if (pending.staging_token && !pending.detached_for_send) {
-            RS.invoke('cancel_attachment_stage', { token: pending.staging_token }).catch(function() {});
+        if (!pending.detached_for_send) {
+            // Await source staging, not a photo chooser that may still be open.
+            // Cancelled Blob uploads stop at the next bounded read/append; a
+            // late native token is retired before the next selection starts.
+            var cleanup = Promise.resolve(pending.source_stage_promise).catch(function() {
+                return null;
+            }).then(function(token) {
+                token = pending.staging_token || token;
+                if (token) return RS.invoke('cancel_attachment_stage', { token: token });
+            });
+            _attachmentRetirement = Promise.all([_attachmentRetirement, cleanup]).then(function() {});
+            // Event handlers may ignore the return value. The next selection
+            // still observes cleanup failure and must not race a live lease.
+            _attachmentRetirement.catch(function() {});
         }
         if (pending.preview_url) {
             try { URL.revokeObjectURL(pending.preview_url); } catch (_) {}
@@ -4587,6 +4618,7 @@ function clearPendingFile() {
         container.classList.remove('pending-file-has-image');
     }
     if (window.RS && RS.voiceMemos) RS.voiceMemos.syncComposer();
+    return _attachmentRetirement;
 }
 
 function setReplyTarget(msgData) {

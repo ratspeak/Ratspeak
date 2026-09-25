@@ -821,6 +821,26 @@ mod tests {
     }
 
     #[test]
+    fn stored_attachment_cleanup_uses_exact_long_keys_and_rejects_path_aliases() {
+        let dir = tempfile::tempdir().unwrap();
+        let names = [
+            format!("{}_photo.jpg", "a".repeat(240)),
+            format!("{}_photo.jpg", "界".repeat(75)),
+        ];
+        for name in &names {
+            std::fs::write(dir.path().join(name), b"attachment").unwrap();
+        }
+        // Unsafe names must never be filtered into another valid file key.
+        std::fs::write(dir.path().join("keep.txt"), b"keep").unwrap();
+        remove_stored_file_refs(dir.path(), ["/keep.txt".into(), "../keep.txt".into()]);
+        assert!(dir.path().join("keep.txt").exists());
+        remove_stored_file_refs(dir.path(), names.clone());
+        for name in names {
+            assert!(!dir.path().join(name).exists());
+        }
+    }
+
+    #[test]
     fn fresh_lora_add_marker_gates_rollback_and_consumes_once() {
         let first_identity = tempfile::tempdir().unwrap();
         let second_identity = tempfile::tempdir().unwrap();

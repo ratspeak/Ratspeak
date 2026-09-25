@@ -49,7 +49,7 @@ function fixture(android = true, image = false) {
         openConversationWith(hash) { navigation++; context.lxmfActiveContact = hash; node('lxmf-input').value = context._lxmfDrafts[hash] || ''; },
         attachSharedImage(image, stage) {
             const pending = {name:image.name,preparing:true}; context.lxmfPendingFile = pending;
-            pending.stage_promise = stage.then(token => {pending.preparing=false;return token;}).catch(() => {context.lxmfPendingFile=null;return null;});
+            pending.stage_promise = Promise.resolve().then(() => typeof stage === 'function' ? stage() : stage).then(token => {pending.preparing=false;return token;}).catch(() => {context.lxmfPendingFile=null;return null;});
             return pending;
         },
         sendLxmfMessage(method, holder) { sent.push({ method, holder, text: node('lxmf-input').value }); context.RS.textShares.dispatched(holder); }

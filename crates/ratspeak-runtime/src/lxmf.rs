@@ -2743,12 +2743,7 @@ impl LxmfManager {
     pub fn save_attachment(&self, file_name: &str, data: &[u8]) -> std::io::Result<String> {
         use std::io::Write;
 
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let safe_name = sanitize_stored_file_name(file_name).unwrap_or_else(|| "file".to_string());
-        let stored_name = format!("{ts}-{}_{safe_name}", uuid::Uuid::new_v4().simple());
+        let stored_name = attachment_storage_name(file_name);
         let path = self.files_dir().join(&stored_name);
         let mut file = std::fs::OpenOptions::new()
             .write(true)
@@ -2767,12 +2762,7 @@ impl LxmfManager {
         file_name: &str,
         staged_path: &Path,
     ) -> std::io::Result<String> {
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis();
-        let safe_name = sanitize_stored_file_name(file_name).unwrap_or_else(|| "file".to_string());
-        let stored_name = format!("{ts}-{}_{safe_name}", uuid::Uuid::new_v4().simple());
+        let stored_name = attachment_storage_name(file_name);
         let files_dir = self.files_dir();
         let path = files_dir.join(&stored_name);
         std::fs::rename(staged_path, &path)?;
@@ -5773,21 +5763,60 @@ impl LxmfManager {
     }
 }
 
-/// Single filename rule for everything under `files_dir`: the
-/// save/get/download/delete paths all use it, so a name that saves is always
-/// retrievable and deletable. The char whitelist (spaces allowed — existing
-/// stored attachments contain them) guards against path traversal; pure
-/// dot-names are rejected so the result can never reference a directory.
-pub fn sanitize_stored_file_name(raw: &str) -> Option<String> {
-    let sanitized: String = raw
+fn attachment_storage_name(file_name: &str) -> String {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let prefix = format!("{ts}-{}_", uuid::Uuid::new_v4().simple());
+    let budget = 255 - prefix.len();
+    let mut name: String = file_name
         .chars()
         .filter(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' '))
         .take(240)
         .collect();
-    if sanitized.is_empty() || sanitized.chars().all(|c| c == '.' || c == ' ') {
+    if name.len() > budget || file_name.chars().take(241).count() > 240 {
+        // Preserve an ordinary extension even when the long stem was clipped.
+        let extension = file_name
+            .rsplit_once('.')
+            .map(|(_, ext)| ext)
+            .filter(|ext| {
+                !ext.is_empty()
+                    && ext.len() <= 16
+                    && ext.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            });
+        let suffix = extension.map(|ext| format!(".{ext}")).unwrap_or_default();
+        let stem = name.strip_suffix(&suffix).unwrap_or(&name);
+        let mut end = stem.len().min(budget - suffix.len());
+        while !stem.is_char_boundary(end) {
+            end -= 1;
+        }
+        name = format!("{}{suffix}", &stem[..end]);
+    }
+    let name = name.trim_end_matches([' ', '.']);
+    let name = if name.is_empty() || name.chars().all(|c| c == '.' || c == ' ') {
+        "file"
+    } else {
+        name
+    };
+    format!("{prefix}{name}")
+}
+
+/// Validate an existing storage key without renaming or truncating it.
+/// Creation budgets the complete filename separately; legacy keys may exceed
+/// that new byte budget on filesystems with different Unicode length rules.
+/// Unsafe keys must not alias a different attachment during read or deletion.
+pub fn sanitize_stored_file_name(raw: &str) -> Option<String> {
+    if raw.is_empty()
+        || raw.len() > 1024
+        || !raw
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '.' | '-' | '_' | ' '))
+        || raw.chars().all(|c| c == '.' || c == ' ')
+    {
         return None;
     }
-    Some(sanitized)
+    Some(raw.to_string())
 }
 
 #[cfg(test)]
@@ -6266,6 +6295,64 @@ mod tests {
         assert!(mgr.get_received_file(&stored).is_none());
     }
 
+    #[test]
+    fn attachment_storage_names_round_trip_with_long_and_unicode_names() {
+        let mgr = test_manager();
+        for name in [
+            format!("{}.pdf", "a".repeat(189)),
+            format!("{}.pdf", "a".repeat(190)),
+            format!("{}.pdf", "a".repeat(196)),
+            format!("{}.pdf", "a".repeat(400)),
+            format!("{}.png", "界".repeat(200)),
+            format!("{}.txt", "é".repeat(200)),
+        ] {
+            for adopt in [false, true] {
+                let stored = if adopt {
+                    let source = mgr.data_dir.join("name-test-stage");
+                    std::fs::write(&source, b"original bytes").unwrap();
+                    mgr.adopt_staged_attachment(&name, &source).unwrap()
+                } else {
+                    mgr.save_attachment(&name, b"original bytes").unwrap()
+                };
+                assert!(stored.len() <= 255);
+                assert_eq!(Path::new(&stored).extension(), Path::new(&name).extension());
+                let path = mgr
+                    .get_received_file(&stored)
+                    .expect("saved name must resolve");
+                assert_eq!(std::fs::read(&path).unwrap(), b"original bytes");
+                assert!(
+                    mgr.list_received_files()
+                        .iter()
+                        .any(|entry| entry["stored_name"] == stored)
+                );
+                let key = sanitize_stored_file_name(&stored).expect("cleanup must keep exact key");
+                assert_eq!(key, stored);
+                std::fs::remove_file(mgr.files_dir().join(key)).unwrap();
+                assert!(mgr.get_received_file(&stored).is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn attachment_storage_resolves_existing_long_keys_without_renaming() {
+        let mgr = test_manager();
+        let stored = format!("1700000000000-{}_{}.pdf", "a".repeat(32), "b".repeat(196));
+        assert_eq!(stored.len(), 247);
+        let path = mgr.files_dir().join(&stored);
+        std::fs::write(&path, b"legacy bytes").unwrap();
+        assert_eq!(
+            mgr.get_received_file(&stored),
+            Some(path.canonicalize().unwrap())
+        );
+        assert!(mgr.get_received_file(&format!("/{stored}")).is_none());
+        assert_eq!(sanitize_stored_file_name(&stored), Some(stored.clone()));
+        std::fs::remove_file(
+            mgr.files_dir()
+                .join(sanitize_stored_file_name(&stored).unwrap()),
+        )
+        .unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn received_attachment_resolution_rejects_symlink_escape() {
@@ -6286,8 +6373,8 @@ mod tests {
     fn stored_file_name_sanitizer_blocks_traversal() {
         assert_eq!(
             sanitize_stored_file_name("../../etc/passwd").as_deref(),
-            Some("....etcpasswd"),
-            "separators are stripped so the result cannot traverse"
+            None,
+            "unsafe keys must not be rewritten into another attachment's key"
         );
         assert_eq!(sanitize_stored_file_name(".."), None);
         assert_eq!(sanitize_stored_file_name("."), None);
@@ -6296,8 +6383,8 @@ mod tests {
         assert_eq!(sanitize_stored_file_name(""), None);
         assert_eq!(
             sanitize_stored_file_name("a/b\\c").as_deref(),
-            Some("abc"),
-            "separators are stripped, not preserved"
+            None,
+            "separators are rejected, not stripped"
         );
         assert_eq!(
             sanitize_stored_file_name("my file.txt").as_deref(),

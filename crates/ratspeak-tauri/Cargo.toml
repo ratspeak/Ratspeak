@@ -76,5 +76,7 @@ objc2 = "0.6"
 jni = "0.19"
 
 [dev-dependencies]
+image = { workspace = true }
+tauri = { version = "2", features = ["test"] }
 tempfile = "3"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

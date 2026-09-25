@@ -278,14 +278,16 @@
             drafts[hash] = holder;
             if (holder.item.image) {
                 var imageOwner = holder.owner;
-                var nativeStage = edit(holder, 'stage_image').then(function(result) {
-                    var token = result.stage.token;
-                    if (!RS.conversationOwner.isCurrent(imageOwner)) {
-                        RS.invoke('cancel_attachment_stage', {token: token}).catch(function() {});
-                        throw new Error('The conversation changed. Your photo is kept in Shared items.');
-                    }
-                    return token;
-                });
+                var nativeStage = function() {
+                    return edit(holder, 'stage_image').then(function(result) {
+                        var token = result.stage.token;
+                        if (!RS.conversationOwner.isCurrent(imageOwner)) {
+                            RS.invoke('cancel_attachment_stage', {token: token}).catch(function() {});
+                            throw new Error('The conversation changed. Your photo is kept in Shared items.');
+                        }
+                        return token;
+                    });
+                };
                 holder.attachment = attachSharedImage(holder.item.image, nativeStage);
             }
             input.dispatchEvent(new Event('input'));

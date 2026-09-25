@@ -455,7 +455,21 @@ window.RS.fileMetadata = function(storedName) {
 
 var _rsFileDownloadInFlight = {};
 var _rsLargeFileDownloadActive = false;
+var _rsLargeFileDownloadQueue = Promise.resolve();
 var _rsSmallFileDownloadBytes = 0;
+
+function _rsWithLargeFileDownload(read) {
+    // Hydration may request several images at once. Wait for the single large
+    // allocation lane instead of turning ordinary contention into a failure.
+    var download = _rsLargeFileDownloadQueue.then(function() {
+        _rsLargeFileDownloadActive = true;
+        return Promise.resolve().then(read).finally(function() {
+            _rsLargeFileDownloadActive = false;
+        });
+    });
+    _rsLargeFileDownloadQueue = download.catch(function() {});
+    return download;
+}
 
 window.RS.fileDownload = function(storedName, knownMeta) {
     if (_rsFileDownloadInFlight[storedName]) return _rsFileDownloadInFlight[storedName];
@@ -467,12 +481,6 @@ window.RS.fileDownload = function(storedName, knownMeta) {
     var download = metadata.then(function(meta) {
         var size = Number(meta && meta.size) || 0;
         if (size > (1024 * 1024 - 1)) {
-            if (_rsLargeFileDownloadActive) {
-                var busy = new Error('Another large attachment is being loaded');
-                busy.code = 'attachment_busy';
-                throw busy;
-            }
-            _rsLargeFileDownloadActive = true;
             lane = 'large';
         } else {
             if (_rsSmallFileDownloadBytes + size > 8 * 1024 * 1024) {
@@ -484,39 +492,42 @@ window.RS.fileDownload = function(storedName, knownMeta) {
             admittedBytes = size;
             lane = 'small';
         }
-        var chunkBytes = Math.min(Number(meta && meta.chunk_bytes) || (256 * 1024), 256 * 1024);
-        var chunks = [];
-        var offset = 0;
+        function readFile() {
+            // Allocate only after admission, including for queued work.
+            var chunkBytes = Math.min(Number(meta && meta.chunk_bytes) || (256 * 1024), 256 * 1024);
+            var chunks = [];
+            var offset = 0;
 
-        function readNext() {
-            if (offset >= size) return Promise.resolve();
-            var length = Math.min(chunkBytes, size - offset);
-            return window.RS.invoke('api_file_read_chunk', {
-                storedName: storedName,
-                offset: offset,
-                length: length,
-            }).then(function(raw) {
-                var bytes = _rsRawIpcBytes(raw);
-                if (bytes.byteLength !== length) throw new Error('Attachment chunk was truncated');
-                chunks.push(bytes);
-                offset += length;
-                return readNext();
+            function readNext() {
+                if (offset >= size) return Promise.resolve();
+                var length = Math.min(chunkBytes, size - offset);
+                return window.RS.invoke('api_file_read_chunk', {
+                    storedName: storedName,
+                    offset: offset,
+                    length: length,
+                }).then(function(raw) {
+                    var bytes = _rsRawIpcBytes(raw);
+                    if (bytes.byteLength !== length) throw new Error('Attachment chunk was truncated');
+                    chunks.push(bytes);
+                    offset += length;
+                    return readNext();
+                });
+            }
+
+            return readNext().then(function() {
+                var mime = (meta && meta.mime) || 'application/octet-stream';
+                var blob = new Blob(chunks, { type: mime });
+                return {
+                    url: URL.createObjectURL(blob),
+                    blob: blob,
+                    size: blob.size,
+                    filename: (meta && meta.filename) || storedName,
+                    mime: mime,
+                };
             });
         }
-
-        return readNext().then(function() {
-            var mime = (meta && meta.mime) || 'application/octet-stream';
-            var blob = new Blob(chunks, { type: mime });
-            return {
-                url: URL.createObjectURL(blob),
-                blob: blob,
-                size: blob.size,
-                filename: (meta && meta.filename) || storedName,
-                mime: mime,
-            };
-        });
+        return lane === 'large' ? _rsWithLargeFileDownload(readFile) : readFile();
     }).finally(function() {
-        if (lane === 'large') _rsLargeFileDownloadActive = false;
         if (lane === 'small') {
             _rsSmallFileDownloadBytes = Math.max(0, _rsSmallFileDownloadBytes - admittedBytes);
         }
