@@ -341,6 +341,10 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check desktop shell
         run: cargo check --manifest-path Ratspeak/src-tauri/Cargo.toml --locked
+      - name: Test serialized attachment commands on Windows
+        if: runner.os == 'Windows'
+        run: cargo test -p ratspeak-tauri --test attachment_staging --locked
+        working-directory: Ratspeak
 
   mobile-rust-lint:
     name: Mobile gate (${{ matrix.target }}, ${{ matrix.toolchain }})

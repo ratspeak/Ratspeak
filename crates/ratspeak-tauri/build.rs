@@ -7,6 +7,23 @@ fn main() {
     println!("cargo::rerun-if-env-changed=RATSPEAK_DISPLAY_VERSION");
     println!("cargo::rerun-if-env-changed=GITHUB_REF_NAME");
 
+    // MockRuntime still links Tauri's Common Controls v6 imports on Windows.
+    // Tauri embeds that dependency in app binaries, but not integration tests.
+    // Scope the manifest to tests so the production shell keeps its own full
+    // application manifest (tauri-apps/tauri#13419).
+    println!("cargo::rerun-if-changed=tests/windows-test-manifest.xml");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/windows-test-manifest.xml");
+        println!("cargo::rustc-link-arg-tests=/MANIFEST:EMBED");
+        println!(
+            "cargo::rustc-link-arg-tests=/MANIFESTINPUT:{}",
+            manifest.display()
+        );
+    }
+
     if let Some(version) = display_version() {
         println!("cargo::rustc-env=RATSPEAK_DISPLAY_VERSION={version}");
     }
