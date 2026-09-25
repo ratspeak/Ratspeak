@@ -9,8 +9,8 @@
       "x86_64"
     ],
     "platformBuilds": {
-      "androidVersionCode": 1000060,
-      "iosBundleVersion": "1000060"
+      "androidVersionCode": 1000061,
+      "iosBundleVersion": "1000061"
     },
     "predecessor": {
       "displayVersion": "1.0.31",
@@ -45,7 +45,7 @@
       "name": "rsLXMF",
       "repository": "https://github.com/ratspeak/rsLXMF.git",
       "path": "../rsLXMF",
-      "commit": "7caacbb3827aaeaa3566879682859ae6e1df6627",
+      "commit": "8a22f7e9514b1e3cf40084855ebba202c3188e02",
       "version": "1.2.0",
       "integrationTag": "ratspeak-v1.0.32"
     },
