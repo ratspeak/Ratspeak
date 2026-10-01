@@ -15,7 +15,12 @@
     "shortDescription": "Ratspeak: An all-in-one Reticulum & LXMF client in Rust.",
     "longDescription": "https://github.com/ratspeak/Ratspeak",
     "resources": {
-      "../third_party/opus-rs-0.1.29-COPYING": "third-party/opus-rs-0.1.29-COPYING.txt"
+      "../third_party/opus-rs-0.1.29-COPYING": "third-party/opus-rs-0.1.29-COPYING.txt",
+      "../third_party/lxst-codec2/NOTICE": "third-party/lxst-codec2/NOTICE",
+      "../third_party/lxst-codec2/licenses/LGPL-2.1.txt": "third-party/lxst-codec2/licenses/LGPL-2.1.txt",
+      "../third_party/lxst-codec2/licenses/KISS-FFT-BSD-3-Clause.txt": "third-party/lxst-codec2/licenses/KISS-FFT-BSD-3-Clause.txt",
+      "../third_party/lxst-codec2/licenses/upstream-Cargo.toml": "third-party/lxst-codec2/licenses/upstream-Cargo.toml",
+      "../third_party/lxst-codec2/licenses/upstream-README.md": "third-party/lxst-codec2/licenses/upstream-README.md"
     },
     "icon": [
       "icons/32x32.png",

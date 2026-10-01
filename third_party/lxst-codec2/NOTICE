@@ -1,0 +1,20 @@
+This is a modified version of the pure-Rust codec2 0.3.1 implementation by
+David Rowe and Matt Weeks, https://github.com/scriptjunkie/codec2.
+The original manifest declares LGPL-2.1-only AND MIT. The original package
+and pinned repository have no separate MIT license file; the original manifest
+and README are retained under licenses/. Do not erase the upstream declaration.
+Codec2's LGPL-2.1 text and the embedded KISS FFT BSD-3-Clause notice are retained
+there as well. Original author/function notices remain in the adapted sources.
+
+Modified for rsLXST on 2026-10-01: bounded storage and scratch; in-place state
+initialisation; per-instance synthesis RNG; exact libm math on all targets;
+checked public frame shapes; corrected real-FFT input copying; shared the
+identical forward FFT plan and removed unreachable mode/rate storage; separated
+phase scratch lifetime from inverse FFT scratch for the MCU stack. The public API
+exposes only native 1600/3200 modes at 8 kHz mono. Other private upstream modes
+are not a supported API. See UPSTREAM.json for immutable original provenance.
+
+New wrapper, tests and storage adaptation are provided under LGPL-2.1-only.
+Third-party libm retains its own MIT license and appears in the workspace's
+locked third-party inventory. Packaging must retain the applicable notices and
+provide the corresponding modified Codec2 source and relinking materials.

@@ -9376,3 +9376,32 @@ fn android_text_sharing_is_narrow_durable_and_never_a_transport_command() {
     assert!(root.join("scripts/dashboard/test_text_shares.js").is_file());
     assert!(!root.join("dashboard/scripts/test_text_shares.js").exists());
 }
+
+#[test]
+fn native_codec2_distribution_notices_match_selected_rs_lxst() {
+    let root = repo_root();
+    let config: serde_json::Value = serde_json::from_str(
+        &read_source(root.join("src-tauri/tauri.conf.json")).expect("Tauri config"),
+    )
+    .expect("valid Tauri config");
+    let selected = root
+        .parent()
+        .expect("workspace")
+        .join("rsLXST/crates/lxst-codec2");
+    for name in [
+        "NOTICE",
+        "licenses/LGPL-2.1.txt",
+        "licenses/KISS-FFT-BSD-3-Clause.txt",
+        "licenses/upstream-Cargo.toml",
+        "licenses/upstream-README.md",
+    ] {
+        let source = format!("../third_party/lxst-codec2/{name}");
+        let target = format!("third-party/lxst-codec2/{name}");
+        assert_eq!(config["bundle"]["resources"][&source], target);
+        assert_eq!(
+            std::fs::read(root.join("third_party/lxst-codec2").join(name)).expect("bundled notice"),
+            std::fs::read(selected.join(name)).expect("selected native codec notice"),
+            "notice bytes differ: {name}",
+        );
+    }
+}

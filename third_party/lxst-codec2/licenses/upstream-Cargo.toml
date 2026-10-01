@@ -1,0 +1,20 @@
+[package]
+name = "codec2"
+version = "0.3.1"
+description = "A pure-Rust implementation of the Codec2 low-bitrate speech compression codec"
+authors = ["David Rowe", "Matt Weeks <scriptjunkie@scriptjunkie.us>"]
+license = "LGPL-2.1-only AND MIT"
+edition = "2018"
+repository = "https://github.com/scriptjunkie/codec2"
+keywords = ["audio", "speech", "compression", "codec"]
+categories = ["compression", "multimedia::audio", "multimedia::encoding", "algorithms"]
+readme = "README.md"
+
+[dependencies]
+micromath = {version = "2.1.0", optional = true}
+
+[dev-dependencies]
+zerocopy = "0.3.0"
+
+[features]
+micromath = ["dep:micromath"]
