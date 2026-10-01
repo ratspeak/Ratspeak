@@ -2410,6 +2410,7 @@ pub fn ratspeak_runtime::voice::release_call_audio(&ratspeak_runtime::state::App
 pub fn ratspeak_runtime::voice::reserve_call_audio(&ratspeak_runtime::state::AppState)
 pub async fn ratspeak_runtime::voice::restart_speaker(&ratspeak_runtime::state::AppState, bool) -> ratspeak_runtime::voice::VoiceResult<serde_json::value::Value>
 pub fn ratspeak_runtime::voice::set_microphone_muted(&ratspeak_runtime::state::AppState, bool) -> ratspeak_runtime::voice::VoiceResult<serde_json::value::Value>
+pub fn ratspeak_runtime::voice::set_talk(&ratspeak_runtime::state::AppState, [u8; 16], u64, bool) -> ratspeak_runtime::voice::VoiceResult<serde_json::value::Value>
 pub async fn ratspeak_runtime::voice::shutdown_voice_service(&alloc::sync::Arc<ratspeak_runtime::state::AppState>)
 pub async fn ratspeak_runtime::voice::start_voice_service(&alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> ratspeak_runtime::voice::VoiceResult<()>
 pub fn ratspeak_runtime::voice::voice_status(&ratspeak_runtime::state::AppState) -> serde_json::value::Value

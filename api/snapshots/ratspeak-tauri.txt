@@ -695,6 +695,10 @@ pub struct ratspeak_tauri::commands::voice::VoiceRestartSpeakerArgs
 pub ratspeak_tauri::commands::voice::VoiceRestartSpeakerArgs::speakerphone: bool
 pub struct ratspeak_tauri::commands::voice::VoiceSetMicrophoneMutedArgs
 pub ratspeak_tauri::commands::voice::VoiceSetMicrophoneMutedArgs::muted: bool
+pub struct ratspeak_tauri::commands::voice::VoiceSetTalkArgs
+pub ratspeak_tauri::commands::voice::VoiceSetTalkArgs::link_id: alloc::string::String
+pub ratspeak_tauri::commands::voice::VoiceSetTalkArgs::pressed: bool
+pub ratspeak_tauri::commands::voice::VoiceSetTalkArgs::serial: u64
 pub async fn ratspeak_tauri::commands::voice::send_lxmf_voice_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::SendLxmfVoiceMessageArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_answer(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceAnswerArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_call(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceCallArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
@@ -712,6 +716,7 @@ pub async fn ratspeak_tauri::commands::voice::voice_memo_stop(tauri::state::Stat
 pub async fn ratspeak_tauri::commands::voice::voice_reject(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_restart_speaker(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceRestartSpeakerArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_set_microphone_muted(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceSetMicrophoneMutedArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::voice::voice_set_talk(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceSetTalkArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_start_service(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_status(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_stop_service(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>

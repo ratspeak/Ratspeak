@@ -19,8 +19,8 @@
     "sourceCommit": "fc78e4926c696a921f308d238ef1b620e0db0078"
   },
   "snapshotSource": {
-    "commit": "c6ae7f09782955021138cf3edabf7bab8bbf0a33",
-    "capturedOn": "2026-09-24",
+    "commit": "21765377862f85d91101de3b2c2c0b7d6e2f764f",
+    "capturedOn": "2026-10-01",
     "review": {
       "areas": [
         "application domain and configuration",
@@ -32,7 +32,8 @@
         "Android inbound text sharing and identity-locked native draft cleanup",
         "exact route recovery, packet proof ownership and authoritative timing",
         "bounded automatic photo preparation request and exact attachment storage keys",
-        "Direct delivery readiness and content-free BLE/Resource aggregate diagnostics (September 24)"
+        "Direct delivery readiness and content-free BLE/Resource aggregate diagnostics (September 24)",
+        "Native Codec2 live audio, exact-Link PTT input leases and constrained profile ceiling"
       ],
       "canonicalDependencies": [
         "lxmf_core::message_api",
@@ -41,12 +42,12 @@
       ],
       "classification": "application-internal lifecycle, persistence, mobile integration and explicit network ownership",
       "publicApiDiff": {
-        "added": 163,
+        "added": 169,
         "removed": 12
       },
       "semver": "no public-library consequence; application integration only",
       "deprecations": "none",
-      "wirePersistenceRuntimeImpact": "No wire-format change. Adds versioned profile ownership/selectors and opaque credential references, native protected secret storage, five Developer-gated Tauri commands, and the R8-kept Android credential JNI bridge. Mode changes serialize with identity/interface lifecycle, commit after readiness, retain unlocked identity only for same-profile rebuild, and verify rollback. External clients authenticate without fallback and reject local interface changes. New managed profiles are standalone; existing private sharing and operator selectors are preserved. AutoInterface UDP remains unchanged. Retains the previously reviewed announce/readiness boundaries and BLE firmware startup policy. Failed Link/packet recovery now uses the transport's bounded exact-attempt owner, with no ordinary receive-interface quarantine. Atomic packet receipts retain validated proofs across retry queues; canonical first-hop timing drives packet and Link deadlines, while bounded protocol clocks take precedence over orphan watchdogs. Packet RTT still reaches DB, UI events and Activity. No new UI setting, wire format, native dependency or Auto delivery policy change.",
+      "wirePersistenceRuntimeImpact": "No wire-format change. Adds versioned profile ownership/selectors and opaque credential references, native protected secret storage, five Developer-gated Tauri commands, and the R8-kept Android credential JNI bridge. Mode changes serialize with identity/interface lifecycle, commit after readiness, retain unlocked identity only for same-profile rebuild, and verify rollback. External clients authenticate without fallback and reject local interface changes. New managed profiles are standalone; existing private sharing and operator selectors are preserved. AutoInterface UDP remains unchanged. Retains the previously reviewed announce/readiness boundaries and BLE firmware startup policy. Failed Link/packet recovery now uses the transport's bounded exact-attempt owner, with no ordinary receive-interface quarantine. Atomic packet receipts retain validated proofs across retry queues; canonical first-hop timing drives packet and Link deadlines, while bounded protocol clocks take precedence over orphan watchdogs. Packet RTT still reaches DB, UI events and Activity. No new UI setting, wire format, native dependency or Auto delivery policy change. Adds voice_set_talk with exact established Link and monotonic edge serials. Constrained Codec2 calls require renewed local input and retain their profile ceiling. Existing LXMF Ogg/Opus memos and wire IDs are unchanged.",
       "platformEvidence": [
         "Ratspeak workspace: 1007 tests passed, including 625 runtime, 128 Tauri unit and 132 source contracts; dashboard behavior tests passed",
         "Rust 1.87 all-feature runtime/Tauri check; all-feature strict Clippy; full standalone Tauri shell compile",
@@ -58,7 +59,8 @@
         "Fresh ARM64 debug APK on isolated API35 AVD: cold/warm text intake, Unicode draft selection, no automatic send, edited draft process recovery, exact native revision/Activity/identity rejection, explicit locally queued send, repeat/recreation; three real Keystore/AtomicFile instrumentation tests. Real source apps and physical acceptance remain open.",
         "September 5 path recovery: 633 runtime tests plus actual slow-Link deadline regression, strict runtime Clippy; real manager/actor authenticated late-proof, same-radio/direct-to-relay and alternate-route regressions; live Python 1.4.2 shared recovery reconnect and payload",
         "Rust 1.87 all-feature workspace check; Android ARM64 and iOS simulator all-feature shell Clippy checkpoint; final combined preflight recorded separately",
-        "September 24: two application-internal delivery drive/readiness methods, focused runtime/diagnostic/source tests, Android Kotlin/JNI checks, and encrypted readiness-driven multi-segment probes. No phone throughput qualification or new installation."
+        "September 24: two application-internal delivery drive/readiness methods, focused runtime/diagnostic/source tests, Android Kotlin/JNI checks, and encrypted readiness-driven multi-segment probes. No phone throughput qualification or new installation.",
+        "26 voice-enabled runtime tests, voice-enabled Tauri compile, strict runtime Clippy and actual UI owner/layout checks at four widths and both themes. Cross-client and physical acceptance remain separate."
       ]
     }
   },
@@ -119,8 +121,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-runtime.txt",
-      "itemCount": 2500,
-      "sha256": "0330d36b08c93aaf7f631918ca4660015c723482af29167c7aea4949d37da1f1"
+      "itemCount": 2501,
+      "sha256": "4041a0645ef69c674766e39ea8175bd42b0029ea0bd08355f3c2b8129818d802"
     },
     {
       "name": "ratspeak-tauri",
@@ -128,8 +130,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-tauri.txt",
-      "itemCount": 801,
-      "sha256": "5527e44c2440923100ef829ab245af97330962c6a2d10669e4c7809a303ebff9"
+      "itemCount": 806,
+      "sha256": "708369194da93d2187db1ab5fd4bf27d0660c6bf6b6a2974051603f0a28593cd"
     },
     {
       "name": "ratspeak",
