@@ -64,6 +64,23 @@ pub struct VoiceSetMicrophoneMutedArgs {
 }
 
 #[derive(Deserialize)]
+pub struct VoiceSetTalkArgs {
+    pub link_id: String,
+    pub serial: u64,
+    pub pressed: bool,
+}
+#[tauri::command]
+pub async fn voice_set_talk(
+    state: State<'_, Arc<AppState>>,
+    args: VoiceSetTalkArgs,
+) -> AppResult<Value> {
+    let link_id = hex_to_array16(&args.link_id)
+        .ok_or_else(|| AppError::bad_request("Invalid voice Link ID"))?;
+    crate::voice::set_talk(state.inner(), link_id, args.serial, args.pressed)
+        .map_err(AppError::conflict)
+}
+
+#[derive(Deserialize)]
 pub struct VoiceRestartSpeakerArgs {
     pub speakerphone: bool,
 }

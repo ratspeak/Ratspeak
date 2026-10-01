@@ -315,6 +315,7 @@ function _voiceSyncElapsedTimer() {
 }
 
 function _voiceResetCallControls() {
+    _voiceStopTalk();
     _voiceSpeakerRestartToken++;
     lxstVoiceState.microphoneMuted = false;
     lxstVoiceState.speakerphone = false;
@@ -559,6 +560,7 @@ function _voiceRenderCallSurface(ids) {
     var avatarEl = surface.querySelector('.lxst-call-strip-indicator');
 
     surface.hidden = !peer;
+    surface.classList.toggle('is-ptt', !!(active && active.push_to_talk));
     surface.classList.toggle('is-incoming', !!incoming && !active);
     surface.classList.toggle('is-active', !!(active && active.status === 'established'));
     surface.classList.toggle('is-connecting', !!(
@@ -593,11 +595,19 @@ function _voiceRenderCallSurface(ids) {
     }
 
     var showCallControls = !!(active && active.status === 'established');
-    if (controls) controls.hidden = !showCallControls;
+    if (controls) {
+        controls.hidden = !showCallControls;
+        var ptt = _voiceTalkButton(controls);
+        ptt.hidden = !(showCallControls && active.push_to_talk);
+        ptt.disabled = !lxstVoiceState.audioMicrophone;
+        ptt.textContent = _voiceTalkHeld ? 'Talking — release to stop' : 'Hold to talk';
+        ptt.setAttribute('aria-pressed', _voiceTalkHeld ? 'true' : 'false');
+        ptt.title = 'Hold to talk, up to 10 seconds';
+    }
     if (muteBtn) {
         var muteLabel = lxstVoiceState.microphoneMuted ? 'Unmute microphone' : 'Mute microphone';
         if (!lxstVoiceState.audioMicrophone) muteLabel = 'Microphone unavailable';
-        muteBtn.style.display = showCallControls ? '' : 'none';
+        muteBtn.style.display = showCallControls && !active.push_to_talk ? '' : 'none';
         muteBtn.disabled = showCallControls && !lxstVoiceState.audioMicrophone;
         muteBtn.classList.toggle('is-muted', !!lxstVoiceState.microphoneMuted);
         muteBtn.setAttribute('aria-pressed', lxstVoiceState.microphoneMuted ? 'true' : 'false');
@@ -789,6 +799,7 @@ function _voiceRejectCall() {
 }
 
 function _voiceHangupCall() {
+    _voiceStopTalk();
     _voiceStopRingtone();
     _voiceCancelPendingDial();
     _voiceAnswerToken++;
@@ -807,6 +818,55 @@ function _voiceHangupCall() {
         renderVoiceUi();
     });
 }
+
+// Constrained calls use a native, exact-Link PTT lease. Pointer/keyboard release,
+// navigation and UI suspension revoke it; renewal cannot extend the 10s burst.
+var _voiceTalkSerial = 0;
+var _voiceTalkHeld = null;
+function _voiceStopTalk() {
+    var held = _voiceTalkHeld;
+    if (!held) return;
+    _voiceTalkHeld = null;
+    clearInterval(held.timer);
+    RS.invoke('voice_set_talk', { args: { link_id: held.link, serial: ++_voiceTalkSerial, pressed: false } }).catch(function() {});
+    renderVoiceUi();
+}
+function _voiceStartTalk() {
+    var active = lxstVoiceState.active;
+    if (_voiceTalkHeld || !active || !active.push_to_talk || active.status !== 'established' || !lxstVoiceState.audioMicrophone) return;
+    var held = { link: active.link_id, serial: ++_voiceTalkSerial, born: Date.now(), timer: null };
+    _voiceTalkHeld = held;
+    function renew() {
+        var current = lxstVoiceState.active;
+        if (_voiceTalkHeld !== held) return;
+        if (!current || current.link_id !== held.link || current.status !== 'established' || document.hidden || Date.now() - held.born >= 10000) {
+            _voiceStopTalk(); return;
+        }
+        RS.invoke('voice_set_talk', { args: { link_id: held.link, serial: held.serial, pressed: true } }).catch(function() {
+            if (_voiceTalkHeld === held) _voiceStopTalk();
+        });
+    }
+    held.timer = setInterval(renew, 250);
+    renew(); renderVoiceUi();
+}
+function _voiceTalkButton(controls) {
+    var button = controls.querySelector('.lxst-call-ptt');
+    if (button) return button;
+    button = document.createElement('button');
+    button.type = 'button'; button.className = 'lxst-call-action lxst-call-ptt';
+    button.style.touchAction = 'none';
+    button.addEventListener('pointerdown', function(e) {
+        if (e.button !== 0) return;
+        e.preventDefault(); button.setPointerCapture(e.pointerId); _voiceStartTalk();
+    });
+    ['pointerup', 'pointercancel', 'lostpointercapture', 'blur'].forEach(function(name) {button.addEventListener(name, _voiceStopTalk);});
+    button.addEventListener('keydown', function(e) {if (e.key === ' ' || e.key === 'Enter') {e.preventDefault();if (!e.repeat) _voiceStartTalk();}});
+    button.addEventListener('keyup', function(e) {if (e.key === ' ' || e.key === 'Enter') {e.preventDefault();_voiceStopTalk();}});
+    controls.appendChild(button);return button;
+}
+window.addEventListener('blur', _voiceStopTalk);
+window.addEventListener('pagehide', _voiceStopTalk);
+document.addEventListener('visibilitychange', function() {if (document.hidden) _voiceStopTalk();});
 
 function _voiceToggleMute() {
     var active = lxstVoiceState.active;
@@ -853,6 +913,7 @@ function _voiceToggleSpeaker() {
 }
 
 function renderVoiceUi() {
+    if (_voiceTalkHeld && (!lxstVoiceState.active || lxstVoiceState.active.link_id !== _voiceTalkHeld.link || lxstVoiceState.active.status !== 'established' || !lxstVoiceState.active.push_to_talk)) _voiceStopTalk();
     var callBtn = document.getElementById('lxst-call-btn');
     var active = lxstVoiceState.active;
     var incoming = lxstVoiceState.incoming;

@@ -1254,6 +1254,7 @@ pub fn run() {
             ratspeak_tauri::commands::voice::voice_hangup,
             #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_set_microphone_muted,
+            ratspeak_tauri::commands::voice::voice_set_talk,
             #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_restart_speaker,
             #[cfg(feature = "lxst-voice")]

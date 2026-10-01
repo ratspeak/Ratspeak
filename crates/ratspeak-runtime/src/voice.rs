@@ -33,6 +33,8 @@ use crate::activity::producer::{
 use crate::db;
 use crate::state::{ActivityRequestFence, AppState};
 
+mod ptt;
+
 const AUDIO_FRAME_CHANNEL_DEPTH: usize = 8;
 const AUDIO_SPEAKER_CHANNEL_DEPTH: usize = 32;
 const MICROPHONE_CAPTURE_RETRY_DELAYS: [Duration; 3] = [
@@ -316,6 +318,27 @@ pub fn release_call_audio(state: &AppState) {
         .store(false, Ordering::Release);
 }
 
+pub fn set_talk(
+    state: &AppState,
+    link_id: [u8; 16],
+    serial: u64,
+    pressed: bool,
+) -> VoiceResult<Value> {
+    let exact = state
+        .voice_call_snapshot
+        .lock()
+        .ok()
+        .and_then(|s| s.clone())
+        .is_some_and(|s| {
+            s["active_call"]["link_id"].as_str() == Some(hex::encode(link_id).as_str())
+                && s["active_call"]["status"] == "established"
+        });
+    if !exact {
+        return Err("No matching established voice call".into());
+    }
+    ptt::update(link_id, serial, pressed)
+}
+
 pub fn set_microphone_muted(state: &AppState, muted: bool) -> VoiceResult<Value> {
     if voice_control_tx(state).is_none() {
         return Err("LXST voice service is not running".to_string());
@@ -428,7 +451,7 @@ async fn send_control(state: &AppState, control: TelephonyControl) -> VoiceResul
 }
 
 fn microphone_muted() -> bool {
-    VOICE_MICROPHONE_MUTED.load(Ordering::Relaxed)
+    VOICE_MICROPHONE_MUTED.load(Ordering::Relaxed) || ptt::blocked()
 }
 
 #[derive(Debug, Clone)]
@@ -1075,10 +1098,16 @@ async fn drive_voice_events(
                 }
                 emit_snapshot(&state, &snapshot, audio_session.as_ref());
             }
-            TelephonyServiceEvent::OpusTransmitStreamStarted { link_id, profile } => {
+            TelephonyServiceEvent::OpusTransmitStreamStarted { link_id, profile }
+            | TelephonyServiceEvent::AudioTransmitStreamStarted { link_id, profile } => {
                 emit_media_state(&state, "mic_started", link_id, profile, None);
             }
             TelephonyServiceEvent::OpusTransmitStreamStopped {
+                link_id,
+                profile,
+                reason,
+            }
+            | TelephonyServiceEvent::AudioTransmitStreamStopped {
                 link_id,
                 profile,
                 reason,
@@ -1091,10 +1120,16 @@ async fn drive_voice_events(
                     Some(format!("{reason:?}")),
                 );
             }
-            TelephonyServiceEvent::OpusReceiveStreamStarted { link_id, profile } => {
+            TelephonyServiceEvent::OpusReceiveStreamStarted { link_id, profile }
+            | TelephonyServiceEvent::AudioReceiveStreamStarted { link_id, profile } => {
                 emit_media_state(&state, "speaker_started", link_id, profile, None);
             }
             TelephonyServiceEvent::OpusReceiveStreamStopped {
+                link_id,
+                profile,
+                reason,
+            }
+            | TelephonyServiceEvent::AudioReceiveStreamStopped {
                 link_id,
                 profile,
                 reason,
@@ -1108,6 +1143,12 @@ async fn drive_voice_events(
                 );
             }
             TelephonyServiceEvent::OpusReceiveStreamFrames {
+                link_id,
+                profile,
+                frames,
+                dropped,
+            }
+            | TelephonyServiceEvent::AudioReceiveStreamFrames {
                 link_id,
                 profile,
                 frames,
@@ -1180,10 +1221,12 @@ async fn drive_voice_events(
             }
             TelephonyServiceEvent::MediaReceived { .. }
             | TelephonyServiceEvent::OpusFramesReceived { .. }
+            | TelephonyServiceEvent::AudioFramesReceived { .. }
             | TelephonyServiceEvent::Drive(_) => {}
         }
     }
 
+    ptt::clear();
     release_call_audio(&state);
     stop_audio_session(audio_session.take(), &control_tx).await;
 }
@@ -1264,6 +1307,7 @@ async fn reconcile_audio_session(
     audio_failure: &mut Option<VoiceAudioFailure>,
 ) {
     let Some(active) = snapshot.active_call.as_ref() else {
+        ptt::clear();
         stop_audio_session(audio_session.take(), control_tx).await;
         *audio_failure = None;
         return;
@@ -1276,14 +1320,25 @@ async fn reconcile_audio_session(
     }
 
     let profile = active.profile.unwrap_or(Profile::DEFAULT);
-    if profile.opus_payload_ceiling_bytes().is_none() {
+    if !ptt::supported(profile) {
         state.emit_to_all(
             "voice_call_update",
             json!({
                 "type": "error",
-                "message": "Only Opus LXST voice profiles are supported by the live audio bridge",
+                "message": "This voice codec is unavailable; native Codec2 1600/3200 and Opus are supported",
             }),
         );
+        let _ = control_tx
+            .send(TelephonyControl::Hangup {
+                ring_timeout: false,
+            })
+            .await;
+        return;
+    }
+    if let Some(ceiling) = ptt::sync(active.link_id, profile) {
+        let _ = control_tx
+            .send(TelephonyControl::SwitchProfile { profile: ceiling })
+            .await;
         return;
     }
 
@@ -1444,11 +1499,11 @@ async fn stop_audio_session(
 ) {
     if let Some(session) = session {
         if session.microphone {
-            let _ = control_tx.send(TelephonyControl::StopOpusStream).await;
+            let _ = control_tx.send(TelephonyControl::StopAudioStream).await;
         }
         if session.speaker {
             let _ = control_tx
-                .send(TelephonyControl::StopOpusReceiveStream)
+                .send(TelephonyControl::StopAudioReceiveStream)
                 .await;
         }
         drop(session);
@@ -1506,6 +1561,7 @@ fn active_call_payload(active: &ActiveCallSnapshot) -> Value {
         "role": role_key(active.role),
         "status": status_key(active.status),
         "profile": active.profile.map(profile_key),
+        "push_to_talk": active.profile.is_some_and(ptt::constrained),
         "answered": active.answered,
     })
 }
@@ -1959,6 +2015,7 @@ impl VoiceAudioSession {
             let host = cpal::default_host();
             match start_microphone_side(
                 &host,
+                self.link_id,
                 self.profile,
                 control_tx.clone(),
                 &mut self.call_audio_session,
@@ -2035,11 +2092,11 @@ impl VoiceAudioSession {
         let had_microphone = self.microphone;
         let had_speaker = self.speaker;
         if self.microphone {
-            let _ = control_tx.send(TelephonyControl::StopOpusStream).await;
+            let _ = control_tx.send(TelephonyControl::StopAudioStream).await;
         }
         if self.speaker {
             let _ = control_tx
-                .send(TelephonyControl::StopOpusReceiveStream)
+                .send(TelephonyControl::StopAudioReceiveStream)
                 .await;
         }
         if let Some(task) = self.sink_task.take() {
@@ -2057,6 +2114,7 @@ impl VoiceAudioSession {
 
         match start_microphone_side(
             &host,
+            self.link_id,
             self.profile,
             control_tx.clone(),
             &mut self.call_audio_session,
@@ -2118,6 +2176,7 @@ impl VoiceAudioSession {
         let mut warnings = Vec::new();
         let input_stream = match start_microphone_side(
             &host,
+            link_id,
             profile,
             control_tx.clone(),
             &mut call_audio_session,
@@ -2177,6 +2236,7 @@ impl VoiceAudioSession {
 
 async fn start_microphone_side(
     host: &cpal::Host,
+    link_id: [u8; 16],
     profile: Profile,
     control_tx: mpsc::Sender<TelephonyControl>,
     call_audio_session: &mut PlatformCallAudioSession,
@@ -2191,7 +2251,9 @@ async fn start_microphone_side(
     };
 
     if let Err(e) = control_tx
-        .send(TelephonyControl::StartOpusStream {
+        .send(TelephonyControl::StartAudioStream {
+            link_id,
+            gate: ptt::gate(link_id),
             profile,
             frames: capture_rx,
         })
@@ -2378,7 +2440,7 @@ async fn start_speaker_side(
         }
 
         if let Err(e) = control_tx
-            .send(TelephonyControl::StartOpusReceiveStream { frames: speaker_tx })
+            .send(TelephonyControl::StartAudioReceiveStream { frames: speaker_tx })
             .await
         {
             sink_task.abort();
@@ -2434,7 +2496,7 @@ async fn start_android_speaker_side(
     });
 
     if let Err(e) = control_tx
-        .send(TelephonyControl::StartOpusReceiveStream { frames: speaker_tx })
+        .send(TelephonyControl::StartAudioReceiveStream { frames: speaker_tx })
         .await
     {
         sink_task.abort();
@@ -2478,6 +2540,7 @@ impl Drop for VoiceAudioSession {
 }
 
 struct InputFrameBuilder {
+    ptt_serial: u64,
     source_channels: usize,
     source_sample_rate: u32,
     target_channels: usize,
@@ -2503,6 +2566,7 @@ impl InputFrameBuilder {
         let target_sample_rate = target_sample_rate.max(1);
         let fade_samples_total = fade_sample_count(target_sample_rate, target_channels);
         Self {
+            ptt_serial: 0,
             source_channels: source_channels.max(1),
             source_sample_rate: source_sample_rate.max(1),
             target_channels,
@@ -3634,6 +3698,11 @@ fn push_input_samples(
     let Ok(mut builder) = builder.try_lock() else {
         return;
     };
+    let serial = ptt::serial();
+    if builder.ptt_serial != serial {
+        builder.clear_pending_audio();
+        builder.ptt_serial = serial;
+    }
     if microphone_muted() {
         builder.clear_pending_audio();
         return;

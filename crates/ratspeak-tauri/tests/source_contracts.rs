@@ -5329,7 +5329,7 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(voice_rs.contains("enum VoiceAudioControl"));
     assert!(voice_rs.contains("RestartSpeaker { speakerphone: bool }"));
     assert!(voice_rs.contains("async fn restart_speaker("));
-    assert!(voice_rs.contains("TelephonyControl::StopOpusStream"));
+    assert!(voice_rs.contains("TelephonyControl::StopAudioStream"));
     assert!(voice_rs.contains("start_microphone_side("));
     assert!(voice_rs.contains("start_android_speaker_side("));
     assert!(voice_rs.contains("RatspeakVoiceAudio.write"));

@@ -2893,6 +2893,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lxst-codec2"
+version = "0.2.0"
+dependencies = [
+ "libm",
+]
+
+[[package]]
 name = "lxst-core"
 version = "0.2.0"
 dependencies = [
@@ -2920,6 +2927,7 @@ name = "lxst-telephony"
 version = "0.2.0"
 dependencies = [
  "bytes",
+ "lxst-codec2",
  "lxst-core",
  "lxst-rns",
  "rns-crypto",
