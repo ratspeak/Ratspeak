@@ -834,6 +834,12 @@ function _voiceStopTalk() {
 function _voiceStartTalk() {
     var active = lxstVoiceState.active;
     if (_voiceTalkHeld || !active || !active.push_to_talk || active.status !== 'established' || !lxstVoiceState.audioMicrophone) return;
+    // A reloaded webview must advance the still-running native call's input
+    // serial. Restarting at zero would leave every fresh press stale.
+    if (Number.isSafeInteger(active.ptt_input_serial) && active.ptt_input_serial >= 0) {
+        _voiceTalkSerial = Math.max(_voiceTalkSerial, active.ptt_input_serial);
+    }
+    if (_voiceTalkSerial >= Number.MAX_SAFE_INTEGER - 1) return;
     var held = { link: active.link_id, serial: ++_voiceTalkSerial, born: Date.now(), timer: null };
     _voiceTalkHeld = held;
     function renew() {

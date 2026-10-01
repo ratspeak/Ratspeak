@@ -1562,6 +1562,7 @@ fn active_call_payload(active: &ActiveCallSnapshot) -> Value {
         "status": status_key(active.status),
         "profile": active.profile.map(profile_key),
         "push_to_talk": active.profile.is_some_and(ptt::constrained),
+        "ptt_input_serial": ptt::gate(active.link_id).map(|gate| gate.serial()).unwrap_or(0),
         "answered": active.answered,
     })
 }
