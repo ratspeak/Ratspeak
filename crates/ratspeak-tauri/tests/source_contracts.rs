@@ -8980,9 +8980,7 @@ fn voice_memos_share_lxst_capture_and_use_first_class_lxmf_audio() {
         .expect("ios audio session");
 
     assert!(memo.contains("const PROFILE: Profile = Profile::QualityMedium"));
-    assert!(
-        memo.contains("crate::voice::start_microphone_capture(PROFILE, &native_session_token)")
-    );
+    assert!(memo.contains("crate::voice::start_memo_microphone_capture("));
     assert!(voice.contains("pub(crate) fn start_microphone_capture"));
     assert!(voice.contains("MICROPHONE_CAPTURE_RETRY_DELAYS"));
     assert!(memo.contains("RECORDING_STOP_DRAIN_TIMEOUT"));
@@ -9025,7 +9023,7 @@ fn voice_memos_share_lxst_capture_and_use_first_class_lxmf_audio() {
     assert!(voice.contains(".try_lock()"));
     assert!(commands.contains("VOICE_MEMO_START_UNAVAILABLE"));
     assert!(commands.contains("crate::voice_memo::cancel_recording(&app_state)"));
-    assert!(commands.contains("spawn_blocking(move || crate::voice_memo::decode_voice_memo"));
+    assert!(commands.contains("let playback = tokio::task::spawn_blocking(move || {"));
     assert!(commands.contains("pub session_id: String"));
     assert!(commands.contains("pub lease_id: String"));
     assert!(commands.contains("read_bounded_voice_memo"));
@@ -9035,7 +9033,10 @@ fn voice_memos_share_lxst_capture_and_use_first_class_lxmf_audio() {
     assert!(commands.contains("begin_attachment_staging("));
     assert!(commands.contains("take_completed_attachment_staging(&args.staging_token)"));
     assert!(commands.contains("VOICE_MEMO_MAX_GENERATED_OGG_BYTES"));
-    assert!(commands.contains("crate::voice_memo::inspect_voice_memo(&inspection_bytes)"));
+    assert!(
+        commands
+            .contains("crate::voice_memo::inspect_voice_memo_format(&inspection_bytes, format)")
+    );
     assert!(commands.contains("crate::commands::messaging::queue_prepared_audio("));
     assert!(messaging_commands.contains("AudioMessageRequest"));
     assert!(

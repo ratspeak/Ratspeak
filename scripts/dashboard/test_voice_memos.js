@@ -165,7 +165,7 @@ assert(voice.includes('Array.from({ length: BAR_COUNT }, function() { return 0; 
     'received audio without decoded metadata must use a neutral waveform');
 assert(commands.includes('begin_attachment_staging('));
 assert(commands.includes('take_completed_attachment_staging(&args.staging_token)'));
-assert(commands.includes('crate::voice_memo::inspect_voice_memo(&inspection_bytes)'));
+assert(commands.includes('crate::voice_memo::inspect_voice_memo_format(&inspection_bytes, format)'));
 assert(commands.includes('crate::commands::messaging::queue_prepared_audio('));
 assert(messagingCommands.includes('send_audio_message_with_preference_report(AudioMessageRequest'));
 assert(!voice.includes('.lxvm') && !messaging.includes('.lxvm') &&
@@ -213,7 +213,7 @@ assert(runtime.includes('_platform_audio_session'));
 assert(commands.includes('VOICE_MEMO_START_UNAVAILABLE'));
 assert(commands.includes('reserve_call_audio'));
 assert(commands.includes('release_call_audio'));
-assert(commands.includes('spawn_blocking(move || crate::voice_memo::decode_voice_memo'));
+assert(commands.includes('let playback = tokio::task::spawn_blocking(move || {'));
 assert(systemCommands.includes('mobile_background_voice_memo_cancel_failed'));
 assert(iosPlatform.includes('AVAudioSessionCategoryPlayAndRecord'));
 assert(iosPlatform.includes('AVAudioSessionModeVoiceChat'));

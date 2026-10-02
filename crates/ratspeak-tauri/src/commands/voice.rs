@@ -10,9 +10,11 @@ use tauri::State;
 use tokio::io::AsyncReadExt as _;
 
 use crate::commands::shared::{hex_to_array16, resolve_identity_hash};
+use crate::db;
 use crate::error::{AppError, AppResult};
-use crate::helpers::{sanitize_text, validate_hex};
+use crate::helpers::{active_identity_id, sanitize_text, validate_hex};
 use crate::state::{AppState, AttachmentTransferAdmissionError};
+use crate::voice_memo::MemoFormat;
 
 const VOICE_MEMO_START_UNAVAILABLE: &str = "Ratspeak couldn't start recording. Check microphone access and the selected input device, then try again.";
 const VOICE_MEMO_AUDIO_BUSY: &str =
@@ -86,6 +88,57 @@ pub struct VoiceRestartSpeakerArgs {
 }
 
 #[derive(Deserialize)]
+pub struct VoiceMemoStartArgs {
+    pub dest_hash: String,
+}
+#[derive(Deserialize)]
+pub struct VoiceMemoFormatArgs {
+    pub dest_hash: String,
+    pub identity_id: Option<String>,
+    pub audio_mode: Option<u8>,
+}
+
+/// An explicit saved choice is the first compact-format discovery path. No
+/// peer naming, transport, or old call failure is treated as codec evidence.
+#[tauri::command]
+pub async fn voice_memo_format(
+    state: State<'_, Arc<AppState>>,
+    args: VoiceMemoFormatArgs,
+) -> AppResult<Value> {
+    let destination = args.dest_hash.to_ascii_lowercase();
+    if hex_to_array16(&destination).is_none() {
+        return Err(AppError::bad_request("Invalid LXMF destination"));
+    }
+    let fence = state.activity_request_fence();
+    let _identity = state.identity_switch_lock.lock().await;
+    if !state.is_current_activity_request_fence_after_identity_lock(fence) {
+        return Err(AppError::conflict("Identity changed"));
+    }
+    let identity = active_identity_id(&state);
+    if identity.is_empty() || args.identity_id.as_ref().is_some_and(|v| v != &identity) {
+        return Err(AppError::conflict("Identity changed"));
+    }
+    if args.audio_mode.is_some() && args.identity_id.is_none() {
+        return Err(AppError::bad_request("Voice format requires its identity"));
+    }
+    if let Some(mode) = args.audio_mode {
+        MemoFormat::from_mode(mode).map_err(AppError::bad_request)?;
+    }
+    let local = identity.clone();
+    let peer = destination.clone();
+    let mode = db::spawn_db(state.db.clone(), move |pool| {
+        if let Some(mode) = args.audio_mode {
+            db::set_voice_message_format(&pool, &local, &peer, mode)?;
+        }
+        db::voice_message_format(&pool, &local, &peer)
+    })
+    .await
+    .map_err(|_| AppError::internal("Voice format task stopped"))?
+    .map_err(|_| AppError::internal("Voice format could not be saved or loaded"))?;
+    Ok(json!({"identity_id":identity,"dest_hash":destination,"audio_mode":mode}))
+}
+
+#[derive(Deserialize)]
 pub struct VoiceMemoPauseArgs {
     pub session_id: String,
     pub paused: bool,
@@ -113,6 +166,8 @@ pub struct VoiceMemoPlaybackLeaseArgs {
 
 #[derive(Deserialize)]
 pub struct VoiceMemoPlaybackStartArgs {
+    #[serde(default)]
+    pub audio_mode: Option<u8>,
     pub data_base64: Option<String>,
     pub stored_name: Option<String>,
     #[serde(default)]
@@ -122,6 +177,8 @@ pub struct VoiceMemoPlaybackStartArgs {
 #[derive(Deserialize)]
 pub struct VoiceMemoDecodeDataArgs {
     pub data_base64: String,
+    #[serde(default)]
+    pub audio_mode: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -131,6 +188,7 @@ pub struct VoiceMemoDecodeStoredArgs {
 
 #[derive(Serialize)]
 pub struct VoiceMemoDraftResponse {
+    pub audio_mode: u8,
     pub session_id: String,
     pub staging_token: String,
     pub filename: String,
@@ -273,12 +331,34 @@ pub async fn voice_restart_speaker(
 }
 
 #[tauri::command]
-pub async fn voice_memo_start(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    crate::voice_memo::start_recording(state.inner())
-        .await
-        .map(|status| {
-            serde_json::to_value(status).unwrap_or_else(|_| json!({ "state": "recording" }))
+pub async fn voice_memo_start(
+    state: State<'_, Arc<AppState>>,
+    args: Option<VoiceMemoStartArgs>,
+) -> AppResult<Value> {
+    let fence = state.activity_request_fence();
+    let _identity = state.identity_switch_lock.lock().await;
+    if !state.is_current_activity_request_fence_after_identity_lock(fence) {
+        return Err(AppError::conflict("Identity changed"));
+    }
+    let format = if let Some(args) = args {
+        let destination = args.dest_hash.to_ascii_lowercase();
+        if hex_to_array16(&destination).is_none() {
+            return Err(AppError::bad_request("Invalid LXMF destination"));
+        }
+        let identity = active_identity_id(&state);
+        let mode = db::spawn_db(state.db.clone(), move |pool| {
+            db::voice_message_format(&pool, &identity, &destination)
         })
+        .await
+        .map_err(|_| AppError::internal("Voice format task stopped"))?
+        .map_err(|_| AppError::internal("Voice format unavailable"))?;
+        MemoFormat::from_mode(mode).map_err(AppError::bad_request)?
+    } else {
+        MemoFormat::Opus
+    };
+    crate::voice_memo::start_recording_format(state.inner(), format)
+        .await
+        .map(|status| serde_json::to_value(status).unwrap_or_else(|_| json!({})))
         .map_err(voice_memo_start_error)
 }
 
@@ -317,8 +397,8 @@ pub async fn voice_memo_stop(
     ensure_outbound_voice_memo_size(size)?;
     let staging_token = Arc::clone(&state)
         .begin_attachment_staging(
-            crate::voice_memo::VOICE_MEMO_FILENAME.to_string(),
-            crate::voice_memo::VOICE_MEMO_MIME.to_string(),
+            draft.format.filename().to_string(),
+            draft.format.mime().to_string(),
             size,
             false,
         )
@@ -352,10 +432,11 @@ pub async fn voice_memo_stop(
     };
     debug_assert_eq!(written, size);
     Ok(VoiceMemoDraftResponse {
+        audio_mode: draft.format.mode(),
         session_id: args.session_id,
         staging_token,
-        filename: crate::voice_memo::VOICE_MEMO_FILENAME.to_string(),
-        mime: crate::voice_memo::VOICE_MEMO_MIME.to_string(),
+        filename: draft.format.filename().to_string(),
+        mime: draft.format.mime().to_string(),
         data_base64: B64.encode(&draft.data),
         size,
         duration_ms: draft.duration_ms,
@@ -404,9 +485,11 @@ pub async fn send_lxmf_voice_message(
     let staged = state
         .take_completed_attachment_staging(&args.staging_token)
         .ok_or_else(|| AppError::bad_request("Voice message staging is incomplete or expired"))?;
+    let format = staged_voice_format(&staged.file_name, &staged.mime)
+        .ok_or_else(|| AppError::bad_request("Voice message staging is invalid"))?;
     if staged.is_image
-        || staged.file_name != crate::voice_memo::VOICE_MEMO_FILENAME
-        || staged.mime != crate::voice_memo::VOICE_MEMO_MIME
+        || (format == MemoFormat::Compact
+            && staged.declared_size > crate::voice_memo::compact::RECORD_BYTES)
     {
         return Err(AppError::bad_request("Voice message staging is invalid"));
     }
@@ -433,10 +516,12 @@ pub async fn send_lxmf_voice_message(
         ));
     }
     let inspection_bytes = audio_bytes.clone();
-    tokio::task::spawn_blocking(move || crate::voice_memo::inspect_voice_memo(&inspection_bytes))
-        .await
-        .map_err(|_| AppError::internal("Voice message validation task panicked"))?
-        .map_err(|_| AppError::bad_request("Voice message is not valid bounded Ogg/Opus"))?;
+    tokio::task::spawn_blocking(move || {
+        crate::voice_memo::inspect_voice_memo_format(&inspection_bytes, format)
+    })
+    .await
+    .map_err(|_| AppError::internal("Voice message validation task panicked"))?
+    .map_err(|_| AppError::bad_request("Voice message is not valid bounded audio"))?;
 
     crate::commands::messaging::queue_prepared_audio(
         Arc::clone(&state),
@@ -444,6 +529,7 @@ pub async fn send_lxmf_voice_message(
         delivery_pref,
         client_msg_id,
         audio_bytes,
+        format.mode(),
         staged,
     )
     .await
@@ -456,7 +542,7 @@ pub async fn voice_memo_playback_start(
 ) -> AppResult<Value> {
     #[cfg(any(target_os = "ios", target_os = "android"))]
     {
-        let data = match (args.data_base64, args.stored_name) {
+        let (data, format) = match (args.data_base64, args.stored_name) {
             (Some(encoded), None) => {
                 let max_encoded = crate::voice_memo::VOICE_MEMO_MAX_AUDIO_BYTES
                     .div_ceil(3)
@@ -468,21 +554,13 @@ pub async fn voice_memo_playback_start(
                     .decode(encoded)
                     .map_err(|_| AppError::bad_request("Voice memo data is not valid base64"))?;
                 ensure_voice_memo_container_size(data.len())?;
-                data
+                (
+                    data,
+                    MemoFormat::from_mode(args.audio_mode.unwrap_or(0x10))
+                        .map_err(AppError::bad_request)?,
+                )
             }
-            (None, Some(stored_name)) => {
-                let path = state
-                    .lxmf
-                    .lock()
-                    .ok()
-                    .and_then(|manager| {
-                        manager
-                            .as_ref()
-                            .and_then(|manager| manager.get_received_file(&stored_name))
-                    })
-                    .ok_or_else(|| AppError::not_found("Voice memo not found"))?;
-                read_bounded_voice_memo(path).await?
-            }
+            (None, Some(stored_name)) => load_stored_voice(&state, &stored_name).await?,
             _ => {
                 return Err(AppError::bad_request(
                     "Voice message playback requires exactly one native source",
@@ -490,19 +568,20 @@ pub async fn voice_memo_playback_start(
             }
         };
         let app_state = state.inner().clone();
-        let started = crate::voice_memo::start_native_playback(&app_state, data, args.position_ms)
-            .await
-            .map_err(|error| {
-                if error.contains("using audio") || error.contains("being recorded") {
-                    AppError::conflict(error)
-                } else {
-                    tracing::warn!(
-                        reason = "native_output_failed",
-                        "voice message playback failed"
-                    );
-                    AppError::service_unavailable(VOICE_MEMO_PLAYBACK_UNAVAILABLE)
-                }
-            })?;
+        let started =
+            crate::voice_memo::start_native_playback(&app_state, data, args.position_ms, format)
+                .await
+                .map_err(|error| {
+                    if error.contains("using audio") || error.contains("being recorded") {
+                        AppError::conflict(error)
+                    } else {
+                        tracing::warn!(
+                            reason = "native_output_failed",
+                            "voice message playback failed"
+                        );
+                        AppError::service_unavailable(VOICE_MEMO_PLAYBACK_UNAVAILABLE)
+                    }
+                })?;
         return Ok(serde_json::to_value(started).unwrap_or_else(|_| json!({})));
     }
 
@@ -557,7 +636,12 @@ pub async fn voice_memo_decode_data(
         .decode(args.data_base64)
         .map_err(|_| AppError::bad_request("Voice memo data is not valid base64"))?;
     ensure_voice_memo_container_size(data.len())?;
-    decode_voice_memo_response(&state, data).await
+    decode_voice_memo_response(
+        &state,
+        data,
+        MemoFormat::from_mode(args.audio_mode.unwrap_or(0x10)).map_err(AppError::bad_request)?,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -565,18 +649,8 @@ pub async fn voice_memo_decode_stored(
     state: State<'_, Arc<AppState>>,
     args: VoiceMemoDecodeStoredArgs,
 ) -> AppResult<VoiceMemoPlaybackResponse> {
-    let path = state
-        .lxmf
-        .lock()
-        .ok()
-        .and_then(|manager| {
-            manager
-                .as_ref()
-                .and_then(|manager| manager.get_received_file(&args.stored_name))
-        })
-        .ok_or_else(|| AppError::not_found("Voice memo not found"))?;
-    let data = read_bounded_voice_memo(path).await?;
-    decode_voice_memo_response(&state, data).await
+    let (data, format) = load_stored_voice(&state, &args.stored_name).await?;
+    decode_voice_memo_response(&state, data, format).await
 }
 
 #[tauri::command]
@@ -584,6 +658,39 @@ pub async fn voice_memo_inspect_stored(
     state: State<'_, Arc<AppState>>,
     args: VoiceMemoDecodeStoredArgs,
 ) -> AppResult<Value> {
+    let (data, format) = load_stored_voice(&state, &args.stored_name).await?;
+    let metadata = tokio::task::spawn_blocking(move || {
+        crate::voice_memo::inspect_voice_memo_format(&data, format)
+    })
+    .await
+    .map_err(|_| AppError::internal("Voice memo inspector task panicked"))?
+    .map_err(AppError::bad_request)?;
+    Ok(serde_json::to_value(metadata).unwrap_or_else(|_| json!({})))
+}
+
+fn staged_voice_format(filename: &str, mime: &str) -> Option<MemoFormat> {
+    [MemoFormat::Opus, MemoFormat::Compact]
+        .into_iter()
+        .find(|format| format.filename() == filename && format.mime() == mime)
+}
+async fn load_stored_voice(
+    state: &Arc<AppState>,
+    stored_name: &str,
+) -> AppResult<(Vec<u8>, MemoFormat)> {
+    let fence = state.activity_request_fence();
+    let _identity = state.identity_switch_lock.lock().await;
+    if !state.is_current_activity_request_fence_after_identity_lock(fence) {
+        return Err(AppError::conflict("Identity changed"));
+    }
+    let identity = active_identity_id(state);
+    let name = stored_name.to_owned();
+    let mode = db::spawn_db(state.db.clone(), move |pool| {
+        db::stored_audio_mode(&pool, &identity, &name)
+    })
+    .await
+    .map_err(|_| AppError::internal("Audio lookup task stopped"))?
+    .map_err(|_| AppError::not_found("Voice memo not found"))?;
+    let format = MemoFormat::from_mode(mode).map_err(AppError::bad_request)?;
     let path = state
         .lxmf
         .lock()
@@ -591,16 +698,10 @@ pub async fn voice_memo_inspect_stored(
         .and_then(|manager| {
             manager
                 .as_ref()
-                .and_then(|manager| manager.get_received_file(&args.stored_name))
+                .and_then(|m| m.get_received_file(stored_name))
         })
         .ok_or_else(|| AppError::not_found("Voice memo not found"))?;
-    let data = read_bounded_voice_memo(path).await?;
-    let metadata =
-        tokio::task::spawn_blocking(move || crate::voice_memo::inspect_voice_memo(&data))
-            .await
-            .map_err(|_| AppError::internal("Voice memo inspector task panicked"))?
-            .map_err(AppError::bad_request)?;
-    Ok(serde_json::to_value(metadata).unwrap_or_else(|_| json!({})))
+    Ok((read_bounded_voice_memo(path).await?, format))
 }
 
 fn ensure_voice_memo_container_size(size: usize) -> AppResult<()> {
@@ -643,13 +744,16 @@ async fn read_bounded_voice_memo(path: std::path::PathBuf) -> AppResult<Vec<u8>>
 async fn decode_voice_memo_response(
     state: &AppState,
     data: Vec<u8>,
+    format: MemoFormat,
 ) -> AppResult<VoiceMemoPlaybackResponse> {
     ensure_voice_memo_container_size(data.len())?;
     let _decode = state.voice_memo_decode_lock.lock().await;
-    let playback = tokio::task::spawn_blocking(move || crate::voice_memo::decode_voice_memo(&data))
-        .await
-        .map_err(|_| AppError::internal("Voice memo decoder task panicked"))?
-        .map_err(AppError::bad_request)?;
+    let playback = tokio::task::spawn_blocking(move || {
+        crate::voice_memo::decode_voice_memo_format(&data, format)
+    })
+    .await
+    .map_err(|_| AppError::internal("Voice memo decoder task panicked"))?
+    .map_err(AppError::bad_request)?;
     Ok(VoiceMemoPlaybackResponse {
         mime: "audio/wav".to_string(),
         data_base64: B64.encode(&playback.wav_data),

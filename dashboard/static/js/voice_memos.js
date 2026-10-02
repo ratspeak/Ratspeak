@@ -1,4 +1,4 @@
-/* Ratspeak voice messages: native LXST/Opus capture, review, and playback.
+/* Ratspeak voice messages: native Opus/Codec2 capture, review, and playback.
  * The native runtime owns microphone and codec state. This module owns only
  * the composer/player interaction so it can share LXMF's proven send path. */
 (function() {
@@ -30,6 +30,8 @@
     var recordingOwner = null;
     var recordingGeneration = 0;
     var recordingSessionId = '';
+    var recordingMode = 0x10;
+    var recordingMaxDuration = 300000;
     var recordingStartPromise = null;
     var recordingStartRetirement = null;
     var recordingDiscardPromise = null;
@@ -113,7 +115,7 @@
         return formatDuration(clampPlaybackFraction(fraction) * duration) + ' of ' + formatDuration(duration);
     }
     function isAudio(audio) {
-        return Number(audio && audio.mode) === 0x10;
+        return Number(audio && audio.mode) === 0x10 || Number(audio && audio.mode) === 0x03;
     }
     function announce(text) {
         var node = el('voice-memo-announcer');
@@ -353,6 +355,37 @@
         if (input && document.activeElement === input) input.blur();
         return Promise.resolve();
     }
+    function openFormatMenu(trigger) {
+        if (!window.lxmfActiveContact || recorderState !== 'idle') {
+            showToast('Finish this recording before changing voice format.', 'toast-warning', 4200);
+            return Promise.resolve(false);
+        }
+        var owner = conversationSnapshot();
+        return RS.invoke('voice_memo_format', { args: { dest_hash: canonicalConversationHash(owner.hash) } }).then(function(saved) {
+            if (!conversationOwnerIsCurrent(owner)) return false;
+            var items = [
+                { mode: 0x10, label: 'Standard · 5 minutes' },
+                { mode: 0x03, label: 'Compact for handhelds · 15s' }
+            ].map(function(choice) {
+                return {
+                    label: choice.label,
+                    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' + (Number(saved.audio_mode) === choice.mode ? 'role="img" aria-label="Selected">' : 'aria-hidden="true">') + (Number(saved.audio_mode) === choice.mode ? '<path d="m5 12 4 4L19 6"/>' : '<circle cx="12" cy="12" r="7"/>') + '</svg>',
+                    onSelect: function() {
+                        if (!conversationOwnerIsCurrent(owner) || recorderState !== 'idle') return;
+                        return RS.invoke('voice_memo_format', { args: {
+                            dest_hash: saved.dest_hash, identity_id: saved.identity_id, audio_mode: choice.mode
+                        } }).then(function() {
+                            if (!conversationOwnerIsCurrent(owner)) return;
+                            showToast(choice.mode === 0x03 ? 'Compact voice messages saved for this contact.' : 'Standard voice messages saved for this contact.', 'toast-success', 3500);
+                        }).catch(function() { if (conversationOwnerIsCurrent(owner)) showToast('Could not save voice format.', 'toast-error', 4200); });
+                    }
+                };
+            });
+            if (RS.ui && typeof RS.ui.openActionMenu === 'function') RS.ui.openActionMenu(trigger, items, { title: 'Voice message format' });
+            else if (typeof actionPopover === 'function') actionPopover(trigger, items);
+            return true;
+        }).catch(function() { if (conversationOwnerIsCurrent(owner)) showToast('Could not load voice format.', 'toast-error', 4200); return false; });
+    }
     function startRecording() {
         if (recorderState !== 'idle' || !window.lxmfActiveContact) return Promise.resolve(false);
         if (voiceCallOwnsAudio()) {
@@ -389,7 +422,7 @@
                 return false;
             }
             setRecorderState('starting');
-            var startPromise = RS.invoke('voice_memo_start');
+            var startPromise = RS.invoke('voice_memo_start', { args: { dest_hash: recordingTarget } });
             recordingStartPromise = startPromise;
             return startPromise.then(function(result) {
                 var sessionId = recordingSessionFrom(result);
@@ -399,6 +432,8 @@
                     return RS.invoke('voice_memo_cancel', { args: { session_id: sessionId } }).catch(function() {}).then(function() { return false; });
                 }
                 recordingSessionId = sessionId;
+                recordingMode = Number(result.audio_mode || 0x10);
+                recordingMaxDuration = Number(result.max_duration_ms || 300000);
                 draft = null;
                 paused = false;
                 liveWaveform = [];
@@ -598,7 +633,7 @@
     }
     function decodeDraftOrStored(source) {
         if (source.data_base64) {
-            return RS.invoke('voice_memo_decode_data', { args: { data_base64: source.data_base64 } });
+            return RS.invoke('voice_memo_decode_data', { args: { data_base64: source.data_base64, audio_mode: source.audio_mode == null ? 0x10 : source.audio_mode } });
         }
         return RS.invoke('voice_memo_decode_stored', { args: { stored_name: source.stored_name } });
     }
@@ -675,6 +710,7 @@
                 nativeSource: {
                     data_base64: source && source.data_base64 || '',
                     stored_name: source && source.stored_name || '',
+                    audio_mode: source && source.audio_mode != null ? source.audio_mode : 0x10,
                 },
                 duration_ms: Number(nativeMetadata.duration_ms || 0),
                 waveform: nativeMetadata.waveform || [],
@@ -792,7 +828,7 @@
             if (!desiredPlaying) return false;
             if (handle.duration && positionMs >= handle.duration * 1000) positionMs = 0;
             var startingSeekRevision = seekRevision;
-            var args = { position_ms: Math.max(0, Math.round(positionMs)) };
+            var args = { position_ms: Math.max(0, Math.round(positionMs)), audio_mode: source.audio_mode == null ? 0x10 : source.audio_mode };
             if (source.data_base64) args.data_base64 = source.data_base64;
             else if (source.stored_name) args.stored_name = source.stored_name;
             else return Promise.reject(new Error('Voice message playback source is unavailable'));
@@ -1017,6 +1053,7 @@
         if (local) {
             return {
                 data_base64: local.data_base64,
+                audio_mode: local.audio_mode == null ? 0x10 : local.audio_mode,
                 duration_ms: local.duration_ms,
                 waveform: local.waveform || [],
             };
@@ -1545,7 +1582,7 @@
             return;
         }
         var timer = el('voice-memo-timer');
-        if (timer && typeof data.duration_ms === 'number') timer.textContent = formatDuration(data.duration_ms);
+        if (timer && typeof data.duration_ms === 'number') timer.textContent = formatDuration(data.duration_ms) + (recordingMode === 0x03 ? ' / ' + formatDuration(recordingMaxDuration) : '');
         var recorder = el('lxmf-voice-recorder');
         if (recorder && (data.state === 'recording' || data.state === 'paused')) recorder.dataset.state = data.state;
         syncPauseButton();
@@ -1667,6 +1704,7 @@
     RS.voiceMemos = {
         hasPendingRecording: function() { return recorderState !== 'idle'; },
         isAudio: isAudio,
+        openFormatMenu: openFormatMenu,
         renderAudio: renderAudio,
         registerDraft: registerDraft,
         hydratePlayers: hydratePlayers,

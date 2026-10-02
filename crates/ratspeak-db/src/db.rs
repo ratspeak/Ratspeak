@@ -8,7 +8,15 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-const SCHEMA_VERSION: i64 = 43;
+const SCHEMA_VERSION: i64 = 44;
+
+const VOICE_FORMAT_SCHEMA_SQL: &str = "
+CREATE TABLE IF NOT EXISTS conversation_voice_formats (
+    identity_id TEXT NOT NULL,
+    dest_hash TEXT NOT NULL CHECK (length(dest_hash) = 32),
+    audio_mode INTEGER NOT NULL CHECK (audio_mode IN (3, 16)),
+    PRIMARY KEY(identity_id, dest_hash)
+);";
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -106,6 +114,7 @@ pub fn init_schema(pool: &DbPool) -> Result<(), Box<dyn std::error::Error + Send
     }
 
     conn.execute_batch(SCHEMA_SQL)?;
+    conn.execute_batch(VOICE_FORMAT_SCHEMA_SQL)?;
     conn.execute_batch(CHANNEL_HISTORY_SCHEMA_SQL)?;
     conn.execute_batch(CHANNEL_ROOM_STATE_SCHEMA_SQL)?;
     conn.execute_batch(CHANNEL_PARTICIPANT_OBSERVATION_SCHEMA_SQL)?;
@@ -1830,6 +1839,14 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 44 {
+        migration_step(conn, 44, |conn| {
+            conn.execute_batch(VOICE_FORMAT_SCHEMA_SQL)?;
+            conn.execute_batch("UPDATE schema_version SET version = 44;")?;
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -2004,6 +2021,7 @@ pub fn update_identity_status(pool: &DbPool, hash_hex: &str, status: &str) -> Re
 /// Inventory-checked in tests: a new user-data table must be added here (or
 /// explicitly exempted in the test) before it can ship.
 pub const RESET_TABLES: &[&str] = &[
+    "conversation_voice_formats",
     "messages",
     "contacts",
     "identities",
@@ -2094,6 +2112,10 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
     (
         "channel_hub_klines",
         "DELETE FROM channel_hub_klines WHERE identity_id = ?1",
+    ),
+    (
+        "conversation_voice_formats",
+        "DELETE FROM conversation_voice_formats WHERE identity_id = ?1",
     ),
     ("contacts", "DELETE FROM contacts WHERE identity_id = ?1"),
     ("messages", "DELETE FROM messages WHERE identity_id = ?1"),
@@ -3216,6 +3238,63 @@ pub fn delete_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) ->
     .ok();
 
     file_refs
+}
+
+/// Explicit local preference, scoped to a local identity and LXMF destination.
+/// Absence keeps legacy Opus; a database error never masquerades as a choice.
+pub fn voice_message_format(
+    pool: &DbPool,
+    identity: &str,
+    destination: &str,
+) -> Result<u8, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT audio_mode FROM conversation_voice_formats WHERE identity_id=?1 AND dest_hash=?2",
+        params![identity, destination],
+        |row| row.get::<_, u8>(0),
+    )
+    .optional()
+    .map(|v| v.unwrap_or(0x10))
+    .map_err(|e| e.to_string())
+}
+pub fn set_voice_message_format(
+    pool: &DbPool,
+    identity: &str,
+    destination: &str,
+    mode: u8,
+) -> Result<(), String> {
+    if identity.is_empty()
+        || destination.len() != 32
+        || !destination
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || !matches!(mode, 3 | 16)
+    {
+        return Err("Invalid voice message preference".into());
+    }
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT INTO conversation_voice_formats(identity_id,dest_hash,audio_mode) VALUES(?1,?2,?3)
+        ON CONFLICT(identity_id,dest_hash) DO UPDATE SET audio_mode=excluded.audio_mode",
+        params![identity, destination, mode],
+    )
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+/// Bind stored playback to the authenticated message metadata in this identity.
+/// Filenames, caller-provided modes and raw byte patterns are not evidence.
+pub fn stored_audio_mode(pool: &DbPool, identity: &str, stored_name: &str) -> Result<u8, String> {
+    if stored_name.is_empty() || stored_name == ATTACHMENT_UNAVAILABLE_STORED_NAME {
+        return Err("Audio unavailable".into());
+    }
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let (mode, count): (Option<u8>, u32) = conn.query_row(
+        "SELECT MIN(audio_mode),COUNT(DISTINCT audio_mode) FROM messages WHERE identity_id=?1 AND audio_stored_name=?2",
+        params![identity,stored_name], |row| Ok((row.get(0)?,row.get(1)?))).map_err(|e| e.to_string())?;
+    if count != 1 {
+        return Err("Audio message reference unavailable".into());
+    }
+    mode.ok_or_else(|| "Audio message reference unavailable".into())
 }
 
 pub fn get_setting(pool: &DbPool, key: &str) -> Option<String> {
@@ -9120,7 +9199,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
             serde_json::json!({
                 "mode": mode,
                 "stored_name": audio_stored_name,
-                "supported": mode == 0x10,
+                "supported": mode == 0x10 || mode == 0x03,
             })
         }
     });
@@ -10921,7 +11000,7 @@ mod migration_tests {
         }
 
         init_schema(&pool).unwrap();
-        assert_eq!(read_schema_version(&pool), 43);
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
         let conn = pool.get().unwrap();
         let columns = get_column_names(&conn, "messages").unwrap();
         assert_eq!(
@@ -12480,5 +12559,60 @@ mod pending_blackhole_tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(remaining, vec![reobserved, protected]);
+    }
+}
+
+#[cfg(test)]
+mod voice_format_tests {
+    use super::*;
+    #[test]
+    fn explicit_voice_format_is_identity_and_destination_bound_and_migrates() {
+        let pool = Pool::builder()
+            .max_size(1)
+            .build(SqliteConnectionManager::memory())
+            .unwrap();
+        init_schema(&pool).unwrap();
+        pool.get()
+            .unwrap()
+            .execute_batch(
+                "DROP TABLE conversation_voice_formats; UPDATE schema_version SET version=43;",
+            )
+            .unwrap();
+        init_schema(&pool).unwrap();
+        let a = "ab".repeat(16);
+        let b = "cd".repeat(16);
+        assert_eq!(voice_message_format(&pool, "alice", &a).unwrap(), 16);
+        set_voice_message_format(&pool, "alice", &a, 3).unwrap();
+        assert_eq!(voice_message_format(&pool, "alice", &a).unwrap(), 3);
+        assert_eq!(voice_message_format(&pool, "bob", &a).unwrap(), 16);
+        assert_eq!(voice_message_format(&pool, "alice", &b).unwrap(), 16);
+        assert!(set_voice_message_format(&pool, "alice", &a, 4).is_err());
+        assert!(set_voice_message_format(&pool, "alice", "handheld", 3).is_err());
+        assert!(set_voice_message_format(&pool, "", &a, 3).is_err());
+        set_voice_message_format(&pool, "alice", &a, 16).unwrap();
+        assert_eq!(voice_message_format(&pool, "alice", &a).unwrap(), 16);
+        delete_identity(&pool, "alice", true).unwrap();
+        assert_eq!(
+            pool.get()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM conversation_voice_formats", [], |r| r
+                    .get::<_, u32>(0))
+                .unwrap(),
+            0
+        );
+    }
+    #[test]
+    fn stored_voice_mode_requires_an_unambiguous_message_in_this_identity() {
+        let pool = Pool::builder()
+            .max_size(1)
+            .build(SqliteConnectionManager::memory())
+            .unwrap();
+        init_schema(&pool).unwrap();
+        assert!(stored_audio_mode(&pool, "alice", "clip.c2raw").is_err());
+        pool.get().unwrap().execute("INSERT INTO messages(id,source,destination,timestamp,identity_id,audio_mode,audio_stored_name) VALUES('a','s','d',1,'alice',3,'clip.c2raw')",[]).unwrap();
+        assert_eq!(stored_audio_mode(&pool, "alice", "clip.c2raw").unwrap(), 3);
+        assert!(stored_audio_mode(&pool, "bob", "clip.c2raw").is_err());
+        pool.get().unwrap().execute("INSERT INTO messages(id,source,destination,timestamp,identity_id,audio_mode,audio_stored_name) VALUES('b','s','d',2,'alice',16,'clip.c2raw')",[]).unwrap();
+        assert!(stored_audio_mode(&pool, "alice", "clip.c2raw").is_err());
     }
 }

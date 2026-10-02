@@ -32,6 +32,7 @@ lxmf-core = { path = "../rsLXMF/crates/lxmf-core", version = "1.2.0" }
 
 # --- From rsLXST (sibling directory) ---
 lxst-core = { path = "../rsLXST/crates/lxst-core", version = "0.2.0" }
+lxst-codec2 = { path = "../rsLXST/crates/lxst-codec2", version = "0.2.0" }
 lxst-rns = { path = "../rsLXST/crates/lxst-rns", version = "0.2.0" }
 lxst-telephony = { path = "../rsLXST/crates/lxst-telephony", version = "0.2.0" }
 

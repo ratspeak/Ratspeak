@@ -4352,6 +4352,7 @@ dependencies = [
  "keyring",
  "lrgp",
  "lxmf-core",
+ "lxst-codec2",
  "lxst-core",
  "lxst-rns",
  "lxst-telephony",

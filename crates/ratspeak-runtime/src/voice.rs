@@ -2243,13 +2243,14 @@ async fn start_microphone_side(
     call_audio_session: &mut PlatformCallAudioSession,
 ) -> VoiceResult<cpal::Stream> {
     call_audio_session.promote_capture()?;
-    let (input_stream, capture_rx) = match open_microphone_capture(host, profile) {
-        Ok(capture) => capture,
-        Err(error) => {
-            let _ = call_audio_session.demote_capture();
-            return Err(error);
-        }
-    };
+    let (input_stream, capture_rx) =
+        match open_microphone_capture(host, profile, profile.sample_frames_per_packet()) {
+            Ok(capture) => capture,
+            Err(error) => {
+                let _ = call_audio_session.demote_capture();
+                return Err(error);
+            }
+        };
 
     if let Err(e) = control_tx
         .send(TelephonyControl::StartAudioStream {
@@ -2279,6 +2280,33 @@ pub(crate) fn start_microphone_capture(
     cpal::Stream,
     mpsc::Receiver<RawAudioFrame>,
 )> {
+    start_microphone_capture_frames(profile, profile.sample_frames_per_packet(), session_token)
+}
+
+pub(crate) fn start_memo_microphone_capture(
+    compact: bool,
+    session_token: &str,
+) -> VoiceResult<(
+    PlatformVoiceAudioSession,
+    cpal::Stream,
+    mpsc::Receiver<RawAudioFrame>,
+)> {
+    if compact {
+        start_microphone_capture_frames(Profile::BandwidthUltraLow, 320, session_token)
+    } else {
+        start_microphone_capture(Profile::QualityMedium, session_token)
+    }
+}
+
+fn start_microphone_capture_frames(
+    profile: Profile,
+    target_frames: usize,
+    session_token: &str,
+) -> VoiceResult<(
+    PlatformVoiceAudioSession,
+    cpal::Stream,
+    mpsc::Receiver<RawAudioFrame>,
+)> {
     ensure_android_audio_context()?;
     let platform_audio_session = start_platform_voice_memo_audio_session(session_token)?;
     let mut last_error = "No microphone is available".to_string();
@@ -2287,7 +2315,7 @@ pub(crate) fn start_microphone_capture(
             std::thread::sleep(delay);
         }
         let host = cpal::default_host();
-        match open_microphone_capture(&host, profile) {
+        match open_microphone_capture(&host, profile, target_frames) {
             Ok((stream, capture_rx)) => {
                 return Ok((platform_audio_session, stream, capture_rx));
             }
@@ -2303,10 +2331,11 @@ pub(crate) fn start_microphone_capture(
 fn open_microphone_capture(
     host: &cpal::Host,
     profile: Profile,
+    target_frames: usize,
 ) -> VoiceResult<(cpal::Stream, mpsc::Receiver<RawAudioFrame>)> {
     let mut last_error = "No default microphone is available".to_string();
     if let Some(device) = host.default_input_device() {
-        match open_microphone_device(&device, profile) {
+        match open_microphone_device(&device, profile, target_frames) {
             Ok(capture) => return Ok(capture),
             Err(error) => last_error = format!("Default microphone failed: {error}"),
         }
@@ -2315,7 +2344,7 @@ fn open_microphone_capture(
     match host.input_devices() {
         Ok(devices) => {
             for (index, device) in devices.take(MICROPHONE_DEVICE_ATTEMPT_LIMIT).enumerate() {
-                match open_microphone_device(&device, profile) {
+                match open_microphone_device(&device, profile, target_frames) {
                     Ok(capture) => return Ok(capture),
                     Err(error) => {
                         last_error = format!("Input device {} failed: {error}", index + 1);
@@ -2334,10 +2363,10 @@ fn open_microphone_capture(
 fn open_microphone_device(
     input_device: &cpal::Device,
     profile: Profile,
+    target_frames: usize,
 ) -> VoiceResult<(cpal::Stream, mpsc::Receiver<RawAudioFrame>)> {
     let target_channels = usize::from(profile.channels());
     let target_sample_rate = profile.sample_rate_hz();
-    let target_frames = profile.sample_frames_per_packet();
     let input_configs = select_input_configs(input_device, target_sample_rate)?;
     let mut last_error = "No usable microphone configuration was found".to_string();
 

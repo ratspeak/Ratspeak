@@ -37,9 +37,10 @@ function element() {
         },
     };
 }
-function harness(platform) {
+function harness(platform, mode) {
+    mode = mode == null ? 0x10 : mode;
     var nodes = {}, events = {}, timers = [], clock = 0, starts = [], stops = [], recordings = [], media = [], sent = [], toasts = [];
-    var draft = { data_base64: 'b2dnLW9wdXMtYnl0ZXM=', duration_ms: 4000,
+    var draft = { audio_mode: mode, data_base64: 'b2dnLW9wdXMtYnl0ZXM=', duration_ms: 4000,
         waveform: [20, 80, 120], staging_token: 'stage-preview', size: 14 };
     var hooks = {}, nextLease = 0;
     function node(id) { return nodes[id] || (nodes[id] = element()); }
@@ -73,22 +74,30 @@ function harness(platform) {
             media.push(this);
         },
         RS: {
+            ui: { openActionMenu: function(trigger, items) { hooks.menu = items; } },
             diag: function() {}, config: { VOICE_PLAYBACK_START_TIMEOUT: 2000 },
             mediaPermissions: { ensure: function() { return Promise.resolve(true); } },
             composer: { dismissForReplacement: function() { return Promise.resolve(); } },
             listen: function(k, fn) { events[k] = fn; return Promise.resolve(function() {}); },
             invoke: function(command, payload) {
+                if (command === 'voice_memo_format') {
+                    hooks.formatCalls = hooks.formatCalls || []; hooks.formatCalls.push(payload.args);
+                    return Promise.resolve({ identity_id: 'alice', dest_hash: payload.args.dest_hash, audio_mode: payload.args.audio_mode || mode });
+                }
                 if (command === 'voice_memo_status') return Promise.resolve({ state: 'idle' });
                 if (command === 'voice_memo_start') {
                     recordings.push(command);
-                    return Promise.resolve({ session_id: 'vmr-0000000000000001' });
+                    assert.equal(payload.args.dest_hash, context.lxmfActiveContact);
+                    return Promise.resolve({ session_id: 'vmr-0000000000000001', audio_mode: mode, max_duration_ms: mode === 3 ? 15000 : 300000 });
                 }
                 if (command === 'voice_memo_stop') return Promise.resolve(draft);
                 if (command === 'voice_memo_decode_data') {
                     assert.equal(platform, 'desktop', 'mobile preview must decode natively');
+                    assert.equal(payload.args.audio_mode, mode);
                     return Promise.resolve({ data_base64: 'AQIDBA==', duration_ms: draft.duration_ms, waveform: draft.waveform });
                 }
                 if (command === 'voice_memo_playback_start') {
+                    assert.equal(payload.args.audio_mode, mode);
                     var call = { args: payload.args, lease: lease(++nextLease) };
                     starts.push(call);
                     return hooks.start ? hooks.start(call) : Promise.resolve({
@@ -144,6 +153,23 @@ function harness(platform) {
 }
 
 var cases = [
+    ['compact preview carries its explicit audio mode through desktop and native playback', async function(platform) {
+        var h = harness(platform, 3); await h.record(); await h.click('play');
+        h.event('playing', 800); assert.equal(h.state(), 'playing');
+        await h.click('send'); assert.equal(h.sent[0].audio_mode, 3);
+    }],
+    ['voice format is saved for the exact conversation and cannot change during recording', async function(platform) {
+        var h = harness(platform);
+        await h.context.RS.voiceMemos.openFormatMenu({});
+        assert.equal(h.hooks.menu.length, 2);
+        await h.hooks.menu[1].onSelect();
+        assert.equal(h.hooks.formatCalls[1].audio_mode, 3);
+        assert.equal(h.hooks.formatCalls[1].identity_id, 'alice');
+        h.context.lxmfActiveContact = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+        h.hooks.menu[0].onSelect(); assert.equal(h.hooks.formatCalls.length, 2);
+        await h.record(); await h.context.RS.voiceMemos.openFormatMenu({});
+        assert.equal(h.hooks.formatCalls.length, 2, 'an existing recording freezes its format');
+    }],
     ['controller reports the original recorded duration before any playback', async function(platform) {
         var h = harness(platform); await h.record();
         assert.equal(h.timer(), '0:04');

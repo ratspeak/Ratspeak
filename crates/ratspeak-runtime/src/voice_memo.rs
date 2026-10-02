@@ -5,6 +5,7 @@
 //! reuses the trusted LXST Opus implementation and wraps its exact packets in
 //! the interoperable LXMF `FIELD_AUDIO` Ogg/Opus representation.
 
+pub mod compact;
 mod ogg_opus;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -43,8 +44,65 @@ pub(crate) const NATIVE_PLAYBACK_REFILL_TARGET_MS: u32 = 1_500;
 
 pub type VoiceMemoResult<T> = Result<T, String>;
 
+/// The LXMF audio mode is authoritative. Never sniff raw native frames or use
+/// the similarly numbered LXST profile identifiers as a container type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoFormat {
+    Opus,
+    Compact,
+}
+impl MemoFormat {
+    pub fn from_mode(mode: u8) -> VoiceMemoResult<Self> {
+        match mode {
+            0x10 => Ok(Self::Opus),
+            compact::MODE => Ok(Self::Compact),
+            _ => Err("Unsupported voice message format".into()),
+        }
+    }
+    pub const fn mode(self) -> u8 {
+        match self {
+            Self::Opus => 0x10,
+            Self::Compact => compact::MODE,
+        }
+    }
+    pub const fn filename(self) -> &'static str {
+        match self {
+            Self::Opus => VOICE_MEMO_FILENAME,
+            Self::Compact => compact::FILENAME,
+        }
+    }
+    pub const fn mime(self) -> &'static str {
+        match self {
+            Self::Opus => VOICE_MEMO_MIME,
+            Self::Compact => compact::MIME,
+        }
+    }
+    pub const fn max_duration_ms(self) -> u32 {
+        match self {
+            Self::Opus => VOICE_MEMO_MAX_DURATION_MS,
+            Self::Compact => compact::RECORD_MS,
+        }
+    }
+    const fn frame_ms(self) -> u32 {
+        match self {
+            Self::Opus => FRAME_MS,
+            Self::Compact => compact::FRAME_MS,
+        }
+    }
+    const fn max_frames(self) -> usize {
+        (self.max_duration_ms() / self.frame_ms()) as usize
+    }
+    const fn sample_rate(self) -> u32 {
+        match self {
+            Self::Opus => 48_000,
+            Self::Compact => compact::SAMPLE_RATE,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct VoiceMemoStatus {
+    pub audio_mode: u8,
     pub state: String,
     pub duration_ms: u32,
     pub max_duration_ms: u32,
@@ -54,6 +112,7 @@ pub struct VoiceMemoStatus {
 impl VoiceMemoStatus {
     fn idle() -> Self {
         Self {
+            audio_mode: 0x10,
             state: "idle".to_string(),
             duration_ms: 0,
             max_duration_ms: VOICE_MEMO_MAX_DURATION_MS,
@@ -64,6 +123,7 @@ impl VoiceMemoStatus {
 
 #[derive(Debug)]
 pub struct VoiceMemoDraft {
+    pub format: MemoFormat,
     pub data: Vec<u8>,
     pub duration_ms: u32,
     pub waveform: Vec<u8>,
@@ -243,19 +303,110 @@ impl NativeVoiceMemoSource {
         }
         Ok(None)
     }
+}
 
+enum ParsedMemo {
+    Opus(ogg_opus::ParsedOggOpus),
+    Compact(Vec<u8>),
+}
+impl ParsedMemo {
+    fn parse(data: &[u8], format: MemoFormat) -> VoiceMemoResult<Self> {
+        match format {
+            MemoFormat::Opus => ogg_opus::parse_ogg_opus(data).map(Self::Opus),
+            MemoFormat::Compact => {
+                compact::inspect(data)?;
+                Ok(Self::Compact(data.to_vec()))
+            }
+        }
+    }
+    fn duration_ms(&self) -> u32 {
+        match self {
+            Self::Opus(v) => v.metadata.duration_ms,
+            Self::Compact(v) => v.len() as u32 * 10,
+        }
+    }
+    fn sample_count(&self) -> VoiceMemoResult<usize> {
+        match self {
+            Self::Opus(v) => usize::try_from(v.metadata.playable_samples_48k)
+                .map_err(|_| "Decoded voice memo is too large".into()),
+            Self::Compact(v) => Ok(v.len() / compact::FRAME_BYTES * compact::FRAME_SAMPLES),
+        }
+    }
+    fn into_source(self, position_ms: u32) -> VoiceMemoResult<MemoPlaybackSource> {
+        match self {
+            Self::Opus(v) => NativeVoiceMemoSource::new(v, position_ms)
+                .map(|source| MemoPlaybackSource::Opus(Box::new(source))),
+            Self::Compact(v) => {
+                compact::Source::new(v, position_ms).map(MemoPlaybackSource::Compact)
+            }
+        }
+    }
+}
+
+enum MemoPlaybackSource {
+    Opus(Box<NativeVoiceMemoSource>),
+    Compact(compact::Source),
+}
+impl MemoPlaybackSource {
+    fn next_decoded(&mut self) -> VoiceMemoResult<Option<RawAudioFrame>> {
+        match self {
+            Self::Opus(s) => s.next_decoded(),
+            Self::Compact(s) => s.next_decoded(),
+        }
+    }
     #[cfg(any(target_os = "ios", target_os = "android"))]
     fn refill(&mut self, output: &crate::voice::NativeVoiceMemoOutput) -> VoiceMemoResult<()> {
-        while !self.exhausted && output.needs_refill() {
+        while output.needs_refill() {
             let Some(frame) = self.next_decoded()? else {
+                output.finish_input()?;
                 break;
             };
             output.enqueue_frame(&frame, 0)?;
         }
-        if self.exhausted {
-            output.finish_input()?;
-        }
         Ok(())
+    }
+}
+
+trait RecordingCodec {
+    fn format(&self) -> MemoFormat;
+    fn encode(&mut self, frame: &RawAudioFrame) -> VoiceMemoResult<Vec<u8>>;
+}
+impl RecordingCodec for OpusEncoderState {
+    fn format(&self) -> MemoFormat {
+        MemoFormat::Opus
+    }
+    fn encode(&mut self, frame: &RawAudioFrame) -> VoiceMemoResult<Vec<u8>> {
+        self.encode_frame(frame)
+            .map(|v| v.payload)
+            .map_err(|e| format!("Could not encode voice memo audio: {e}"))
+    }
+}
+enum MemoEncoder {
+    Opus(Box<OpusEncoderState>),
+    Compact(Box<lxst_codec2::Codec>),
+}
+impl MemoEncoder {
+    fn new(format: MemoFormat) -> VoiceMemoResult<Self> {
+        match format {
+            MemoFormat::Opus => OpusEncoderState::new(PROFILE)
+                .map(|codec| Self::Opus(Box::new(codec)))
+                .map_err(|e| format!("Could not initialize the voice memo codec: {e}")),
+            MemoFormat::Compact => Ok(Self::Compact(compact::codec())),
+        }
+    }
+}
+impl RecordingCodec for MemoEncoder {
+    fn format(&self) -> MemoFormat {
+        match self {
+            Self::Opus(_) => MemoFormat::Opus,
+            Self::Compact(_) => MemoFormat::Compact,
+        }
+    }
+    fn encode(&mut self, frame: &RawAudioFrame) -> VoiceMemoResult<Vec<u8>> {
+        match self {
+            Self::Opus(codec) => codec.encode(frame),
+            Self::Compact(codec) => compact::encode(codec, frame),
+        }
     }
 }
 
@@ -265,7 +416,7 @@ struct RecordingActor {
     stream: Stream,
     capture_rx: mpsc::Receiver<RawAudioFrame>,
     command_rx: mpsc::Receiver<RecorderCommand>,
-    encoder: OpusEncoderState,
+    encoder: MemoEncoder,
     status: Arc<Mutex<VoiceMemoStatus>>,
     session_id: u64,
 }
@@ -347,6 +498,13 @@ impl Drop for VoiceMemoRecordingHandle {
 }
 
 pub async fn start_recording(state: &Arc<AppState>) -> VoiceMemoResult<VoiceMemoStatus> {
+    start_recording_format(state, MemoFormat::Opus).await
+}
+
+pub async fn start_recording_format(
+    state: &Arc<AppState>,
+    format: MemoFormat,
+) -> VoiceMemoResult<VoiceMemoStatus> {
     if crate::voice::call_audio_reserved(state) {
         return Err("A voice call is using the microphone".to_string());
     }
@@ -366,9 +524,10 @@ pub async fn start_recording(state: &Arc<AppState>) -> VoiceMemoResult<VoiceMemo
     let session_id = next_nonzero_generation(&state.voice_memo_recording_generation);
     let (command_tx, command_rx) = mpsc::channel(4);
     let status = Arc::new(Mutex::new(VoiceMemoStatus {
+        audio_mode: format.mode(),
         state: "starting".to_string(),
         duration_ms: 0,
-        max_duration_ms: VOICE_MEMO_MAX_DURATION_MS,
+        max_duration_ms: format.max_duration_ms(),
         session_id: Some(format_recording_session_id(session_id)),
     }));
     let task_state = Arc::clone(state);
@@ -376,7 +535,7 @@ pub async fn start_recording(state: &Arc<AppState>) -> VoiceMemoResult<VoiceMemo
     let runtime = tokio::runtime::Handle::current();
     let (started_tx, started_rx) = oneshot::channel::<VoiceMemoResult<()>>();
     let task = tokio::task::spawn_blocking(move || {
-        let encoder = match OpusEncoderState::new(PROFILE) {
+        let encoder = match MemoEncoder::new(format) {
             Ok(encoder) => encoder,
             Err(error) => {
                 let _ = started_tx.send(Err(format!(
@@ -387,14 +546,17 @@ pub async fn start_recording(state: &Arc<AppState>) -> VoiceMemoResult<VoiceMemo
         };
         let native_session_token = format_recording_session_id(session_id);
         let (platform_audio_session, stream, capture_rx) =
-            match crate::voice::start_microphone_capture(PROFILE, &native_session_token) {
+            match crate::voice::start_memo_microphone_capture(
+                format == MemoFormat::Compact,
+                &native_session_token,
+            ) {
                 Ok(capture) => capture,
                 Err(error) => {
                     let _ = started_tx.send(Err(error));
                     return;
                 }
             };
-        let _ = update_status(&task_status, session_id, "recording", 0);
+        let _ = update_status(&task_status, session_id, "recording", 0, format);
         let _ = started_tx.send(Ok(()));
         runtime.block_on(drive_recording(RecordingActor {
             state: task_state,
@@ -443,7 +605,7 @@ pub async fn start_recording(state: &Arc<AppState>) -> VoiceMemoResult<VoiceMemo
             "state": "recording",
             "duration_ms": 0,
             "level": 0,
-            "max_duration_ms": VOICE_MEMO_MAX_DURATION_MS,
+            "max_duration_ms": format.max_duration_ms(),
             "session_id": format_recording_session_id(session_id),
         }),
     );
@@ -586,10 +748,11 @@ pub async fn start_native_playback(
     state: &Arc<AppState>,
     data: Vec<u8>,
     requested_position_ms: u32,
+    format: MemoFormat,
 ) -> VoiceMemoResult<VoiceMemoNativePlaybackStarted> {
     let parsed = {
         let _decode = state.voice_memo_decode_lock.lock().await;
-        tokio::task::spawn_blocking(move || ogg_opus::parse_ogg_opus(&data))
+        tokio::task::spawn_blocking(move || ParsedMemo::parse(&data, format))
             .await
             .map_err(|_| "Voice message decoder task panicked".to_string())??
     };
@@ -604,7 +767,7 @@ pub async fn start_native_playback(
     invalidate_playback_session_locked(state).await;
 
     let lease_id = next_nonzero_generation(&state.voice_memo_playback_generation);
-    let duration_ms = parsed.metadata.duration_ms;
+    let duration_ms = parsed.duration_ms();
     let position_ms = if requested_position_ms >= duration_ms {
         0
     } else {
@@ -617,7 +780,7 @@ pub async fn start_native_playback(
     let runtime = tokio::runtime::Handle::current();
     let worker_state = Arc::clone(state);
     let task = tokio::task::spawn_blocking(move || {
-        let mut source = match NativeVoiceMemoSource::new(parsed, position_ms) {
+        let mut source = match parsed.into_source(position_ms) {
             Ok(source) => source,
             Err(error) => {
                 let _ = started_tx.send(Err(error));
@@ -632,7 +795,11 @@ pub async fn start_native_playback(
                     return;
                 }
             };
-        let output = match crate::voice::start_voice_memo_output(48_000, position_ms, duration_ms) {
+        let output = match crate::voice::start_voice_memo_output(
+            format.sample_rate(),
+            position_ms,
+            duration_ms,
+        ) {
             Ok(output) => output,
             Err(error) => {
                 let _ = started_tx.send(Err(error));
@@ -736,7 +903,7 @@ async fn drive_native_playback(
     duration_ms: u32,
     output: crate::voice::NativeVoiceMemoOutput,
     platform_audio_session: crate::voice::PlatformVoiceMemoPlaybackSession,
-    mut source: NativeVoiceMemoSource,
+    mut source: MemoPlaybackSource,
     mut command_rx: mpsc::Receiver<PlaybackCommand>,
 ) {
     let mut last_position_ms = start_position_ms;
@@ -832,11 +999,12 @@ async fn drive_recording(actor: RecordingActor) {
         status,
         session_id,
     } = actor;
+    let format = encoder.format();
     let mut stream = Some(stream);
     let mut capture_open = true;
     let mut paused = false;
-    let mut frames = Vec::<Vec<u8>>::with_capacity(MAX_FRAME_COUNT);
-    let mut waveform = Vec::<u8>::with_capacity(MAX_FRAME_COUNT);
+    let mut frames = Vec::<Vec<u8>>::with_capacity(format.max_frames());
+    let mut waveform = Vec::<u8>::with_capacity(format.max_frames());
 
     loop {
         tokio::select! {
@@ -847,14 +1015,14 @@ async fn drive_recording(actor: RecordingActor) {
                     RecorderCommand::SetPaused { paused: next_paused, reply } => {
                         paused = next_paused;
                         let next_state = if paused { "paused" } else { "recording" };
-                        let snapshot = update_status(&status, session_id, next_state, frames.len());
+                        let snapshot = update_status(&status, session_id, next_state, frames.len(), format);
                         state.emit_to_all(
                             "voice_memo_recording",
                             serde_json::json!({
                                 "state": next_state,
                                 "duration_ms": snapshot.duration_ms,
                                 "level": 0,
-                                "max_duration_ms": VOICE_MEMO_MAX_DURATION_MS,
+                                "max_duration_ms": format.max_duration_ms(),
                                 "session_id": format_recording_session_id(session_id),
                             }),
                         );
@@ -862,7 +1030,8 @@ async fn drive_recording(actor: RecordingActor) {
                     }
                     RecorderCommand::Stop { reply } => {
                         let should_drain = should_drain_capture_on_stop(capture_open, paused);
-                        let drain_result = if should_drain {
+                        if format == MemoFormat::Compact { stream.take(); }
+                        let drain_result = if should_drain && format == MemoFormat::Opus {
                             drain_capture_before_stream_stop(
                                 &mut capture_rx,
                                 &mut encoder,
@@ -892,14 +1061,16 @@ async fn drive_recording(actor: RecordingActor) {
                                 return;
                             }
                         }
-                        let result = pad_recording_to_minimum_duration(
+                        let result = if format == MemoFormat::Compact {
+                            finish_compact_draft(frames, waveform)
+                        } else { pad_recording_to_minimum_duration(
                             &mut encoder,
                             &mut frames,
                             &mut waveform,
                         )
                         .and_then(|end_trim_48k| {
                             finish_draft_with_end_trim(frames, waveform, end_trim_48k)
-                        });
+                        }) };
                         let _ = reply.send(result);
                         break;
                     }
@@ -918,28 +1089,28 @@ async fn drive_recording(actor: RecordingActor) {
                 if paused { continue; }
                 match encode_captured_frame(&mut encoder, frame, &mut frames, &mut waveform) {
                     Ok(level) => {
-                        let snapshot = update_status(&status, session_id, "recording", frames.len());
+                        let snapshot = update_status(&status, session_id, "recording", frames.len(), format);
                         state.emit_to_all(
                             "voice_memo_recording",
                             serde_json::json!({
                                 "state": "recording",
                                 "duration_ms": snapshot.duration_ms,
                                 "level": level,
-                                "max_duration_ms": VOICE_MEMO_MAX_DURATION_MS,
+                                "max_duration_ms": format.max_duration_ms(),
                                 "session_id": format_recording_session_id(session_id),
                             }),
                         );
-                        if frames.len() >= MAX_FRAME_COUNT {
+                        if frames.len() >= format.max_frames() {
                             stream.take();
                             capture_open = false;
-                            let snapshot = update_status(&status, session_id, "limit", frames.len());
+                            let snapshot = update_status(&status, session_id, "limit", frames.len(), format);
                             state.emit_to_all(
                                 "voice_memo_recording",
                                 serde_json::json!({
                                     "state": "limit",
                                     "duration_ms": snapshot.duration_ms,
                                     "level": 0,
-                                    "max_duration_ms": VOICE_MEMO_MAX_DURATION_MS,
+                                    "max_duration_ms": format.max_duration_ms(),
                                     "session_id": format_recording_session_id(session_id),
                                 }),
                             );
@@ -948,7 +1119,7 @@ async fn drive_recording(actor: RecordingActor) {
                     Err(message) => {
                         stream.take();
                         capture_open = false;
-                        let snapshot = update_status(&status, session_id, "error", frames.len());
+                        let snapshot = update_status(&status, session_id, "error", frames.len(), format);
                         state.emit_to_all(
                             "voice_memo_recording",
                             serde_json::json!({
@@ -956,7 +1127,7 @@ async fn drive_recording(actor: RecordingActor) {
                                 "duration_ms": snapshot.duration_ms,
                                 "level": 0,
                                 "message": message,
-                                "max_duration_ms": VOICE_MEMO_MAX_DURATION_MS,
+                                "max_duration_ms": format.max_duration_ms(),
                                 "session_id": format_recording_session_id(session_id),
                             }),
                         );
@@ -967,14 +1138,14 @@ async fn drive_recording(actor: RecordingActor) {
     }
 
     stream.take();
-    let _ = update_status(&status, session_id, "idle", 0);
+    let _ = update_status(&status, session_id, "idle", 0, format);
     state.emit_to_all(
         "voice_memo_recording",
         serde_json::json!({
             "state": "idle",
             "duration_ms": 0,
             "level": 0,
-            "max_duration_ms": VOICE_MEMO_MAX_DURATION_MS,
+            "max_duration_ms": format.max_duration_ms(),
             "session_id": format_recording_session_id(session_id),
         }),
     );
@@ -985,11 +1156,13 @@ fn update_status(
     session_id: u64,
     state: &str,
     frame_count: usize,
+    format: MemoFormat,
 ) -> VoiceMemoStatus {
     let snapshot = VoiceMemoStatus {
+        audio_mode: format.mode(),
         state: state.to_string(),
-        duration_ms: duration_for_frames(frame_count),
-        max_duration_ms: VOICE_MEMO_MAX_DURATION_MS,
+        duration_ms: (frame_count as u32).saturating_mul(format.frame_ms()),
+        max_duration_ms: format.max_duration_ms(),
         session_id: Some(format_recording_session_id(session_id)),
     };
     match status.lock() {
@@ -1004,7 +1177,7 @@ fn should_drain_capture_on_stop(capture_open: bool, paused: bool) -> bool {
 }
 
 fn encode_captured_frame(
-    encoder: &mut OpusEncoderState,
+    encoder: &mut impl RecordingCodec,
     frame: RawAudioFrame,
     frames: &mut Vec<Vec<u8>>,
     waveform: &mut Vec<u8>,
@@ -1015,25 +1188,23 @@ fn encode_captured_frame(
         .fold(0.0f32, |current, sample| current.max(sample.abs()))
         .clamp(0.0, 1.0);
     let level = (peak.sqrt() * 255.0).round() as u8;
-    let encoded = encoder
-        .encode_frame(&frame)
-        .map_err(|error| format!("Could not encode voice memo audio: {error}"))?;
-    if encoded.payload.is_empty() || encoded.payload.len() > MAX_RECORDING_PACKET_BYTES {
+    let encoded = encoder.encode(&frame)?;
+    if encoded.is_empty() || encoded.len() > MAX_RECORDING_PACKET_BYTES {
         return Err("Voice memo encoder produced an invalid frame".to_string());
     }
-    frames.push(encoded.payload);
+    frames.push(encoded);
     waveform.push(level);
     Ok(level)
 }
 
 async fn drain_capture_before_stream_stop(
     capture_rx: &mut mpsc::Receiver<RawAudioFrame>,
-    encoder: &mut OpusEncoderState,
+    encoder: &mut impl RecordingCodec,
     frames: &mut Vec<Vec<u8>>,
     waveform: &mut Vec<u8>,
 ) -> VoiceMemoResult<()> {
     drain_ready_capture(capture_rx, encoder, frames, waveform)?;
-    if frames.len() >= MAX_FRAME_COUNT {
+    if frames.len() >= encoder.format().max_frames() {
         return Ok(());
     }
 
@@ -1049,11 +1220,11 @@ async fn drain_capture_before_stream_stop(
 
 fn drain_ready_capture(
     capture_rx: &mut mpsc::Receiver<RawAudioFrame>,
-    encoder: &mut OpusEncoderState,
+    encoder: &mut impl RecordingCodec,
     frames: &mut Vec<Vec<u8>>,
     waveform: &mut Vec<u8>,
 ) -> VoiceMemoResult<()> {
-    while frames.len() < MAX_FRAME_COUNT {
+    while frames.len() < encoder.format().max_frames() {
         let Ok(frame) = capture_rx.try_recv() else {
             break;
         };
@@ -1063,7 +1234,7 @@ fn drain_ready_capture(
 }
 
 fn pad_recording_to_minimum_duration(
-    encoder: &mut OpusEncoderState,
+    encoder: &mut impl RecordingCodec,
     frames: &mut Vec<Vec<u8>>,
     waveform: &mut Vec<u8>,
 ) -> VoiceMemoResult<u64> {
@@ -1104,8 +1275,28 @@ fn finish_draft_with_end_trim(
         VOICE_MEMO_MIN_DURATION_MS
     };
     Ok(VoiceMemoDraft {
+        format: MemoFormat::Opus,
         data,
         duration_ms,
+        waveform,
+    })
+}
+
+fn finish_compact_draft(
+    frames: Vec<Vec<u8>>,
+    waveform: Vec<u8>,
+) -> VoiceMemoResult<VoiceMemoDraft> {
+    if frames.len() != waveform.len()
+        || frames.is_empty()
+        || frames.len() > MemoFormat::Compact.max_frames()
+        || frames.iter().any(|v| v.len() != compact::FRAME_BYTES)
+    {
+        return Err("Compact recording is empty, incomplete, or longer than 15 seconds".into());
+    }
+    Ok(VoiceMemoDraft {
+        format: MemoFormat::Compact,
+        duration_ms: frames.len() as u32 * compact::FRAME_MS,
+        data: frames.concat(),
         waveform,
     })
 }
@@ -1120,13 +1311,20 @@ fn duration_for_frames(frame_count: usize) -> u32 {
 }
 
 pub fn decode_voice_memo(data: &[u8]) -> VoiceMemoResult<VoiceMemoPlayback> {
-    let parsed = ogg_opus::parse_ogg_opus(data)?;
-    let duration_ms = parsed.metadata.duration_ms;
-    let capacity = usize::try_from(parsed.metadata.playable_samples_48k)
-        .map_err(|_| "Decoded voice memo is too large".to_string())?;
-    let mut source = NativeVoiceMemoSource::new(parsed, 0)?;
-    let mut wav_data = begin_pcm16_wav(capacity, 48_000, 1)?;
-    let mut waveform = Vec::with_capacity(duration_ms.div_ceil(FRAME_MS) as usize);
+    decode_voice_memo_format(data, MemoFormat::Opus)
+}
+
+pub fn decode_voice_memo_format(
+    data: &[u8],
+    format: MemoFormat,
+) -> VoiceMemoResult<VoiceMemoPlayback> {
+    let parsed = ParsedMemo::parse(data, format)?;
+    let duration_ms = parsed.duration_ms();
+    let capacity = parsed.sample_count()?;
+    let rate = format.sample_rate();
+    let mut source = parsed.into_source(0)?;
+    let mut wav_data = begin_pcm16_wav(capacity, rate, 1)?;
+    let mut waveform = Vec::with_capacity(duration_ms.div_ceil(format.frame_ms()) as usize);
     let mut bucket_peak = 0.0f32;
     let mut bucket_samples = 0usize;
     while let Some(frame) = source.next_decoded()? {
@@ -1135,7 +1333,7 @@ pub fn decode_voice_memo(data: &[u8]) -> VoiceMemoResult<VoiceMemoPlayback> {
             bucket_samples += 1;
             let pcm = (sample.clamp(-1.0, 1.0) * i16::MAX as f32).round() as i16;
             wav_data.extend_from_slice(&pcm.to_le_bytes());
-            if bucket_samples == 2_880 {
+            if bucket_samples == (rate / 1_000 * format.frame_ms()) as usize {
                 waveform.push((bucket_peak.sqrt() * 255.0).round() as u8);
                 bucket_peak = 0.0;
                 bucket_samples = 0;
@@ -1156,12 +1354,21 @@ pub fn decode_voice_memo(data: &[u8]) -> VoiceMemoResult<VoiceMemoPlayback> {
         wav_data,
         duration_ms,
         waveform,
-        sample_rate_hz: 48_000,
+        sample_rate_hz: rate,
         channels: 1,
     })
 }
 
 pub fn inspect_voice_memo(data: &[u8]) -> VoiceMemoResult<VoiceMemoMetadata> {
+    inspect_voice_memo_format(data, MemoFormat::Opus)
+}
+pub fn inspect_voice_memo_format(
+    data: &[u8],
+    format: MemoFormat,
+) -> VoiceMemoResult<VoiceMemoMetadata> {
+    if format == MemoFormat::Compact {
+        return compact::inspect(data);
+    }
     let parsed = ogg_opus::parse_ogg_opus(data)?;
     Ok(VoiceMemoMetadata {
         duration_ms: parsed.metadata.duration_ms,

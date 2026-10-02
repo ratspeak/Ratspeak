@@ -1259,6 +1259,7 @@ pub fn run() {
             ratspeak_tauri::commands::voice::voice_restart_speaker,
             #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_memo_start,
+            ratspeak_tauri::commands::voice::voice_memo_format,
             #[cfg(feature = "lxst-voice")]
             ratspeak_tauri::commands::voice::voice_memo_status,
             #[cfg(feature = "lxst-voice")]

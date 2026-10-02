@@ -2515,7 +2515,7 @@ function _conversationPreviewForMessage(message) {
     if (!message) return '';
     var title = (message.title || '').trim();
     if (title) return _messageDisplayContent(message, !!message.audio).trim();
-    if (message.audio && Number(message.audio.mode) === 0x10) return 'Voice message';
+    if (message.audio && (Number(message.audio.mode) === 0x10 || Number(message.audio.mode) === 0x03)) return 'Voice message';
     if (message.audio) return 'Unsupported audio';
     var content = (message.content || '').trim();
     if (content) return content;
@@ -4212,7 +4212,7 @@ function sendLxmfVoiceMemo(voiceDraft, targetHash, options) {
             state: resp && resp.cancelled ? 'cancelled' : 'sending',
             delivery_method: _optimisticDeliveryMethod(chosenDelivery),
             audio: {
-                mode: 0x10,
+                mode: voiceDraft.audio_mode == null ? 0x10 : voiceDraft.audio_mode,
                 supported: true,
                 stored_name: '',
                 size: voiceDraft.size || 0,
@@ -4691,7 +4691,7 @@ function clearPendingFile() {
 function setReplyTarget(msgData) {
     var replyContent = _messageDisplayContent(msgData, !!msgData.audio).substring(0, 100);
     if (msgData.audio && !replyContent.trim()) {
-        replyContent = Number(msgData.audio.mode) === 0x10 ? 'Voice message' : 'Unsupported audio';
+        replyContent = (Number(msgData.audio.mode) === 0x10 || Number(msgData.audio.mode) === 0x03) ? 'Voice message' : 'Unsupported audio';
     }
     _replyTarget = {
         id: msgData.id,
@@ -6151,6 +6151,11 @@ function openChatHeaderDropdown(triggerEl) {
                 _voiceRunPrimaryAction(lxmfActiveContact);
             }
         });
+    }
+
+    if (window.RS && RS.voiceMemos && lxstVoiceState.available) {
+        items.push({ label: 'Voice Message Format', icon: _voiceIcon('mic', 18),
+            onSelect: function() { RS.voiceMemos.openFormatMenu(menuTrigger); } });
     }
 
     items.push(

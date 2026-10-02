@@ -4194,16 +4194,21 @@ fn extract_and_save_audio(
     }
 
     let is_ogg_opus = mode == lxmf_core::constants::AM_OPUS_OGG;
+    let is_compact = mode == lxmf_core::constants::AM_CODEC2_700C;
     #[cfg(feature = "lxst-voice")]
-    if is_ogg_opus {
-        if let Err(error) = voice_memo::inspect_voice_memo(audio.bytes) {
-            tracing::warn!(%error, size = audio.bytes.len(), "inbound Ogg/Opus audio is invalid");
+    if is_ogg_opus || is_compact {
+        let valid = voice_memo::MemoFormat::from_mode(mode)
+            .and_then(|format| voice_memo::inspect_voice_memo_format(audio.bytes, format));
+        if let Err(error) = valid {
+            tracing::warn!(%error, mode, size = audio.bytes.len(), "inbound voice audio is invalid");
             return Some(unavailable());
         }
     }
 
     let file_name = if is_ogg_opus {
         lxmf::AUDIO_MESSAGE_FILE_NAME.to_string()
+    } else if is_compact {
+        lxmf::COMPACT_AUDIO_FILE_NAME.to_string()
     } else {
         format!("Audio message {mode:02x}.bin")
     };
@@ -4221,7 +4226,7 @@ fn extract_and_save_audio(
             Some(ExtractedAudio {
                 mode,
                 stored_name,
-                supported: is_ogg_opus && cfg!(feature = "lxst-voice"),
+                supported: (is_ogg_opus || is_compact) && cfg!(feature = "lxst-voice"),
             })
         }
         None => {
@@ -8034,6 +8039,48 @@ mod inbound_pipeline_tests {
         assert_eq!(emitter.count("lxmf_message"), 1);
         assert!(emitter.count("contacts_update") >= 1);
         assert!(emitter.count("unread_total") >= 1);
+    }
+
+    #[cfg(feature = "lxst-voice")]
+    #[tokio::test]
+    async fn compact_audio_pipeline_keeps_metadata_and_rejects_malformed_media_only() {
+        for (length, valid) in [
+            (4, true),
+            (1500, true),
+            (3000, true),
+            (3, false),
+            (3004, false),
+        ] {
+            let (state, emitter) = pipeline_state();
+            let bytes = vec![0x42; length];
+            let data = packed_inbound_with_audio(local_dest(&state), [0xED; 16], 3, &bytes);
+            handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+            let identity = local_identity(&state);
+            let rows = db::get_conversation(&state.db, &hex::encode([0xED; 16]), &identity, 10);
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0]["content"], "Voice message");
+            assert_eq!(rows[0]["audio"]["mode"], 3);
+            assert_eq!(rows[0]["audio"]["supported"], valid);
+            assert_eq!(emitter.count("lxmf_message"), 1);
+            if valid {
+                let name = rows[0]["audio"]["stored_name"].as_str().unwrap();
+                let path = state
+                    .lxmf
+                    .lock()
+                    .unwrap()
+                    .as_ref()
+                    .unwrap()
+                    .get_received_file(name)
+                    .unwrap();
+                assert_eq!(std::fs::read(path).unwrap(), bytes);
+                assert_eq!(
+                    db::stored_audio_mode(&state.db, &identity, name).unwrap(),
+                    3
+                );
+            } else {
+                assert_eq!(rows[0]["audio"]["unavailable"], true);
+            }
+        }
     }
 
     #[tokio::test]

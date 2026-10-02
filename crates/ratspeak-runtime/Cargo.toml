@@ -20,6 +20,7 @@ mobile-throttle = ["rns-transport/mobile-throttle", "rns-interface/mobile-thrott
 lxst-voice = [
     "dep:cpal",
     "dep:lxst-core",
+    "dep:lxst-codec2",
     "dep:lxst-rns",
     "dep:lxst-telephony",
     "dep:ogg",
@@ -51,6 +52,7 @@ rns-ratkey = { workspace = true, optional = true }
 lxmf-core = { workspace = true }
 lrgp = { workspace = true }
 lxst-core = { workspace = true, optional = true }
+lxst-codec2 = { workspace = true, optional = true }
 lxst-rns = { workspace = true, optional = true }
 lxst-telephony = { workspace = true, optional = true }
 cpal = { workspace = true, optional = true }

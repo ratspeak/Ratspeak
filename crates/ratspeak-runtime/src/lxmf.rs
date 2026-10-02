@@ -42,6 +42,7 @@ use ratspeak_core::{LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME, LXMF_PROPAGATION_AP
 const MAX_LXMF_RESOURCE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE;
 pub const MAX_AUDIO_FIELD_BYTES: usize = 1_000_000;
 pub const AUDIO_MESSAGE_FILE_NAME: &str = "Voice message.opus";
+pub const COMPACT_AUDIO_FILE_NAME: &str = "Voice message.c2raw";
 // A deferred PoW stamp can still be attached after semantic submission. Its
 // MessagePack bin8 representation is marker + u8 length + 32 stamp bytes; the
 // surrounding fixarray marker remains one byte when the payload grows 4 -> 5.
@@ -742,16 +743,26 @@ fn validate_attachment_envelope_size(actual_bytes: usize) -> Result<(), LxmfSubm
     }
 }
 
-fn validate_outbound_audio(audio_bytes: &[u8]) -> Result<(), LxmfSubmissionFailure> {
+fn validate_outbound_audio(
+    audio_bytes: &[u8],
+    audio_mode: u8,
+) -> Result<(), LxmfSubmissionFailure> {
     #[cfg(feature = "lxst-voice")]
     {
-        crate::voice_memo::inspect_voice_memo(audio_bytes)
+        let format = crate::voice_memo::MemoFormat::from_mode(audio_mode)
+            .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
+        if format == crate::voice_memo::MemoFormat::Compact
+            && audio_bytes.len() > crate::voice_memo::compact::RECORD_BYTES
+        {
+            return Err(LxmfSubmissionFailure::PreparationFailed);
+        }
+        crate::voice_memo::inspect_voice_memo_format(audio_bytes, format)
             .map(|_| ())
             .map_err(|_| LxmfSubmissionFailure::PreparationFailed)
     }
     #[cfg(not(feature = "lxst-voice"))]
     {
-        let _ = audio_bytes;
+        let _ = (audio_bytes, audio_mode);
         Err(LxmfSubmissionFailure::PreparationFailed)
     }
 }
@@ -808,7 +819,7 @@ pub struct AttachmentMessageRequest<'a> {
     pub preference: DeliveryPreference,
 }
 
-/// Fully-specified first-class LXMF Ogg/Opus audio send request.
+/// Fully-specified first-class LXMF audio send request with an explicit wire mode.
 ///
 /// Staging-token ownership remains in the command layer. When `staged_path`
 /// is present, the runtime atomically adopts that already-validated private
@@ -818,6 +829,7 @@ pub struct AudioMessageRequest<'a> {
     pub content: &'a str,
     pub title: &'a str,
     pub audio_bytes: &'a [u8],
+    pub audio_mode: u8,
     pub staged_path: Option<&'a Path>,
     pub db_pool: &'a DbPool,
     pub identity_id: &'a str,
@@ -2371,13 +2383,20 @@ impl LxmfManager {
             content,
             title,
             audio_bytes,
+            audio_mode,
             staged_path,
             db_pool,
             identity_id,
             preference,
         } = request;
 
-        validate_outbound_audio(audio_bytes)?;
+        validate_outbound_audio(audio_bytes, audio_mode)?;
+        if db::voice_message_format(db_pool, identity_id, dest_hash_hex)
+            .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?
+            != audio_mode
+        {
+            return Err(LxmfSubmissionFailure::PreparationFailed);
+        }
         let content = if content.trim().is_empty() {
             "Voice message"
         } else {
@@ -2399,7 +2418,7 @@ impl LxmfManager {
         );
         let mut msg = LxMessage::new(dest, self.lxmf_dest_hash, title, content, method);
         self.apply_peer_lxmf_compression_support(&mut msg, Some(db_pool), dest_hash_hex);
-        msg.set_audio_field(lxmf_core::constants::AM_OPUS_OGG, audio_bytes)
+        msg.set_audio_field(audio_mode, audio_bytes)
             .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
         debug_assert!(
             !msg.fields
@@ -2425,6 +2444,12 @@ impl LxmfManager {
             .checked_add(MAX_DEFERRED_STAMP_WIRE_BYTES)
             .ok_or(LxmfSubmissionFailure::PreparationFailed)?;
         validate_audio_message_size(packed_admission_len)?;
+        if audio_mode == lxmf_core::constants::AM_CODEC2_700C && packed_admission_len > 3_659 {
+            return Err(LxmfSubmissionFailure::ResourceLimitExceeded {
+                actual_bytes: packed_admission_len,
+                limit_bytes: 3_659,
+            });
+        }
 
         let msg_id = msg
             .hash
@@ -2440,9 +2465,14 @@ impl LxmfManager {
         self.preempt_opportunistic_path(&mut msg);
         let auto_fallback = Self::auto_live_fallback_hash(&msg, preference);
         let method = msg.method;
+        let filename = if audio_mode == lxmf_core::constants::AM_CODEC2_700C {
+            COMPACT_AUDIO_FILE_NAME
+        } else {
+            AUDIO_MESSAGE_FILE_NAME
+        };
         let stored_name = match staged_path {
-            Some(path) => self.adopt_staged_attachment(AUDIO_MESSAGE_FILE_NAME, path),
-            None => self.save_attachment(AUDIO_MESSAGE_FILE_NAME, audio_bytes),
+            Some(path) => self.adopt_staged_attachment(filename, path),
+            None => self.save_attachment(filename, audio_bytes),
         }
         .map_err(|_| LxmfSubmissionFailure::StorageFailed)?;
 
@@ -2464,7 +2494,7 @@ impl LxmfManager {
             "",
             "",
             Some(delivery_method_name(method)),
-            Some(lxmf_core::constants::AM_OPUS_OGG),
+            Some(audio_mode),
             &stored_name,
         )
         .is_err()
@@ -10364,6 +10394,7 @@ mod tests {
                 dest_hash_hex: &dest,
                 content: "",
                 title: "",
+                audio_mode: lxmf_core::constants::AM_OPUS_OGG,
                 audio_bytes: &audio_bytes,
                 staged_path: None,
                 db_pool: &pool,
@@ -10401,6 +10432,69 @@ mod tests {
 
     #[cfg(feature = "lxst-voice")]
     #[test]
+    fn compact_audio_requires_exact_saved_preference_and_preserves_native_field() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "de".repeat(16);
+        let audio = vec![0x42; crate::voice_memo::compact::RECORD_BYTES];
+        let submit = |mgr: &mut LxmfManager, peer: &str, body: &str, bytes: &[u8]| {
+            mgr.send_audio_message_with_preference_report(AudioMessageRequest {
+                dest_hash_hex: peer,
+                content: body,
+                title: "",
+                audio_mode: 3,
+                audio_bytes: bytes,
+                staged_path: None,
+                db_pool: &pool,
+                identity_id: "me",
+                preference: DeliveryPreference::Direct,
+            })
+        };
+        assert_eq!(
+            submit(&mut mgr, &dest, "", &audio),
+            Err(LxmfSubmissionFailure::PreparationFailed)
+        );
+        db::set_voice_message_format(&pool, "other", &dest, 3).unwrap();
+        assert_eq!(
+            submit(&mut mgr, &dest, "", &audio),
+            Err(LxmfSubmissionFailure::PreparationFailed)
+        );
+        db::set_voice_message_format(&pool, "me", &dest, 3).unwrap();
+        assert_eq!(
+            submit(&mut mgr, &dest, "", &audio[..1499]),
+            Err(LxmfSubmissionFailure::PreparationFailed)
+        );
+        assert_eq!(
+            submit(&mut mgr, &dest, "", &vec![0; 1504]),
+            Err(LxmfSubmissionFailure::PreparationFailed)
+        );
+        let queued = submit(&mut mgr, &dest, "", &audio).unwrap();
+        let message = mgr.router.pending_outbound.first().unwrap();
+        let field = message.audio_field().unwrap().unwrap();
+        assert_eq!(field.mode, 3);
+        assert_eq!(field.bytes, audio);
+        assert!(message.packed_len().unwrap() + MAX_DEFERRED_STAMP_WIRE_BYTES <= 3659);
+        let rows = db::get_conversation(&pool, &dest, "me", 10);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["id"], queued.message_id);
+        assert_eq!(rows[0]["audio"]["mode"], 3);
+        assert_eq!(rows[0]["audio"]["supported"], true);
+        let name = rows[0]["audio"]["stored_name"].as_str().unwrap();
+        assert_eq!(db::stored_audio_mode(&pool, "me", name).unwrap(), 3);
+        assert_eq!(
+            std::fs::read(mgr.get_received_file(name).unwrap()).unwrap(),
+            audio
+        );
+        db::set_voice_message_format(&pool, "me", &dest, 16).unwrap();
+        assert_eq!(
+            submit(&mut mgr, &dest, "", &audio),
+            Err(LxmfSubmissionFailure::PreparationFailed)
+        );
+        assert_eq!(db::get_conversation(&pool, &dest, "me", 10).len(), 1);
+    }
+
+    #[cfg(feature = "lxst-voice")]
+    #[test]
     fn invalid_audio_is_rejected_before_storage_or_router_admission() {
         let pool = test_pool();
         let mut mgr = test_manager();
@@ -10410,6 +10504,7 @@ mod tests {
             dest_hash_hex: &dest,
             content: "Voice message",
             title: "",
+            audio_mode: lxmf_core::constants::AM_OPUS_OGG,
             audio_bytes: b"not an Ogg stream",
             staged_path: None,
             db_pool: &pool,
@@ -10437,6 +10532,7 @@ mod tests {
             dest_hash_hex: &dest,
             content: "Voice message",
             title: "",
+            audio_mode: lxmf_core::constants::AM_OPUS_OGG,
             audio_bytes: &audio_bytes,
             staged_path: Some(&staging),
             db_pool: &pool,

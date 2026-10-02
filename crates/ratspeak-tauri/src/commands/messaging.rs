@@ -1294,6 +1294,7 @@ pub(crate) async fn queue_prepared_audio(
     delivery_pref: DeliveryPreference,
     client_msg_id: Option<String>,
     audio_bytes: Vec<u8>,
+    audio_mode: u8,
     staged: StagedAttachment,
 ) -> AppResult<Value> {
     let client_send = begin_lxmf_client_send(&state, client_msg_id.as_ref())?;
@@ -1330,6 +1331,7 @@ pub(crate) async fn queue_prepared_audio(
                     content: "Voice message",
                     title: "",
                     audio_bytes: &audio_bytes,
+                    audio_mode,
                     staged_path: Some(&staged_path),
                     db_pool: &st.db,
                     identity_id: &identity_id,
