@@ -11,8 +11,20 @@ initialisation; per-instance synthesis RNG; exact libm math on all targets;
 checked public frame shapes; corrected real-FFT input copying; shared the
 identical forward FFT plan and removed unreachable mode/rate storage; separated
 phase scratch lifetime from inverse FFT scratch for the MCU stack. The public API
-exposes only native 1600/3200 modes at 8 kHz mono. Other private upstream modes
+exposes native 700C/1600/3200 modes at 8 kHz mono. Other private upstream modes
 are not a supported API. See UPSTREAM.json for immutable original provenance.
+
+The native 700C implementation and immutable codebooks additionally adapt
+David Rowe's Codec2 C implementation, Copyright 2017, under LGPL-2.1-only:
+https://github.com/drowe67/codec2 at commit
+310777b1c6f1af0bc7c72f5b32f80f6fd9136962. Source/codebook hashes are recorded in
+UPSTREAM.json. Modified for rsLXST on 2026-10-01: Rust newamp1 spectral
+quantization and phase reconstruction, fixed M-best scratch and FFT plans,
+streamed synthesis models, explicit mode identity, and default 700C settings.
+Shared analysis and synthesis preserve reference scalar promotions in pitch,
+windows, FFT twiddles, notch filtering and phase arithmetic. KISS FFT changes
+retain its BSD-3-Clause attribution. Corrected inherited
+background-estimator voicing and pitch-search endpoint/history-bin behavior.
 
 New wrapper, tests and storage adaptation are provided under LGPL-2.1-only.
 Third-party libm retains its own MIT license and appears in the workspace's

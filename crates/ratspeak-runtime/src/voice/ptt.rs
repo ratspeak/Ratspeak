@@ -7,11 +7,14 @@ struct Constrained {
     gate: Arc<AudioTransmitGate>,
 }
 static SESSION: Mutex<Option<Constrained>> = Mutex::new(None);
-pub(super) fn supported(profile: Profile) -> bool {
-    profile != Profile::BandwidthUltraLow
+pub(super) fn supported(_profile: Profile) -> bool {
+    true
 }
 pub(super) fn constrained(profile: Profile) -> bool {
-    matches!(profile, Profile::BandwidthVeryLow | Profile::BandwidthLow)
+    matches!(
+        profile,
+        Profile::BandwidthUltraLow | Profile::BandwidthVeryLow | Profile::BandwidthLow
+    )
 }
 pub(super) fn clear() {
     if let Ok(mut slot) = SESSION.lock() {
@@ -24,14 +27,11 @@ pub(super) fn clear() {
 // Opus stream. Retain its ceiling for the lifetime of this exact Link.
 pub(super) fn sync(link: [u8; 16], profile: Profile) -> Option<Profile> {
     let Ok(mut slot) = SESSION.lock() else {
-        return Some(Profile::BandwidthVeryLow);
+        return Some(Profile::BandwidthUltraLow);
     };
     if let Some(current) = slot.as_ref() {
         if current.link == link {
-            if !constrained(profile)
-                || (current.profile == Profile::BandwidthVeryLow
-                    && profile == Profile::BandwidthLow)
-            {
+            if !constrained(profile) || profile.wire_value() > current.profile.wire_value() {
                 return Some(current.profile);
             }
             if current.profile == profile {
@@ -78,8 +78,9 @@ pub(super) fn update(link: [u8; 16], serial: u64, pressed: bool) -> VoiceResult<
 mod tests {
     use super::*;
     #[test]
-    fn supported_profiles_never_claim_700c() {
-        assert!(!supported(Profile::BandwidthUltraLow));
+    fn native_codec2_profiles_are_supported_and_require_ptt() {
+        assert!(supported(Profile::BandwidthUltraLow));
+        assert!(constrained(Profile::BandwidthUltraLow));
         assert!(constrained(Profile::BandwidthVeryLow));
         assert!(constrained(Profile::BandwidthLow));
         assert!(!constrained(Profile::QualityHigh));
@@ -108,6 +109,15 @@ mod session_tests {
         assert_eq!(
             sync(link, Profile::BandwidthLow),
             Some(Profile::BandwidthVeryLow)
+        );
+        assert_eq!(sync(link, Profile::BandwidthUltraLow), None);
+        assert_eq!(
+            sync(link, Profile::BandwidthVeryLow),
+            Some(Profile::BandwidthUltraLow)
+        );
+        assert_eq!(
+            sync(link, Profile::BandwidthLow),
+            Some(Profile::BandwidthUltraLow)
         );
         let second = gate(link).unwrap();
         assert!(!second.allows());
