@@ -613,6 +613,7 @@
         ],
         "lxst-voice": [
           "dep:cpal",
+          "dep:lxst-codec2",
           "dep:lxst-core",
           "dep:lxst-rns",
           "dep:lxst-telephony",
@@ -762,6 +763,17 @@
           "target": null,
           "requirement": "^1.2.0",
           "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
+          "name": "lxst-codec2",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.2.0",
+          "optional": true,
           "defaultFeatures": true,
           "features": [],
           "sourceKind": "path"

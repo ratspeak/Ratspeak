@@ -315,7 +315,9 @@ pub fn ratspeak_db::db::set_channel_room_notification_level(&ratspeak_db::DbPool
 pub fn ratspeak_db::db::set_identity_lxmf_compression_support(&ratspeak_db::DbPool, &str, &str) -> bool
 pub fn ratspeak_db::db::set_identity_propagation_node(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::set_setting(&ratspeak_db::DbPool, &str, &str)
+pub fn ratspeak_db::db::set_voice_message_format(&ratspeak_db::DbPool, &str, &str, u8) -> core::result::Result<(), alloc::string::String>
 pub async fn ratspeak_db::db::spawn_db<F, R>(ratspeak_db::DbPool, F) -> core::result::Result<R, tokio::runtime::task::error::JoinError> where F: core::ops::function::FnOnce(ratspeak_db::DbPool) -> R + core::marker::Send + 'static, R: core::marker::Send + 'static
+pub fn ratspeak_db::db::stored_audio_mode(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<u8, alloc::string::String>
 pub fn ratspeak_db::db::touch_identity_activity(&ratspeak_db::DbPool, &[(alloc::string::String, f64, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>)]) -> usize
 pub fn ratspeak_db::db::touch_identity_activity_for_service(&ratspeak_db::DbPool, &[(alloc::string::String, f64, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>)], core::option::Option<&str>, &str) -> usize
 pub fn ratspeak_db::db::touch_identity_activity_for_services(&ratspeak_db::DbPool, &[(alloc::string::String, f64, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>)], core::option::Option<&str>, &[&str], bool) -> usize
@@ -336,6 +338,7 @@ pub fn ratspeak_db::db::validate_channel_history_after_cursor(&str) -> core::res
 pub fn ratspeak_db::db::validate_channel_history_cursor(core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::validate_channel_history_event(&str, &ratspeak_db::NewChannelHistoryEvent) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::validate_channel_participant_observation(&str, &ratspeak_db::NewChannelParticipantObservation) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::db::voice_message_format(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<u8, alloc::string::String>
 pub type ratspeak_db::db::DbPool = r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>
 pub mod ratspeak_db::static_nodes
 pub struct ratspeak_db::static_nodes::StaticPropNode
@@ -662,7 +665,9 @@ pub fn ratspeak_db::set_channel_room_notification_level(&ratspeak_db::DbPool, &s
 pub fn ratspeak_db::set_identity_lxmf_compression_support(&ratspeak_db::DbPool, &str, &str) -> bool
 pub fn ratspeak_db::set_identity_propagation_node(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::set_setting(&ratspeak_db::DbPool, &str, &str)
+pub fn ratspeak_db::set_voice_message_format(&ratspeak_db::DbPool, &str, &str, u8) -> core::result::Result<(), alloc::string::String>
 pub async fn ratspeak_db::spawn_db<F, R>(ratspeak_db::DbPool, F) -> core::result::Result<R, tokio::runtime::task::error::JoinError> where F: core::ops::function::FnOnce(ratspeak_db::DbPool) -> R + core::marker::Send + 'static, R: core::marker::Send + 'static
+pub fn ratspeak_db::stored_audio_mode(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<u8, alloc::string::String>
 pub fn ratspeak_db::touch_identity_activity(&ratspeak_db::DbPool, &[(alloc::string::String, f64, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>)]) -> usize
 pub fn ratspeak_db::touch_identity_activity_for_service(&ratspeak_db::DbPool, &[(alloc::string::String, f64, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>)], core::option::Option<&str>, &str) -> usize
 pub fn ratspeak_db::touch_identity_activity_for_services(&ratspeak_db::DbPool, &[(alloc::string::String, f64, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>)], core::option::Option<&str>, &[&str], bool) -> usize
@@ -683,4 +688,5 @@ pub fn ratspeak_db::validate_channel_history_after_cursor(&str) -> core::result:
 pub fn ratspeak_db::validate_channel_history_cursor(core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::validate_channel_history_event(&str, &ratspeak_db::NewChannelHistoryEvent) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::validate_channel_participant_observation(&str, &ratspeak_db::NewChannelParticipantObservation) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::voice_message_format(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<u8, alloc::string::String>
 pub type ratspeak_db::DbPool = r2d2::Pool<r2d2_sqlite::SqliteConnectionManager>

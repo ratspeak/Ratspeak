@@ -661,10 +661,12 @@ pub ratspeak_tauri::commands::voice::VoiceAnswerArgs::link_id: alloc::string::St
 pub struct ratspeak_tauri::commands::voice::VoiceCallArgs
 pub ratspeak_tauri::commands::voice::VoiceCallArgs::hash: alloc::string::String
 pub struct ratspeak_tauri::commands::voice::VoiceMemoDecodeDataArgs
+pub ratspeak_tauri::commands::voice::VoiceMemoDecodeDataArgs::audio_mode: core::option::Option<u8>
 pub ratspeak_tauri::commands::voice::VoiceMemoDecodeDataArgs::data_base64: alloc::string::String
 pub struct ratspeak_tauri::commands::voice::VoiceMemoDecodeStoredArgs
 pub ratspeak_tauri::commands::voice::VoiceMemoDecodeStoredArgs::stored_name: alloc::string::String
 pub struct ratspeak_tauri::commands::voice::VoiceMemoDraftResponse
+pub ratspeak_tauri::commands::voice::VoiceMemoDraftResponse::audio_mode: u8
 pub ratspeak_tauri::commands::voice::VoiceMemoDraftResponse::data_base64: alloc::string::String
 pub ratspeak_tauri::commands::voice::VoiceMemoDraftResponse::duration_ms: u32
 pub ratspeak_tauri::commands::voice::VoiceMemoDraftResponse::filename: alloc::string::String
@@ -673,6 +675,10 @@ pub ratspeak_tauri::commands::voice::VoiceMemoDraftResponse::session_id: alloc::
 pub ratspeak_tauri::commands::voice::VoiceMemoDraftResponse::size: usize
 pub ratspeak_tauri::commands::voice::VoiceMemoDraftResponse::staging_token: alloc::string::String
 pub ratspeak_tauri::commands::voice::VoiceMemoDraftResponse::waveform: alloc::vec::Vec<u8>
+pub struct ratspeak_tauri::commands::voice::VoiceMemoFormatArgs
+pub ratspeak_tauri::commands::voice::VoiceMemoFormatArgs::audio_mode: core::option::Option<u8>
+pub ratspeak_tauri::commands::voice::VoiceMemoFormatArgs::dest_hash: alloc::string::String
+pub ratspeak_tauri::commands::voice::VoiceMemoFormatArgs::identity_id: core::option::Option<alloc::string::String>
 pub struct ratspeak_tauri::commands::voice::VoiceMemoPauseArgs
 pub ratspeak_tauri::commands::voice::VoiceMemoPauseArgs::paused: bool
 pub ratspeak_tauri::commands::voice::VoiceMemoPauseArgs::session_id: alloc::string::String
@@ -686,11 +692,14 @@ pub ratspeak_tauri::commands::voice::VoiceMemoPlaybackResponse::mime: alloc::str
 pub ratspeak_tauri::commands::voice::VoiceMemoPlaybackResponse::sample_rate_hz: u32
 pub ratspeak_tauri::commands::voice::VoiceMemoPlaybackResponse::waveform: alloc::vec::Vec<u8>
 pub struct ratspeak_tauri::commands::voice::VoiceMemoPlaybackStartArgs
+pub ratspeak_tauri::commands::voice::VoiceMemoPlaybackStartArgs::audio_mode: core::option::Option<u8>
 pub ratspeak_tauri::commands::voice::VoiceMemoPlaybackStartArgs::data_base64: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::voice::VoiceMemoPlaybackStartArgs::position_ms: u32
 pub ratspeak_tauri::commands::voice::VoiceMemoPlaybackStartArgs::stored_name: core::option::Option<alloc::string::String>
 pub struct ratspeak_tauri::commands::voice::VoiceMemoSessionArgs
 pub ratspeak_tauri::commands::voice::VoiceMemoSessionArgs::session_id: alloc::string::String
+pub struct ratspeak_tauri::commands::voice::VoiceMemoStartArgs
+pub ratspeak_tauri::commands::voice::VoiceMemoStartArgs::dest_hash: alloc::string::String
 pub struct ratspeak_tauri::commands::voice::VoiceRestartSpeakerArgs
 pub ratspeak_tauri::commands::voice::VoiceRestartSpeakerArgs::speakerphone: bool
 pub struct ratspeak_tauri::commands::voice::VoiceSetMicrophoneMutedArgs
@@ -706,11 +715,12 @@ pub async fn ratspeak_tauri::commands::voice::voice_hangup(tauri::state::State<'
 pub async fn ratspeak_tauri::commands::voice::voice_memo_cancel(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceMemoSessionArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_memo_decode_data(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceMemoDecodeDataArgs) -> ratspeak_tauri::error::AppResult<ratspeak_tauri::commands::voice::VoiceMemoPlaybackResponse>
 pub async fn ratspeak_tauri::commands::voice::voice_memo_decode_stored(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceMemoDecodeStoredArgs) -> ratspeak_tauri::error::AppResult<ratspeak_tauri::commands::voice::VoiceMemoPlaybackResponse>
+pub async fn ratspeak_tauri::commands::voice::voice_memo_format(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceMemoFormatArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_memo_inspect_stored(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceMemoDecodeStoredArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_memo_pause(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceMemoPauseArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_memo_playback_session_stop(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceMemoPlaybackLeaseArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_memo_playback_start(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceMemoPlaybackStartArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
-pub async fn ratspeak_tauri::commands::voice::voice_memo_start(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::voice::voice_memo_start(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, core::option::Option<ratspeak_tauri::commands::voice::VoiceMemoStartArgs>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_memo_status(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::voice::voice_memo_stop(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::voice::VoiceMemoSessionArgs) -> ratspeak_tauri::error::AppResult<ratspeak_tauri::commands::voice::VoiceMemoDraftResponse>
 pub async fn ratspeak_tauri::commands::voice::voice_reject(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>

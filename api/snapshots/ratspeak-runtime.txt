@@ -1495,6 +1495,7 @@ pub ratspeak_runtime::lxmf::AttachmentMessageRequest::staged_path: core::option:
 pub ratspeak_runtime::lxmf::AttachmentMessageRequest::title: &'a str
 pub struct ratspeak_runtime::lxmf::AudioMessageRequest<'a>
 pub ratspeak_runtime::lxmf::AudioMessageRequest::audio_bytes: &'a [u8]
+pub ratspeak_runtime::lxmf::AudioMessageRequest::audio_mode: u8
 pub ratspeak_runtime::lxmf::AudioMessageRequest::content: &'a str
 pub ratspeak_runtime::lxmf::AudioMessageRequest::db_pool: &'a ratspeak_db::db::DbPool
 pub ratspeak_runtime::lxmf::AudioMessageRequest::dest_hash_hex: &'a str
@@ -1680,6 +1681,7 @@ pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::reply_to_id: &'a str
 pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::reply_to_preview: &'a str
 pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::title: &'a str
 pub const ratspeak_runtime::lxmf::AUDIO_MESSAGE_FILE_NAME: &str
+pub const ratspeak_runtime::lxmf::COMPACT_AUDIO_FILE_NAME: &str
 pub const ratspeak_runtime::lxmf::EMIT_LEGACY_REPLY_REACTION_ENVELOPE: bool
 pub const ratspeak_runtime::lxmf::LEGACY_RATSPEAK_REACTION_TYPE: &[u8]
 pub const ratspeak_runtime::lxmf::MAX_AUDIO_FIELD_BYTES: usize
@@ -2416,9 +2418,37 @@ pub async fn ratspeak_runtime::voice::start_voice_service(&alloc::sync::Arc<rats
 pub fn ratspeak_runtime::voice::voice_status(&ratspeak_runtime::state::AppState) -> serde_json::value::Value
 pub type ratspeak_runtime::voice::VoiceResult<T> = core::result::Result<T, alloc::string::String>
 pub mod ratspeak_runtime::voice_memo
+pub mod ratspeak_runtime::voice_memo::compact
+pub struct ratspeak_runtime::voice_memo::compact::Source
+impl ratspeak_runtime::voice_memo::compact::Source
+pub fn ratspeak_runtime::voice_memo::compact::Source::new(alloc::vec::Vec<u8>, u32) -> ratspeak_runtime::voice_memo::VoiceMemoResult<Self>
+pub fn ratspeak_runtime::voice_memo::compact::Source::next_decoded(&mut self) -> ratspeak_runtime::voice_memo::VoiceMemoResult<core::option::Option<lxst_core::raw::RawAudioFrame>>
+pub const ratspeak_runtime::voice_memo::compact::FILENAME: &str
+pub const ratspeak_runtime::voice_memo::compact::FRAME_BYTES: usize
+pub const ratspeak_runtime::voice_memo::compact::FRAME_MS: u32
+pub const ratspeak_runtime::voice_memo::compact::FRAME_SAMPLES: usize
+pub const ratspeak_runtime::voice_memo::compact::MIME: &str
+pub const ratspeak_runtime::voice_memo::compact::MODE: u8
+pub const ratspeak_runtime::voice_memo::compact::PLAYBACK_BYTES: usize
+pub const ratspeak_runtime::voice_memo::compact::RECORD_BYTES: usize
+pub const ratspeak_runtime::voice_memo::compact::RECORD_MS: u32
+pub const ratspeak_runtime::voice_memo::compact::SAMPLE_RATE: u32
+pub fn ratspeak_runtime::voice_memo::compact::codec() -> alloc::boxed::Box<lxst_codec2::Codec>
+pub fn ratspeak_runtime::voice_memo::compact::encode(&mut lxst_codec2::Codec, &lxst_core::raw::RawAudioFrame) -> ratspeak_runtime::voice_memo::VoiceMemoResult<alloc::vec::Vec<u8>>
+pub fn ratspeak_runtime::voice_memo::compact::inspect(&[u8]) -> ratspeak_runtime::voice_memo::VoiceMemoResult<ratspeak_runtime::voice_memo::VoiceMemoMetadata>
+pub enum ratspeak_runtime::voice_memo::MemoFormat
+pub ratspeak_runtime::voice_memo::MemoFormat::Compact
+pub ratspeak_runtime::voice_memo::MemoFormat::Opus
+impl ratspeak_runtime::voice_memo::MemoFormat
+pub const fn ratspeak_runtime::voice_memo::MemoFormat::filename(self) -> &'static str
+pub fn ratspeak_runtime::voice_memo::MemoFormat::from_mode(u8) -> ratspeak_runtime::voice_memo::VoiceMemoResult<Self>
+pub const fn ratspeak_runtime::voice_memo::MemoFormat::max_duration_ms(self) -> u32
+pub const fn ratspeak_runtime::voice_memo::MemoFormat::mime(self) -> &'static str
+pub const fn ratspeak_runtime::voice_memo::MemoFormat::mode(self) -> u8
 pub struct ratspeak_runtime::voice_memo::VoiceMemoDraft
 pub ratspeak_runtime::voice_memo::VoiceMemoDraft::data: alloc::vec::Vec<u8>
 pub ratspeak_runtime::voice_memo::VoiceMemoDraft::duration_ms: u32
+pub ratspeak_runtime::voice_memo::VoiceMemoDraft::format: ratspeak_runtime::voice_memo::MemoFormat
 pub ratspeak_runtime::voice_memo::VoiceMemoDraft::waveform: alloc::vec::Vec<u8>
 pub struct ratspeak_runtime::voice_memo::VoiceMemoMetadata
 pub ratspeak_runtime::voice_memo::VoiceMemoMetadata::duration_ms: u32
@@ -2433,6 +2463,7 @@ pub struct ratspeak_runtime::voice_memo::VoiceMemoRecordingHandle
 impl core::ops::drop::Drop for ratspeak_runtime::voice_memo::VoiceMemoRecordingHandle
 pub fn ratspeak_runtime::voice_memo::VoiceMemoRecordingHandle::drop(&mut self)
 pub struct ratspeak_runtime::voice_memo::VoiceMemoStatus
+pub ratspeak_runtime::voice_memo::VoiceMemoStatus::audio_mode: u8
 pub ratspeak_runtime::voice_memo::VoiceMemoStatus::duration_ms: u32
 pub ratspeak_runtime::voice_memo::VoiceMemoStatus::max_duration_ms: u32
 pub ratspeak_runtime::voice_memo::VoiceMemoStatus::session_id: core::option::Option<alloc::string::String>
@@ -2446,14 +2477,17 @@ pub const ratspeak_runtime::voice_memo::VOICE_MEMO_MIME: &str
 pub async fn ratspeak_runtime::voice_memo::cancel_recording(&ratspeak_runtime::state::AppState) -> ratspeak_runtime::voice_memo::VoiceMemoResult<()>
 pub async fn ratspeak_runtime::voice_memo::cancel_recording_session(&ratspeak_runtime::state::AppState, u64) -> ratspeak_runtime::voice_memo::VoiceMemoResult<()>
 pub fn ratspeak_runtime::voice_memo::decode_voice_memo(&[u8]) -> ratspeak_runtime::voice_memo::VoiceMemoResult<ratspeak_runtime::voice_memo::VoiceMemoPlayback>
+pub fn ratspeak_runtime::voice_memo::decode_voice_memo_format(&[u8], ratspeak_runtime::voice_memo::MemoFormat) -> ratspeak_runtime::voice_memo::VoiceMemoResult<ratspeak_runtime::voice_memo::VoiceMemoPlayback>
 pub fn ratspeak_runtime::voice_memo::format_playback_lease_id(u64) -> alloc::string::String
 pub fn ratspeak_runtime::voice_memo::format_recording_session_id(u64) -> alloc::string::String
 pub fn ratspeak_runtime::voice_memo::inspect_voice_memo(&[u8]) -> ratspeak_runtime::voice_memo::VoiceMemoResult<ratspeak_runtime::voice_memo::VoiceMemoMetadata>
+pub fn ratspeak_runtime::voice_memo::inspect_voice_memo_format(&[u8], ratspeak_runtime::voice_memo::MemoFormat) -> ratspeak_runtime::voice_memo::VoiceMemoResult<ratspeak_runtime::voice_memo::VoiceMemoMetadata>
 pub fn ratspeak_runtime::voice_memo::parse_playback_lease_id(&str) -> core::option::Option<u64>
 pub fn ratspeak_runtime::voice_memo::parse_recording_session_id(&str) -> core::option::Option<u64>
 pub fn ratspeak_runtime::voice_memo::recording_status(&ratspeak_runtime::state::AppState) -> ratspeak_runtime::voice_memo::VoiceMemoStatus
 pub async fn ratspeak_runtime::voice_memo::set_paused(&ratspeak_runtime::state::AppState, u64, bool) -> ratspeak_runtime::voice_memo::VoiceMemoResult<ratspeak_runtime::voice_memo::VoiceMemoStatus>
 pub async fn ratspeak_runtime::voice_memo::start_recording(&alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> ratspeak_runtime::voice_memo::VoiceMemoResult<ratspeak_runtime::voice_memo::VoiceMemoStatus>
+pub async fn ratspeak_runtime::voice_memo::start_recording_format(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, ratspeak_runtime::voice_memo::MemoFormat) -> ratspeak_runtime::voice_memo::VoiceMemoResult<ratspeak_runtime::voice_memo::VoiceMemoStatus>
 pub async fn ratspeak_runtime::voice_memo::stop_recording(&ratspeak_runtime::state::AppState, u64) -> ratspeak_runtime::voice_memo::VoiceMemoResult<ratspeak_runtime::voice_memo::VoiceMemoDraft>
 pub type ratspeak_runtime::voice_memo::VoiceMemoResult<T> = core::result::Result<T, alloc::string::String>
 pub enum ratspeak_runtime::AnnounceSendDisposition
