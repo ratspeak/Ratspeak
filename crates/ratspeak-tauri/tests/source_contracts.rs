@@ -5814,15 +5814,14 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "errors when sending large files or photos",
-        "Kept automatically prepared photos within their size limit",
-        "Fixed attachment replacement and cancellation",
-        "Improved Bluetooth Peer transfers",
-        "Corrected file transfer progress",
-        "Prevented chats from jumping when images load",
-        "Removed stale startup warnings",
-        "Improved first-message delivery to handhelds",
-        "Improved discovery on busy or slow connections",
+        "Added compact voice messages for compatible handhelds using Codec2 700C",
+        "other recipients use the existing Opus format",
+        "Added native Codec2 support",
+        "Preserved recorded clips for retry",
+        "prevented duplicate sends after an uncertain result",
+        "Prevented voice messages from crossing identities",
+        "Displayed the recording duration limit immediately",
+        "Compact recordings are limited to 15 seconds",
         "Some attachments sent to NomadNet may appear delivered",
     ];
 
@@ -9031,7 +9030,10 @@ fn voice_memos_share_lxst_capture_and_use_first_class_lxmf_audio() {
     assert!(commands.contains("voice_memo_decode_lock.lock().await"));
     assert!(commands.contains("pub async fn send_lxmf_voice_message("));
     assert!(commands.contains("begin_attachment_staging("));
-    assert!(commands.contains("take_completed_attachment_staging(&args.staging_token)"));
+    assert!(commands.contains("take_retryable_attachment_staging(&args.staging_token)"));
+    assert!(commands.contains("state.restore_attachment_staging(clip)"));
+    assert!(commands.contains("fence.identity_session_generation()"));
+    assert!(commands.contains("begin_lxmf_client_send(&state, client_msg_id.as_ref())"));
     assert!(commands.contains("VOICE_MEMO_MAX_GENERATED_OGG_BYTES"));
     assert!(
         commands
