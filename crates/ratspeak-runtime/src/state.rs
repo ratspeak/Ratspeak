@@ -134,6 +134,8 @@ pub struct StagedAttachment {
     image_preparing: bool,
     image_preparation_revision: u64,
     identity_generation: u64,
+    retry_token: Option<String>,
+    retry_cancelled: Option<Arc<AtomicBool>>,
     lease: Option<AttachmentTransferLease>,
 }
 
@@ -615,6 +617,9 @@ pub struct AppState {
     attachment_transfer_budget: Mutex<AttachmentTransferBudgetState>,
     attachment_pressure_until_ms: AtomicU64,
     attachment_staging: Mutex<HashMap<String, StagedAttachment>>,
+    // Weak entries retain cancellation authority while a retryable stage is
+    // temporarily owned by native preparation. Dead entries are pruned on take.
+    attachment_staging_inflight: Mutex<HashMap<String, std::sync::Weak<AtomicBool>>>,
     /// Serializes bounded still-image decoding/encoding across all WebViews.
     /// The staging registry remains the lifecycle and cancellation authority.
     pub image_preparation_lock: tokio::sync::Mutex<()>,
@@ -889,6 +894,7 @@ impl AppState {
             attachment_transfer_budget: Mutex::new(AttachmentTransferBudgetState::default()),
             attachment_pressure_until_ms: AtomicU64::new(0),
             attachment_staging: Mutex::new(HashMap::new()),
+            attachment_staging_inflight: Mutex::new(HashMap::new()),
             image_preparation_lock: tokio::sync::Mutex::new(()),
             attachment_delivery_leases: Mutex::new(HashMap::new()),
             inbound_attachment_transfers: Mutex::new(HashMap::new()),
@@ -1261,6 +1267,8 @@ impl AppState {
             image_preparing: false,
             image_preparation_revision: 0,
             identity_generation: self.current_identity_session_generation(),
+            retry_token: None,
+            retry_cancelled: None,
             lease: Some(lease),
         };
         self.attachment_staging
@@ -1345,6 +1353,87 @@ impl AppState {
                 && staged.written == staged.declared_size
         });
         complete.then(|| staging.remove(token)).flatten()
+    }
+
+    /// Take a completed stage for an operation that can fail before admission.
+    /// Cancellation remains effective until it is restored or consumed. A stage
+    /// must never be restored after a possibly successful durable admission.
+    pub fn take_retryable_attachment_staging(&self, token: &str) -> Option<StagedAttachment> {
+        let mut staging = self
+            .attachment_staging
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let complete = staging.get(token).is_some_and(|staged| {
+            staged.identity_generation == self.current_identity_session_generation()
+                && !staged.write_in_progress
+                && !staged.image_preparing
+                && (!staged.image_source || staged.image_prepared)
+                && staged.written == staged.declared_size
+        });
+        if !complete {
+            return None;
+        }
+        let mut staged = staging.remove(token)?;
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let mut inflight = self
+            .attachment_staging_inflight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        inflight.retain(|_, value| value.strong_count() != 0);
+        inflight.insert(token.to_owned(), Arc::downgrade(&cancelled));
+        staged.retry_token = Some(token.to_owned());
+        staged.retry_cancelled = Some(cancelled);
+        Some(staged)
+    }
+
+    /// Validate while holding the identity lifecycle lock before message admission.
+    /// This also covers sends without an optimistic WebView message identifier.
+    pub fn attachment_staging_is_current(&self, staged: &StagedAttachment) -> bool {
+        staged.identity_generation == self.current_identity_session_generation()
+            && self.attachment_pressure_until_ms.load(Ordering::Acquire) <= unix_time_ms()
+            && !staged
+                .retry_cancelled
+                .as_ref()
+                .is_some_and(|v| v.load(Ordering::Acquire))
+    }
+
+    /// Restore exactly the same file/token/lease after a definite pre-admission
+    /// failure. Closing the conversation, identity changes and memory-pressure
+    /// cancellation cannot resurrect a discarded clip. Caller owns lifecycle lock.
+    pub fn restore_attachment_staging(&self, mut staged: StagedAttachment) -> bool {
+        let Some(token) = staged.retry_token.as_ref().cloned() else {
+            return false;
+        };
+        if !staged.path.is_file() {
+            return false;
+        }
+        let mut staging = self
+            .attachment_staging
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut inflight = self
+            .attachment_staging_inflight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if !self.attachment_staging_is_current(&staged) || staging.contains_key(&token) {
+            return false;
+        }
+        inflight.remove(&token);
+        staged.retry_token = None;
+        staged.retry_cancelled = None;
+        staging.insert(token, staged);
+        true
+    }
+
+    fn cancel_inflight_attachment_staging(&self) {
+        let mut inflight = self
+            .attachment_staging_inflight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        for cancel in inflight.values().filter_map(std::sync::Weak::upgrade) {
+            cancel.store(true, Ordering::Release);
+        }
+        inflight.clear();
     }
 
     pub fn inspect_staged_image_attachment(
@@ -1562,17 +1651,27 @@ impl AppState {
     }
 
     pub fn cancel_attachment_staging(&self, token: &str) -> bool {
-        let staged = self
+        let mut staging = self
             .attachment_staging
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(token);
-        if let Some(staged) = staged {
-            let _ = std::fs::remove_file(&staged.path);
+            .unwrap_or_else(|p| p.into_inner());
+        let staged = staging.remove(token);
+        let inflight = self
+            .attachment_staging_inflight
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let cancelled = if let Some(cancel) = inflight.get(token).and_then(std::sync::Weak::upgrade)
+        {
+            cancel.store(true, Ordering::Release);
             true
         } else {
             false
-        }
+        };
+        drop(inflight);
+        drop(staging);
+        let removed = staged.is_some();
+        drop(staged);
+        removed || cancelled
     }
 
     /// Drop only disposable, not-yet-queued attachment state. Active router
@@ -1593,6 +1692,7 @@ impl AppState {
         for staged in staged {
             let _ = std::fs::remove_file(&staged.path);
         }
+        self.cancel_inflight_attachment_staging();
         self.emit_to_all(
             "attachment_memory_pressure",
             serde_json::json!({ "critical": critical }),
@@ -2488,6 +2588,7 @@ impl AppState {
         for staged in staged {
             let _ = std::fs::remove_file(&staged.path);
         }
+        self.cancel_inflight_attachment_staging();
         if let Ok(mut leases) = self.attachment_delivery_leases.lock() {
             leases.clear();
         }
@@ -3535,6 +3636,54 @@ mod tests {
         std::fs::remove_file(&staged.path).unwrap();
         drop(staged);
         assert!(state.reserve_attachment_transfer(1024).is_ok());
+    }
+
+    #[test]
+    fn retryable_staging_restores_exact_token_and_respects_cancel_identity_and_pressure() {
+        for case in 0..5 {
+            let state = Arc::new(make_state());
+            let token = state
+                .begin_attachment_staging(
+                    "Voice message.c2raw".into(),
+                    "application/octet-stream".into(),
+                    4,
+                    false,
+                )
+                .unwrap();
+            state
+                .append_attachment_staging(&token, 0, &[1, 2, 3, 4])
+                .unwrap();
+            let staged = state.take_retryable_attachment_staging(&token).unwrap();
+            let path = staged.path.clone();
+            assert!(state.take_retryable_attachment_staging(&token).is_none());
+            match case {
+                1 => {
+                    assert!(state.cancel_attachment_staging(&token));
+                }
+                2 => {
+                    state.bump_identity_session_generation();
+                    state.clear_identity_scoped_runtime_state();
+                }
+                3 => state.handle_attachment_memory_pressure(true),
+                // The pressure callback can pause admission before draining its registries.
+                4 => state
+                    .attachment_pressure_until_ms
+                    .store(unix_time_ms() + 30_000, Ordering::Release),
+                _ => {}
+            }
+            assert_eq!(state.restore_attachment_staging(staged), case == 0);
+            if case == 0 {
+                let restored = state.take_retryable_attachment_staging(&token).unwrap();
+                assert_eq!(std::fs::read(&restored.path).unwrap(), [1, 2, 3, 4]);
+                drop(restored);
+            }
+            assert!(!path.exists());
+            assert!(state.attachment_staging.lock().unwrap().is_empty());
+            assert_eq!(
+                state.attachment_transfer_budget.lock().unwrap().small_bytes,
+                0
+            );
+        }
     }
 
     #[test]

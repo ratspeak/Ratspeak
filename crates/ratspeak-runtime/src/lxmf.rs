@@ -1887,6 +1887,21 @@ impl LxmfManager {
             .unwrap_or(CompressionSupport::Unknown)
     }
 
+    /// Select the format for a new recording using the existing destination-bound
+    /// compression announcement/cache. Explicit no-compression selects compact;
+    /// unknown and supported peers retain Standard. This product policy is not a
+    /// claim that no-compression is a codec capability. Freeze the returned mode
+    /// in the recording; later announcements never reinterpret recorded bytes.
+    pub fn voice_message_format(&self, db_pool: &DbPool, dest_hash_hex: &str) -> u8 {
+        if self.peer_lxmf_compression_support(Some(db_pool), dest_hash_hex)
+            == CompressionSupport::Unsupported
+        {
+            lxmf_core::constants::AM_CODEC2_700C
+        } else {
+            lxmf_core::constants::AM_OPUS_OGG
+        }
+    }
+
     fn apply_peer_lxmf_compression_support(
         &self,
         msg: &mut LxMessage,
@@ -2391,12 +2406,8 @@ impl LxmfManager {
         } = request;
 
         validate_outbound_audio(audio_bytes, audio_mode)?;
-        if db::voice_message_format(db_pool, identity_id, dest_hash_hex)
-            .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?
-            != audio_mode
-        {
-            return Err(LxmfSubmissionFailure::PreparationFailed);
-        }
+        // The recorder freezes its selected mode. Discovery may change while
+        // reviewing or retrying; it must not relabel or discard existing audio.
         let content = if content.trim().is_empty() {
             "Voice message"
         } else {
@@ -10430,9 +10441,53 @@ mod tests {
         );
     }
 
+    #[test]
+    fn voice_format_uses_only_explicit_live_or_cached_no_compression() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "de".repeat(16);
+        let destination = [0xde; 16];
+        assert_eq!(mgr.voice_message_format(&pool, &dest), 16);
+        db::set_voice_message_format(&pool, "me", &dest, 3).unwrap();
+        assert_eq!(
+            mgr.voice_message_format(&pool, &dest),
+            16,
+            "legacy customization is ignored"
+        );
+        db::touch_identity_activity(&pool, &[(dest.clone(), 1.0, None, None)]);
+        assert!(db::set_identity_lxmf_compression_support(
+            &pool,
+            &dest,
+            db::LXMF_COMPRESSION_SUPPORT_UNSUPPORTED
+        ));
+        assert_eq!(
+            mgr.voice_message_format(&pool, &dest),
+            3,
+            "restored explicit no-compression"
+        );
+        mgr.peer_lxmf_compression_support
+            .insert(destination, CompressionSupport::Supported);
+        assert_eq!(
+            mgr.voice_message_format(&pool, &dest),
+            16,
+            "live support overrides cache"
+        );
+        mgr.peer_lxmf_compression_support
+            .insert(destination, CompressionSupport::Unknown);
+        assert_eq!(mgr.voice_message_format(&pool, &dest), 16);
+        mgr.peer_lxmf_compression_support
+            .insert(destination, CompressionSupport::Unsupported);
+        assert_eq!(mgr.voice_message_format(&pool, &dest), 3);
+        assert_eq!(
+            mgr.voice_message_format(&pool, &"ab".repeat(16)),
+            16,
+            "another destination is independent"
+        );
+    }
+
     #[cfg(feature = "lxst-voice")]
     #[test]
-    fn compact_audio_requires_exact_saved_preference_and_preserves_native_field() {
+    fn compact_audio_preserves_recorded_format_after_discovery_changes() {
         let pool = test_pool();
         let mut mgr = test_manager();
         let dest = "de".repeat(16);
@@ -10450,16 +10505,15 @@ mod tests {
                 preference: DeliveryPreference::Direct,
             })
         };
-        assert_eq!(
-            submit(&mut mgr, &dest, "", &audio),
-            Err(LxmfSubmissionFailure::PreparationFailed)
-        );
-        db::set_voice_message_format(&pool, "other", &dest, 3).unwrap();
-        assert_eq!(
-            submit(&mut mgr, &dest, "", &audio),
-            Err(LxmfSubmissionFailure::PreparationFailed)
-        );
-        db::set_voice_message_format(&pool, "me", &dest, 3).unwrap();
+        let destination: [u8; 16] = hex::decode(&dest).unwrap().try_into().unwrap();
+        mgr.peer_lxmf_compression_support
+            .insert(destination, CompressionSupport::Unsupported);
+        assert_eq!(mgr.voice_message_format(&pool, &dest), 3);
+        // This recording was made compact. Later positive support changes only
+        // future recordings, never the bytes currently being reviewed/retried.
+        mgr.peer_lxmf_compression_support
+            .insert(destination, CompressionSupport::Supported);
+        assert_eq!(mgr.voice_message_format(&pool, &dest), 16);
         assert_eq!(
             submit(&mut mgr, &dest, "", &audio[..1499]),
             Err(LxmfSubmissionFailure::PreparationFailed)
@@ -10486,10 +10540,6 @@ mod tests {
             audio
         );
         db::set_voice_message_format(&pool, "me", &dest, 16).unwrap();
-        assert_eq!(
-            submit(&mut mgr, &dest, "", &audio),
-            Err(LxmfSubmissionFailure::PreparationFailed)
-        );
         assert_eq!(db::get_conversation(&pool, &dest, "me", 10).len(), 1);
     }
 

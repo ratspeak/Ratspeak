@@ -74,16 +74,11 @@ function harness(platform, mode) {
             media.push(this);
         },
         RS: {
-            ui: { openActionMenu: function(trigger, items) { hooks.menu = items; } },
             diag: function() {}, config: { VOICE_PLAYBACK_START_TIMEOUT: 2000 },
             mediaPermissions: { ensure: function() { return Promise.resolve(true); } },
             composer: { dismissForReplacement: function() { return Promise.resolve(); } },
             listen: function(k, fn) { events[k] = fn; return Promise.resolve(function() {}); },
             invoke: function(command, payload) {
-                if (command === 'voice_memo_format') {
-                    hooks.formatCalls = hooks.formatCalls || []; hooks.formatCalls.push(payload.args);
-                    return Promise.resolve({ identity_id: 'alice', dest_hash: payload.args.dest_hash, audio_mode: payload.args.audio_mode || mode });
-                }
                 if (command === 'voice_memo_status') return Promise.resolve({ state: 'idle' });
                 if (command === 'voice_memo_start') {
                     recordings.push(command);
@@ -153,22 +148,23 @@ function harness(platform, mode) {
 }
 
 var cases = [
-    ['compact preview carries its explicit audio mode through desktop and native playback', async function(platform) {
+    ['compact preview carries its explicit audio mode through playback', async function(platform) {
         var h = harness(platform, 3); await h.record(); await h.click('play');
         h.event('playing', 800); assert.equal(h.state(), 'playing');
         await h.click('send'); assert.equal(h.sent[0].audio_mode, 3);
     }],
-    ['voice format is saved for the exact conversation and cannot change during recording', async function(platform) {
-        var h = harness(platform);
-        await h.context.RS.voiceMemos.openFormatMenu({});
-        assert.equal(h.hooks.menu.length, 2);
-        await h.hooks.menu[1].onSelect();
-        assert.equal(h.hooks.formatCalls[1].audio_mode, 3);
-        assert.equal(h.hooks.formatCalls[1].identity_id, 'alice');
-        h.context.lxmfActiveContact = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
-        h.hooks.menu[0].onSelect(); assert.equal(h.hooks.formatCalls.length, 2);
-        await h.record(); await h.context.RS.voiceMemos.openFormatMenu({});
-        assert.equal(h.hooks.formatCalls.length, 2, 'an existing recording freezes its format');
+    ['recording uses the automatic mode without a format menu or setter', async function(platform) {
+        var h = harness(platform, 3);
+        assert.equal(h.context.RS.voiceMemos.openFormatMenu, undefined);
+        await h.click('record');
+        assert.equal(h.timer(), '0:00 / 0:15');
+        await h.click('stop');
+        await h.click('send');
+        assert.equal(h.sent[0].audio_mode, 3, 'the native recording mode remains frozen through Send');
+        assert.equal(h.sent[0].data_base64, h.draft.data_base64);
+        var standard = harness(platform, 16);
+        await standard.click('record');
+        assert.equal(standard.timer(), '0:00 / 5:00');
     }],
     ['controller reports the original recorded duration before any playback', async function(platform) {
         var h = harness(platform); await h.record();

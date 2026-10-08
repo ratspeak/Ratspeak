@@ -4199,9 +4199,13 @@ function sendLxmfVoiceMemo(voiceDraft, targetHash, options) {
             staging_token: stageToken,
         }
     }).catch(function(error) {
+        // Only native confirmation of no admission and successful restoration
+        // allows reuse. A stale conversation still owns no retained recording.
+        if (error && error.code === 'voice_retryable' && _conversationOwnerIsCurrent(sendOwner) &&
+            (typeof options.isCurrent !== 'function' || options.isCurrent())) throw error;
         return _cancelStagedAttachmentToken(stageToken).then(function() { throw error; });
     }).then(function(resp) {
-        if (!_conversationOwnerIdentityIsCurrent(sendOwner)) return resp;
+        if (!_conversationOwnerIdentityIsCurrent(sendOwner) || (resp && resp.cancelled)) return resp;
         var acceptedId = (resp && resp.msg_id) || msgId;
         if (window.RS && RS.voiceMemos) RS.voiceMemos.registerDraft(acceptedId, voiceDraft);
         var isActive = _appendConversationMessage(targetHash, {
@@ -6151,11 +6155,6 @@ function openChatHeaderDropdown(triggerEl) {
                 _voiceRunPrimaryAction(lxmfActiveContact);
             }
         });
-    }
-
-    if (window.RS && RS.voiceMemos && lxstVoiceState.available) {
-        items.push({ label: 'Voice Message Format', icon: _voiceIcon('mic', 18),
-            onSelect: function() { RS.voiceMemos.openFormatMenu(menuTrigger); } });
     }
 
     items.push(

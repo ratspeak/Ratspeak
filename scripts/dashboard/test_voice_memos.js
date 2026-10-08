@@ -87,7 +87,7 @@ assert(voice.includes("record.addEventListener('pointerdown'"),
     'touch-and-hold recording must start immediately on pointer-down');
 assert(voice.includes("setRecorderState('review')"),
     'recordings must be reviewed before transfer');
-assert(voice.includes("announce('Voice message queued to send')") &&
+assert(voice.includes("'Voice message queued to send'") &&
     !voice.includes("announce('Voice message sent')"),
     'backend admission must not be announced as network delivery');
 assert(voice.includes('stop.disabled = busy'),
@@ -164,7 +164,7 @@ assert(voice.includes('data-audio-supported'));
 assert(voice.includes('Array.from({ length: BAR_COUNT }, function() { return 0; })'),
     'received audio without decoded metadata must use a neutral waveform');
 assert(commands.includes('begin_attachment_staging('));
-assert(commands.includes('take_completed_attachment_staging(&args.staging_token)'));
+assert(commands.includes('take_retryable_attachment_staging(&args.staging_token)'));
 assert(commands.includes('crate::voice_memo::inspect_voice_memo_format(&inspection_bytes, format)'));
 assert(commands.includes('crate::commands::messaging::queue_prepared_audio('));
 assert(messagingCommands.includes('send_audio_message_with_preference_report(AudioMessageRequest'));

@@ -76,6 +76,7 @@ var stopRequests = [];
 var playbackStarts = [];
 var playbackStopRequests = [];
 var permissionRequests = [];
+var sendRequests = [];
 var deferPermission = false;
 var cancelIds = [];
 var cancelledStageTokens = [];
@@ -115,6 +116,14 @@ var context = {
     requestAnimationFrame: function() { return 1; },
     cancelAnimationFrame: function() {},
     showToast: function(message) { toasts.push(message); },
+    sendLxmfVoiceMemo: function(draft, target, options) {
+        var request = deferred();
+        request.draft = draft;
+        request.target = target;
+        sendRequests.push(request);
+        options.onAdmissionStart();
+        return request.promise;
+    },
     escapeHtml: function(value) { return String(value); },
     isIOS: function() { return false; },
     isAndroid: function() { return true; },
@@ -379,6 +388,68 @@ async function flush() {
         'permission completion after lifecycle retirement must not start a hidden microphone');
     assert(!toasts.some(function(message) { return message.includes('discarded while Ratspeak'); }),
         'the first microphone permission sheet must not claim a voice message was discarded');
+    context.document.hidden = false;
+    deferPermission = false;
+    elements['voice-memo-record-btn'].fire('click');
+    await flush();
+    startRequests[4].resolve({ session_id: 'vmr-0000000000000005', audio_mode: 3, max_duration_ms: 15000 });
+    await flush();
+    assert.strictEqual(elements['voice-memo-timer'].textContent, '0:00 / 0:15',
+        'automatic Compact duration must be visible immediately after native admission');
+    assert.strictEqual(elements['voice-memo-announcer'].textContent,
+        'Recording voice message. Maximum 15 seconds.');
+    recordingEvent({ state: 'recording', session_id: 'vmr-0000000000000005', duration_ms: 2000, level: 100 });
+    assert.strictEqual(elements['voice-memo-timer'].textContent, '0:02 / 0:15');
+    elements['voice-memo-stop-btn'].fire('click');
+    await flush();
+    stopRequests[3].resolve({
+        session_id: 'vmr-0000000000000005', staging_token: 'retry-compact-stage', audio_mode: 3,
+        data_base64: 'compact-clip', duration_ms: 2000, size: 200, waveform: [10, 20, 30],
+    });
+    await flush();
+    elements['voice-memo-send-btn'].fire('click');
+    await flush();
+    assert.strictEqual(elements['lxmf-voice-recorder'].dataset.state, 'sending');
+    sendRequests[0].reject({ code: 'voice_retryable' });
+    await flush();
+    assert.strictEqual(elements['lxmf-voice-recorder'].dataset.state, 'review');
+    assert.strictEqual(elements['voice-memo-timer'].textContent, '0:02');
+    assert.strictEqual(elements['voice-memo-send-btn'].disabled, false);
+    assert.strictEqual(elements['voice-memo-play-btn'].disabled, false);
+    assert(!cancelledStageTokens.includes('retry-compact-stage'));
+    elements['voice-memo-send-btn'].fire('click');
+    await flush();
+    assert.strictEqual(sendRequests[1].draft, sendRequests[0].draft,
+        'retry must use the exact frozen recording and mode, without recording or transcoding');
+    sendRequests[1].resolve({ msg_id: 'accepted-compact' });
+    await flush();
+    assert.strictEqual(elements['lxmf-voice-recorder'].dataset.state, 'idle');
+
+    elements['voice-memo-record-btn'].fire('click');
+    await flush();
+    startRequests[5].resolve({ session_id: 'vmr-0000000000000006', audio_mode: 16, max_duration_ms: 300000 });
+    await flush();
+    assert.strictEqual(elements['voice-memo-timer'].textContent, '0:00 / 5:00');
+    assert.strictEqual(elements['voice-memo-announcer'].textContent,
+        'Recording voice message. Maximum 5 minutes.');
+    elements['voice-memo-stop-btn'].fire('click');
+    await flush();
+    stopRequests[4].resolve({
+        session_id: 'vmr-0000000000000006', staging_token: 'uncertain-stage', audio_mode: 16,
+        data_base64: 'opus-clip', duration_ms: 2000, waveform: [10],
+    });
+    await flush();
+    elements['voice-memo-send-btn'].fire('click');
+    await flush();
+    sendRequests[2].reject({ code: 'voice_send_uncertain' });
+    await flush();
+    assert.strictEqual(elements['lxmf-voice-recorder'].dataset.state, 'idle',
+        'ambiguous completion must not offer another send of the same clip');
+    assert.strictEqual(elements['voice-memo-alert'].textContent,
+        'Send status unavailable. Check the conversation.');
+    elements['voice-memo-send-btn'].fire('click');
+    await flush();
+    assert.strictEqual(sendRequests.length, 3, 'cleared ambiguous review cannot submit again');
     console.log('Voice recording ownership tests passed');
 })().catch(function(error) {
     console.error(error);

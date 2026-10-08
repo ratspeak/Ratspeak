@@ -174,6 +174,68 @@ async function flush() {
     assert.strictEqual(appended.length, appendedBeforeIdentityReset,
         'an old-identity completion must not repopulate the replacement identity cache');
 
+    context._activateConversation(hashA, 'navigation');
+    var retryOwner = context._conversationOwnerSnapshot();
+    var retryDraft = voiceDraft();
+    retryDraft.staging_token = 'stage-retry';
+    var rowsBeforeRetry = appended.length;
+    calls.length = 0;
+    admission = deferred();
+    var retrySend = context.sendLxmfVoiceMemo(retryDraft, hashA, { owner: retryOwner });
+    admission.reject({ code: 'voice_retryable', message: 'retry' });
+    await assert.rejects(retrySend, function(error) { return error.code === 'voice_retryable'; });
+    assert(!calls.some(function(call) { return call.command === 'cancel_attachment_stage'; }),
+        'definite pre-admission failure must preserve the same native stage for an active conversation');
+    assert.strictEqual(appended.length, rowsBeforeRetry, 'failed admission must not add a chat bubble');
+    admission = deferred();
+    var acceptedRetry = context.sendLxmfVoiceMemo(retryDraft, hashA, { owner: retryOwner });
+    admission.resolve({ msg_id: 'accepted-retry' });
+    await acceptedRetry;
+    assert.strictEqual(appended.length, rowsBeforeRetry + 1, 'explicit retry reconciles exactly one bubble');
+    assert.strictEqual(calls.filter(function(call) {
+        return call.command === 'send_lxmf_voice_message';
+    }).length, 2, 'each press admits one attempt, with no automatic retry loop');
+
+    calls.length = 0;
+    admission = deferred();
+    var staleRetry = context.sendLxmfVoiceMemo(retryDraft, hashA, { owner: retryOwner });
+    context._activateConversation('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'navigation');
+    admission.reject({ code: 'voice_retryable', message: 'retry' });
+    await assert.rejects(staleRetry, function(error) { return error.code === 'voice_retryable'; });
+    assert(calls.some(function(call) {
+        return call.command === 'cancel_attachment_stage' && call.payload.token === 'stage-retry';
+    }), 'navigation during admission must remove a restored stage from its retired conversation');
+
+    context._activateConversation(hashA, 'navigation');
+    calls.length = 0;
+    admission = deferred();
+    var uncertainSend = context.sendLxmfVoiceMemo(retryDraft, hashA, {
+        owner: context._conversationOwnerSnapshot(),
+    });
+    admission.reject({ code: 'voice_send_uncertain', message: 'uncertain' });
+    await assert.rejects(uncertainSend, function(error) { return error.code === 'voice_send_uncertain'; });
+    assert(calls.some(function(call) { return call.command === 'cancel_attachment_stage'; }),
+        'an ambiguous completion cannot retain a token that permits duplicate submission');
+
+    calls.length = 0;
+    admission = deferred();
+    var ownerStillActive = true;
+    var retiredSend = context.sendLxmfVoiceMemo(retryDraft, hashA, {
+        owner: context._conversationOwnerSnapshot(), isCurrent: function() { return ownerStillActive; },
+    });
+    ownerStillActive = false;
+    admission.reject({ code: 'voice_retryable', message: 'retry' });
+    await assert.rejects(retiredSend, function(error) { return error.code === 'voice_retryable'; });
+    assert(calls.some(function(call) { return call.command === 'cancel_attachment_stage'; }),
+        'background retirement within the same conversation must remove a restored clip');
+
+    var rowsBeforeCancel = appended.length;
+    admission = deferred();
+    var stoppedSend = context.sendLxmfVoiceMemo(retryDraft, hashA, { owner: context._conversationOwnerSnapshot() });
+    admission.resolve({ cancelled: true, client_msg_id: 'client-message' });
+    await stoppedSend;
+    assert.strictEqual(appended.length, rowsBeforeCancel, 'cancelled preparation must never create a phantom sent bubble');
+
     var attachmentBranch = source.slice(
         source.indexOf('if (lxmfPendingFile)'),
         source.indexOf('if (!text) return;', source.indexOf('if (lxmfPendingFile)'))

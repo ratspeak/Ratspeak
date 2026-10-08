@@ -14,12 +14,12 @@ use crate::commands::shared::remove_stored_file_refs;
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::helpers::{active_identity_id, sanitize_text, validate_hex};
-#[cfg(feature = "lxst-voice")]
-use crate::lxmf::AudioMessageRequest;
 use crate::lxmf::{
     AttachmentMessageRequest, DeliveryPreference, DeliveryProfile, LxmfManager,
     LxmfSubmissionFailure, MessageSendRequest, ReactionSendRequest, ReplyMessageSendRequest,
 };
+#[cfg(feature = "lxst-voice")]
+use crate::lxmf::{AudioMessageRequest, LxmfQueuedMessage};
 use crate::state::{
     AppState, AttachmentTransferAdmissionError, AttachmentTransferLease,
     ImageAttachmentStagingError, LxmfClientSendAdmissionError, LxmfClientSendCancellation,
@@ -93,7 +93,7 @@ pub(crate) fn normalize_lxmf_client_msg_id(raw: Option<&str>) -> AppResult<Optio
     Ok(Some(client_msg_id))
 }
 
-fn begin_lxmf_client_send(
+pub(crate) fn begin_lxmf_client_send(
     state: &Arc<AppState>,
     client_msg_id: Option<&String>,
 ) -> AppResult<Option<LxmfClientSendGuard>> {
@@ -1288,17 +1288,42 @@ async fn queue_prepared_attachment(
 }
 
 #[cfg(feature = "lxst-voice")]
+fn voice_send_uncertain() -> AppError {
+    // A worker/finalization failure may follow durable admission. Never offer
+    // another send of the same clip when its first delivery is ambiguous.
+    AppError::new(
+        "voice_send_uncertain",
+        "Check this conversation for delivery before recording again",
+    )
+}
+
+#[cfg(feature = "lxst-voice")]
+pub(crate) struct VoiceSendOrigin {
+    pub client_msg_id: Option<String>,
+    pub fence: crate::state::ActivityRequestFence,
+    pub identity_id: String,
+    pub client_send: Option<LxmfClientSendGuard>,
+}
+
+#[cfg(feature = "lxst-voice")]
 pub(crate) async fn queue_prepared_audio(
     state: Arc<AppState>,
     dest_hash: String,
     delivery_pref: DeliveryPreference,
-    client_msg_id: Option<String>,
     audio_bytes: Vec<u8>,
     audio_mode: u8,
-    staged: StagedAttachment,
+    staged: &mut Option<StagedAttachment>,
+    origin: VoiceSendOrigin,
 ) -> AppResult<Value> {
-    let client_send = begin_lxmf_client_send(&state, client_msg_id.as_ref())?;
-    let activity_fence = state.activity_request_fence();
+    let VoiceSendOrigin {
+        client_msg_id,
+        fence: activity_fence,
+        identity_id,
+        client_send,
+    } = origin;
+    if state.current_identity_session_generation() != activity_fence.identity_session_generation() {
+        return Err(AppError::conflict("Identity changed"));
+    }
     let _ = crate::commands::shared::hydrate_contact_identity_for_send(&state, &dest_hash).await;
     if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
         return Ok(response);
@@ -1316,15 +1341,41 @@ pub(crate) async fn queue_prepared_audio(
     }
     propagation_readiness?;
 
-    let identity_id = active_identity_id(&state);
+    // The worker owns the clip and lifecycle lock through local admission,
+    // even if the IPC future is dropped while its blocking work continues.
+    // Finalization and event publication remain inside this boundary as well.
+    // Network/path readiness above never holds the lifecycle lock.
     let st = Arc::clone(&state);
     let dh = dest_hash.clone();
     let cancellation = client_send
         .as_ref()
         .map(LxmfClientSendGuard::cancellation_probe);
-    let staged_path = staged.path.clone();
-    let (send_result, staged) = tokio::task::spawn_blocking(move || {
-        let attempt = queue_lxmf_client_send(&st, cancellation.as_ref(), |manager| {
+    let runtime = tokio::runtime::Handle::current();
+    let mut clip = staged.take();
+    let (response, returned_clip) = tokio::task::spawn_blocking(move || {
+        let state = st;
+        let _identity = runtime.block_on(state.identity_switch_lock.lock());
+        if state.current_identity_session_generation()
+            != activity_fence.identity_session_generation()
+            || active_identity_id(&state) != identity_id
+            || !clip
+                .as_ref()
+                .is_some_and(|clip| state.attachment_staging_is_current(clip))
+        {
+            return (
+                Err(AppError::conflict(
+                    "Voice message was cancelled or identity changed",
+                )),
+                clip,
+            );
+        }
+        let send_result = queue_lxmf_client_send(&state, cancellation.as_ref(), |manager| {
+            if !clip
+                .as_ref()
+                .is_some_and(|clip| state.attachment_staging_is_current(clip))
+            {
+                return None;
+            }
             Some(
                 manager.send_audio_message_with_preference_report(AudioMessageRequest {
                     dest_hash_hex: &dh,
@@ -1332,31 +1383,65 @@ pub(crate) async fn queue_prepared_audio(
                     title: "",
                     audio_bytes: &audio_bytes,
                     audio_mode,
-                    staged_path: Some(&staged_path),
-                    db_pool: &st.db,
+                    // Preserve the exact temporary clip until durable admission.
+                    // Definite failure can restore its same token without rerecording.
+                    staged_path: None,
+                    db_pool: &state.db,
                     identity_id: &identity_id,
                     preference: delivery_pref,
                 }),
             )
         });
-        (attempt, staged)
+        if let LxmfClientSendAttempt::Queued(Ok(ref queued)) = send_result {
+            state.hold_attachment_delivery_lease(
+                queued.message_id.clone(),
+                clip.take()
+                    .expect("admission owns its staged clip")
+                    .into_transfer_lease(),
+            );
+        }
+        let response = runtime.block_on(finish_voice_send(
+            &state,
+            &dest_hash,
+            activity_fence,
+            client_msg_id,
+            client_send.as_ref(),
+            send_result,
+        ));
+        (response, clip)
     })
     .await
-    .map_err(|_| AppError::internal("send_audio task panicked"))?;
+    .map_err(|_| voice_send_uncertain())?;
+    *staged = returned_clip;
+    response
+}
 
+// The admitting worker keeps the identity lifecycle lock through this function.
+// A completed send may outlive its IPC caller, but never its original identity.
+#[cfg(feature = "lxst-voice")]
+async fn finish_voice_send(
+    state: &Arc<AppState>,
+    dest_hash: &str,
+    activity_fence: crate::state::ActivityRequestFence,
+    client_msg_id: Option<String>,
+    client_send: Option<&LxmfClientSendGuard>,
+    send_result: LxmfClientSendAttempt<Result<LxmfQueuedMessage, LxmfSubmissionFailure>>,
+) -> AppResult<Value> {
     match send_result {
         LxmfClientSendAttempt::Queued(Ok(queued)) => {
             let id = queued.message_id;
-            state.hold_attachment_delivery_lease(id.clone(), staged.into_transfer_lease());
-            if finalize_lxmf_client_send(&state, client_send.as_ref(), &id).await? {
+            if finalize_lxmf_client_send(state, client_send, &id)
+                .await
+                .map_err(|_| voice_send_uncertain())?
+            {
                 return Ok(json!({
                     "msg_id": id,
                     "client_msg_id": client_msg_id,
                     "cancelled": true,
                 }));
             }
-            schedule_announce_after_user_send_from_origin(&state, &dest_hash, activity_fence);
-            record_lxmf_delivery_queued(&state, activity_fence, &id, &dest_hash, queued.method);
+            schedule_announce_after_user_send_from_origin(state, dest_hash, activity_fence);
+            record_lxmf_delivery_queued(state, activity_fence, &id, dest_hash, queued.method);
             state.emit_to_all(
                 "lxmf_step",
                 json!({
@@ -1366,7 +1451,7 @@ pub(crate) async fn queue_prepared_audio(
                     "client_msg_id": client_msg_id,
                 }),
             );
-            broadcast_conversations(Arc::clone(&state));
+            broadcast_conversations(Arc::clone(state));
             state.lxmf_notify.notify_one();
             Ok(json!({ "msg_id": id, "client_msg_id": client_msg_id }))
         }
@@ -1375,13 +1460,13 @@ pub(crate) async fn queue_prepared_audio(
             limit_bytes,
         })) => {
             record_lxmf_submission_failed(
-                &state,
+                state,
                 activity_fence,
-                &dest_hash,
+                dest_hash,
                 producer::LxmfSubmissionFailureReason::AttachmentEnvelopeTooLarge,
             );
             emit_lxmf_send_error(
-                &state,
+                state,
                 client_msg_id.as_deref(),
                 "audio_envelope_too_large",
                 "Voice message exceeds the protocol resource limit",
@@ -1395,13 +1480,13 @@ pub(crate) async fn queue_prepared_audio(
         }
         LxmfClientSendAttempt::Queued(Err(LxmfSubmissionFailure::PreparationFailed)) => {
             record_lxmf_submission_failed(
-                &state,
+                state,
                 activity_fence,
-                &dest_hash,
+                dest_hash,
                 producer::LxmfSubmissionFailureReason::PreparationFailed,
             );
             emit_lxmf_send_error(
-                &state,
+                state,
                 client_msg_id.as_deref(),
                 "audio_invalid",
                 "Voice message could not be queued",
@@ -1413,13 +1498,13 @@ pub(crate) async fn queue_prepared_audio(
         }
         LxmfClientSendAttempt::Queued(Err(LxmfSubmissionFailure::StorageFailed)) => {
             record_lxmf_submission_failed(
-                &state,
+                state,
                 activity_fence,
-                &dest_hash,
+                dest_hash,
                 producer::LxmfSubmissionFailureReason::AttachmentStorageFailed,
             );
             emit_lxmf_send_error(
-                &state,
+                state,
                 client_msg_id.as_deref(),
                 "audio_storage_failed",
                 "Voice message storage is unavailable",
@@ -1430,11 +1515,11 @@ pub(crate) async fn queue_prepared_audio(
             ))
         }
         LxmfClientSendAttempt::Cancelled => Ok(emit_prequeue_lxmf_cancellation(
-            &state,
+            state,
             client_msg_id.as_deref().unwrap_or_default(),
         )),
         LxmfClientSendAttempt::Failed(reason) => {
-            record_lxmf_submission_failed(&state, activity_fence, &dest_hash, reason);
+            record_lxmf_submission_failed(state, activity_fence, dest_hash, reason);
             let (code, message, error) = match reason {
                 producer::LxmfSubmissionFailureReason::RouterUnavailable => (
                     "lxmf_not_initialized",
@@ -1472,7 +1557,7 @@ pub(crate) async fn queue_prepared_audio(
                     AppError::internal("Voice message storage is unavailable"),
                 ),
             };
-            emit_lxmf_send_error(&state, client_msg_id.as_deref(), code, message);
+            emit_lxmf_send_error(state, client_msg_id.as_deref(), code, message);
             Err(error)
         }
     }

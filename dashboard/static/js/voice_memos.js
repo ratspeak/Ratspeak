@@ -30,7 +30,6 @@
     var recordingOwner = null;
     var recordingGeneration = 0;
     var recordingSessionId = '';
-    var recordingMode = 0x10;
     var recordingMaxDuration = 300000;
     var recordingStartPromise = null;
     var recordingStartRetirement = null;
@@ -355,37 +354,6 @@
         if (input && document.activeElement === input) input.blur();
         return Promise.resolve();
     }
-    function openFormatMenu(trigger) {
-        if (!window.lxmfActiveContact || recorderState !== 'idle') {
-            showToast('Finish this recording before changing voice format.', 'toast-warning', 4200);
-            return Promise.resolve(false);
-        }
-        var owner = conversationSnapshot();
-        return RS.invoke('voice_memo_format', { args: { dest_hash: canonicalConversationHash(owner.hash) } }).then(function(saved) {
-            if (!conversationOwnerIsCurrent(owner)) return false;
-            var items = [
-                { mode: 0x10, label: 'Standard · 5 minutes' },
-                { mode: 0x03, label: 'Compact for handhelds · 15s' }
-            ].map(function(choice) {
-                return {
-                    label: choice.label,
-                    icon: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ' + (Number(saved.audio_mode) === choice.mode ? 'role="img" aria-label="Selected">' : 'aria-hidden="true">') + (Number(saved.audio_mode) === choice.mode ? '<path d="m5 12 4 4L19 6"/>' : '<circle cx="12" cy="12" r="7"/>') + '</svg>',
-                    onSelect: function() {
-                        if (!conversationOwnerIsCurrent(owner) || recorderState !== 'idle') return;
-                        return RS.invoke('voice_memo_format', { args: {
-                            dest_hash: saved.dest_hash, identity_id: saved.identity_id, audio_mode: choice.mode
-                        } }).then(function() {
-                            if (!conversationOwnerIsCurrent(owner)) return;
-                            showToast(choice.mode === 0x03 ? 'Compact voice messages saved for this contact.' : 'Standard voice messages saved for this contact.', 'toast-success', 3500);
-                        }).catch(function() { if (conversationOwnerIsCurrent(owner)) showToast('Could not save voice format.', 'toast-error', 4200); });
-                    }
-                };
-            });
-            if (RS.ui && typeof RS.ui.openActionMenu === 'function') RS.ui.openActionMenu(trigger, items, { title: 'Voice message format' });
-            else if (typeof actionPopover === 'function') actionPopover(trigger, items);
-            return true;
-        }).catch(function() { if (conversationOwnerIsCurrent(owner)) showToast('Could not load voice format.', 'toast-error', 4200); return false; });
-    }
     function startRecording() {
         if (recorderState !== 'idle' || !window.lxmfActiveContact) return Promise.resolve(false);
         if (voiceCallOwnsAudio()) {
@@ -432,7 +400,6 @@
                     return RS.invoke('voice_memo_cancel', { args: { session_id: sessionId } }).catch(function() {}).then(function() { return false; });
                 }
                 recordingSessionId = sessionId;
-                recordingMode = Number(result.audio_mode || 0x10);
                 recordingMaxDuration = Number(result.max_duration_ms || 300000);
                 draft = null;
                 paused = false;
@@ -440,7 +407,9 @@
                 syncPauseButton();
                 renderRecorderWaveform([], true);
                 setRecorderState('recording');
-                announce('Recording voice message');
+                var timer = el('voice-memo-timer');
+                if (timer) timer.textContent = formatDuration(0) + ' / ' + formatDuration(recordingMaxDuration);
+                announce('Recording voice message. Maximum ' + (recordingMaxDuration >= 60000 ? Math.round(recordingMaxDuration / 60000) + ' minutes' : Math.round(recordingMaxDuration / 1000) + ' seconds') + '.');
                 voiceHaptic('light');
                 return true;
             }).catch(function(error) {
@@ -583,7 +552,7 @@
                     recordingSendAdmissionStarted = true;
                 }
             },
-        })).then(function() {
+        })).then(function(result) {
             if (generation !== recordingGeneration) return;
             draft = null;
             if (draftPlaybackKey === retiringPlaybackKey) draftPlaybackKey = '';
@@ -591,17 +560,31 @@
             recordingOwner = null;
             recordingSendAdmissionStarted = false;
             setRecorderState('idle');
-            announce('Voice message queued to send');
+            announce(result && result.cancelled ? 'Voice message cancelled' : 'Voice message queued to send');
             voiceHaptic('medium');
-        }).catch(function() {
+        }).catch(function(error) {
             if (generation !== recordingGeneration) return;
+            if (error && error.code === 'voice_retryable' && conversationOwnerIsCurrent(sendOwner)) {
+                draft = toSend;
+                draftPlaybackKey = createDraftPlaybackKey(toSend);
+                recordingSendAdmissionStarted = false;
+                renderRecorderWaveform(toSend.waveform || [], false);
+                var timer = el('voice-memo-timer');
+                if (timer) timer.textContent = formatDuration(toSend.duration_ms);
+                setRecorderState('review');
+                announce('Voice message not sent. Recording ready to retry.');
+                showToast('Couldn\'t send. Your recording is ready to retry.', 'toast-warning', 4200);
+                return;
+            }
             draft = null;
             if (draftPlaybackKey === retiringPlaybackKey) draftPlaybackKey = '';
             recordingTarget = '';
             recordingOwner = null;
             recordingSendAdmissionStarted = false;
             setRecorderState('idle');
-            showToast('Voice message wasn\'t sent. Record it again to retry.', 'toast-error', 4200);
+            var message = error && error.code === 'voice_send_uncertain' ? 'Send status unavailable. Check the conversation.' : 'Voice message wasn\'t sent. Record it again to retry.';
+            alertVoice(message);
+            showToast(message, 'toast-error', 4200);
         });
     }
     function retireAdmittedSendUi() {
@@ -1582,7 +1565,7 @@
             return;
         }
         var timer = el('voice-memo-timer');
-        if (timer && typeof data.duration_ms === 'number') timer.textContent = formatDuration(data.duration_ms) + (recordingMode === 0x03 ? ' / ' + formatDuration(recordingMaxDuration) : '');
+        if (timer && typeof data.duration_ms === 'number') timer.textContent = formatDuration(data.duration_ms) + ' / ' + formatDuration(recordingMaxDuration);
         var recorder = el('lxmf-voice-recorder');
         if (recorder && (data.state === 'recording' || data.state === 'paused')) recorder.dataset.state = data.state;
         syncPauseButton();
@@ -1704,7 +1687,6 @@
     RS.voiceMemos = {
         hasPendingRecording: function() { return recorderState !== 'idle'; },
         isAudio: isAudio,
-        openFormatMenu: openFormatMenu,
         renderAudio: renderAudio,
         registerDraft: registerDraft,
         hydratePlayers: hydratePlayers,

@@ -98,8 +98,8 @@ pub struct VoiceMemoFormatArgs {
     pub audio_mode: Option<u8>,
 }
 
-/// An explicit saved choice is the first compact-format discovery path. No
-/// peer naming, transport, or old call failure is treated as codec evidence.
+/// Read the automatically selected format. Legacy preference rows remain
+/// readable for migration, but neither they nor caller overrides select codecs.
 #[tauri::command]
 pub async fn voice_memo_format(
     state: State<'_, Arc<AppState>>,
@@ -108,6 +108,9 @@ pub async fn voice_memo_format(
     let destination = args.dest_hash.to_ascii_lowercase();
     if hex_to_array16(&destination).is_none() {
         return Err(AppError::bad_request("Invalid LXMF destination"));
+    }
+    if args.audio_mode.is_some() {
+        return Err(AppError::bad_request("Voice message format is automatic"));
     }
     let fence = state.activity_request_fence();
     let _identity = state.identity_switch_lock.lock().await;
@@ -118,24 +121,18 @@ pub async fn voice_memo_format(
     if identity.is_empty() || args.identity_id.as_ref().is_some_and(|v| v != &identity) {
         return Err(AppError::conflict("Identity changed"));
     }
-    if args.audio_mode.is_some() && args.identity_id.is_none() {
-        return Err(AppError::bad_request("Voice format requires its identity"));
-    }
-    if let Some(mode) = args.audio_mode {
-        MemoFormat::from_mode(mode).map_err(AppError::bad_request)?;
-    }
-    let local = identity.clone();
-    let peer = destination.clone();
-    let mode = db::spawn_db(state.db.clone(), move |pool| {
-        if let Some(mode) = args.audio_mode {
-            db::set_voice_message_format(&pool, &local, &peer, mode)?;
-        }
-        db::voice_message_format(&pool, &local, &peer)
-    })
-    .await
-    .map_err(|_| AppError::internal("Voice format task stopped"))?
-    .map_err(|_| AppError::internal("Voice format could not be saved or loaded"))?;
+    let mode = automatic_voice_mode(&state, &destination)?;
     Ok(json!({"identity_id":identity,"dest_hash":destination,"audio_mode":mode}))
+}
+
+fn automatic_voice_mode(state: &AppState, destination: &str) -> AppResult<u8> {
+    state
+        .lxmf
+        .lock()
+        .map_err(|_| AppError::internal("Voice format unavailable"))?
+        .as_ref()
+        .map(|manager| manager.voice_message_format(&state.db, destination))
+        .ok_or_else(|| AppError::lxmf_not_initialized("LXMF not initialized"))
 }
 
 #[derive(Deserialize)]
@@ -345,13 +342,7 @@ pub async fn voice_memo_start(
         if hex_to_array16(&destination).is_none() {
             return Err(AppError::bad_request("Invalid LXMF destination"));
         }
-        let identity = active_identity_id(&state);
-        let mode = db::spawn_db(state.db.clone(), move |pool| {
-            db::voice_message_format(&pool, &identity, &destination)
-        })
-        .await
-        .map_err(|_| AppError::internal("Voice format task stopped"))?
-        .map_err(|_| AppError::internal("Voice format unavailable"))?;
+        let mode = automatic_voice_mode(&state, &destination)?;
         MemoFormat::from_mode(mode).map_err(AppError::bad_request)?
     } else {
         MemoFormat::Opus
@@ -479,60 +470,93 @@ pub async fn send_lxmf_voice_message(
     state: State<'_, Arc<AppState>>,
     args: SendLxmfVoiceMessageArgs,
 ) -> AppResult<Value> {
-    // Taking the exact token first makes this command single-use. Every early
-    // return below drops the staged owner, which removes its private file and
-    // releases the media-transfer admission lease.
-    let staged = state
-        .take_completed_attachment_staging(&args.staging_token)
-        .ok_or_else(|| AppError::bad_request("Voice message staging is incomplete or expired"))?;
-    let format = staged_voice_format(&staged.file_name, &staged.mime)
-        .ok_or_else(|| AppError::bad_request("Voice message staging is invalid"))?;
-    if staged.is_image
-        || (format == MemoFormat::Compact
-            && staged.declared_size > crate::voice_memo::compact::RECORD_BYTES)
-    {
-        return Err(AppError::bad_request("Voice message staging is invalid"));
+    // Capture origin before taking the stage or awaiting I/O. A token acquired
+    // in one identity must never be admitted by a replacement manager, even if
+    // the caller did not supply an optimistic client message identifier.
+    let fence = state.activity_request_fence();
+    let identity_id = active_identity_id(&state);
+    if identity_id.is_empty() {
+        return Err(AppError::conflict("No active identity"));
     }
-    ensure_outbound_voice_memo_size(staged.declared_size)?;
-
-    let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
-    if !validate_hex(&dest_hash, 16, 64) {
-        return Err(AppError::new(
-            "invalid_destination",
-            "Invalid identity hash",
-        ));
-    }
-    let delivery_pref =
-        crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref());
-    crate::commands::messaging::validate_delivery_preference(&state, delivery_pref)?;
     let client_msg_id =
         crate::commands::messaging::normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
-
-    let audio_bytes = read_bounded_voice_memo(staged.path.clone()).await?;
-    if audio_bytes.len() != staged.declared_size {
-        return Err(AppError::new(
-            "audio_storage_failed",
-            "Staged voice message length changed",
-        ));
+    let client_send =
+        crate::commands::messaging::begin_lxmf_client_send(&state, client_msg_id.as_ref())?;
+    let mut staged = Some(
+        state
+            .take_retryable_attachment_staging(&args.staging_token)
+            .ok_or_else(|| {
+                AppError::bad_request("Voice message staging is incomplete or expired")
+            })?,
+    );
+    let result = async {
+        let clip = staged.as_ref().expect("preparation owns its clip");
+        let format = staged_voice_format(&clip.file_name, &clip.mime)
+            .ok_or_else(|| AppError::bad_request("Voice message staging is invalid"))?;
+        if clip.is_image
+            || (format == MemoFormat::Compact
+                && clip.declared_size > crate::voice_memo::compact::RECORD_BYTES)
+        {
+            return Err(AppError::bad_request("Voice message staging is invalid"));
+        }
+        ensure_outbound_voice_memo_size(clip.declared_size)?;
+        let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
+        if hex_to_array16(&dest_hash).is_none() {
+            return Err(AppError::new(
+                "invalid_destination",
+                "Invalid LXMF destination",
+            ));
+        }
+        let delivery_pref =
+            crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref());
+        crate::commands::messaging::validate_delivery_preference(&state, delivery_pref)?;
+        let audio_bytes = read_bounded_voice_memo(clip.path.clone()).await?;
+        if audio_bytes.len() != clip.declared_size {
+            return Err(AppError::new(
+                "audio_storage_failed",
+                "Staged voice message length changed",
+            ));
+        }
+        let inspection_bytes = audio_bytes.clone();
+        tokio::task::spawn_blocking(move || {
+            crate::voice_memo::inspect_voice_memo_format(&inspection_bytes, format)
+        })
+        .await
+        .map_err(|_| AppError::internal("Voice message validation task panicked"))?
+        .map_err(|_| AppError::bad_request("Voice message is not valid bounded audio"))?;
+        crate::commands::messaging::queue_prepared_audio(
+            Arc::clone(&state),
+            dest_hash,
+            delivery_pref,
+            audio_bytes,
+            format.mode(),
+            &mut staged,
+            crate::commands::messaging::VoiceSendOrigin {
+                client_msg_id,
+                fence,
+                identity_id: identity_id.clone(),
+                client_send,
+            },
+        )
+        .await
     }
-    let inspection_bytes = audio_bytes.clone();
-    tokio::task::spawn_blocking(move || {
-        crate::voice_memo::inspect_voice_memo_format(&inspection_bytes, format)
-    })
-    .await
-    .map_err(|_| AppError::internal("Voice message validation task panicked"))?
-    .map_err(|_| AppError::bad_request("Voice message is not valid bounded audio"))?;
-
-    crate::commands::messaging::queue_prepared_audio(
-        Arc::clone(&state),
-        dest_hash,
-        delivery_pref,
-        client_msg_id,
-        audio_bytes,
-        format.mode(),
-        staged,
-    )
-    .await
+    .await;
+    if let Err(error) = &result {
+        if let Some(clip) = staged.take() {
+            let _identity = state.identity_switch_lock.lock().await;
+            if state.current_identity_session_generation() == fence.identity_session_generation()
+                && active_identity_id(&state) == identity_id
+                && !matches!(error.code.as_str(), "bad_request" | "invalid_destination")
+                && state.restore_attachment_staging(clip)
+            {
+                return Err(AppError::new(
+                    "voice_retryable",
+                    "Couldn't send this voice message. Your recording is ready to retry.",
+                ));
+            }
+        }
+    }
+    result
 }
 
 #[tauri::command]

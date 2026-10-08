@@ -242,6 +242,21 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
     Some(json!(result))
 }
 
+// Building the list must not block identity switching. Serialize only the
+// final publication and reject reads that completed after an identity change.
+async fn publish_conversations_for_generation(
+    state: &AppState,
+    generation: u64,
+    payload: Value,
+) -> bool {
+    let _identity = state.identity_switch_lock.lock().await;
+    if state.current_identity_session_generation() != generation {
+        return false;
+    }
+    state.emit_to_all("conversations_update", payload);
+    true
+}
+
 /// Coalesced fire-and-forget conversations broadcast (100ms debounce).
 pub fn broadcast_conversations(state: Arc<AppState>) {
     use std::sync::atomic::Ordering;
@@ -256,8 +271,9 @@ pub fn broadcast_conversations(state: Arc<AppState>) {
         state
             .conversations_broadcast_pending
             .store(false, Ordering::Release);
+        let generation = state.current_identity_session_generation();
         if let Some(payload) = build_conversations_payload(&state).await {
-            state.emit_to_all("conversations_update", payload);
+            publish_conversations_for_generation(&state, generation, payload).await;
         }
     });
 }
@@ -275,8 +291,9 @@ pub async fn broadcast_conversations_now(state: &AppState) {
     state
         .conversations_broadcast_pending
         .store(false, Ordering::Release);
+    let generation = state.current_identity_session_generation();
     if let Some(payload) = build_conversations_payload(state).await {
-        state.emit_to_all("conversations_update", payload);
+        publish_conversations_for_generation(state, generation, payload).await;
     }
 }
 
@@ -310,6 +327,43 @@ mod tests {
             Arc::new(ratspeak_core::NoopEmitter),
             Arc::new(ratspeak_core::NoopNotifier),
         )
+    }
+
+    #[tokio::test]
+    async fn conversation_publication_rejects_identity_changes_while_awaiting_lock() {
+        use std::future::{Future, poll_fn};
+        use std::task::Poll;
+        for transitions in [1, 2] {
+            let state = make_state();
+            let generation = state.current_identity_session_generation();
+            let identity = state.identity_switch_lock.lock().await;
+            let mut publish = Box::pin(publish_conversations_for_generation(
+                &state,
+                generation,
+                json!([]),
+            ));
+            poll_fn(|cx| {
+                assert!(publish.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            for _ in 0..transitions {
+                state.bump_identity_session_generation();
+            }
+            drop(identity);
+            assert!(
+                !publish.await,
+                "a stale list cannot repopulate a replacement identity, including A-to-B-to-A"
+            );
+            assert!(
+                publish_conversations_for_generation(
+                    &state,
+                    state.current_identity_session_generation(),
+                    json!([])
+                )
+                .await
+            );
+        }
     }
 
     #[tokio::test]
