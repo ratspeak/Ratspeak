@@ -175,5 +175,12 @@
     "removedSnapshotLines": 1,
     "classification": "Coordinated application-internal API only. Runtime audio_mode and draft format fields are required in Rust; existing IPC start/decode args default to Opus.",
     "tests": "Private harness AudioMessageRequest callers updated explicitly; exact peer matrix tracked separately."
+  },
+  "voiceReleaseVersionReview": {
+    "sourceCommit": "b0ce9691ce32e483a9cdabe38356843b63ab5184",
+    "reviewedOn": "2026-10-08",
+    "scope": "Untagged Ratspeak 1.0.34, mobile build 1000064. Application package and internal requirement versions advance together; the exact LXST source selects the implemented native 700C codec and shared immutable FFT coefficients.",
+    "compatibility": "No additional Rust API, wire, persistence, IPC, JNI, or registry dependency change. Existing manifest and API reviews remain authoritative.",
+    "qualification": "Exact-source CI, platform artifacts, and physical acceptance remain required. No release or integration tags created."
   }
 }
