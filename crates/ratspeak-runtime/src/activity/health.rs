@@ -164,11 +164,20 @@ fn saturating_atomic_add(counter: &AtomicU64, count: u64) {
     }
 
     // These counters do not publish or guard any other state, so relaxed
-    // ordering is sufficient. `fetch_update` retries the saturating operation
-    // against the latest observed value and therefore cannot lose increments.
-    let _ = counter.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-        (current != u64::MAX).then(|| current.saturating_add(count))
-    });
+    // ordering is sufficient. Retry against the latest observed value so no
+    // increments are lost, using APIs shared by Rust 1.87 and newer toolchains.
+    let mut current = counter.load(Ordering::Relaxed);
+    while current != u64::MAX {
+        match counter.compare_exchange_weak(
+            current,
+            current.saturating_add(count),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return,
+            Err(value) => current = value,
+        }
+    }
 }
 
 fn decimal_snapshot(counter: &AtomicU64) -> String {
@@ -260,6 +269,22 @@ impl LossObservationSlot {
         }
     }
 
+    fn enter(&self) -> bool {
+        let mut readers = self.readers.load(Ordering::Relaxed);
+        while let Some(next) = readers.checked_add(1) {
+            match self.readers.compare_exchange_weak(
+                readers,
+                next,
+                Ordering::Acquire,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(current) => readers = current,
+            }
+        }
+        false
+    }
+
     fn reset(&self) {
         self.count.store(0, Ordering::Relaxed);
         self.first_unix_ms
@@ -295,13 +320,7 @@ impl LossObservations {
         loop {
             let epoch = self.active_epoch.load(Ordering::Acquire);
             let slot = &self.slots[(epoch & 1) as usize];
-            if slot
-                .readers
-                .fetch_update(Ordering::Acquire, Ordering::Relaxed, |readers| {
-                    readers.checked_add(1)
-                })
-                .is_err()
-            {
+            if !slot.enter() {
                 return;
             }
             if self.active_epoch.load(Ordering::Acquire) != epoch {
@@ -419,6 +438,24 @@ impl CaptureWindows {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saturated_reader_count_refuses_observation_without_wrapping() {
+        let observations = LossObservations::default();
+        observations.slots[0]
+            .readers
+            .store(usize::MAX, Ordering::Relaxed);
+        observations.note(1, 42);
+        assert_eq!(
+            observations.slots[0].readers.load(Ordering::Relaxed),
+            usize::MAX
+        );
+        assert_eq!(observations.slots[0].count.load(Ordering::Relaxed), 0);
+        observations.slots[0].readers.store(0, Ordering::Relaxed);
+        observations.note(1, 42);
+        assert_eq!(observations.slots[0].count.load(Ordering::Relaxed), 1);
+        assert_eq!(observations.slots[0].readers.load(Ordering::Relaxed), 0);
+    }
 
     #[test]
     fn named_increment_and_add_methods_update_every_counter() {

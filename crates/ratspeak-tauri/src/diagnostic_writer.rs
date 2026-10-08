@@ -62,11 +62,18 @@ impl DroppedLogLines {
     }
 
     fn increment(&self) {
-        let _ = self
-            .0
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
-                (value != usize::MAX).then(|| value + 1)
-            });
+        let mut value = self.0.load(Ordering::Acquire);
+        while value != usize::MAX {
+            match self.0.compare_exchange_weak(
+                value,
+                value + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return,
+                Err(current) => value = current,
+            }
+        }
     }
 }
 
@@ -670,6 +677,26 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+
+    #[test]
+    fn dropped_line_counter_is_concurrent_and_saturating() {
+        let dropped = DroppedLogLines::default();
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                let counter = dropped.clone();
+                scope.spawn(move || {
+                    for _ in 0..1_000 {
+                        counter.increment();
+                    }
+                });
+            }
+        });
+        assert_eq!(dropped.get(), 8_000);
+        dropped.0.store(usize::MAX - 1, Ordering::Release);
+        dropped.increment();
+        dropped.increment();
+        assert_eq!(dropped.get(), usize::MAX);
+    }
 
     fn test_limits(max_file_bytes: u64, max_record_bytes: usize) -> WriterLimits {
         WriterLimits {

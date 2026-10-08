@@ -15,9 +15,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RATSPEAK_RSRETICULUM_REF: d4183434fcb969799c208ddcf140bae7550c14fe
-  RATSPEAK_RSLXMF_REF: df3a500c4f2149b405731067cbb0cbe7d0204b6c
-  RATSPEAK_RSLXST_REF: 5c9c94530077daf361209826903ade922a4752e5
+  RATSPEAK_RSRETICULUM_REF: 5edb8f22f5d8e6b2bd7392dc06e255ead96576fb
+  RATSPEAK_RSLXMF_REF: 284d56fee3d8cdc70dedc6d92aa117d7e1df41ff
+  RATSPEAK_RSLXST_REF: 208560655fe1988013a61428057fe197b08e49fd
   RATSPEAK_LRGP_REF: 88c8665e1e7e1ad710e53e8da6425f3dbe4f5856
 
 jobs:
@@ -151,6 +151,9 @@ jobs:
         working-directory: Ratspeak
       - name: Test Rust workspace
         run: cargo test --workspace --locked
+        working-directory: Ratspeak
+      - name: Test voice-enabled runtime and IPC
+        run: cargo test -p ratspeak-runtime -p ratspeak-tauri --features ratspeak-tauri/lxst-voice --locked
         working-directory: Ratspeak
       - name: Test dashboard behavior
         run: |
