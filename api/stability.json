@@ -19,8 +19,8 @@
     "sourceCommit": "fc78e4926c696a921f308d238ef1b620e0db0078"
   },
   "snapshotSource": {
-    "commit": "cfb11325fd8d398aa4bd4df0dc2a979016351162",
-    "capturedOn": "2026-10-02",
+    "commit": "3647fc677fa5f4b00a3c0541160de1f58bb21575",
+    "capturedOn": "2026-10-08",
     "review": {
       "areas": [
         "application domain and configuration",
@@ -34,7 +34,8 @@
         "bounded automatic photo preparation request and exact attachment storage keys",
         "Direct delivery readiness and content-free BLE/Resource aggregate diagnostics (September 24)",
         "Native Codec2 live audio, exact-Link PTT input leases and constrained profile ceiling",
-        "Standard native 700C voice messages with explicit identity/destination format preference"
+        "Standard native 700C voice messages with explicit identity/destination format preference",
+        "Automatic voice format selection, identity-fenced queue publication and definite pre-admission retry"
       ],
       "canonicalDependencies": [
         "lxmf_core::message_api",
@@ -43,12 +44,12 @@
       ],
       "classification": "application-internal lifecycle, persistence, mobile integration and explicit network ownership",
       "publicApiDiff": {
-        "added": 220,
+        "added": 224,
         "removed": 13
       },
       "semver": "no public-library consequence; application integration only",
       "deprecations": "none",
-      "wirePersistenceRuntimeImpact": "No wire-format change. Adds versioned profile ownership/selectors and opaque credential references, native protected secret storage, five Developer-gated Tauri commands, and the R8-kept Android credential JNI bridge. Mode changes serialize with identity/interface lifecycle, commit after readiness, retain unlocked identity only for same-profile rebuild, and verify rollback. External clients authenticate without fallback and reject local interface changes. New managed profiles are standalone; existing private sharing and operator selectors are preserved. AutoInterface UDP remains unchanged. Retains the previously reviewed announce/readiness boundaries and BLE firmware startup policy. Failed Link/packet recovery now uses the transport's bounded exact-attempt owner, with no ordinary receive-interface quarantine. Atomic packet receipts retain validated proofs across retry queues; canonical first-hop timing drives packet and Link deadlines, while bounded protocol clocks take precedence over orphan watchdogs. Packet RTT still reaches DB, UI events and Activity. No new UI setting, wire format, native dependency or Auto delivery policy change. Adds voice_set_talk with exact established Link and monotonic edge serials. Constrained Codec2 calls require renewed local input and retain their profile ceiling. Existing LXMF Ogg/Opus memos and wire IDs are unchanged. Adds standard LXMF audio mode 0x03 compact clips (15-second capture / 30-second receive), typed decode/record APIs and a defaulted audio_mode in existing IPC results. Runtime AudioMessageRequest now explicitly carries audio_mode. Schema 44 stores per-identity/destination format preferences; no capability guessing or new wire IDs. Stored playback resolves the mode from the identity-bound message row. Existing Opus recording, calls and ownership barriers are retained.",
+      "wirePersistenceRuntimeImpact": "No wire-format change. Adds versioned profile ownership/selectors and opaque credential references, native protected secret storage, five Developer-gated Tauri commands, and the R8-kept Android credential JNI bridge. Mode changes serialize with identity/interface lifecycle, commit after readiness, retain unlocked identity only for same-profile rebuild, and verify rollback. External clients authenticate without fallback and reject local interface changes. New managed profiles are standalone; existing private sharing and operator selectors are preserved. AutoInterface UDP remains unchanged. Retains the previously reviewed announce/readiness boundaries and BLE firmware startup policy. Failed Link/packet recovery now uses the transport's bounded exact-attempt owner, with no ordinary receive-interface quarantine. Atomic packet receipts retain validated proofs across retry queues; canonical first-hop timing drives packet and Link deadlines, while bounded protocol clocks take precedence over orphan watchdogs. Packet RTT still reaches DB, UI events and Activity. No new UI setting, wire format, native dependency or Auto delivery policy change. Adds voice_set_talk with exact established Link and monotonic edge serials. Constrained Codec2 calls require renewed local input and retain their profile ceiling. Existing LXMF Ogg/Opus memos and wire IDs are unchanged. Adds standard LXMF audio mode 0x03 compact clips (15-second capture / 30-second receive), typed decode/record APIs and a defaulted audio_mode in existing IPC results. Runtime AudioMessageRequest now explicitly carries audio_mode. Schema 44 stores per-identity/destination format preferences; no capability guessing or new wire IDs. Stored playback resolves the mode from the identity-bound message row. Existing Opus recording, calls and ownership barriers are retained. October 8: recording selects native 700C only for explicit no-compression peer metadata from live/cache discovery, otherwise Opus; this is an application heuristic, not a new codec advertisement. Schema 44 preference rows remain readable but no longer control new recordings or send validation; the existing format IPC is read-only and rejects override arguments. The selected recording mode remains frozen. Retryable staged owners preserve cancellation authority and may restore only after definite pre-admission failure. Durable admission, lease transfer, canonical finalization and queue notification retain the originating identity lifecycle lock even if the IPC future is dropped. Asynchronous conversation broadcasts reject stale identity generations. Ambiguous queue completion never restores a sendable token. No dependency pin, manifest, wire mode, mobile bridge, runtime ceiling or MSRV change.",
       "platformEvidence": [
         "Ratspeak workspace: 1007 tests passed, including 625 runtime, 128 Tauri unit and 132 source contracts; dashboard behavior tests passed",
         "Rust 1.87 all-feature runtime/Tauri check; all-feature strict Clippy; full standalone Tauri shell compile",
@@ -62,7 +63,8 @@
         "Rust 1.87 all-feature workspace check; Android ARM64 and iOS simulator all-feature shell Clippy checkpoint; final combined preflight recorded separately",
         "September 24: two application-internal delivery drive/readiness methods, focused runtime/diagnostic/source tests, Android Kotlin/JNI checks, and encrypted readiness-driven multi-segment probes. No phone throughput qualification or new installation.",
         "26 voice-enabled runtime tests, voice-enabled Tauri compile, strict runtime Clippy and actual UI owner/layout checks at four widths and both themes. Cross-client and physical acceptance remain separate.",
-        "October 2 M5: 16 unchanged-source command gates including 29 memo tests, 16 audio tests, 109 database tests, Tauri voice/IPC tests, seven dashboard suites, strict Clippy, iOS runtime and full desktop shell compile. Android runtime compiles separately; physical audio and final handheld peer qualification remain open."
+        "October 2 M5: 16 unchanged-source command gates including 29 memo tests, 16 audio tests, 109 database tests, Tauri voice/IPC tests, seven dashboard suites, strict Clippy, iOS runtime and full desktop shell compile. Android runtime compiles separately; physical audio and final handheld peer qualification remain open.",
+        "October 8 source 3647fc6: six production voice command integration tests (A-to-B/A-to-B-to-A, no client ID, retained exact retry, cancellation, detached admission worker), focused runtime memo/audio/staging/policy/publication tests, all seven desktop/iOS/Android dashboard voice suites, fmt and strict all-target/all-feature runtime/Tauri Clippy. Clean local qualification graph uses rsReticulum d4183434, rsLXMF df3a500c and rsLXST 7dfb98e1; this is not the still-deferred release dependency pin set. Physical mobile audio and versioned artifact qualification remain separate gates."
       ]
     }
   },
@@ -123,8 +125,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-runtime.txt",
-      "itemCount": 2535,
-      "sha256": "8edeb479527f516f61c52ae6ae5612ebff6eaf23393c65691ae70719cb283a88"
+      "itemCount": 2539,
+      "sha256": "45c4c00fe03268f8d4c029bbea54525a04a3b4eed07a37a864d02b92840ce9cd"
     },
     {
       "name": "ratspeak-tauri",

@@ -1644,6 +1644,7 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::update_lxmf_announce_app_data(&mut s
 pub fn ratspeak_runtime::lxmf::LxmfManager::update_remote_crypto(&mut self, &str, &[u8; 64], core::option::Option<&[u8; 32]>) -> (bool, bool)
 pub fn ratspeak_runtime::lxmf::LxmfManager::update_route_hop(&mut self, [u8; 16], u8)
 pub fn ratspeak_runtime::lxmf::LxmfManager::verify_inbound_signature(&self, &mut lxmf_core::message::LxMessage) -> core::option::Option<bool>
+pub fn ratspeak_runtime::lxmf::LxmfManager::voice_message_format(&self, &ratspeak_db::db::DbPool, &str) -> u8
 impl ratspeak_runtime::lxmf::LxmfManager
 pub fn ratspeak_runtime::lxmf::LxmfManager::set_path_recovery_handle(&mut self, rns_transport::path_recovery::PathRecoveryHandle)
 pub struct ratspeak_runtime::lxmf::LxmfPersistenceDelta
@@ -2205,6 +2206,7 @@ pub fn ratspeak_runtime::state::AppState::android_ble_rnode_auto_resume_enabled(
 pub fn ratspeak_runtime::state::AppState::announce_ratspeak_usage_enabled(&self) -> bool
 pub fn ratspeak_runtime::state::AppState::announce_semantic_revision(&self) -> ratspeak_runtime::announce::AnnounceSemanticRevision
 pub fn ratspeak_runtime::state::AppState::append_attachment_staging(&self, &str, usize, &[u8]) -> core::io::error::Result<usize>
+pub fn ratspeak_runtime::state::AppState::attachment_staging_is_current(&self, &ratspeak_runtime::state::StagedAttachment) -> bool
 pub fn ratspeak_runtime::state::AppState::begin_attachment_staging(&alloc::sync::Arc<Self>, alloc::string::String, alloc::string::String, usize, bool) -> core::result::Result<alloc::string::String, ratspeak_runtime::state::AttachmentTransferAdmissionError>
 pub fn ratspeak_runtime::state::AppState::begin_ble_rnode_activity_cancellation(&self) -> core::option::Option<BleRnodeActivityCancellation>
 pub fn ratspeak_runtime::state::AppState::begin_ble_rnode_activity_operation(&self, ratspeak_runtime::state::ActivityRequestFence, core::option::Option<BleRnodeRollback>) -> alloc::string::String
@@ -2274,6 +2276,7 @@ pub fn ratspeak_runtime::state::AppState::release_inbound_attachment_link(&self,
 pub fn ratspeak_runtime::state::AppState::request_poll_now(&self)
 pub fn ratspeak_runtime::state::AppState::reserve_attachment_transfer(&alloc::sync::Arc<Self>, usize) -> core::result::Result<ratspeak_runtime::state::AttachmentTransferLease, ratspeak_runtime::state::AttachmentTransferAdmissionError>
 pub fn ratspeak_runtime::state::AppState::reset_message_send_times_on_resume(&self) -> usize
+pub fn ratspeak_runtime::state::AppState::restore_attachment_staging(&self, ratspeak_runtime::state::StagedAttachment) -> bool
 pub fn ratspeak_runtime::state::AppState::rnode_activity_handle_for_origin(&self, rns_interface::traits::InterfaceId, ratspeak_runtime::state::RNodeActivityOrigin) -> core::option::Option<rns_runtime::reticulum::ReticulumHandle>
 pub fn ratspeak_runtime::state::AppState::rnode_activity_runtime_context_for_identity(&self, u64) -> core::option::Option<ratspeak_runtime::RNodeActivityRuntimeContext>
 pub fn ratspeak_runtime::state::AppState::set_android_ble_rnode_auto_resume_enabled(&self, bool)
@@ -2308,6 +2311,7 @@ pub fn ratspeak_runtime::state::AppState::take_interface_reannounce_suppression(
 pub fn ratspeak_runtime::state::AppState::take_pending_ble_rnode_activity_operation(&self, &str) -> core::option::Option<BleRnodeActivityTake>
 pub fn ratspeak_runtime::state::AppState::take_pending_ble_rnode_activity_operation_with_completion(&self, &str) -> core::option::Option<BleRnodeActivityTakeWithCompletion>
 pub fn ratspeak_runtime::state::AppState::take_pending_hw_pin(&self) -> core::option::Option<alloc::string::String>
+pub fn ratspeak_runtime::state::AppState::take_retryable_attachment_staging(&self, &str) -> core::option::Option<ratspeak_runtime::state::StagedAttachment>
 pub fn ratspeak_runtime::state::AppState::trim_propagation_nodes(&self)
 pub async fn ratspeak_runtime::state::AppState::wait_for_mobile_platform_bridge(&self)
 pub struct ratspeak_runtime::state::AttachmentTransferLease
