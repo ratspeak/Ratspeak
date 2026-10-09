@@ -77,6 +77,15 @@ jobs:
         with:
           node-version: 22.22.0
 
+      - name: Setup Android bridge Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.12"
+
+      - name: Check Android bridge sources before building
+        working-directory: Ratspeak
+        run: python3 scripts/ci/check-btleplug-integration.py
+
       - name: Load reviewed source set
         id: source
         shell: bash

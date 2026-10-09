@@ -12,8 +12,10 @@ BSD 3-Clause license is included in `LICENSE.md`; source headers retain their
 copyright notices.
 
 Update the Rust dependency, JNI initializer, complete Java inventory and this
-manifest together. Run `python3 scripts/ci/check-btleplug-integration.py` and the
-minified Android package checks after changing the integration. Existing native
+manifest together. The bridge checker requires Python 3.11+ (`tomllib`); CI and
+Android packaging select Python 3.12 explicitly. Run
+`python3 scripts/ci/check-btleplug-integration.py` and the minified Android
+package checks after changing the integration. Existing native
 Android BLE owners continue to use JNI 0.19; only btleplug uses the isolated
 `jni-btleplug` 0.22 bridge.
 
