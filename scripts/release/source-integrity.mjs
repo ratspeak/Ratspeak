@@ -398,7 +398,7 @@ export function verifyProductSurfaces(set) {
 
   const rootManifest = readUtf8(join(repoRoot, "Cargo.toml"));
   const workspacePackage = manifestSection(rootManifest, "workspace.package");
-  expectContains(workspacePackage, "rust-version = \"1.87\"", "workspace MSRV");
+  expectContains(workspacePackage, "rust-version = \"1.89\"", "workspace MSRV");
   expectContains(workspacePackage, "publish = false", "workspace publish policy");
 
   for (const manifest of [
@@ -415,7 +415,7 @@ export function verifyProductSurfaces(set) {
 
   const standaloneManifest = readUtf8(join(repoRoot, "src-tauri/Cargo.toml"));
   const standalonePackage = manifestSection(standaloneManifest, "package");
-  expectContains(standalonePackage, "rust-version = \"1.87\"", "standalone Tauri MSRV");
+  expectContains(standalonePackage, "rust-version = \"1.89\"", "standalone Tauri MSRV");
   expectContains(standalonePackage, "publish = false", "standalone Tauri publish policy");
 
   const expectedRequirements = new Map([

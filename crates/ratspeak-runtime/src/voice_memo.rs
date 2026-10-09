@@ -1050,8 +1050,8 @@ async fn drive_recording(actor: RecordingActor) {
                             let _ = reply.send(Err(error));
                             return;
                         }
-                        if should_drain {
-                            if let Err(error) = drain_ready_capture(
+                        if should_drain
+                            && let Err(error) = drain_ready_capture(
                                 &mut capture_rx,
                                 &mut encoder,
                                 &mut frames,
@@ -1060,7 +1060,6 @@ async fn drive_recording(actor: RecordingActor) {
                                 let _ = reply.send(Err(error));
                                 return;
                             }
-                        }
                         let result = if format == MemoFormat::Compact {
                             finish_compact_draft(frames, waveform)
                         } else { pad_recording_to_minimum_duration(
@@ -1613,7 +1612,9 @@ mod tests {
         assert_eq!(&playback.wav_data[..4], b"RIFF");
         assert_eq!(&playback.wav_data[8..12], b"WAVE");
         let peak = playback.wav_data[44..]
-            .chunks_exact(2)
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]).unsigned_abs())
             .max()
             .unwrap_or_default();

@@ -25,7 +25,7 @@ class Adapter {
     public void startScan(ScanFilter filter) {
         BluetoothAdapter bluetoothAdapter = BluetoothAdapter.getDefaultAdapter();
         if (bluetoothAdapter == null) {
-          throw new RuntimeException("No bluetooth adapter available.");
+          throw new NoBluetoothAdapterException();
         }
 
         ArrayList<android.bluetooth.le.ScanFilter> filters = null;
@@ -49,7 +49,7 @@ class Adapter {
         }
         BluetoothLeScanner scanner = bluetoothAdapter.getBluetoothLeScanner();
         if (scanner == null) {
-          throw new RuntimeException("No bluetooth scanner available for adapter");
+          throw new NoBluetoothAdapterException();
         }
         scanner.startScan(filters, settings, this.callback);
     }

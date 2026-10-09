@@ -25,32 +25,29 @@ const TRAY_SHOW_ID: &str = "ratspeak_tray_show";
 ))]
 const TRAY_QUIT_ID: &str = "ratspeak_tray_quit";
 
-// SAFETY: without this init, btleplug's global_adapter() panics on first use
-// and panic=abort terminates the app. Also stashes the JavaVM for BLE peer
-// advertising, BT Classic RFCOMM, and android_usb.
+// Initialize btleplug before any adapter access. Keep the existing JNI 0.19
+// JVM registrations for native BLE Peer/RNode, RFCOMM, and USB independent.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "system" fn JNI_OnLoad(
     vm: jni::JavaVM,
     _reserved: *mut std::ffi::c_void,
 ) -> jni::sys::jint {
-    match vm.get_env() {
-        Ok(env) => match btleplug::platform::init(&env) {
-            Ok(()) => {
-                rns_interface::ble_rnode::mark_btleplug_initialized();
-                tracing::debug!("btleplug initialized from JNI_OnLoad");
-            }
-            Err(_) => {
-                tracing::debug!(
-                    reason = "btleplug_init_failed",
-                    "btleplug init failed from JNI_OnLoad"
-                );
-            }
-        },
+    // SAFETY: JNI_OnLoad receives a live process JavaVM. Both wrappers borrow
+    // that same stable JNI ABI pointer; neither owns or destroys the VM. JNI
+    // objects/Env values never cross between the 0.19 native and 0.22 btleplug
+    // APIs. The scoped attachment retains this loader thread's class context
+    // and handles pending exceptions/local references before returning.
+    let btle_vm = unsafe { jni_btleplug::JavaVM::from_raw(vm.get_java_vm_pointer().cast()) };
+    match btle_vm.attach_current_thread_for_scope(btleplug::platform::init) {
+        Ok(()) => {
+            rns_interface::ble_rnode::mark_btleplug_initialized();
+            tracing::debug!("btleplug initialized from JNI_OnLoad");
+        }
         Err(_) => {
             tracing::debug!(
-                reason = "jni_env_unavailable",
-                "failed to get JNI env in JNI_OnLoad"
+                reason = "btleplug_init_failed",
+                "btleplug init failed from JNI_OnLoad"
             );
         }
     }

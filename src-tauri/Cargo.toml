@@ -7,7 +7,7 @@ license = "AGPL-3.0-or-later"
 homepage = "https://github.com/ratspeak/Ratspeak"
 repository = "https://github.com/ratspeak/Ratspeak"
 edition = "2021"
-rust-version = "1.87"
+rust-version = "1.89"
 publish = false
 resolver = "3"
 
@@ -50,7 +50,8 @@ block2 = "0.6"
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.19"
-btleplug = "0.11"
+btleplug = "=0.13.4"
+jni-btleplug = { package = "jni", version = "0.22" }
 rns-interface = { path = "../../rsReticulum/crates/rns-interface", version = "~1.3.0", features = ["ble", "mobile-throttle"] }
 tracing-android = "0.2"
 

@@ -469,45 +469,44 @@ pub fn mark_relay_path_success(state: &AppState, hash: [u8; 16]) {
     let is_static = static_set.contains(&hash);
     let now = now_f64();
     let hash_hex = hex::encode(hash);
-    if let Ok(mut registry) = state.discovered_propagation_nodes.lock() {
-        if let Some(obj) = registry
+    if let Ok(mut registry) = state.discovered_propagation_nodes.lock()
+        && let Some(obj) = registry
             .get_mut(&hash_hex)
             .and_then(serde_json::Value::as_object_mut)
-        {
-            if is_static {
-                obj.insert("static_status".to_string(), json!("reachable"));
-            }
-            obj.insert("path_status".to_string(), json!("reachable"));
-            obj.insert("last_success".to_string(), json!(now));
-            obj.insert("last_path_success".to_string(), json!(now));
-            obj.insert("failure_count".to_string(), json!(0));
-            obj.insert("backoff_until".to_string(), serde_json::Value::Null);
-            obj.insert("last_failure_reason".to_string(), serde_json::Value::Null);
-            if is_static {
-                obj.insert("static".to_string(), json!(true));
-                let node_state_usable = matches!(
-                    obj.get("node_state")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("unknown"),
-                    "enabled" | "known"
-                );
-                let node_state_disabled = obj
-                    .get("node_state")
+    {
+        if is_static {
+            obj.insert("static_status".to_string(), json!("reachable"));
+        }
+        obj.insert("path_status".to_string(), json!("reachable"));
+        obj.insert("last_success".to_string(), json!(now));
+        obj.insert("last_path_success".to_string(), json!(now));
+        obj.insert("failure_count".to_string(), json!(0));
+        obj.insert("backoff_until".to_string(), serde_json::Value::Null);
+        obj.insert("last_failure_reason".to_string(), serde_json::Value::Null);
+        if is_static {
+            obj.insert("static".to_string(), json!(true));
+            let node_state_usable = matches!(
+                obj.get("node_state")
                     .and_then(|v| v.as_str())
-                    .is_some_and(|s| s == "disabled");
-                if !node_state_usable && !node_state_disabled {
-                    obj.insert("node_state".to_string(), json!("known"));
-                }
-                if let Some(node) = static_nodes::node_for(&hash) {
-                    obj.entry("display_name".to_string())
-                        .or_insert_with(|| json!(node.display_name.clone()));
-                    obj.entry("region".to_string())
-                        .or_insert_with(|| json!(node.region.clone()));
-                    obj.entry("role".to_string())
-                        .or_insert_with(|| json!(node.role.clone()));
-                    obj.entry("priority".to_string())
-                        .or_insert(json!(node.priority));
-                }
+                    .unwrap_or("unknown"),
+                "enabled" | "known"
+            );
+            let node_state_disabled = obj
+                .get("node_state")
+                .and_then(|v| v.as_str())
+                .is_some_and(|s| s == "disabled");
+            if !node_state_usable && !node_state_disabled {
+                obj.insert("node_state".to_string(), json!("known"));
+            }
+            if let Some(node) = static_nodes::node_for(&hash) {
+                obj.entry("display_name".to_string())
+                    .or_insert_with(|| json!(node.display_name.clone()));
+                obj.entry("region".to_string())
+                    .or_insert_with(|| json!(node.region.clone()));
+                obj.entry("role".to_string())
+                    .or_insert_with(|| json!(node.role.clone()));
+                obj.entry("priority".to_string())
+                    .or_insert(json!(node.priority));
             }
         }
     }
@@ -522,27 +521,26 @@ pub fn mark_relay_transaction_success(state: &AppState, hash: [u8; 16], kind: &s
     let is_static = static_set.contains(&hash);
     let now = now_f64();
     let hash_hex = hex::encode(hash);
-    if let Ok(mut registry) = state.discovered_propagation_nodes.lock() {
-        if let Some(obj) = registry
+    if let Ok(mut registry) = state.discovered_propagation_nodes.lock()
+        && let Some(obj) = registry
             .get_mut(&hash_hex)
             .and_then(serde_json::Value::as_object_mut)
-        {
-            if is_static {
-                obj.insert("static_status".to_string(), json!("reachable"));
-                obj.insert("static".to_string(), json!(true));
-            }
-            obj.insert("path_status".to_string(), json!("reachable"));
-            obj.insert("transaction_status".to_string(), json!(kind));
-            obj.insert("last_success".to_string(), json!(now));
-            match kind {
-                "deposit_ok" => obj.insert("last_deposit_success".to_string(), json!(now)),
-                "sync_ok" => obj.insert("last_sync_success".to_string(), json!(now)),
-                _ => None,
-            };
-            obj.insert("failure_count".to_string(), json!(0));
-            obj.insert("backoff_until".to_string(), serde_json::Value::Null);
-            obj.insert("last_failure_reason".to_string(), serde_json::Value::Null);
+    {
+        if is_static {
+            obj.insert("static_status".to_string(), json!("reachable"));
+            obj.insert("static".to_string(), json!(true));
         }
+        obj.insert("path_status".to_string(), json!("reachable"));
+        obj.insert("transaction_status".to_string(), json!(kind));
+        obj.insert("last_success".to_string(), json!(now));
+        match kind {
+            "deposit_ok" => obj.insert("last_deposit_success".to_string(), json!(now)),
+            "sync_ok" => obj.insert("last_sync_success".to_string(), json!(now)),
+            _ => None,
+        };
+        obj.insert("failure_count".to_string(), json!(0));
+        obj.insert("backoff_until".to_string(), serde_json::Value::Null);
+        obj.insert("last_failure_reason".to_string(), serde_json::Value::Null);
     }
 }
 
@@ -551,27 +549,27 @@ pub fn mark_relay_failure(state: &AppState, hash: [u8; 16], reason: &str) {
     let is_static = static_set.contains(&hash);
     let now = now_f64();
     let hash_hex = hex::encode(hash);
-    if let Ok(mut registry) = state.discovered_propagation_nodes.lock() {
-        if let Some(value) = registry.get_mut(&hash_hex) {
-            let failures = value
-                .get("failure_count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0)
-                + 1;
-            if let Some(obj) = value.as_object_mut() {
-                if is_static {
-                    obj.insert("static_status".to_string(), json!("failed"));
-                    obj.insert("static".to_string(), json!(true));
-                }
-                obj.insert("path_status".to_string(), json!("failed"));
-                obj.insert("transaction_status".to_string(), json!("failed"));
-                obj.insert("failure_count".to_string(), json!(failures));
-                obj.insert(
-                    "backoff_until".to_string(),
-                    json!(now + static_probe_backoff(failures)),
-                );
-                obj.insert("last_failure_reason".to_string(), json!(reason));
+    if let Ok(mut registry) = state.discovered_propagation_nodes.lock()
+        && let Some(value) = registry.get_mut(&hash_hex)
+    {
+        let failures = value
+            .get("failure_count")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            + 1;
+        if let Some(obj) = value.as_object_mut() {
+            if is_static {
+                obj.insert("static_status".to_string(), json!("failed"));
+                obj.insert("static".to_string(), json!(true));
             }
+            obj.insert("path_status".to_string(), json!("failed"));
+            obj.insert("transaction_status".to_string(), json!("failed"));
+            obj.insert("failure_count".to_string(), json!(failures));
+            obj.insert(
+                "backoff_until".to_string(),
+                json!(now + static_probe_backoff(failures)),
+            );
+            obj.insert("last_failure_reason".to_string(), json!(reason));
         }
     }
 }
@@ -795,18 +793,17 @@ pub async fn request_relay_path(state: &Arc<AppState>, hash: [u8; 16]) {
         .read()
         .ok()
         .and_then(|g| g.as_ref().map(|mgr| mgr.handle.transport_tx.clone()));
-    if let Some(tx) = transport_tx {
-        if tx
+    if let Some(tx) = transport_tx
+        && tx
             .try_send(TransportMessage::RequestPath {
                 destination_hash: hash,
             })
             .is_err()
-        {
-            tracing::debug!(
-                destination = %crate::short_id(&hex::encode(hash)),
-                "relay path request could not enter the transport queue"
-            );
-        }
+    {
+        tracing::debug!(
+            destination = %crate::short_id(&hex::encode(hash)),
+            "relay path request could not enter the transport queue"
+        );
     }
 }
 
@@ -887,10 +884,10 @@ pub async fn apply_auto_selection(state: &Arc<AppState>, hash: [u8; 16]) {
 
     let st = state.clone();
     let _ = tokio::task::spawn_blocking(move || {
-        if let Ok(mut lxmf) = st.lxmf.lock() {
-            if let Some(mgr) = lxmf.as_mut() {
-                mgr.set_runtime_propagation_node(Some(hash));
-            }
+        if let Ok(mut lxmf) = st.lxmf.lock()
+            && let Some(mgr) = lxmf.as_mut()
+        {
+            mgr.set_runtime_propagation_node(Some(hash));
         }
     })
     .await;
@@ -910,10 +907,10 @@ pub async fn apply_auto_selection(state: &Arc<AppState>, hash: [u8; 16]) {
 pub async fn clear_auto_selection(state: &Arc<AppState>) {
     let st = state.clone();
     let _ = tokio::task::spawn_blocking(move || {
-        if let Ok(mut lxmf) = st.lxmf.lock() {
-            if let Some(mgr) = lxmf.as_mut() {
-                mgr.set_runtime_propagation_node(None);
-            }
+        if let Ok(mut lxmf) = st.lxmf.lock()
+            && let Some(mgr) = lxmf.as_mut()
+        {
+            mgr.set_runtime_propagation_node(None);
         }
     })
     .await;
@@ -1143,14 +1140,12 @@ pub async fn refresh_paths(state: &Arc<AppState>, ignore_throttle: bool) -> Refr
         return RefreshOutcome::Sent { count: 0 };
     }
 
-    if !ignore_throttle {
-        if let Ok(mut last) = state.last_refresh_request_at.lock() {
-            let now = Instant::now();
-            if last.is_some_and(|prev| now.duration_since(prev) < REFRESH_THROTTLE) {
-                return RefreshOutcome::Throttled;
-            }
-            *last = Some(now);
+    if !ignore_throttle && let Ok(mut last) = state.last_refresh_request_at.lock() {
+        let now = Instant::now();
+        if last.is_some_and(|prev| now.duration_since(prev) < REFRESH_THROTTLE) {
+            return RefreshOutcome::Throttled;
         }
+        *last = Some(now);
     }
 
     let transport_tx = state
@@ -1175,33 +1170,32 @@ pub async fn refresh_paths(state: &Arc<AppState>, ignore_throttle: bool) -> Refr
     let mut candidates: Vec<[u8; 16]> = select_static_probe_candidates(state, static_kind, now);
     let static_candidates = candidates.clone();
 
-    if !(ignore_throttle || mode == PropagationMode::Auto && favor_static) {
-        if let Ok(reg) = state.discovered_propagation_nodes.lock() {
-            let static_set = static_nodes::hash_set();
-            let mut discovered = Vec::new();
-            for hash_hex in reg.keys() {
-                let Some(bytes) = hex::decode(hash_hex).ok().filter(|bytes| bytes.len() == 16)
-                else {
-                    continue;
-                };
-                let mut h = [0u8; 16];
-                h.copy_from_slice(&bytes);
-                let Some(value) = reg.get(hash_hex) else {
-                    continue;
-                };
-                if registry_entry_is_static(static_set, &h, value) {
-                    continue;
-                }
-                if node_state_is_usable(value) && last_seen_is_current(value, now) {
-                    discovered.push(h);
-                }
+    if !(ignore_throttle || mode == PropagationMode::Auto && favor_static)
+        && let Ok(reg) = state.discovered_propagation_nodes.lock()
+    {
+        let static_set = static_nodes::hash_set();
+        let mut discovered = Vec::new();
+        for hash_hex in reg.keys() {
+            let Some(bytes) = hex::decode(hash_hex).ok().filter(|bytes| bytes.len() == 16) else {
+                continue;
+            };
+            let mut h = [0u8; 16];
+            h.copy_from_slice(&bytes);
+            let Some(value) = reg.get(hash_hex) else {
+                continue;
+            };
+            if registry_entry_is_static(static_set, &h, value) {
+                continue;
             }
-            discovered.sort();
-            discovered.truncate(DISCOVERED_REFRESH_BUDGET);
-            for h in discovered {
-                if !candidates.contains(&h) {
-                    candidates.push(h);
-                }
+            if node_state_is_usable(value) && last_seen_is_current(value, now) {
+                discovered.push(h);
+            }
+        }
+        discovered.sort();
+        discovered.truncate(DISCOVERED_REFRESH_BUDGET);
+        for h in discovered {
+            if !candidates.contains(&h) {
+                candidates.push(h);
             }
         }
     }
@@ -1698,10 +1692,10 @@ mod tests {
         let auto_node = [0x34; 16];
         let identity_id = install_lxmf_manager(&state, "auto", manual_node);
 
-        if let Ok(mut lxmf) = state.lxmf.lock() {
-            if let Some(mgr) = lxmf.as_mut() {
-                mgr.enable_propagation(true, &state.db, &identity_id);
-            }
+        if let Ok(mut lxmf) = state.lxmf.lock()
+            && let Some(mgr) = lxmf.as_mut()
+        {
+            mgr.enable_propagation(true, &state.db, &identity_id);
         }
 
         apply_auto_selection(&state, auto_node).await;

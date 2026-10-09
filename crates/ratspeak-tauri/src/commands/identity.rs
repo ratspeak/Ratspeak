@@ -1348,12 +1348,13 @@ pub async fn api_set_display_name(
     // A live channels session snapshots its nickname at connect, so without
     // this it would keep stamping the superseded name on every outbound
     // envelope for the rest of the session.
-    if !rename.previous_name.is_empty() && rename.previous_name != display_name {
-        if let Some(channels) = state.channels_handle() {
-            channels
-                .identity_renamed(&rename.previous_name, &display_name)
-                .await;
-        }
+    if !rename.previous_name.is_empty()
+        && rename.previous_name != display_name
+        && let Some(channels) = state.channels_handle()
+    {
+        channels
+            .identity_renamed(&rename.previous_name, &display_name)
+            .await;
     }
 
     if updated_in_memory {

@@ -92,17 +92,17 @@ impl LxmfManager {
                 )
             {
                 let was_waiting = self.live_preparation.discovery.remove(&hash).is_some();
-                if self.live_preparation.auto_messages.contains(&hash) && attempts == 0 {
-                    if let Some(message) = self
+                if self.live_preparation.auto_messages.contains(&hash)
+                    && attempts == 0
+                    && let Some(message) = self
                         .router
                         .pending_outbound
                         .iter_mut()
                         .find(|m| m.hash == Some(hash))
-                    {
-                        message.method = DeliveryMethod::Direct;
-                        if was_waiting {
-                            message.next_delivery_attempt = now;
-                        }
+                {
+                    message.method = DeliveryMethod::Direct;
+                    if was_waiting {
+                        message.next_delivery_attempt = now;
                     }
                 }
                 continue;

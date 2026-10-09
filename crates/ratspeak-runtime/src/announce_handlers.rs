@@ -529,10 +529,10 @@ async fn refresh_lxmf_route_cache_and_lookup_iface(
 }
 
 fn refresh_lxmf_route_cache_from_path_table(state: &Arc<AppState>, entries: &[PathTableRpcEntry]) {
-    if let Ok(mut lxmf) = state.lxmf.lock() {
-        if let Some(mgr) = lxmf.as_mut() {
-            mgr.replace_route_hops_from_path_table(entries);
-        }
+    if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        mgr.replace_route_hops_from_path_table(entries);
     }
 }
 

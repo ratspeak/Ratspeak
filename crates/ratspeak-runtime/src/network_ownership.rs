@@ -118,10 +118,10 @@ impl Drop for TransitionGuard {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .trigger();
-        if let Ok(rns) = self.state.rns.read() {
-            if let Some(manager) = rns.as_ref() {
-                manager.handle.shutdown.trigger();
-            }
+        if let Ok(rns) = self.state.rns.read()
+            && let Some(manager) = rns.as_ref()
+        {
+            manager.handle.shutdown.trigger();
         }
         self.state.set_startup_stage("error");
     }
@@ -249,10 +249,10 @@ pub fn local_interfaces_allowed(state: &AppState) -> bool {
             .network_session
             .read()
             .unwrap_or_else(|e| e.into_inner());
-        if let Some((profile, selection, _)) = &session.proposed {
-            if profile == &key {
-                return selection.mode == Ownership::Managed;
-            }
+        if let Some((profile, selection, _)) = &session.proposed
+            && profile == &key
+        {
+            return selection.mode == Ownership::Managed;
         }
         drop(session);
         match saved(state, &key) {
@@ -593,10 +593,8 @@ pub async fn apply(state: Arc<AppState>, request: NetworkRequest) -> Result<Valu
             .unwrap_or_else(|e| e.into_inner())
             .retained_identity
             .take();
-        if !restored {
-            if let Some((identity, true)) = retained {
-                identity.lock();
-            }
+        if !restored && let Some((identity, true)) = retained {
+            identity.lock();
         }
         let cleaned = match staged_id {
             Some(id) => delete_credential(&state, id).await,
@@ -713,10 +711,10 @@ pub async fn forget_deleted_profile(state: &AppState, identity: &str) -> Result<
         return Err("Cannot remove the active profile's network credentials".into());
     }
     let key = format!("network_ownership.v1.{identity}");
-    if let Some(id) = saved(state, &key)?.and_then(|s| s.credential_ref) {
-        if !delete_credential(state, id).await {
-            return Err("The identity was deleted, but its unused shared-instance credential could not be removed from protected storage.".into());
-        }
+    if let Some(id) = saved(state, &key)?.and_then(|s| s.credential_ref)
+        && !delete_credential(state, id).await
+    {
+        return Err("The identity was deleted, but its unused shared-instance credential could not be removed from protected storage.".into());
     }
     state
         .db

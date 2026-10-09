@@ -12,7 +12,7 @@ members = [
 version = "1.0.34"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-rust-version = "1.87"
+rust-version = "1.89"
 publish = false
 
 [workspace.dependencies]
@@ -79,7 +79,7 @@ r2d2_sqlite = "0.25"
 # Misc
 hex = "0.4"
 # Keep this exact image version until its newer dependency surface is reviewed
-# independently; the Rust 1.87 MSRV lift does not implicitly authorize it.
+# independently; the Rust 1.89 MSRV lift does not implicitly authorize it.
 image = { version = "=0.25.5", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 
 # Testing

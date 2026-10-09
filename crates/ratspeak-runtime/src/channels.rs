@@ -2907,8 +2907,8 @@ async fn run_manager(input: ChannelsManagerInput) {
                     }
                     ChannelsCommand::IdentityRenamed { previous, current } => {
                         let mut adopted_target = None;
-                        if let Some(session) = active.as_mut() {
-                            if let Some(adopted) = adopt_renamed_nickname(
+                        if let Some(session) = active.as_mut()
+                            && let Some(adopted) = adopt_renamed_nickname(
                                 &session.nickname,
                                 &previous,
                                 &current,
@@ -2927,7 +2927,6 @@ async fn run_manager(input: ChannelsManagerInput) {
                                 });
                                 emit_snapshot(&emitter, &snapshot);
                             }
-                        }
                         if let Some((destination, adopted)) = adopted_target {
                             mutate_snapshot(&snapshot, |state| {
                                 set_desired_hub(state, &destination, &adopted, true)
@@ -2992,12 +2991,11 @@ async fn run_manager(input: ChannelsManagerInput) {
                         let _ = result_tx.send(());
                     }
                     ChannelsCommand::FlushHistory { result_tx } => {
-                        if let Some(session) = active.as_mut() {
-                            if enqueue_session_persistence(&history, session) {
+                        if let Some(session) = active.as_mut()
+                            && enqueue_session_persistence(&history, session) {
                                 history.project(&snapshot);
                                 emit_snapshot(&emitter, &snapshot);
                             }
-                        }
                         let _ = result_tx.send(history.barrier().await);
                     }
                     ChannelsCommand::Shutdown {
@@ -3331,12 +3329,11 @@ async fn run_manager(input: ChannelsManagerInput) {
                 }
             }
             completion = greeting_resource_completion_rx.recv() => {
-                if let (Some(completion), Some(active)) = (completion, active.as_mut()) {
-                    if apply_hub_greeting_resource_completion(active, &activity, completion) {
+                if let (Some(completion), Some(active)) = (completion, active.as_mut())
+                    && apply_hub_greeting_resource_completion(active, &activity, completion) {
                         sync_session_snapshot(active, &snapshot);
                         emit_snapshot(&emitter, &snapshot);
                     }
-                }
             }
         }
     }
@@ -4303,23 +4300,22 @@ async fn part_room(
         .get(&room)
         .map(|context| context.token)
         .unwrap_or_else(activity::ChannelRoomToken::random);
-    if prior == ChannelRoomPhase::Joining {
-        if let Some(join) = active
+    if prior == ChannelRoomPhase::Joining
+        && let Some(join) = active
             .room_activity
             .get_mut(&room)
             .and_then(|context| context.join.take())
-        {
-            record_room_operation(
-                activity_recorder,
-                active.activity,
-                room_token,
-                RoomOperationContext {
-                    origin: activity_fence,
-                    ..join
-                },
-                activity::ChannelRoomTransition::JoinCancelled,
-            );
-        }
+    {
+        record_room_operation(
+            activity_recorder,
+            active.activity,
+            room_token,
+            RoomOperationContext {
+                origin: activity_fence,
+                ..join
+            },
+            activity::ChannelRoomTransition::JoinCancelled,
+        );
     }
     let operation = RoomOperationContext {
         correlation_id: CorrelationId::random(),

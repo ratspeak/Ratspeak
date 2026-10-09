@@ -1423,10 +1423,8 @@ fn interface_block_ranges(content: &str) -> Vec<(String, InterfaceBlockRange)> {
             }
 
             if trimmed.starts_with("[[") {
-                if in_interfaces {
-                    if let Some(name) = interface_block_name(line) {
-                        current = Some((name.to_string(), offset));
-                    }
+                if in_interfaces && let Some(name) = interface_block_name(line) {
+                    current = Some((name.to_string(), offset));
                 }
             } else {
                 in_interfaces = named_top_level_section(line, "interfaces");

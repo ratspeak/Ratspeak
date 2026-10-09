@@ -215,12 +215,11 @@ where
     .await;
     let deleted = match deleted_result {
         Ok(Ok(deleted)) => {
-            if let Some(snapshot) = persisted_snapshot.lock().unwrap().take() {
-                if let Ok(mut manager) = state.lxmf.try_lock() {
-                    if let Some(manager) = manager.as_mut() {
-                        manager.acknowledge_known_identities_snapshot(&snapshot);
-                    }
-                }
+            if let Some(snapshot) = persisted_snapshot.lock().unwrap().take()
+                && let Ok(mut manager) = state.lxmf.try_lock()
+                && let Some(manager) = manager.as_mut()
+            {
+                manager.acknowledge_known_identities_snapshot(&snapshot);
             }
             deleted
         }

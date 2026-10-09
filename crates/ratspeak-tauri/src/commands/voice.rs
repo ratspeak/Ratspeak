@@ -541,19 +541,19 @@ pub async fn send_lxmf_voice_message(
         .await
     }
     .await;
-    if let Err(error) = &result {
-        if let Some(clip) = staged.take() {
-            let _identity = state.identity_switch_lock.lock().await;
-            if state.current_identity_session_generation() == fence.identity_session_generation()
-                && active_identity_id(&state) == identity_id
-                && !matches!(error.code.as_str(), "bad_request" | "invalid_destination")
-                && state.restore_attachment_staging(clip)
-            {
-                return Err(AppError::new(
-                    "voice_retryable",
-                    "Couldn't send this voice message. Your recording is ready to retry.",
-                ));
-            }
+    if let Err(error) = &result
+        && let Some(clip) = staged.take()
+    {
+        let _identity = state.identity_switch_lock.lock().await;
+        if state.current_identity_session_generation() == fence.identity_session_generation()
+            && active_identity_id(&state) == identity_id
+            && !matches!(error.code.as_str(), "bad_request" | "invalid_destination")
+            && state.restore_attachment_staging(clip)
+        {
+            return Err(AppError::new(
+                "voice_retryable",
+                "Couldn't send this voice message. Your recording is ready to retry.",
+            ));
         }
     }
     result

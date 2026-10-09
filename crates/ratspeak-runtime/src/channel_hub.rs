@@ -1140,10 +1140,10 @@ impl HubSession {
         }
         self.seen_ids.push_back(id);
         self.seen_set.insert(id);
-        if self.seen_ids.len() > SEEN_ID_LIMIT {
-            if let Some(evicted) = self.seen_ids.pop_front() {
-                self.seen_set.remove(&evicted);
-            }
+        if self.seen_ids.len() > SEEN_ID_LIMIT
+            && let Some(evicted) = self.seen_ids.pop_front()
+        {
+            self.seen_set.remove(&evicted);
         }
         true
     }
@@ -5819,10 +5819,8 @@ impl HubCore {
             envelope: welcome,
         });
 
-        if first_welcome {
-            if let Some(greeting) = self.config.greeting.clone() {
-                self.push_greeting(link_id, &greeting, out);
-            }
+        if first_welcome && let Some(greeting) = self.config.greeting.clone() {
+            self.push_greeting(link_id, &greeting, out);
         }
     }
 

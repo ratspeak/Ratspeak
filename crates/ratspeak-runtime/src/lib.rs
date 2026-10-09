@@ -1701,13 +1701,13 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                 }
                 let (opportunistic_proof_tx, opportunistic_proof_rx) =
                     tokio::sync::mpsc::unbounded_channel();
-                if let Ok(mut lxmf) = state.lxmf.lock() {
-                    if let Some(mgr) = lxmf.as_mut() {
-                        mgr.delivery_tx = Some(delivery_tx);
-                        mgr.set_path_recovery_handle(rns_mgr.handle.path_recovery_handle());
-                        mgr.set_delivery_timing_owner(rns_mgr.handle.clone());
-                        mgr.set_opportunistic_proof_sender(opportunistic_proof_tx);
-                    }
+                if let Ok(mut lxmf) = state.lxmf.lock()
+                    && let Some(mgr) = lxmf.as_mut()
+                {
+                    mgr.delivery_tx = Some(delivery_tx);
+                    mgr.set_path_recovery_handle(rns_mgr.handle.path_recovery_handle());
+                    mgr.set_delivery_timing_owner(rns_mgr.handle.clone());
+                    mgr.set_opportunistic_proof_sender(opportunistic_proof_tx);
                 }
 
                 let (pkt_tx, pkt_rx) = tokio::sync::mpsc::channel(CHANNEL_BUFFER_SIZE);
@@ -2027,15 +2027,15 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
             // hash; Auto selects below; Off keeps any stored hash dormant. This
             // is separate from hosted propagation-node enablement.
             let (mode, _) = propagation::read_settings(&state);
-            if let Ok(mut lxmf) = state.lxmf.lock() {
-                if let Some(mgr) = lxmf.as_mut() {
-                    let identity_id = mgr.identity_hash.clone();
-                    mgr.enable_propagation(
-                        mode != propagation::PropagationMode::Off,
-                        &state.db,
-                        &identity_id,
-                    );
-                }
+            if let Ok(mut lxmf) = state.lxmf.lock()
+                && let Some(mgr) = lxmf.as_mut()
+            {
+                let identity_id = mgr.identity_hash.clone();
+                mgr.enable_propagation(
+                    mode != propagation::PropagationMode::Off,
+                    &state.db,
+                    &identity_id,
+                );
             }
             if mode == propagation::PropagationMode::Manual {
                 let stored_pn = db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
@@ -2047,17 +2047,16 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             .map(String::from)
                     })
                     .unwrap_or_default();
-                if !stored_pn.is_empty() {
-                    if let Ok(mut lxmf) = state.lxmf.lock() {
-                        if let Some(mgr) = lxmf.as_mut() {
-                            let identity_id = mgr.identity_hash.clone();
-                            if mgr.set_propagation_node(Some(&stored_pn), &state.db, &identity_id) {
-                                tracing::info!(
-                                    node = %short_id(&stored_pn),
-                                    "restored Manual-mode propagation node from DB"
-                                );
-                            }
-                        }
+                if !stored_pn.is_empty()
+                    && let Ok(mut lxmf) = state.lxmf.lock()
+                    && let Some(mgr) = lxmf.as_mut()
+                {
+                    let identity_id = mgr.identity_hash.clone();
+                    if mgr.set_propagation_node(Some(&stored_pn), &state.db, &identity_id) {
+                        tracing::info!(
+                            node = %short_id(&stored_pn),
+                            "restored Manual-mode propagation node from DB"
+                        );
                     }
                 }
             }
@@ -2121,45 +2120,45 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                     let direct_conclusion_state = state.clone();
                     let direct_completion_state = state.clone();
                     let direct_completion_tx = link_res_tx.clone();
-                    if let Ok(mut lxmf) = state.lxmf.lock() {
-                        if let Some(mgr) = lxmf.as_mut() {
-                            mgr.set_direct_inbound_resource_handlers(
-                                move |link_id, advertisement| {
-                                    admit_inbound_lxmf_resource(
-                                        &direct_admission_state,
-                                        link_id,
-                                        advertisement,
-                                    )
-                                },
-                                move |link_id, resource_id| {
-                                    drop(
-                                        direct_conclusion_state
-                                            .take_inbound_attachment_resource(link_id, resource_id),
+                    if let Ok(mut lxmf) = state.lxmf.lock()
+                        && let Some(mgr) = lxmf.as_mut()
+                    {
+                        mgr.set_direct_inbound_resource_handlers(
+                            move |link_id, advertisement| {
+                                admit_inbound_lxmf_resource(
+                                    &direct_admission_state,
+                                    link_id,
+                                    advertisement,
+                                )
+                            },
+                            move |link_id, resource_id| {
+                                drop(
+                                    direct_conclusion_state
+                                        .take_inbound_attachment_resource(link_id, resource_id),
+                                );
+                            },
+                        );
+                        mgr.set_direct_inbound_resource_completion_handler(
+                            move |link_id, resource_id, data| {
+                                if let Some(lease) = direct_completion_state
+                                    .take_inbound_attachment_resource(link_id, resource_id)
+                                {
+                                    let _ = direct_completion_tx.send(
+                                        link_accounting::InboundResourceDelivery {
+                                            data,
+                                            link_id,
+                                            lease,
+                                        },
                                     );
-                                },
-                            );
-                            mgr.set_direct_inbound_resource_completion_handler(
-                                move |link_id, resource_id, data| {
-                                    if let Some(lease) = direct_completion_state
-                                        .take_inbound_attachment_resource(link_id, resource_id)
-                                    {
-                                        let _ = direct_completion_tx.send(
-                                            link_accounting::InboundResourceDelivery {
-                                                data,
-                                                link_id,
-                                                lease,
-                                            },
-                                        );
-                                    }
-                                },
-                            );
-                            mgr.set_lxmf_link_control(
-                                link_command_tx,
-                                link_pkt_tx.clone(),
-                                link_identified_rx,
-                                backchannel_event_rx,
-                            );
-                        }
+                                }
+                            },
+                        );
+                        mgr.set_lxmf_link_control(
+                            link_command_tx,
+                            link_pkt_tx.clone(),
+                            link_identified_rx,
+                            backchannel_event_rx,
+                        );
                     }
 
                     let accounting_state = state.clone();
@@ -2380,12 +2379,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             interval.tick().await;
                             // Defer ratchet cleanup +900s to avoid a large
                             // purge in the first post-resume tick.
-                            if is_fg && !was_foreground {
-                                if let Ok(mut lxmf) = tick_state.lxmf.lock() {
-                                    if let Some(mgr) = lxmf.as_mut() {
-                                        mgr.mark_foreground_resume();
-                                    }
-                                }
+                            if is_fg
+                                && !was_foreground
+                                && let Ok(mut lxmf) = tick_state.lxmf.lock()
+                                && let Some(mgr) = lxmf.as_mut()
+                            {
+                                mgr.mark_foreground_resume();
                             }
                             was_foreground = is_fg;
                         }
@@ -2572,10 +2571,10 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                             .lock()
                             .ok()
                             .and_then(|guard| guard.clone());
-                        if let Some(node) = hosted_node {
-                            if let Ok(mut node) = node.lock() {
-                                node.tick();
-                            }
+                        if let Some(node) = hosted_node
+                            && let Ok(mut node) = node.lock()
+                        {
+                            node.tick();
                         }
                     }
                     let propagation_deposit_terminal = !completed_propagation_deposits.is_empty()
@@ -2804,13 +2803,12 @@ pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
                                 new_state,
                             )
                             .await;
-                            if *new_state == "delivered"
+                            if (*new_state == "delivered"
                                 || *new_state == "failed"
-                                || *new_state == "propagated"
+                                || *new_state == "propagated")
+                                && let Ok(mut map) = tick_state.lrgp_msg_to_session.lock()
                             {
-                                if let Ok(mut map) = tick_state.lrgp_msg_to_session.lock() {
-                                    map.remove(msg_id);
-                                }
+                                map.remove(msg_id);
                             }
                         }
                     }
@@ -4046,71 +4044,70 @@ fn extract_and_save_attachment(
     state: &AppState,
     msg: &lxmf_core::message_api::LxMessage,
 ) -> Option<ExtractedAttachment> {
-    if let Ok(Some((file_name, file_data))) = msg.first_file_attachment() {
-        if let Ok(mut lxmf) = state.lxmf.lock() {
-            if let Some(mgr) = lxmf.as_mut() {
-                let stored = match mgr.save_attachment(&file_name, file_data) {
-                    Ok(stored) => stored,
-                    Err(error) => {
-                        tracing::warn!(
-                            error_kind = ?error.kind(),
-                            size = file_data.len(),
-                            kind = "file",
-                            "failed to persist inbound attachment"
-                        );
-                        return Some(ExtractedAttachment {
-                            file_name,
-                            stored_name: db::ATTACHMENT_UNAVAILABLE_STORED_NAME.to_string(),
-                            is_image: false,
-                        });
-                    }
-                };
-                tracing::info!(
+    if let Ok(Some((file_name, file_data))) = msg.first_file_attachment()
+        && let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        let stored = match mgr.save_attachment(&file_name, file_data) {
+            Ok(stored) => stored,
+            Err(error) => {
+                tracing::warn!(
+                    error_kind = ?error.kind(),
                     size = file_data.len(),
                     kind = "file",
-                    "extracted inbound attachment"
+                    "failed to persist inbound attachment"
                 );
                 return Some(ExtractedAttachment {
                     file_name,
-                    stored_name: stored,
+                    stored_name: db::ATTACHMENT_UNAVAILABLE_STORED_NAME.to_string(),
                     is_image: false,
                 });
             }
-        }
+        };
+        tracing::info!(
+            size = file_data.len(),
+            kind = "file",
+            "extracted inbound attachment"
+        );
+        return Some(ExtractedAttachment {
+            file_name,
+            stored_name: stored,
+            is_image: false,
+        });
     }
 
     if let Ok(Some((mime_type, image_data))) = msg.image_attachment() {
         let ext = mime_type.rsplit('/').next().unwrap_or("png");
         let file_name = format!("image.{ext}");
-        if let Ok(mut lxmf) = state.lxmf.lock() {
-            if let Some(mgr) = lxmf.as_mut() {
-                let stored = match mgr.save_attachment(&file_name, image_data) {
-                    Ok(stored) => stored,
-                    Err(error) => {
-                        tracing::warn!(
-                            error_kind = ?error.kind(),
-                            size = image_data.len(),
-                            kind = "image",
-                            "failed to persist inbound attachment"
-                        );
-                        return Some(ExtractedAttachment {
-                            file_name,
-                            stored_name: db::ATTACHMENT_UNAVAILABLE_STORED_NAME.to_string(),
-                            is_image: true,
-                        });
-                    }
-                };
-                tracing::info!(
-                    size = image_data.len(),
-                    kind = "image",
-                    "extracted inbound attachment"
-                );
-                return Some(ExtractedAttachment {
-                    file_name,
-                    stored_name: stored,
-                    is_image: true,
-                });
-            }
+        if let Ok(mut lxmf) = state.lxmf.lock()
+            && let Some(mgr) = lxmf.as_mut()
+        {
+            let stored = match mgr.save_attachment(&file_name, image_data) {
+                Ok(stored) => stored,
+                Err(error) => {
+                    tracing::warn!(
+                        error_kind = ?error.kind(),
+                        size = image_data.len(),
+                        kind = "image",
+                        "failed to persist inbound attachment"
+                    );
+                    return Some(ExtractedAttachment {
+                        file_name,
+                        stored_name: db::ATTACHMENT_UNAVAILABLE_STORED_NAME.to_string(),
+                        is_image: true,
+                    });
+                }
+            };
+            tracing::info!(
+                size = image_data.len(),
+                kind = "image",
+                "extracted inbound attachment"
+            );
+            return Some(ExtractedAttachment {
+                file_name,
+                stored_name: stored,
+                is_image: true,
+            });
         }
     }
 
@@ -4923,17 +4920,15 @@ async fn process_inbound_lxmf(
         return;
     }
 
-    if sig_valid == Some(true) {
-        if let Ok(mut lxmf) = state.lxmf.lock() {
-            if let Some(mgr) = lxmf.as_mut() {
-                if mgr.router.learn_ticket_from_inbound(&msg) {
-                    tracing::debug!(
-                        from = %short_id(&hex::encode(msg.source_hash)),
-                        "stored signed inbound ticket for future stamp bypass"
-                    );
-                }
-            }
-        }
+    if sig_valid == Some(true)
+        && let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+        && mgr.router.learn_ticket_from_inbound(&msg)
+    {
+        tracing::debug!(
+            from = %short_id(&hex::encode(msg.source_hash)),
+            "stored signed inbound ticket for future stamp bypass"
+        );
     }
 
     // Opportunistic ACK; runs before the blocked check on purpose so a
@@ -5021,10 +5016,10 @@ async fn process_inbound_lxmf(
             .and_then(|bytes| bytes.try_into().ok())
             .is_some_and(|local_dest: [u8; 16]| local_dest == msg.destination_hash);
         if local_destination_matches {
-            if let Ok(mut lxmf) = state.lxmf.lock() {
-                if let Some(mgr) = lxmf.as_mut() {
-                    mgr.note_pending_direct_backchannel(msg.source_hash, link_id);
-                }
+            if let Ok(mut lxmf) = state.lxmf.lock()
+                && let Some(mgr) = lxmf.as_mut()
+            {
+                mgr.note_pending_direct_backchannel(msg.source_hash, link_id);
             }
             tracing::debug!(
                 from = %short_id(&source_hash),
@@ -5369,10 +5364,10 @@ fn cache_lxmf_route_hops_from_path_table(
     entries: &[rns_transport::messages::PathTableRpcEntry],
     started: Instant,
 ) {
-    if let Ok(mut lxmf) = state.lxmf.lock() {
-        if let Some(mgr) = lxmf.as_mut() {
-            mgr.replace_routes_observed_at(entries, started);
-        }
+    if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+    {
+        mgr.replace_routes_observed_at(entries, started);
     }
 }
 
@@ -5752,39 +5747,39 @@ async fn poll_stats_loop(
                 let mut router_changed = false;
                 let mut changed_ratchet_hashes = Vec::new();
                 // Aspect-agnostic: crypto cache, announce_history, contact-name refresh.
-                if let Ok(mut lxmf) = state.lxmf.lock() {
-                    if let Some(mgr) = lxmf.as_mut() {
-                        for a in &announces {
-                            let dest_hex = hex::encode(a.dest_hash);
-                            tracing::debug!(
-                                dest = %short_id(&dest_hex),
-                                has_pk = a.public_key.is_some(),
-                                has_ratchet = a.ratchet.is_some(),
-                                hops = a.hops,
-                                "processing announce entry"
-                            );
-                            if let Some(ref pk) = a.public_key {
-                                let is_new = !mgr.known_identities.contains_key(&dest_hex);
-                                let (id_changed, ratchet_changed) =
-                                    mgr.update_remote_crypto(&dest_hex, pk, a.ratchet.as_ref());
-                                identities_changed |= id_changed;
-                                if ratchet_changed {
-                                    changed_ratchet_hashes.push(dest_hex.clone());
-                                }
-                                if is_new {
-                                    tracing::debug!(
-                                        dest = %short_id(&dest_hex),
-                                        has_ratchet = a.ratchet.is_some(),
-                                        "new remote identity cached from announce"
-                                    );
-                                }
+                if let Ok(mut lxmf) = state.lxmf.lock()
+                    && let Some(mgr) = lxmf.as_mut()
+                {
+                    for a in &announces {
+                        let dest_hex = hex::encode(a.dest_hash);
+                        tracing::debug!(
+                            dest = %short_id(&dest_hex),
+                            has_pk = a.public_key.is_some(),
+                            has_ratchet = a.ratchet.is_some(),
+                            hops = a.hops,
+                            "processing announce entry"
+                        );
+                        if let Some(ref pk) = a.public_key {
+                            let is_new = !mgr.known_identities.contains_key(&dest_hex);
+                            let (id_changed, ratchet_changed) =
+                                mgr.update_remote_crypto(&dest_hex, pk, a.ratchet.as_ref());
+                            identities_changed |= id_changed;
+                            if ratchet_changed {
+                                changed_ratchet_hashes.push(dest_hex.clone());
                             }
-                            router_changed |= mgr.update_lxmf_announce_app_data(
-                                a.dest_hash,
-                                a.name_hash,
-                                a.app_data.as_deref(),
-                            );
+                            if is_new {
+                                tracing::debug!(
+                                    dest = %short_id(&dest_hex),
+                                    has_ratchet = a.ratchet.is_some(),
+                                    "new remote identity cached from announce"
+                                );
+                            }
                         }
+                        router_changed |= mgr.update_lxmf_announce_app_data(
+                            a.dest_hash,
+                            a.name_hash,
+                            a.app_data.as_deref(),
+                        );
                     }
                 }
                 if identities_changed || !changed_ratchet_hashes.is_empty() || router_changed {
@@ -6345,11 +6340,11 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
 
     // Stop every remaining local retry/Link/Resource owner after timeout is
     // durable. This cannot recall a packet already handed to the network.
-    if let Ok(mut lxmf) = state.lxmf.lock() {
-        if let Some(manager) = lxmf.as_mut() {
-            for (msg_id, _) in &transitioned {
-                let _ = manager.cancel_outbound_message(msg_id);
-            }
+    if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(manager) = lxmf.as_mut()
+    {
+        for (msg_id, _) in &transitioned {
+            let _ = manager.cancel_outbound_message(msg_id);
         }
     }
 
@@ -7055,15 +7050,15 @@ async fn try_handle_inbound_lrgp(
                 }
                 _ => ("protocol_error", "Action rejected"),
             };
-            if matches!(&error, lrgp::protocol::LrgpError::SessionExpired(_)) {
-                if let Some(Some(expired)) = state.lrgp_router.with_app(&app_id, |app| {
+            if matches!(&error, lrgp::protocol::LrgpError::SessionExpired(_))
+                && let Some(Some(expired)) = state.lrgp_router.with_app(&app_id, |app| {
                     app.get_session_record(&session_id, identity_id)
-                }) {
-                    let _ = db::spawn_db(state.db.clone(), move |pool| {
-                        db::save_game_session(&pool, &expired);
-                    })
-                    .await;
-                }
+                })
+            {
+                let _ = db::spawn_db(state.db.clone(), move |pool| {
+                    db::save_game_session(&pool, &expired);
+                })
+                .await;
             }
             send_lrgp_error_best_effort(
                 state,
@@ -8196,15 +8191,14 @@ mod inbound_pipeline_tests {
             while let Some(message) = rx.recv().await {
                 if let rns_transport::messages::TransportMessage::Rpc { query, response_tx } =
                     message
-                {
-                    if matches!(
+                    && matches!(
                         query,
                         rns_transport::messages::TransportQuery::IsBlackholed { .. }
-                    ) {
-                        let _ = response_tx.send(
-                            rns_transport::messages::TransportQueryResponse::BoolResult(blackholed),
-                        );
-                    }
+                    )
+                {
+                    let _ = response_tx.send(
+                        rns_transport::messages::TransportQueryResponse::BoolResult(blackholed),
+                    );
                 }
             }
         });

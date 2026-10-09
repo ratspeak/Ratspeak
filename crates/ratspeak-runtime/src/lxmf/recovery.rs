@@ -275,17 +275,17 @@ impl LxmfManager {
         );
         // Admit only this new destination here. The normal tick polls the
         // bounded inventory once; enqueueing a batch must not rescan it O(n²).
-        if let Some(handle) = &self.path_recovery {
-            if let Some(pending) = self.pending_path_recoveries.get_mut(&dest) {
-                pending.reply = admit_with_owner(
-                    handle,
-                    self.shared_recovery_owner.as_ref(),
-                    &self.shared_recovery_slots,
-                    dest,
-                    failed_attempt,
-                )
-                .ok();
-            }
+        if let Some(handle) = &self.path_recovery
+            && let Some(pending) = self.pending_path_recoveries.get_mut(&dest)
+        {
+            pending.reply = admit_with_owner(
+                handle,
+                self.shared_recovery_owner.as_ref(),
+                &self.shared_recovery_slots,
+                dest,
+                failed_attempt,
+            )
+            .ok();
         }
     }
 

@@ -97,10 +97,10 @@ where
         Ok(snapshot)
     })
     .await?;
-    if let Ok(mut manager) = state.lxmf.lock() {
-        if let Some(manager) = manager.as_mut() {
-            manager.acknowledge_persistence_delta(&persisted);
-        }
+    if let Ok(mut manager) = state.lxmf.lock()
+        && let Some(manager) = manager.as_mut()
+    {
+        manager.acknowledge_persistence_delta(&persisted);
     }
     Ok(true)
 }
@@ -146,10 +146,10 @@ async fn persist_current_dirty_received_ratchets(
         Ok(snapshot)
     })
     .await?;
-    if let Ok(mut manager) = state.lxmf.lock() {
-        if let Some(manager) = manager.as_mut() {
-            manager.acknowledge_persistence_delta(&persisted);
-        }
+    if let Ok(mut manager) = state.lxmf.lock()
+        && let Some(manager) = manager.as_mut()
+    {
+        manager.acknowledge_persistence_delta(&persisted);
     }
     Ok(true)
 }
@@ -208,14 +208,12 @@ pub async fn delete_expired_received_ratchets(
         Ok((removed, failed))
     })
     .await?;
-    if !failed.is_empty() {
-        if let Ok(mut manager) = state.lxmf.lock() {
-            if let Some(manager) = manager.as_mut() {
-                if manager.identity_hash == identity_hash {
-                    manager.requeue_expired_received_ratchets(failed);
-                }
-            }
-        }
+    if !failed.is_empty()
+        && let Ok(mut manager) = state.lxmf.lock()
+        && let Some(manager) = manager.as_mut()
+        && manager.identity_hash == identity_hash
+    {
+        manager.requeue_expired_received_ratchets(failed);
     }
     Ok(removed)
 }
@@ -251,10 +249,10 @@ where
         Ok(snapshot)
     })
     .await?;
-    if let Ok(mut manager) = state.lxmf.lock() {
-        if let Some(manager) = manager.as_mut() {
-            manager.acknowledge_checkpoint_snapshot(&persisted);
-        }
+    if let Ok(mut manager) = state.lxmf.lock()
+        && let Some(manager) = manager.as_mut()
+    {
+        manager.acknowledge_checkpoint_snapshot(&persisted);
     }
     Ok(true)
 }
@@ -294,10 +292,10 @@ pub async fn persist_current_known_identities_under_owner(
         return Ok(false);
     };
     let persisted = persist_known_identities_under_owner(owner, snapshot, reason).await?;
-    if let Ok(mut manager) = state.lxmf.lock() {
-        if let Some(manager) = manager.as_mut() {
-            manager.acknowledge_known_identities_snapshot(&persisted);
-        }
+    if let Ok(mut manager) = state.lxmf.lock()
+        && let Some(manager) = manager.as_mut()
+    {
+        manager.acknowledge_known_identities_snapshot(&persisted);
     }
     Ok(true)
 }

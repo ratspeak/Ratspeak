@@ -106,14 +106,14 @@ fn mark_lora_add_freshness_in(
         return None;
     }
 
-    if !registry.contains_key(&key) && registry.len() >= MAX_FRESH_LORA_ADDS {
-        if let Some(oldest) = registry
+    if !registry.contains_key(&key)
+        && registry.len() >= MAX_FRESH_LORA_ADDS
+        && let Some(oldest) = registry
             .iter()
             .min_by_key(|(_, entry)| entry.marked_at)
             .map(|(key, _)| key.clone())
-        {
-            registry.remove(&oldest);
-        }
+    {
+        registry.remove(&oldest);
     }
     let marker = NEXT_FRESH_LORA_ADD_MARKER
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
@@ -478,8 +478,8 @@ pub(crate) async fn hydrate_contact_identity_for_send(state: &AppState, dest_has
             .map(|mgr| mgr.update_remote_crypto(&dest_hash, &public_key, None).0)
     });
     if let Some(identity_changed) = identity_changed {
-        if identity_changed {
-            if let Err(error) = ratspeak_runtime::lxmf_persistence::persist_current_delta(
+        if identity_changed
+            && let Err(error) = ratspeak_runtime::lxmf_persistence::persist_current_delta(
                 state,
                 true,
                 &[],
@@ -487,9 +487,8 @@ pub(crate) async fn hydrate_contact_identity_for_send(state: &AppState, dest_has
                 "contact_hydration",
             )
             .await
-            {
-                tracing::warn!(%error, "contact identity persistence failed");
-            }
+        {
+            tracing::warn!(%error, "contact identity persistence failed");
         }
         tracing::debug!("hydrated LXMF identity from contact card");
         return true;

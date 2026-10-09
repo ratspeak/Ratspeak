@@ -195,19 +195,17 @@ impl LxmfManager {
                 if matches!(
                     *attempt.status.borrow(),
                     ReceiptUpdate::TimedOut | ReceiptUpdate::Failed | ReceiptUpdate::Culled
-                ) {
-                    if let Some(pending) = self
-                        .opportunistic_in_flight
-                        .get_mut(hash)
-                        .filter(|pending| pending.packet_hash == attempt.packet_hash)
-                    {
-                        let now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs_f64();
-                        pending.retry_at = now;
-                        pending.message.next_delivery_attempt = now;
-                    }
+                ) && let Some(pending) = self
+                    .opportunistic_in_flight
+                    .get_mut(hash)
+                    .filter(|pending| pending.packet_hash == attempt.packet_hash)
+                {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64();
+                    pending.retry_at = now;
+                    pending.message.next_delivery_attempt = now;
                 }
                 // A concluded receipt can no longer prove delivery, but its
                 // exact failed-route identity remains useful to the next

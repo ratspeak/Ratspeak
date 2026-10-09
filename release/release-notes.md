@@ -7,12 +7,14 @@
 
 ### Fixed and improved
 
+- Improved Windows Bluetooth discovery and reconnection, including saved devices missing from scan results.
 - Preserved recorded clips for retry when a voice message cannot be queued, and prevented duplicate sends after an uncertain result.
 - Prevented voice messages from crossing identities during account changes or appearing in a chat that has already closed.
 - Displayed the recording duration limit immediately and improved voice controls and error announcements.
 
 ### Build and compatibility
 
+- Source builds require Rust 1.89 or later. Updated btleplug to 0.13.4 with the matching Android Java/JNI integration.
 - Compact recordings are limited to 15 seconds. Receive the handheld's announce before recording so the app can select its compatible format.
 
 ### Known issue

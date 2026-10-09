@@ -5,7 +5,7 @@
     {
       "name": "ratspeak",
       "version": "1.0.34",
-      "rustVersion": "1.87",
+      "rustVersion": "1.89",
       "edition": "2021",
       "features": {
         "default": [
@@ -243,7 +243,7 @@
           "rename": null,
           "kind": null,
           "target": "cfg(target_os = \"android\")",
-          "requirement": "^0.11",
+          "requirement": "=0.13.4",
           "optional": false,
           "defaultFeatures": true,
           "features": [],
@@ -280,6 +280,17 @@
           "kind": null,
           "target": "cfg(target_os = \"android\")",
           "requirement": "^0.2",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
+          "name": "jni",
+          "rename": "jni-btleplug",
+          "kind": null,
+          "target": "cfg(target_os = \"android\")",
+          "requirement": "^0.22",
           "optional": false,
           "defaultFeatures": true,
           "features": [],
@@ -371,7 +382,7 @@
     {
       "name": "ratspeak-core",
       "version": "1.0.34",
-      "rustVersion": "1.87",
+      "rustVersion": "1.89",
       "edition": "2024",
       "features": {},
       "targets": [
@@ -438,7 +449,7 @@
     {
       "name": "ratspeak-db",
       "version": "1.0.34",
-      "rustVersion": "1.87",
+      "rustVersion": "1.89",
       "edition": "2024",
       "features": {},
       "targets": [
@@ -597,7 +608,7 @@
     {
       "name": "ratspeak-runtime",
       "version": "1.0.34",
-      "rustVersion": "1.87",
+      "rustVersion": "1.89",
       "edition": "2024",
       "features": {
         "ble": [
@@ -1162,7 +1173,7 @@
     {
       "name": "ratspeak-tauri",
       "version": "1.0.34",
-      "rustVersion": "1.87",
+      "rustVersion": "1.89",
       "edition": "2024",
       "features": {
         "ble": [

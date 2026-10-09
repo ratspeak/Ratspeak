@@ -779,14 +779,14 @@ fn validate_audio_message_size(actual_bytes: usize) -> Result<(), LxmfSubmission
 }
 
 fn normalize_protocol_delivery_method(msg: &mut LxMessage) {
-    if msg.method == DeliveryMethod::Opportunistic {
-        if let Ok(packed) = msg.pack_payload() {
-            let content_size = packed
-                .len()
-                .saturating_sub(TIMESTAMP_SIZE + STRUCT_OVERHEAD);
-            if content_size > OPPORTUNISTIC_MAX_CONTENT_BYTES {
-                msg.method = DeliveryMethod::Direct;
-            }
+    if msg.method == DeliveryMethod::Opportunistic
+        && let Ok(packed) = msg.pack_payload()
+    {
+        let content_size = packed
+            .len()
+            .saturating_sub(TIMESTAMP_SIZE + STRUCT_OVERHEAD);
+        if content_size > OPPORTUNISTIC_MAX_CONTENT_BYTES {
+            msg.method = DeliveryMethod::Direct;
         }
     }
 }
@@ -1416,14 +1416,14 @@ impl LxmfManager {
             Identity::from_file(&legacy_path)?
         } else {
             let mut found = None;
-            if identities_dir.is_dir() {
-                if let Ok(entries) = std::fs::read_dir(&identities_dir) {
-                    for entry in entries.flatten() {
-                        let id_file = entry.path().join("identity");
-                        if id_file.exists() {
-                            found = Some(Identity::from_file(&id_file)?);
-                            break;
-                        }
+            if identities_dir.is_dir()
+                && let Ok(entries) = std::fs::read_dir(&identities_dir)
+            {
+                for entry in entries.flatten() {
+                    let id_file = entry.path().join("identity");
+                    if id_file.exists() {
+                        found = Some(Identity::from_file(&id_file)?);
+                        break;
                     }
                 }
             }
@@ -1839,10 +1839,11 @@ impl LxmfManager {
     }
 
     pub fn export_identity(&self, hash_hex: &str) -> Option<Vec<u8>> {
-        if self.identity_hash == hash_hex && !self.is_hardware {
-            if let Some(private_key) = self.identity.get_private_key() {
-                return Some(private_key.to_vec());
-            }
+        if self.identity_hash == hash_hex
+            && !self.is_hardware
+            && let Some(private_key) = self.identity.get_private_key()
+        {
+            return Some(private_key.to_vec());
         }
 
         let id_file = self
@@ -4075,10 +4076,10 @@ impl LxmfManager {
                 }
                 CompressionSupport::Unknown => {}
             }
-            if compression_support == CompressionSupport::Unsupported {
-                if let Some(delivery) = self.link_delivery.as_mut() {
-                    delivery.disable_pending_direct_compression(dest_hash);
-                }
+            if compression_support == CompressionSupport::Unsupported
+                && let Some(delivery) = self.link_delivery.as_mut()
+            {
+                delivery.disable_pending_direct_compression(dest_hash);
             }
             return changed;
         }
@@ -4461,15 +4462,13 @@ impl LxmfManager {
             } else {
                 if self.last_reported_steps.len() >= MAX_REPORTED_STEPS
                     && !self.last_reported_steps.contains_key(&msg_id)
-                {
-                    if let Some(oldest) = self
+                    && let Some(oldest) = self
                         .last_reported_steps
                         .iter()
                         .min_by(|a, b| a.1.observed_at.total_cmp(&b.1.observed_at))
                         .map(|(id, _)| id.clone())
-                    {
-                        self.last_reported_steps.remove(&oldest);
-                    }
+                {
+                    self.last_reported_steps.remove(&oldest);
                 }
                 self.last_reported_steps.insert(
                     msg_id.clone(),
@@ -5071,15 +5070,14 @@ impl LxmfManager {
                     link_id,
                     packet_hash,
                 } => {
-                    if let Some(ld) = &mut self.link_delivery {
-                        if !ld.abandon_backchannel_packet(link_id, packet_hash) {
-                            self.pending_backchannel_abandon =
-                                Some(BackchannelSendReceipt::Packet {
-                                    link_id,
-                                    packet_hash,
-                                });
-                            break;
-                        }
+                    if let Some(ld) = &mut self.link_delivery
+                        && !ld.abandon_backchannel_packet(link_id, packet_hash)
+                    {
+                        self.pending_backchannel_abandon = Some(BackchannelSendReceipt::Packet {
+                            link_id,
+                            packet_hash,
+                        });
+                        break;
                     }
                 }
                 BackchannelSendReceipt::Resource {

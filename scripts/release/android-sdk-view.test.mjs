@@ -192,7 +192,7 @@ test("both Android CI toolchains use the reviewed SDK view while iOS skips Andro
     .filter((entry) => /target: aarch64-linux-android/.test(entry));
   assert.equal(androidRows.length, 2);
   assert.ok(androidRows.some((entry) => /toolchain: stable/.test(entry)));
-  assert.ok(androidRows.some((entry) => /toolchain: 1\.87\.0/.test(entry)));
+  assert.ok(androidRows.some((entry) => /toolchain: 1\.89\.0/.test(entry)));
   for (const selector of [
     /uses: actions\/setup-node@/,
     /name: Load reviewed mobile toolchains/,

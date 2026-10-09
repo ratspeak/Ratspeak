@@ -1583,12 +1583,12 @@ impl AppState {
                 lease.bytes = prepared_size;
             }
             (AttachmentTransferLane::Large, AttachmentTransferLane::Small) => {
-                if let Some(updated) = budget.small_bytes.checked_add(prepared_size) {
-                    if updated <= LXMF_SMALL_ATTACHMENT_BUDGET_BYTES {
-                        budget.small_bytes = updated;
-                        budget.large_active = false;
-                        lease.lane = AttachmentTransferLane::Small;
-                    }
+                if let Some(updated) = budget.small_bytes.checked_add(prepared_size)
+                    && updated <= LXMF_SMALL_ATTACHMENT_BUDGET_BYTES
+                {
+                    budget.small_bytes = updated;
+                    budget.large_active = false;
+                    lease.lane = AttachmentTransferLane::Small;
                 }
                 lease.bytes = prepared_size;
             }
@@ -1614,13 +1614,12 @@ impl AppState {
             .attachment_staging
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(staged) = staging.get_mut(token) {
-            if staged.image_source
-                && staged.image_preparing
-                && staged.image_preparation_revision == preparation_revision
-            {
-                staged.image_preparing = false;
-            }
+        if let Some(staged) = staging.get_mut(token)
+            && staged.image_source
+            && staged.image_preparing
+            && staged.image_preparation_revision == preparation_revision
+        {
+            staged.image_preparing = false;
         }
     }
 

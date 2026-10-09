@@ -80,14 +80,13 @@ impl RnsManager {
         )
         .await
         .map_err(|e| format!("RNS init failed: {e}"))?;
-        if handle.instance_mode == InstanceMode::Client {
-            if let Err(error) = handle
+        if handle.instance_mode == InstanceMode::Client
+            && let Err(error) = handle
                 .query_control_result(TransportQuery::GetInterfaceStats)
                 .await
-            {
-                handle.shutdown_and_wait().await;
-                return Err(format!("Shared-instance control unavailable ({error}). Configure the existing instance and its RPC key in Settings → Network, or choose Managed by Ratspeak to use your TCP interfaces.").into());
-            }
+        {
+            handle.shutdown_and_wait().await;
+            return Err(format!("Shared-instance control unavailable ({error}). Configure the existing instance and its RPC key in Settings → Network, or choose Managed by Ratspeak to use your TCP interfaces.").into());
         }
         let startup_rnode_runtimes = handle.startup_rnode_runtimes();
 

@@ -15,9 +15,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RATSPEAK_RSRETICULUM_REF: 5edb8f22f5d8e6b2bd7392dc06e255ead96576fb
-  RATSPEAK_RSLXMF_REF: 284d56fee3d8cdc70dedc6d92aa117d7e1df41ff
-  RATSPEAK_RSLXST_REF: 208560655fe1988013a61428057fe197b08e49fd
+  RATSPEAK_RSRETICULUM_REF: 6bbac52ea0b09f743a5e934f7b0eec2617e083df
+  RATSPEAK_RSLXMF_REF: a40fda5ccf548c1a22ae0c88f83f3dd6e3c7f1c0
+  RATSPEAK_RSLXST_REF: 3e9f2ca8f3e26a3fd1f4820cd8d6e16e7f4ea8ae
   RATSPEAK_LRGP_REF: 88c8665e1e7e1ad710e53e8da6425f3dbe4f5856
 
 jobs:
@@ -62,6 +62,9 @@ jobs:
         run: cargo install cargo-public-api --version 0.52.0 --locked
       - name: Check reviewed Rust API baseline
         run: python3 tools/check-api-baseline.py
+        working-directory: Ratspeak
+      - name: Check Android btleplug bridge contract
+        run: python3 scripts/ci/check-btleplug-integration.py
         working-directory: Ratspeak
       - name: Check manifest and feature contract
         run: python3 tools/check-api-manifest.py
@@ -231,7 +234,7 @@ jobs:
         working-directory: Ratspeak
 
   msrv:
-    name: Rust 1.87 MSRV
+    name: Rust 1.89 MSRV
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -265,7 +268,7 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
         with:
-          toolchain: 1.87.0
+          toolchain: 1.89.0
           components: clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
@@ -363,7 +366,7 @@ jobs:
             native_android_lint: true
           - os: ubuntu-latest
             target: aarch64-linux-android
-            toolchain: 1.87.0
+            toolchain: 1.89.0
             native_android_lint: false
           - os: macos-latest
             target: aarch64-apple-ios-sim
@@ -371,7 +374,7 @@ jobs:
             native_android_lint: false
           - os: macos-latest
             target: aarch64-apple-ios-sim
-            toolchain: 1.87.0
+            toolchain: 1.89.0
             native_android_lint: false
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -488,6 +491,7 @@ jobs:
           apk=gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk
           test -f "$apk"
           python3 ../scripts/release/assert-android-jni-boundaries.py archive "$apk"
+          python3 ../scripts/ci/check-btleplug-integration.py --archive "$apk"
           python3 ../scripts/release/assert-android-page-alignment.py "$apk"
       - name: Clippy iOS simulator
         if: matrix.target == 'aarch64-apple-ios-sim'

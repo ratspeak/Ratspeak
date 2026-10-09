@@ -17,10 +17,10 @@ pub(super) fn constrained(profile: Profile) -> bool {
     )
 }
 pub(super) fn clear() {
-    if let Ok(mut slot) = SESSION.lock() {
-        if let Some(old) = slot.take() {
-            old.gate.close();
-        }
+    if let Ok(mut slot) = SESSION.lock()
+        && let Some(old) = slot.take()
+    {
+        old.gate.close();
     }
 }
 // Once a call selects a constrained codec, it cannot silently upgrade to an
