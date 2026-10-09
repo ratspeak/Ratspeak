@@ -469,6 +469,10 @@ jobs:
           export CC_aarch64_linux_android="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang"
           export CXX_aarch64_linux_android="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang++"
           cargo clippy --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }} --all-targets --all-features --locked -- -D warnings
+      - name: Test Android btleplug permission cleanup
+        if: matrix.native_android_lint
+        working-directory: Ratspeak
+        run: python3 scripts/ci/test-btleplug-disconnect.py --android-jar "$ANDROID_HOME/platforms/android-36/android.jar"
       - name: Build minified Android APK and run release lint
         if: matrix.native_android_lint
         shell: bash

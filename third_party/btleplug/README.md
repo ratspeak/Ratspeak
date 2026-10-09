@@ -1,9 +1,13 @@
 # btleplug Android bridge
 
 The Java sources under `com/nonpolynomial/btleplug` and
-`io/github/gedgygedgy/rust` in the Android app are copied without modification
+`io/github/gedgygedgy/rust` in the Android app originate
 from [btleplug 0.13.4](https://github.com/deviceplug/btleplug/tree/0.13.4/src/droidplug/java).
-`source.json` records the exact revision and SHA-256 inventory. The upstream
+`source.json` records the exact revision, upstream and shipped SHA-256 inventories,
+and the reviewed local patch. `patches/disconnect-permission.diff` retires the
+stale GATT reference before closing it and converts permission revocation into
+`PermissionDeniedException` in the new default command-disconnect callback.
+This preserves the Java/JNI method descriptors. The upstream
 BSD 3-Clause license is included in `LICENSE.md`; source headers retain their
 copyright notices.
 

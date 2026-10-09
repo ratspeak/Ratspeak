@@ -778,9 +778,14 @@ class Peripheral {
         public void onConnectionStateChange(BluetoothGatt gatt, int status, int newState) {
             if (newState == BluetoothGatt.STATE_DISCONNECTED) {
                 Peripheral.this.asyncWithFuture(this.future, () -> {
-                    if (Peripheral.this.gatt != null) {
-                        Peripheral.this.gatt.close();
-                        Peripheral.this.gatt = null;
+                    BluetoothGatt disconnectedGatt = Peripheral.this.gatt;
+                    Peripheral.this.gatt = null;
+                    if (disconnectedGatt != null) {
+                        try {
+                            disconnectedGatt.close();
+                        } catch (SecurityException ex) {
+                            throw new PermissionDeniedException(ex);
+                        }
                     }
                     throw new NotConnectedException();
                 });

@@ -18,6 +18,13 @@ actual = {
     for p in (java / namespace).rglob("*.java")
 }
 assert actual == source["sha256"], "Bundled Java differs from the reviewed btleplug inventory"
+upstream = source["upstreamSha256"]
+assert set(upstream) == set(actual), "Upstream and shipped Java inventories differ"
+patched_files = set()
+for patch in source["patches"]:
+    assert hashlib.sha256((ROOT / patch["path"]).read_bytes()).hexdigest() == patch["sha256"], "Reviewed btleplug patch changed"
+    patched_files.update(patch["files"])
+assert {name for name in actual if actual[name] != upstream[name]} == patched_files, "Undocumented btleplug Java changes"
 manifest = tomllib.loads((ROOT / "src-tauri/Cargo.toml").read_text())
 android = manifest["target"]['cfg(target_os = "android")']["dependencies"]
 assert android["btleplug"] == f"={version}", "Android btleplug dependency/Java version mismatch"
@@ -32,7 +39,7 @@ for namespace in ("com.nonpolynomial.btleplug.android.impl", "io.github.gedgyged
     assert f"-keep class {namespace}.** {{ *; }}" in proguard, f"Missing JNI keep rule: {namespace}"
 gradle = (ROOT / "src-tauri/gen/android/app/build.gradle.kts").read_text()
 assert int(re.search(r"minSdk\s*=\s*(\d+)", gradle).group(1)) >= 24
-print(f"btleplug integration: {version}, {len(actual)} upstream Java files, JNI versions and shrinker rules aligned")
+print(f"btleplug integration: {version}, {len(actual)} Java files, {len(source['patches'])} reviewed patch; JNI versions and shrinker rules aligned")
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--archive", type=Path, help="also verify all bridge method descriptors in the final APK/AAB")
