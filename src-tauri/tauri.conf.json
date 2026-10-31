@@ -50,6 +50,7 @@
         }
       },
       "deb": {
+        "depends": ["libayatana-appindicator3-1"],
         "desktopTemplate": "resources/linux/Ratspeak.desktop",
         "files": {
           "/usr/share/metainfo/org.ratspeak.desktop.metainfo.xml": "resources/linux/org.ratspeak.desktop.metainfo.xml",
@@ -58,6 +59,7 @@
         "postInstallScript": "resources/linux/udev-postinst.sh"
       },
       "rpm": {
+        "depends": ["libayatana-appindicator3.so.1()(64bit)"],
         "desktopTemplate": "resources/linux/Ratspeak.desktop",
         "files": {
           "/usr/share/metainfo/org.ratspeak.desktop.metainfo.xml": "resources/linux/org.ratspeak.desktop.metainfo.xml",

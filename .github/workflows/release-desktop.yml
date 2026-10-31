@@ -213,6 +213,14 @@ jobs:
           test "${#appimages[@]}" = "1"
           bash scripts/release/verify-appimage-runtime.sh "${appimages[0]}"
 
+      - name: Verify Linux package dependencies
+        shell: bash
+        working-directory: Ratspeak
+        run: |
+          mapfile -t packages < <(find src-tauri/target/release/bundle/deb src-tauri/target/release/bundle/rpm -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' \) 2>/dev/null | sort)
+          test "${#packages[@]}" -ge 1
+          bash scripts/release/verify-linux-package-deps.sh "${packages[@]}"
+
       - name: Stage Linux release artifacts
         shell: bash
         working-directory: Ratspeak

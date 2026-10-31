@@ -2459,6 +2459,21 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
                 .and_then(|value| value.as_str()),
             Some(metainfo_path)
         );
+        // tauri-cli misses the target-scoped tray-icon feature, so the tray library is declared.
+        let tray_library = if target == "deb" {
+            "libayatana-appindicator3-1"
+        } else {
+            "libayatana-appindicator3.so.1()(64bit)"
+        };
+        assert!(
+            config
+                .get("depends")
+                .and_then(|value| value.as_array())
+                .is_some_and(|depends| depends
+                    .iter()
+                    .any(|value| value.as_str() == Some(tray_library))),
+            "{target} must require {tray_library}"
+        );
     }
     let appimage_files = linux
         .get("appimage")
@@ -2505,6 +2520,21 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
     }
     assert!(verify_runtime.contains("--appimage-extract"));
     assert!(verify_runtime.contains("LD_LIBRARY_PATH=\"$runtime_dir\" ldd"));
+    let verify_packages = read_source(root.join("scripts/release/verify-linux-package-deps.sh"))
+        .expect("Linux package dependency gate");
+    for requirement in [
+        "libayatana-appindicator3-1",
+        "libayatana-appindicator3.so.1()(64bit)",
+    ] {
+        assert!(verify_packages.contains(requirement));
+    }
+
+    // A missing tray library must not crash startup or strand a hidden window.
+    let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("desktop shell");
+    assert!(shell.contains("if !desktop_tray_supported() {"));
+    assert!(shell.contains("app.manage(DesktopTray);"));
+    assert!(shell.contains("&& close_hides_main_window(app_handle)"));
+    assert!(!shell.contains("install_desktop_tray(app)?;"));
 
     let desktop =
         read_source(root.join("src-tauri/resources/linux/Ratspeak.desktop")).expect("desktop");
@@ -6690,12 +6720,20 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(linux.contains(r#"test -n "$rpm""#));
     assert!(linux.contains(r#"test "$artifact_count" = "6""#));
     assert!(linux.contains("linux-${BOM_ARCH}-source-bom.json"));
-    for gate in ["stage-appimage-runtime.sh", "verify-appimage-runtime.sh"] {
+    for gate in [
+        "stage-appimage-runtime.sh",
+        "verify-appimage-runtime.sh",
+        "verify-linux-package-deps.sh",
+    ] {
         assert!(linux.contains(gate), "Linux release is missing {gate}");
     }
     let desktop =
         read_source(root.join(".github/workflows/build-desktop.yml")).expect("desktop build");
-    for gate in ["stage-appimage-runtime.sh", "verify-appimage-runtime.sh"] {
+    for gate in [
+        "stage-appimage-runtime.sh",
+        "verify-appimage-runtime.sh",
+        "verify-linux-package-deps.sh",
+    ] {
         assert!(desktop.contains(gate), "desktop build is missing {gate}");
     }
 

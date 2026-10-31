@@ -26,6 +26,13 @@ const TRAY_SHOW_ID: &str = "ratspeak_tray_show";
 ))]
 const TRAY_QUIT_ID: &str = "ratspeak_tray_quit";
 
+/// Managed once the tray exists; without it, closing the window quits.
+#[cfg(all(
+    not(any(target_os = "android", target_os = "ios")),
+    not(target_os = "macos")
+))]
+struct DesktopTray;
+
 // Initialize btleplug before any adapter access. Keep the existing JNI 0.19
 // JVM registrations for native BLE Peer/RNode, RFCOMM, and USB independent.
 #[cfg(target_os = "android")]
@@ -1516,7 +1523,16 @@ pub fn run() {
                 not(any(target_os = "android", target_os = "ios")),
                 not(target_os = "macos")
             ))]
-            install_desktop_tray(app)?;
+            if !desktop_tray_supported() {
+                tracing::warn!(
+                    reason = "indicator_library_missing",
+                    "tray unavailable; closing the window quits Ratspeak"
+                );
+            } else if let Err(error) = install_desktop_tray(app) {
+                tracing::warn!(%error, "tray unavailable; closing the window quits Ratspeak");
+            } else {
+                app.manage(DesktopTray);
+            }
 
             // iOS edge-to-edge: env(safe-area-inset-*) + viewport-fit=cover
             // drive the layout; disable WKWebView's automatic inset adjustment.
@@ -1621,12 +1637,13 @@ pub fn run() {
 
         #[cfg(not(any(target_os = "ios", target_os = "android")))]
         match event {
-            // A core that failed to start holds nothing; closing its window quits.
+            // Closing quits when nothing can bring the window back or the core never started.
             tauri::RunEvent::WindowEvent {
                 label,
                 event: tauri::WindowEvent::CloseRequested { api, .. },
                 ..
             } if label == "main"
+                && close_hides_main_window(app_handle)
                 && app_handle
                     .try_state::<ratspeak_tauri::StartupError>()
                     .is_none() =>
@@ -1652,6 +1669,41 @@ pub fn run() {
         }
     });
     tracing_guard.shutdown();
+}
+
+#[cfg(target_os = "macos")]
+fn close_hides_main_window(_app: &tauri::AppHandle) -> bool {
+    true
+}
+
+#[cfg(all(
+    not(any(target_os = "android", target_os = "ios")),
+    not(target_os = "macos")
+))]
+fn close_hides_main_window(app: &tauri::AppHandle) -> bool {
+    app.try_state::<DesktopTray>().is_some()
+}
+
+// libappindicator-sys panics, rather than erroring, when none of these load.
+#[cfg(target_os = "linux")]
+fn desktop_tray_supported() -> bool {
+    [
+        "libayatana-appindicator3.so.1",
+        "libappindicator3.so.1",
+        "libayatana-appindicator3.so",
+        "libappindicator3.so",
+    ]
+    .into_iter()
+    // SAFETY: the same libraries the tray loads itself; their initializers are GTK's.
+    .any(|name| unsafe { libloading::Library::new(name) }.is_ok())
+}
+
+#[cfg(all(
+    not(any(target_os = "android", target_os = "ios")),
+    not(any(target_os = "macos", target_os = "linux"))
+))]
+fn desktop_tray_supported() -> bool {
+    true
 }
 
 #[cfg(all(

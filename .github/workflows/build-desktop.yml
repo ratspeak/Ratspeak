@@ -179,6 +179,17 @@ jobs:
           test "${#appimages[@]}" = "1"
           bash scripts/release/verify-appimage-runtime.sh "${appimages[0]}"
 
+      - name: Verify Linux package dependencies
+        if: ${{ startsWith(matrix.os, 'ubuntu-') }}
+        shell: bash
+        working-directory: Ratspeak
+        env:
+          BUILD_PROFILE: ${{ inputs.profile == 'debug' && 'debug' || 'release' }}
+        run: |
+          mapfile -t packages < <(find "src-tauri/target/$BUILD_PROFILE/bundle/deb" "src-tauri/target/$BUILD_PROFILE/bundle/rpm" -maxdepth 1 -type f \( -name '*.deb' -o -name '*.rpm' \) 2>/dev/null | sort)
+          test "${#packages[@]}" -ge 1
+          bash scripts/release/verify-linux-package-deps.sh "${packages[@]}"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

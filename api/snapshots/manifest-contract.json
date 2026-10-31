@@ -367,6 +367,17 @@
           "sourceKind": "registry"
         },
         {
+          "name": "libloading",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"linux\")",
+          "requirement": "^0.8",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
           "name": "block2",
           "rename": null,
           "kind": null,
