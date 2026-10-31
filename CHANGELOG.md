@@ -5,6 +5,14 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+### Fixed and improved
+
+- Fixed Bluetooth RNodes based on ESP32 (such as the Heltec V3 and V4) staying on "Initializing RNode" on some Android phones.
+- Ratspeak now asks for the RNode's pairing PIN itself instead of Android's generic pairing dialog.
+- A Bluetooth RNode that connects but stops answering now reconnects on its own.
+- Radio rows and the add dialog now say why a radio did not connect: wrong PIN, pairing timed out, radio not answering, radio failed to start, or a Bluetooth link that stayed too small.
+- A Bluetooth RNode can now be paused while it is reconnecting, so another radio can be added.
+
 ## [1.0.36] - 2026-10-30
 
 ### Added
