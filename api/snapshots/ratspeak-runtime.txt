@@ -1759,6 +1759,7 @@ pub async fn ratspeak_runtime::messaging::broadcast_conversations_now(&ratspeak_
 pub async fn ratspeak_runtime::messaging::build_conversations_payload(&ratspeak_runtime::state::AppState) -> core::option::Option<serde_json::value::Value>
 pub mod ratspeak_runtime::mobile_platform
 pub enum ratspeak_runtime::mobile_platform::NativeBleRnodeDisconnect<'a>
+pub ratspeak_runtime::mobile_platform::NativeBleRnodeDisconnect::Address(&'a str)
 pub ratspeak_runtime::mobile_platform::NativeBleRnodeDisconnect::Current
 pub ratspeak_runtime::mobile_platform::NativeBleRnodeDisconnect::ExactOperation(&'a str)
 pub struct ratspeak_runtime::mobile_platform::NativeBleRnodeRequest
@@ -2310,6 +2311,7 @@ pub fn ratspeak_runtime::state::AppState::install_mobile_platform_bridge(&self, 
 pub fn ratspeak_runtime::state::AppState::interface_stats_payload(&self, &[rns_transport::messages::InterfaceStatRpcEntry]) -> serde_json::value::Value
 pub fn ratspeak_runtime::state::AppState::invalidate_ble_rnode_activity_operation(&self) -> core::option::Option<BleRnodeActivityCancellation>
 pub fn ratspeak_runtime::state::AppState::invalidate_ble_rnode_activity_operation_if_token(&self, &str) -> core::option::Option<BleRnodeActivityCancellation>
+pub fn ratspeak_runtime::state::AppState::invalidate_ble_rnode_add_operation_for(&self, &str) -> core::option::Option<BleRnodeActivityCancellation>
 pub fn ratspeak_runtime::state::AppState::invalidate_conversation_lists(&self)
 pub fn ratspeak_runtime::state::AppState::invalidate_rnode_lifecycle_operations_for_names<I, S>(&self, I) -> usize where I: core::iter::traits::collect::IntoIterator<Item = S>, S: core::convert::AsRef<str>
 pub fn ratspeak_runtime::state::AppState::is_current_activity_origin_fence(&self, ratspeak_runtime::state::ActivityRequestFence) -> bool
@@ -2325,6 +2327,7 @@ pub fn ratspeak_runtime::state::AppState::lxmf_delivery_limit_bytes(&self) -> us
 pub fn ratspeak_runtime::state::AppState::lxmf_delivery_limit_kb(&self) -> usize
 pub fn ratspeak_runtime::state::AppState::lxmf_limit_1mb_enabled(&self) -> bool
 pub fn ratspeak_runtime::state::AppState::mark_staged_image_as_file(&self, &str) -> core::result::Result<(), ratspeak_runtime::state::ImageAttachmentStagingError>
+pub fn ratspeak_runtime::state::AppState::mobile_hardware_reason(&self, &str) -> core::option::Option<alloc::string::String>
 pub fn ratspeak_runtime::state::AppState::mobile_hardware_state_snapshot(&self) -> serde_json::value::Value
 pub fn ratspeak_runtime::state::AppState::mobile_platform_bridge(&self) -> alloc::sync::Arc<dyn ratspeak_runtime::mobile_platform::MobilePlatformBridge>
 pub fn ratspeak_runtime::state::AppState::native_notifications_enabled(&self) -> bool
