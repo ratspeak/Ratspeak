@@ -1318,7 +1318,7 @@ fn android_ble_product_state_waits_for_exact_protocol_readiness() {
     assert!(native_bridge.contains("const val BLE_INITIALIZING = 3"));
     assert!(!native_bridge.contains("BLE_RECONNECTING"));
     assert!(!native_bridge.contains("BLE_CONNECTED"));
-    assert!(supervisor.contains("publishInitializing(entry)"));
+    assert!(supervisor.contains("publishInitializing(entry, physical.linkLimited())"));
     assert!(supervisor.contains("RatspeakNativeBridge.BLE_WAITING_FOR_RADIO"));
     assert!(!supervisor.contains("RatspeakNativeBridge.BLE_CONNECTED"));
     assert!(native.contains("1 => \"waiting_for_radio\""));
@@ -1351,9 +1351,11 @@ fn android_ble_product_state_waits_for_exact_protocol_readiness() {
     );
     assert!(health.contains("waiting_for_radio: 'Waiting for radio'"));
     assert!(health.contains("initializing: 'Initializing'"));
-    assert!(health.contains("label: 'Connecting…'"));
     assert!(health.contains("label: 'Retry Connection'"));
-    assert!(health.contains("label: 'Radio conflict'"));
+    // A retrying or conflicting radio can always be paused, which releases its
+    // native owner; no BLE state replaces Pause with a disabled label.
+    assert!(!health.contains("label: 'Connecting…'"));
+    assert!(!health.contains("label: 'Radio conflict'"));
     assert!(events.contains("waiting_for_radio: 'Waiting for radio...'"));
     assert!(events.contains("initializing: 'Initializing RNode...'"));
 }
@@ -1891,8 +1893,9 @@ fn dynamic_rnode_activity_monitors_are_exact_covered_and_ownership_gated() {
         .map(|offset| unopened + offset)
         .expect("add still waits for a port that opened");
     assert!(unopened < adopted && adopted < waited);
-    // Every add flow names a setting the radio rejected.
-    assert_eq!(add.matches("error.configuration_rejection()").count(), 3);
+    // Every add flow names a rejected setting, a radio that cannot start, or
+    // one that never answered.
+    assert_eq!(add.matches("error.named_failure()").count(), 3);
     let adopt = rust_function_block(&interfaces, "adopt_spawned_rnode");
     assert!(adopt.contains("state.cover_rnode_activity_interface(spawned.interface_id, origin)"));
     assert!(adopt.contains("ratspeak_runtime::spawn_startup_rnode_activity_monitor("));

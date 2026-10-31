@@ -323,13 +323,6 @@ function buildIfaceActionItems(ifaceType, ifaceName) {
                 icon: ICON_RADIO,
                 onSelect: function() { requestBleRnodePermission(); }
             });
-        } else if (isBleRnode && bleInFlight) {
-            // The native supervisor already owns the durable retry. Re-running
-            // Resume here would replace that valid owner and reset its retry
-            // generation, so expose progress without a destructive action.
-            items.push({ label: 'Connecting…', icon: ICON_RADIO, disabled: true });
-        } else if (isBleRnode && bleStateName === 'conflict') {
-            items.push({ label: 'Radio conflict', icon: ICON_RADIO, disabled: true });
         } else if ((isBleRnode && (bleStateName === 'failed' || bleStateName === 'disabled')) ||
             runtimeStateName === 'failed') {
             items.push({
@@ -337,10 +330,17 @@ function buildIfaceActionItems(ifaceType, ifaceName) {
                 icon: ICON_PLAY,
                 onSelect: function() { setInterfacePaused(ifaceType, ifaceName, false); }
             });
+            items.push({
+                label: 'Pause Interface',
+                icon: ICON_PAUSE,
+                onSelect: function() { setInterfacePaused(ifaceType, ifaceName, true); }
+            });
         } else if (isBleRnode || runtimeWaiting) {
             // Enabled configuration remains owned by its runtime even while
             // live stats are absent or offline. Missing stats alone must never
-            // turn Pause into the destructive Resume/replacement path.
+            // turn Pause into the destructive Resume/replacement path. Pause
+            // stays offered while the native supervisor retries: it releases
+            // that owner instead of replacing it.
             items.push({
                 label: 'Pause Interface',
                 icon: ICON_PAUSE,
@@ -432,6 +432,33 @@ var BLE_RNODE_HELP = {
         message: 'This device did not identify itself as a supported RNode. Check that it ' +
             'runs RNode firmware and that this interface uses the right device.'
     },
+    radio_unresponsive: {
+        title: 'Radio not answering',
+        message: 'Ratspeak connected to this RNode, but it did not answer. Ratspeak ' +
+            'reconnects on its own; if it keeps happening, restart the RNode.'
+    },
+    radio_start_failed: {
+        title: 'Radio failed to start',
+        message: 'The RNode reported that its LoRa radio could not start. Check that its ' +
+            'antenna is attached and restart it. If it keeps failing, the radio hardware ' +
+            'may be faulty.'
+    },
+    link_limited: {
+        title: 'Bluetooth link too small',
+        message: 'This phone kept its Bluetooth link to the RNode at the smallest packet ' +
+            'size, and many RNodes cannot reply in full that way. Turn Bluetooth off and on, ' +
+            'then choose Retry Connection. Ratspeak asks for a larger size on every connect.'
+    },
+    pin_rejected: {
+        title: 'PIN did not match',
+        message: 'The PIN entered did not match the one the RNode showed. Put the RNode ' +
+            'in pairing mode, then choose Retry Connection and enter the PIN it shows.'
+    },
+    pairing_window_closed: {
+        title: 'Pairing ran out of time',
+        message: 'Pairing ended before the PIN was entered. Put the RNode in pairing ' +
+            'mode again, then choose Retry Connection and enter the PIN soon after it shows.'
+    },
 };
 
 // Wired and network radios need no Bluetooth steps.
@@ -477,7 +504,15 @@ function rnodeConnectionHelp(state, reason, port) {
 function bleRnodeHelp(state, reason) {
     var retrying = state === 'waiting_for_radio' || state === 'connecting';
     if (retrying && (reason === 'not_reachable' || reason === 'link_lost' ||
-        reason === 'service_missing')) {
+        reason === 'service_missing' || reason === 'radio_unresponsive')) {
+        return BLE_RNODE_HELP[reason];
+    }
+    if ((retrying || state === 'initializing') && reason === 'radio_start_failed') {
+        return BLE_RNODE_HELP.radio_start_failed;
+    }
+    if (state === 'initializing' && reason === 'link_limited') return BLE_RNODE_HELP.link_limited;
+    if (state === 'failed' && reason === 'link_limited') return BLE_RNODE_HELP.link_limited;
+    if (state === 'failed' && (reason === 'pin_rejected' || reason === 'pairing_window_closed')) {
         return BLE_RNODE_HELP[reason];
     }
     if (state === 'failed' && (reason === 'pairing_required' || reason === 'bond_timeout')) {
@@ -1146,6 +1181,8 @@ var RNODE_FAILED_LABELS = {
     permission_needed: 'Bluetooth permission needed',
     pairing_required: 'Pairing needed',
     bond_timeout: 'Pairing timed out',
+    pin_rejected: 'PIN did not match',
+    pairing_window_closed: 'Pairing ran out of time',
     stale_bond: 'Pair again',
     bridge_unavailable: 'Radio service unavailable',
     radio_disconnected: 'Waiting for radio',
@@ -1170,10 +1207,14 @@ var RNODE_RETRY_LABELS = {
     service_missing: 'No RNode service',
     bluetooth_off: 'Bluetooth is off',
     permission_needed: 'Bluetooth permission needed',
+    radio_unresponsive: 'Radio not answering',
+    radio_start_failed: 'Radio failed to start',
+    link_limited: 'Bluetooth link too small',
 };
 
 function _rnodeStateLabel(state, reason) {
-    var retrying = state === 'waiting_for_radio' || state === 'connecting';
+    var retrying = state === 'waiting_for_radio' || state === 'connecting' ||
+        state === 'initializing';
     if (state === 'failed') return RNODE_FAILED_LABELS[reason] || 'Connection failed';
     return (retrying && RNODE_RETRY_LABELS[reason]) || RNODE_STATE_LABELS[state] || 'Waiting for radio';
 }

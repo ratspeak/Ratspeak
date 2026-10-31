@@ -42,6 +42,12 @@ object RatspeakMobilePolicy {
     private const val KISS_TFEND = 0xDC
     private const val KISS_TFESC = 0xDD
     private val NATIVE_BRIDGE_ACK_MAGIC = byteArrayOf(0x52, 0x53, 0x42, 0x41, 0x01)
+    // Rust's record for a radio that never answered on its bridge generation;
+    // consumed here and never written to the radio.
+    private const val NATIVE_BRIDGE_UNRESPONSIVE_COMMAND = 0xA1
+    private val NATIVE_BRIDGE_UNRESPONSIVE_FRAME = byteArrayOf(
+        0xC0.toByte(), 0xA1.toByte(), 0x52, 0x53, 0x42, 0x55, 0x01, 0xC0.toByte(),
+    )
 
     enum class RnodeWriteMode {
         WITH_RESPONSE,
@@ -135,6 +141,7 @@ object RatspeakMobilePolicy {
     data class NativeBridgeOutboundOffer(
         val chunks: List<NativeBridgeBleWriteChunk>,
         val overflow: Boolean,
+        val radioUnresponsive: Boolean = false,
     )
 
     /**
@@ -162,6 +169,7 @@ object RatspeakMobilePolicy {
             require(start in 0..end && end <= bytes.size)
             if (failed) return NativeBridgeOutboundOffer(emptyList(), overflow = true)
             val chunks = mutableListOf<NativeBridgeBleWriteChunk>()
+            var radioUnresponsive = false
             for (index in start until end) {
                 val value = bytes[index].toInt() and 0xFF
                 if (!started) {
@@ -207,10 +215,17 @@ object RatspeakMobilePolicy {
                 }
 
                 if (value == KISS_FEND) {
-                    chunks += NativeBridgeBleWriteChunk(
-                        pending.toByteArray(),
-                        completedDataFrames = if (command == KISS_DATA_COMMAND) 1 else 0,
-                    )
+                    val record = pending.toByteArray()
+                    if (command == NATIVE_BRIDGE_UNRESPONSIVE_COMMAND &&
+                        record.contentEquals(NATIVE_BRIDGE_UNRESPONSIVE_FRAME)
+                    ) {
+                        radioUnresponsive = true
+                    } else {
+                        chunks += NativeBridgeBleWriteChunk(
+                            record,
+                            completedDataFrames = if (command == KISS_DATA_COMMAND) 1 else 0,
+                        )
+                    }
                     pending.reset()
                     // Preserve shared-boundary KISS streams. The duplicate is
                     // emitted only if another record actually follows and is
@@ -228,7 +243,7 @@ object RatspeakMobilePolicy {
                     pending.reset()
                 }
             }
-            return NativeBridgeOutboundOffer(chunks, overflow = false)
+            return NativeBridgeOutboundOffer(chunks, overflow = false, radioUnresponsive)
         }
     }
 
@@ -630,6 +645,12 @@ object RatspeakMobilePolicy {
         return level == 15 || level >= 60
     }
 
+    /**
+     * A link still at the 23-byte default ATT MTU. ESP32 RNode firmware
+     * truncates every notification to this payload, losing protocol replies.
+     */
+    fun bleLinkLimited(payload: Int): Boolean = payload <= DEFAULT_ATT_PAYLOAD
+
     /** ATT payload is MTU minus the three-byte ATT header. */
     fun attPayload(mtu: Int, negotiationSucceeded: Boolean): Int {
         if (!negotiationSucceeded) return DEFAULT_ATT_PAYLOAD
@@ -715,13 +736,57 @@ object RatspeakMobilePolicy {
             RatspeakBleGatt.FAILURE_NOT_REACHABLE,
             RatspeakBleGatt.FAILURE_LINK_LOST,
             RatspeakBleGatt.FAILURE_SERVICE_MISSING,
+            RatspeakBleGatt.FAILURE_RADIO_UNRESPONSIVE,
             RatspeakBleGatt.FAILURE_CONNECT -> true
             RatspeakBleGatt.FAILURE_PAIRING_REQUIRED,
             RatspeakBleGatt.FAILURE_BOND_TIMEOUT,
+            RatspeakBleGatt.FAILURE_PIN_REJECTED,
+            RatspeakBleGatt.FAILURE_PAIRING_WINDOW_CLOSED,
             RatspeakBleGatt.FAILURE_STALE_BOND -> false
             else -> false
         }
     }
+
+    // BluetoothDevice.UNBOND_REASON_* (hidden constants, public extras values).
+    private const val UNBOND_REASON_AUTH_FAILED = 1
+    private const val UNBOND_REASON_AUTH_TIMEOUT = 6
+    private const val UNBOND_REASON_REMOTE_AUTH_CANCELED = 8
+    // Android 17 also reports an SMP response timeout as REMOVED.
+    private const val UNBOND_REASON_REMOVED = 9
+
+    /**
+     * Closed failure for a bond that ended without BONDED. A missing reason
+     * (-1) keeps the pairing-mode advice. A pairing that times out or is closed
+     * after its PIN was requested ran out of time; before that request, the
+     * same reasons mean the radio refused (e.g. SMP repeated attempts).
+     */
+    fun bleBondFailureCode(unbondReason: Int, pinRequested: Boolean): String = when (unbondReason) {
+        UNBOND_REASON_AUTH_FAILED -> RatspeakBleGatt.FAILURE_PIN_REJECTED
+        UNBOND_REASON_AUTH_TIMEOUT,
+        UNBOND_REASON_REMOTE_AUTH_CANCELED,
+        UNBOND_REASON_REMOVED ->
+            if (pinRequested) {
+                RatspeakBleGatt.FAILURE_PAIRING_WINDOW_CLOSED
+            } else {
+                RatspeakBleGatt.FAILURE_PAIRING_REQUIRED
+            }
+        else -> RatspeakBleGatt.FAILURE_PAIRING_REQUIRED
+    }
+
+    /**
+     * Backoff attempt for the next physical connect. A radio that keeps going
+     * silent backs off by its silence streak; the reconnect counter resets on
+     * every successful link and would otherwise retry it every two seconds.
+     */
+    fun bleRetryAttempt(endReason: String?, silentStreak: Int, retry: Int): Int =
+        if (endReason == RatspeakBleGatt.FAILURE_RADIO_UNRESPONSIVE) {
+            (silentStreak - 1).coerceAtLeast(0)
+        } else {
+            retry
+        }
+
+    /** Only a six-digit RNode PIN is ever handed to Android. */
+    fun validBleRnodePin(pin: String): Boolean = pin.length == 6 && pin.all { it in '0'..'9' }
 
     fun shouldAutoResumeBle(failureCode: String, enabled: Boolean): Boolean {
         return enabled && shouldRetryBle(failureCode)

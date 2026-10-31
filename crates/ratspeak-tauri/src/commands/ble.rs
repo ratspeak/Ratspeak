@@ -128,6 +128,16 @@ fn ble_rnode_readiness_failure_feedback(
             "startup_timeout",
             BleRnodeActivityOutcome::StartupTimedOut,
         ),
+        RnodeReadinessFailure::RadioStartFailed => (
+            crate::commands::rnode_readiness::RADIO_START_FAILED_MESSAGE,
+            "radio_start_failed",
+            BleRnodeActivityOutcome::RuntimeFailed,
+        ),
+        RnodeReadinessFailure::RadioUnresponsive => (
+            crate::commands::rnode_readiness::RADIO_UNRESPONSIVE_MESSAGE,
+            "radio_unresponsive",
+            BleRnodeActivityOutcome::StartupTimedOut,
+        ),
         RnodeReadinessFailure::CapabilityAdmissionRejected(_) => (
             "RNode did not become ready. Try connecting again.",
             "readiness_failed",
@@ -168,6 +178,23 @@ fn ble_rnode_readiness_failure_feedback(
             BleRnodeActivityOutcome::RuntimeFailed,
         ),
     }
+}
+
+/// A radio that never became ready over a link Android kept at the default
+/// ATT MTU: ESP32 RNode firmware truncates its replies to fit, so the cause is
+/// the phone's Bluetooth link, not the radio.
+#[cfg(feature = "ble")]
+fn android_link_limited_feedback(
+    state: &AppState,
+    failure: RnodeReadinessFailure,
+) -> Option<(&'static str, &'static str, BleRnodeActivityOutcome)> {
+    (failure == RnodeReadinessFailure::Timeout
+        && state.mobile_hardware_reason("ble_rnode").as_deref() == Some("link_limited"))
+    .then_some((
+        "This phone kept the Bluetooth link too small for this RNode. Turn Bluetooth off and on, then try again.",
+        "link_limited",
+        BleRnodeActivityOutcome::StartupTimedOut,
+    ))
 }
 
 type BleRnodeRollbackContext = (std::path::PathBuf, String, u64);
@@ -1878,7 +1905,10 @@ pub async fn apply_ble_rnode_bridge_ready(
                                     )
                             {
                                 let (status, failure_code, activity_outcome) =
-                                    ble_rnode_readiness_failure_feedback(failure);
+                                    android_link_limited_feedback(&state_arc, failure)
+                                        .unwrap_or_else(|| {
+                                            ble_rnode_readiness_failure_feedback(failure)
+                                        });
                                 rollback_ble_rnode_context(&state_arc, rollback_context);
                                 emit_op_status_broadcast(
                                     &state_arc,
@@ -2199,7 +2229,8 @@ pub async fn disconnect_ble_rnode(
                     })
                     .and_then(|interface| interface.get("port"))
                     .and_then(Value::as_str)
-                    .is_some_and(|port| port.starts_with("ble://"));
+                    .and_then(|port| port.strip_prefix("ble://"))
+                    .map(str::to_string);
                 let removal_outcome =
                     match crate::rns_config::snapshot_interface_block(&config_dir, &name) {
                         Ok(expected) => {
@@ -2317,13 +2348,13 @@ pub async fn disconnect_ble_rnode(
                     return false;
                 }
                 #[cfg(target_os = "android")]
-                if native_ble_disconnect {
+                if let Some(address) = native_ble_disconnect.as_deref() {
                     // New RNode mutations also begin while this lock is held,
                     // so an older disconnect event is ordered before any
                     // replacement native connect.
                     let _ = state_arc
                         .mobile_platform_bridge()
-                        .disconnect_ble_rnode(NativeBleRnodeDisconnect::Current);
+                        .disconnect_ble_rnode(NativeBleRnodeDisconnect::Address(address));
                 }
                 #[cfg(not(target_os = "android"))]
                 let _ = native_ble_disconnect;

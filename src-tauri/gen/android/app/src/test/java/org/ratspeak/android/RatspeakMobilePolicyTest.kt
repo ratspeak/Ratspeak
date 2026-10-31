@@ -74,6 +74,32 @@ class RatspeakMobilePolicyTest {
     }
 
     @Test
+    fun nativeBridgeUnresponsiveRecordIsConsumedAndNeverWrittenToTheRadio() {
+        val unresponsive = byteArrayOf(
+            0xC0.toByte(), 0xA1.toByte(), 0x52, 0x53, 0x42, 0x55, 0x01, 0xC0.toByte(),
+        )
+        val detect = byteArrayOf(0xC0.toByte(), 0x08, 0x73, 0xC0.toByte())
+        val coalescer = RatspeakMobilePolicy.NativeBridgeOutboundKissCoalescer(
+            chunkBytes = RatspeakMobilePolicy.DEFAULT_ATT_PAYLOAD,
+        )
+        val offered = coalescer.offer(detect + unresponsive)
+        assertTrue(offered.radioUnresponsive)
+        assertFalse(offered.overflow)
+        assertEquals(1, offered.chunks.size)
+        assertArrayEquals(detect, offered.chunks.single().wire)
+
+        // Same command with a different payload is not the bridge record.
+        val lookalike = byteArrayOf(
+            0xC0.toByte(), 0xA1.toByte(), 0x52, 0x53, 0x42, 0x55, 0x02, 0xC0.toByte(),
+        )
+        val passed = RatspeakMobilePolicy.NativeBridgeOutboundKissCoalescer(
+            chunkBytes = RatspeakMobilePolicy.DEFAULT_ATT_PAYLOAD,
+        ).offer(lookalike)
+        assertFalse(passed.radioUnresponsive)
+        assertArrayEquals(lookalike, passed.chunks.single().wire)
+    }
+
+    @Test
     fun nativeBridgeOneByteTcpReadsStillUseAtMostFiftyOneGattWrites() {
         val payload = ByteArray(508) { if (it % 2 == 0) 0xC0.toByte() else 0xDB.toByte() }
         val wire = kissDataFrame(payload)
@@ -517,12 +543,70 @@ class RatspeakMobilePolicyTest {
             RatspeakBleGatt.FAILURE_LINK_LOST,
             RatspeakBleGatt.FAILURE_SERVICE_MISSING,
             RatspeakBleGatt.FAILURE_PERMISSION,
+            RatspeakBleGatt.FAILURE_RADIO_UNRESPONSIVE,
         ).forEach { assertTrue(it, RatspeakMobilePolicy.shouldRetryBle(it)) }
         listOf(
             RatspeakBleGatt.FAILURE_STALE_BOND,
             RatspeakBleGatt.FAILURE_BOND_TIMEOUT,
             RatspeakBleGatt.FAILURE_PAIRING_REQUIRED,
+            RatspeakBleGatt.FAILURE_PIN_REJECTED,
+            RatspeakBleGatt.FAILURE_PAIRING_WINDOW_CLOSED,
         ).forEach { assertFalse(it, RatspeakMobilePolicy.shouldRetryBle(it)) }
+    }
+
+    @Test
+    fun bondFailuresAreNamedFromAndroidsReasonOnly() {
+        // AUTH_FAILED: the typed PIN did not match.
+        assertEquals(
+            RatspeakBleGatt.FAILURE_PIN_REJECTED,
+            RatspeakMobilePolicy.bleBondFailureCode(1, pinRequested = true),
+        )
+        // AUTH_TIMEOUT / REMOTE_AUTH_CANCELED / REMOVED (Android 17's SMP
+        // timeout) after the PIN was asked for; before it, the radio refused.
+        listOf(6, 8, 9).forEach {
+            assertEquals(
+                RatspeakBleGatt.FAILURE_PAIRING_WINDOW_CLOSED,
+                RatspeakMobilePolicy.bleBondFailureCode(it, pinRequested = true),
+            )
+            assertEquals(
+                RatspeakBleGatt.FAILURE_PAIRING_REQUIRED,
+                RatspeakMobilePolicy.bleBondFailureCode(it, pinRequested = false),
+            )
+        }
+        // Missing, rejected, repeated attempts and anything unknown keep today's advice.
+        listOf(-1, 2, 3, 4, 7, 99).forEach {
+            assertEquals(
+                RatspeakBleGatt.FAILURE_PAIRING_REQUIRED,
+                RatspeakMobilePolicy.bleBondFailureCode(it, pinRequested = true),
+            )
+        }
+    }
+
+    @Test
+    fun silentRadiosBackOffByTheirStreakNotTheResetReconnectCounter() {
+        val silent = RatspeakBleGatt.FAILURE_RADIO_UNRESPONSIVE
+        assertEquals(0, RatspeakMobilePolicy.bleRetryAttempt(silent, silentStreak = 1, retry = 0))
+        assertEquals(3, RatspeakMobilePolicy.bleRetryAttempt(silent, silentStreak = 4, retry = 0))
+        assertEquals(2, RatspeakMobilePolicy.bleRetryAttempt(null, silentStreak = 4, retry = 2))
+        assertEquals(
+            1,
+            RatspeakMobilePolicy.bleRetryAttempt("radio_disconnected", silentStreak = 0, retry = 1),
+        )
+    }
+
+    @Test
+    fun onlyTheDefaultAttPayloadIsALimitedLink() {
+        assertTrue(RatspeakMobilePolicy.bleLinkLimited(RatspeakMobilePolicy.DEFAULT_ATT_PAYLOAD))
+        assertTrue(RatspeakMobilePolicy.bleLinkLimited(RatspeakMobilePolicy.attPayload(517, false)))
+        assertFalse(RatspeakMobilePolicy.bleLinkLimited(RatspeakMobilePolicy.attPayload(247, true)))
+    }
+
+    @Test
+    fun onlySixDigitPinsReachAndroid() {
+        assertTrue(RatspeakMobilePolicy.validBleRnodePin("012345"))
+        listOf("", "12345", "1234567", "12 456", "abcdef", "١٢٣٤٥٦").forEach {
+            assertFalse(it, RatspeakMobilePolicy.validBleRnodePin(it))
+        }
     }
 
     @Test

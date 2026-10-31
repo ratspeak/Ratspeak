@@ -47,6 +47,8 @@ import java.util.concurrent.atomic.AtomicReference
 class RatspeakBleGatt(
     private val context: Context,
     private val progress: (String) -> Unit = {},
+    // Asks the visible app to collect the PIN; false leaves Android's dialog.
+    private val pinRequest: () -> Boolean = { false },
 ) {
 
     companion object {
@@ -57,6 +59,9 @@ class RatspeakBleGatt(
         // only universally safe payload is therefore 20 bytes.
         private const val MTU_FALLBACK_PAYLOAD = RatspeakMobilePolicy.DEFAULT_ATT_PAYLOAD
         private const val GATT_TIMEOUT_SEC = 15L
+        private const val MTU_REQUEST_ATTEMPTS = 3
+        private const val MTU_RESPONSE_TIMEOUT_SEC = 5L
+        private const val MTU_RETRY_DELAY_MS = 300L
         // Cardputer RNode keeps first-pair/manual pairing windows open longer
         // than this; time out first so the app can cleanly roll back.
         private const val BOND_TIMEOUT_SEC = 60L
@@ -104,6 +109,13 @@ class RatspeakBleGatt(
         const val FAILURE_NOT_REACHABLE = "not_reachable"
         const val FAILURE_LINK_LOST = "link_lost"
         const val FAILURE_SERVICE_MISSING = "service_missing"
+        const val FAILURE_RADIO_UNRESPONSIVE = "radio_unresponsive"
+        const val FAILURE_PIN_REJECTED = "pin_rejected"
+        const val FAILURE_PAIRING_WINDOW_CLOSED = "pairing_window_closed"
+
+        private const val EXTRA_UNBOND_REASON = "android.bluetooth.device.extra.REASON"
+        // Ahead of Settings' default-priority pairing dialog receiver.
+        private const val PAIRING_REQUEST_PRIORITY = 999
 
         // Android delivers the bond-loss broadcast shortly after the encrypted
         // link fails; wait this long before classifying a bonded link loss.
@@ -162,6 +174,15 @@ class RatspeakBleGatt(
     @Volatile private var backgroundWaitUnanswered = false
     @Volatile private var waitingInBackground = false
     private var bondLossReceiver: BroadcastReceiver? = null
+    private var pairingReceiver: BroadcastReceiver? = null
+    private val unbondReason = AtomicInteger(-1)
+    private val pinRequested = AtomicBoolean(false)
+    @Volatile private var pairingDevice: BluetoothDevice? = null
+    // Why this physical generation ended, when it ended for a named reason.
+    @Volatile private var endReason: String? = null
+    private val radioSpoke = AtomicBoolean(false)
+    // The link that reached the bridge never got past the default ATT MTU.
+    @Volatile private var linkLimited = false
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -211,6 +232,12 @@ class RatspeakBleGatt(
             serviceMissing.set(false)
             bondLossObserved.set(false)
             adapterUnavailable.set(false)
+            unbondReason.set(-1)
+            pinRequested.set(false)
+            pairingDevice = null
+            endReason = null
+            radioSpoke.set(false)
+            linkLimited = false
             tcpWriter?.shutdown()
             tcpWriter = null
             synchronized(inboundKissAssembler) { inboundKissAssembler.reset() }
@@ -267,16 +294,19 @@ class RatspeakBleGatt(
                 emitProgress("bonding")
                 bondLatch = CountDownLatch(1)
                 registerBondReceiver(address)
+                registerPairingReceiver(address)
                 Log.i(TAG, "Phase 0: createBond() (RNode must be in pairing mode, up to ${BOND_TIMEOUT_SEC}s)...")
                 val started = try { device.createBond() } catch (e: Exception) {
                     logEx("createBond", e); false
                 }
                 if (!started && device.bondState != BluetoothDevice.BOND_BONDING) {
                     unregisterBondReceiver()
+                    unregisterPairingReceiver()
                     return err("$ERR_PAIRING_MODE createBond() rejected — Bluetooth state may be unstable")
                 }
                 if (!waitForBondState(device) && device.bondState != BluetoothDevice.BOND_BONDED) {
                     unregisterBondReceiver()
+                    unregisterPairingReceiver()
                     return err(
                         "$ERR_PAIRING_MODE $ERR_BOND_TIMEOUT Bonding timed out " +
                             "(${bondStr(device.bondState)})"
@@ -284,12 +314,21 @@ class RatspeakBleGatt(
                 }
                 if (device.bondState != BluetoothDevice.BOND_BONDED) {
                     unregisterBondReceiver()
-                    return err("$ERR_PAIRING_MODE Bonding failed (${bondStr(device.bondState)})")
+                    unregisterPairingReceiver()
+                    classifiedFailure = RatspeakMobilePolicy.bleBondFailureCode(
+                        unbondReason.get(),
+                        pinRequested.get(),
+                    )
+                    return err(
+                        "$ERR_PAIRING_MODE Bonding failed (${bondStr(device.bondState)}, " +
+                            "reason=${unbondReason.get()})"
+                    )
                 }
                 Log.i(TAG, "Phase 0 COMPLETE: Bonded")
                 bondedDuringThisConnect = true
             }
             unregisterBondReceiver()
+            unregisterPairingReceiver()
             if (bondedDuringThisConnect) {
                 // rsCardputer/RNode intentionally disconnects shortly after
                 // pairing succeeds so the host reconnects over the stored bond.
@@ -440,12 +479,7 @@ class RatspeakBleGatt(
         // Phase 2: MTU negotiation.
         emitProgress("mtu")
         Log.i(TAG, "Phase 2: Requesting MTU=$TARGET_MTU")
-        mtuLatch = CountDownLatch(1)
-        handler.post { gatt?.requestMtu(TARGET_MTU) }
-        if (!mtuLatch!!.await(5, TimeUnit.SECONDS)) {
-            negotiatedMtu = MTU_FALLBACK_PAYLOAD
-            Log.w(TAG, "MTU negotiation timed out - using fallback payload=$MTU_FALLBACK_PAYLOAD")
-        }
+        negotiateMtu()
         if (adapterUnavailable.get()) return "Bluetooth is turned off"
         linkLostDuring("MTU negotiation")?.let { return it }
         Log.i(TAG, "Phase 2 COMPLETE: MTU payload=$negotiatedMtu")
@@ -484,6 +518,14 @@ class RatspeakBleGatt(
                 return "NUS TX characteristic not found"
             }
         Log.i(TAG, "Phase 3 COMPLETE: NUS found")
+        // A stack busy right after connect may only accept the request now.
+        if (RatspeakMobilePolicy.bleLinkLimited(negotiatedMtu)) {
+            negotiateMtu()
+            if (adapterUnavailable.get()) return "Bluetooth is turned off"
+            linkLostDuring("MTU negotiation")?.let { return it }
+        }
+        linkLimited = RatspeakMobilePolicy.bleLinkLimited(negotiatedMtu)
+        if (linkLimited) Log.w(TAG, "ATT MTU stayed at the default; payload=$negotiatedMtu")
 
         // Phase 5: Subscribe to TX notifications (now authenticated).
         emitProgress("subscribing")
@@ -513,6 +555,40 @@ class RatspeakBleGatt(
         }
         Log.i(TAG, "Phase 5 COMPLETE: TX notifications enabled")
         return null
+    }
+
+    /**
+     * Raise the ATT MTU, retrying a request the stack rejects or fails. Some
+     * stacks refuse one made right after connect, and Android never retries.
+     */
+    private fun negotiateMtu() {
+        for (attempt in 1..MTU_REQUEST_ATTEMPTS) {
+            mtuLatch = CountDownLatch(1)
+            val latch = mtuLatch ?: return
+            if (requestMtuOnMain()) {
+                if (!latch.await(MTU_RESPONSE_TIMEOUT_SEC, TimeUnit.SECONDS)) {
+                    Log.w(TAG, "MTU response timed out (attempt $attempt/$MTU_REQUEST_ATTEMPTS)")
+                }
+            } else {
+                Log.w(TAG, "MTU request rejected (attempt $attempt/$MTU_REQUEST_ATTEMPTS)")
+            }
+            if (adapterUnavailable.get() || setupLinkLost.get()) return
+            if (!RatspeakMobilePolicy.bleLinkLimited(negotiatedMtu)) return
+            if (attempt < MTU_REQUEST_ATTEMPTS) Thread.sleep(MTU_RETRY_DELAY_MS * attempt)
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun requestMtuOnMain(): Boolean {
+        val accepted = AtomicBoolean(false)
+        val done = CountDownLatch(1)
+        handler.post {
+            accepted.set(
+                try { gatt?.requestMtu(TARGET_MTU) == true } catch (_: SecurityException) { false }
+            )
+            done.countDown()
+        }
+        return done.await(1, TimeUnit.SECONDS) && accepted.get()
     }
 
     private fun linkLostDuring(phase: String): String? {
@@ -695,6 +771,14 @@ class RatspeakBleGatt(
                     running.set(false)
                     break
                 }
+                if (offered.radioUnresponsive) {
+                    // The radio answered nothing on a whole Rust generation;
+                    // only a new physical link can recover it.
+                    Log.w(TAG, "Radio never answered over this link — replacing it")
+                    endReason = FAILURE_RADIO_UNRESPONSIVE
+                    running.set(false)
+                    break
+                }
                 for (chunk in offered.chunks) {
                     if (!running.get()) break
                     val activeGatt = gatt ?: break
@@ -752,6 +836,33 @@ class RatspeakBleGatt(
         cleanup()
     }
     fun isRunning(): Boolean = running.get()
+
+    /** Why the last physical generation ended, when it ended for a named reason. */
+    fun endReason(): String? = endReason
+
+    /** Whether the live link never got past the default ATT MTU. */
+    fun linkLimited(): Boolean = linkLimited
+
+    /** Whether the radio sent anything during the last physical generation. */
+    fun radioSpoke(): Boolean = radioSpoke.get()
+
+    /**
+     * Answer the pairing request this generation took over. False means
+     * Android refused the PIN and the bond will fail on its own.
+     */
+    @SuppressLint("MissingPermission")
+    fun submitPin(pin: String): Boolean {
+        if (!RatspeakMobilePolicy.validBleRnodePin(pin)) return false
+        val device = pairingDevice ?: return false
+        val accepted = try {
+            device.setPin(pin.toByteArray(Charsets.US_ASCII))
+        } catch (error: Exception) {
+            logEx("setPin", error)
+            false
+        }
+        Log.i(TAG, "PIN handed to Android accepted=$accepted")
+        return accepted
+    }
 
     private fun observeRustDetachBytes(bytes: ByteArray, start: Int, end: Int) {
         for (i in start until end) {
@@ -830,6 +941,7 @@ class RatspeakBleGatt(
             Log.i(TAG, "cleanup()")
             running.set(false)
             unregisterBondReceiver()
+            unregisterPairingReceiver()
             unregisterBondLossReceiver()
             unregisterAdapterReceiver()
             tcpWriter?.shutdown()
@@ -970,6 +1082,11 @@ class RatspeakBleGatt(
                 val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
                 val prev = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, -1)
                 Log.i(TAG, "Bond: ${bondStr(prev)} → ${bondStr(state)} (${dev?.address})")
+                if (dev?.address == address && state == BluetoothDevice.BOND_NONE) {
+                    val reason = intent.getIntExtra(EXTRA_UNBOND_REASON, -1)
+                    Log.i(TAG, "Bond ended without pairing, reason=$reason")
+                    unbondReason.set(reason)
+                }
                 if (dev?.address == address) {
                     // Only BONDED releases the wait — NONE bounces are handled
                     // (debounced) by the waitForBondState poll loop.
@@ -979,12 +1096,60 @@ class RatspeakBleGatt(
                 }
             }
         }
-        val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(bondReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            context.registerReceiver(bondReceiver, filter)
+        // Sent by the Bluetooth process, which a not-exported receiver never hears.
+        ContextCompat.registerReceiver(
+            context,
+            bondReceiver,
+            IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED),
+            ContextCompat.RECEIVER_EXPORTED,
+        )
+    }
+
+    /**
+     * Take over the PIN entry for this radio's bond while the app is visible.
+     * Android's own dialog asks for a classic PIN ("Usually 0000 or 1234"),
+     * which does not match an RNode; any other variant, or no visible app,
+     * is left to Android.
+     */
+    private fun registerPairingReceiver(address: String) {
+        if (pairingReceiver != null) return
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                if (intent.action != BluetoothDevice.ACTION_PAIRING_REQUEST) return
+                val dev = bluetoothDeviceExtra(intent, BluetoothDevice.EXTRA_DEVICE) ?: return
+                if (!dev.address.equals(address, ignoreCase = true)) return
+                val variant = intent.getIntExtra(BluetoothDevice.EXTRA_PAIRING_VARIANT, -1)
+                if (variant != BluetoothDevice.PAIRING_VARIANT_PIN || !isOrderedBroadcast) return
+                pairingDevice = dev
+                if (!pinRequest()) {
+                    pairingDevice = null
+                    return
+                }
+                pinRequested.set(true)
+                abortBroadcast()
+                Log.i(TAG, "PIN entry taken over in app")
+            }
         }
+        val filter = IntentFilter(BluetoothDevice.ACTION_PAIRING_REQUEST).apply {
+            priority = PAIRING_REQUEST_PRIORITY
+        }
+        try {
+            // Protected system broadcast, as for the adapter observer.
+            ContextCompat.registerReceiver(context, receiver, filter, ContextCompat.RECEIVER_EXPORTED)
+            pairingReceiver = receiver
+        } catch (error: Throwable) {
+            Log.w(TAG, "Pairing request observer unavailable: ${error.javaClass.simpleName}")
+        }
+    }
+
+    private fun unregisterPairingReceiver() {
+        pairingReceiver?.let {
+            try { context.unregisterReceiver(it) }
+            catch (error: Throwable) {
+                Log.d(TAG, "cleanup(unregister pairing observer): ${error.javaClass.simpleName}")
+            }
+        }
+        pairingReceiver = null
     }
 
     /**
@@ -1292,6 +1457,7 @@ class RatspeakBleGatt(
 
     private fun handleCharacteristicChanged(ch: BluetoothGattCharacteristic, data: ByteArray) {
         if (ch.uuid != BleUuids.NUS_TX_CHAR) return
+        if (data.isNotEmpty()) radioSpoke.set(true)
 
         val assembly = synchronized(inboundKissAssembler) {
             inboundKissAssembler.offer(data)

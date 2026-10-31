@@ -2693,6 +2693,40 @@ impl AppState {
         })
     }
 
+    /// Invalidate the native BLE operation only while it is the fresh add of
+    /// `name`, so pausing that row keeps it instead of rolling it back.
+    pub fn invalidate_ble_rnode_add_operation_for(
+        &self,
+        name: &str,
+    ) -> Option<BleRnodeActivityCancellation> {
+        let mut pending = self
+            .ble_rnode_activity_operation
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let operation = pending.as_ref()?;
+        if operation
+            .rollback_context
+            .as_ref()
+            .is_none_or(|context| context.name != name)
+            || matches!(
+                operation.phase,
+                BleRnodeActivityOperationPhase::Cancelling
+                    | BleRnodeActivityOperationPhase::CancellationCompleting
+            )
+        {
+            return None;
+        }
+        let operation = pending.take()?;
+        let rollback_context = operation
+            .rollback_context
+            .map(|context| (context.config_dir, context.name, context.marker));
+        Some((
+            hex::encode(operation.token),
+            operation.activity_fence,
+            rollback_context,
+        ))
+    }
+
     /// Invalidate only the native BLE operation identified by `token_hex`.
     ///
     /// Lifecycle watchers use this to revoke their own bridge operation after
@@ -3348,6 +3382,17 @@ impl AppState {
             | AndroidBleReadyCacheTransition::PhaseMismatch => {}
         }
         true
+    }
+
+    /// The latest closed reason published for one native hardware kind.
+    pub fn mobile_hardware_reason(&self, kind: &str) -> Option<String> {
+        self.mobile_hardware_state
+            .read()
+            .ok()?
+            .get(kind)?
+            .get("reason")?
+            .as_str()
+            .map(str::to_string)
     }
 
     pub fn mobile_hardware_state_snapshot(&self) -> serde_json::Value {

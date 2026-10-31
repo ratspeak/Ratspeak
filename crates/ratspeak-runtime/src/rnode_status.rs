@@ -23,14 +23,36 @@ pub fn configuration_rejection_reason(rejected: Option<RNodeReadinessEvidence>) 
 pub(crate) fn rnode_row_state(
     snapshot: &RNodeRuntimeSnapshot,
 ) -> Option<(&'static str, Option<&'static str>)> {
-    row_state(
+    let state = row_state(
         snapshot.phase,
         snapshot.reconnect_total,
         snapshot.reason,
         snapshot.configuration_rejection,
         snapshot.capability_admission_failure,
         snapshot.port_failure,
-    )
+    )?;
+    Some(match state {
+        ("waiting_for_radio", reason) => (
+            "waiting_for_radio",
+            attempt_failure_reason(snapshot.last_attempt_failure.map(|failure| failure.reason))
+                .or(reason),
+        ),
+        ("initializing", None)
+            if snapshot.reason == Some(RNodeRuntimeReason::RadioInitialisationFault) =>
+        {
+            ("initializing", Some("radio_start_failed"))
+        }
+        other => other,
+    })
+}
+
+/// Closed reason for a radio whose last attempt failed in a way it named.
+fn attempt_failure_reason(reason: Option<RNodeRuntimeReason>) -> Option<&'static str> {
+    match reason? {
+        RNodeRuntimeReason::RadioInitialisationFault => Some("radio_start_failed"),
+        RNodeRuntimeReason::DeviceUnresponsive => Some("radio_unresponsive"),
+        _ => None,
+    }
 }
 
 /// Closed reason for a port that could not be opened.
@@ -88,6 +110,23 @@ fn row_state(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_attempt_failures_explain_waiting_rows() {
+        use RNodeRuntimeReason::{
+            ConnectionAttemptFailed, DeviceUnresponsive, RadioInitialisationFault,
+        };
+        assert_eq!(
+            attempt_failure_reason(Some(DeviceUnresponsive)),
+            Some("radio_unresponsive")
+        );
+        assert_eq!(
+            attempt_failure_reason(Some(RadioInitialisationFault)),
+            Some("radio_start_failed")
+        );
+        assert_eq!(attempt_failure_reason(Some(ConnectionAttemptFailed)), None);
+        assert_eq!(attempt_failure_reason(None), None);
+    }
 
     #[test]
     fn configuration_rejections_map_to_closed_reasons() {

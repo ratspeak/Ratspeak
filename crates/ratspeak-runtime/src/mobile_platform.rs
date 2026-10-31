@@ -30,6 +30,8 @@ pub struct NativeBleRnodeRequest {
 pub enum NativeBleRnodeDisconnect<'a> {
     Current,
     ExactOperation(&'a str),
+    /// Only the operation that owns this radio address.
+    Address(&'a str),
 }
 
 pub trait MobilePlatformBridge: Send + Sync {

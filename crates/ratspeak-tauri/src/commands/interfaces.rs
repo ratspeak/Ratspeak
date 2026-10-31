@@ -3162,6 +3162,33 @@ fn cancel_pending_ble_rnode_activity(state: &AppState) -> bool {
     true
 }
 
+/// Pausing a radio whose add is still connecting keeps the row: the add
+/// gives up its rollback and closes instead of deleting what was paused.
+#[cfg(all(feature = "ble", target_os = "android"))]
+fn keep_paused_ble_rnode_add(state: &Arc<AppState>, name: &str) {
+    let Some((_, activity_fence, rollback_context)) =
+        state.invalidate_ble_rnode_add_operation_for(name)
+    else {
+        return;
+    };
+    if let Some((config_dir, rollback_name, marker)) = rollback_context {
+        crate::commands::shared::clear_fresh_lora_add_marker(
+            state,
+            &config_dir,
+            &rollback_name,
+            marker,
+        );
+    }
+    emit_op_status_broadcast(state, "add_lora", "hub", "Radio paused", true, None);
+    record_interface_activity(
+        state,
+        activity_fence,
+        InterfaceClass::RNode,
+        rnode_activity_transition(RnodeActivityOutcome::Cancelled),
+        None,
+    );
+}
+
 #[cfg(all(feature = "ble", target_os = "android"))]
 fn schedule_android_ble_rnode_operation_watchdog(state: &Arc<AppState>, activity_operation: &str) {
     let state = Arc::clone(state);
@@ -3305,18 +3332,21 @@ impl std::fmt::Display for OwnedRnodeReadinessError {
 ))]
 impl OwnedRnodeReadinessError {
     fn is_timeout(self) -> bool {
-        matches!(self, Self::Readiness(RnodeReadinessFailure::Timeout))
+        matches!(
+            self,
+            Self::Readiness(
+                RnodeReadinessFailure::Timeout | RnodeReadinessFailure::RadioUnresponsive
+            )
+        )
     }
 
-    /// The radio's rejection as (message, closed reason), when it rejected
-    /// the configured settings.
-    fn configuration_rejection(self) -> Option<(&'static str, &'static str)> {
+    /// A failure the radio named, as (message, closed reason).
+    fn named_failure(self) -> Option<(&'static str, &'static str)> {
         match self {
-            Self::Readiness(RnodeReadinessFailure::ConfigurationRejected(rejected)) => Some((
-                crate::commands::rnode_readiness::configuration_rejection_message(rejected),
-                ratspeak_runtime::rnode_status::configuration_rejection_reason(rejected),
-            )),
-            _ => None,
+            Self::Readiness(failure) => {
+                crate::commands::rnode_readiness::named_readiness_failure(failure)
+            }
+            Self::Superseded => None,
         }
     }
 
@@ -3473,6 +3503,7 @@ async fn teardown_rnode_interface_for_port(
 #[cfg(target_os = "android")]
 fn disconnect_native_ble_if_owned(
     state: &Arc<AppState>,
+    address: &str,
     rnode_lease: Option<&RNodeLifecycleOperationLease>,
 ) -> bool {
     if let Some(lease) = rnode_lease {
@@ -3482,12 +3513,12 @@ fn disconnect_native_ble_if_owned(
             }
             state
                 .mobile_platform_bridge()
-                .disconnect_ble_rnode(NativeBleRnodeDisconnect::Current)
+                .disconnect_ble_rnode(NativeBleRnodeDisconnect::Address(address))
         });
     }
     state
         .mobile_platform_bridge()
-        .disconnect_ble_rnode(NativeBleRnodeDisconnect::Current)
+        .disconnect_ble_rnode(NativeBleRnodeDisconnect::Address(address))
 }
 
 #[cfg(all(feature = "ble", target_os = "android"))]
@@ -3709,7 +3740,7 @@ async fn teardown_live_interface_by_name(
     let _ = rnode_port;
 
     #[cfg(target_os = "android")]
-    let native_ble_disconnect = rnode_port.is_some_and(|p| p.starts_with("ble://"));
+    let native_ble_address = rnode_port.and_then(|p| p.strip_prefix("ble://"));
 
     let owns_operation = || {
         operation_lease.is_none_or(|lease| state.is_current_interface_lifecycle_operation(lease))
@@ -3722,8 +3753,8 @@ async fn teardown_live_interface_by_name(
         // Android BLE GATT lives in the Kotlin bridge; without an explicit
         // disconnect the link lingers and the RNode cannot advertise again.
         #[cfg(target_os = "android")]
-        if native_ble_disconnect {
-            disconnect_native_ble_if_owned(state, operation_lease);
+        if let Some(address) = native_ble_address {
+            disconnect_native_ble_if_owned(state, address, operation_lease);
         }
         return owns_operation();
     };
@@ -3738,16 +3769,16 @@ async fn teardown_live_interface_by_name(
         .is_err()
     {
         #[cfg(target_os = "android")]
-        if native_ble_disconnect {
-            disconnect_native_ble_if_owned(state, operation_lease);
+        if let Some(address) = native_ble_address {
+            disconnect_native_ble_if_owned(state, address, operation_lease);
         }
         return owns_operation();
     }
     let Ok(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) = resp_rx.await
     else {
         #[cfg(target_os = "android")]
-        if native_ble_disconnect {
-            disconnect_native_ble_if_owned(state, operation_lease);
+        if let Some(address) = native_ble_address {
+            disconnect_native_ble_if_owned(state, address, operation_lease);
         }
         return owns_operation();
     };
@@ -3774,8 +3805,8 @@ async fn teardown_live_interface_by_name(
     // its normal detach/radio-off sequence through the still-open bridge. A
     // replacement that began during teardown owns the newer native link.
     #[cfg(target_os = "android")]
-    if native_ble_disconnect {
-        disconnect_native_ble_if_owned(state, operation_lease);
+    if let Some(address) = native_ble_address {
+        disconnect_native_ble_if_owned(state, address, operation_lease);
     }
     owns_operation()
 }
@@ -4720,6 +4751,13 @@ pub async fn pause_interface(
         }
         Ok::<_, AppError>((rnode_port, activity_class, operation_lease))
     })?;
+    #[cfg(all(feature = "ble", target_os = "android"))]
+    if rnode_port
+        .as_deref()
+        .is_some_and(|port| port.starts_with("ble://"))
+    {
+        keep_paused_ble_rnode_add(&state_arc, &name);
+    }
 
     emit_hub_interfaces(
         &state_arc,
@@ -5385,7 +5423,7 @@ pub async fn add_lora_interface(
                             }
                             Err(OwnedRnodeReadinessError::Superseded) => return,
                             Err(error) => {
-                                let rejection = error.configuration_rejection();
+                                let rejection = error.named_failure();
                                 emit_op_status_broadcast(
                                     &st,
                                     "add_lora",
@@ -5837,13 +5875,13 @@ pub async fn add_lora_interface(
                                                 marker,
                                             );
                                     }
-                                    let rejection = error.configuration_rejection();
-                                    let step = if error.is_timeout() {
+                                    let rejection = error.named_failure();
+                                    let step = if let Some((message, _)) = rejection {
+                                        message.to_string()
+                                    } else if error.is_timeout() {
                                         format!(
                                             "BLE pairing timed out for '{name_for_status}'. Check that the RNode is in pairing mode and retry."
                                         )
-                                    } else if let Some((message, _)) = rejection {
-                                        message.to_string()
                                     } else if error.ready_stats_failure_code().is_some() {
                                         error.to_string()
                                     } else {
@@ -6160,7 +6198,7 @@ pub async fn add_lora_interface(
                             }
                             Err(OwnedRnodeReadinessError::Superseded) => return,
                             Err(error) => {
-                                let rejection = error.configuration_rejection();
+                                let rejection = error.named_failure();
                                 let terminal_step = if let Some((message, _)) = rejection {
                                     message.to_string()
                                 } else if error.ready_stats_failure_code().is_some() {

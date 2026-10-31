@@ -21,6 +21,12 @@ object RatspeakAndroidObservers {
         synchronized(lock) { activity.get() }?.onNativeBleProgress(token, generation, phase)
     }
 
+    /** True only when a visible app took over this operation's PIN entry. */
+    fun blePinRequest(token: String, generation: Long): Boolean {
+        val owner = synchronized(lock) { activity.get() } ?: return false
+        return owner.onNativeBlePinRequest(token, generation)
+    }
+
     fun usbPermission(deviceName: String, granted: Boolean, error: String?) {
         synchronized(lock) { activity.get() }?.onNativeUsbPermission(deviceName, granted, error)
     }

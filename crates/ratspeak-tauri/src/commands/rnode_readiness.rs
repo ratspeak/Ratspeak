@@ -9,10 +9,13 @@ use std::time::Duration;
 
 use ratspeak_runtime::{PendingRNodeActivityMonitor, RNodeActivityOrigin};
 use rns_interface::rnode::{
-    RNodeCapabilityAdmissionFailureClass, RNodeRuntimeReason, RNodeTransportClass,
+    RNodeCapabilityAdmissionFailureClass, RNodeRuntimeReason, RNodeRuntimeSnapshot,
+    RNodeTransportClass,
 };
 use rns_interface::rnode_protocol::RNodeReadinessEvidence;
-use rns_runtime::reticulum::{RNodeReadinessError, ReticulumHandle, SpawnedRNodeRuntime};
+use rns_runtime::reticulum::{
+    RNodeReadinessError, RNodeRuntimeObserver, ReticulumHandle, SpawnedRNodeRuntime,
+};
 
 use crate::state::AppState;
 
@@ -25,6 +28,10 @@ pub(crate) const RNODE_READINESS_TIMEOUT: Duration = Duration::from_secs(120);
 /// racing ahead of the first authoritative stats row without extending the
 /// device/pairing timeout materially.
 pub(crate) const RNODE_READY_STATS_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// The driver keeps retrying a radio that cannot start (as upstream does); a
+/// product wait gives up once two attempts in a row reported it.
+pub(crate) const RNODE_RADIO_START_FAULTS_BEFORE_FAILING: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RnodeReadyStatsPublicationFailure {
@@ -43,6 +50,10 @@ pub(crate) enum RnodeReadyStatsPublicationFailure {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum RnodeReadinessFailure {
     Timeout,
+    /// The RNode reported it could not start its radio.
+    RadioStartFailed,
+    /// The transport connected, but the RNode never answered.
+    RadioUnresponsive,
     ShuttingDown,
     Stopped,
     ObservationClosed,
@@ -61,6 +72,8 @@ impl fmt::Display for RnodeReadinessFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Timeout => "RNode readiness timed out",
+            Self::RadioStartFailed => "RNode could not start its radio",
+            Self::RadioUnresponsive => "RNode did not answer",
             Self::ShuttingDown => "RNode began shutting down before becoming ready",
             Self::Stopped => "RNode stopped before becoming ready",
             Self::ObservationClosed => "RNode readiness observation closed",
@@ -109,11 +122,44 @@ pub(crate) fn configuration_rejection_message(
     }
 }
 
+pub(crate) const RADIO_START_FAILED_MESSAGE: &str =
+    "The RNode could not start its radio. Check its antenna and hardware, then try again.";
+pub(crate) const RADIO_UNRESPONSIVE_MESSAGE: &str =
+    "The RNode connected but did not answer. Restart the RNode, then try again.";
+
+/// A readiness failure the user can act on, as (message, closed reason).
+#[cfg_attr(
+    not(any(
+        feature = "ble",
+        feature = "serial",
+        feature = "rnode-tcp",
+        target_os = "android"
+    )),
+    allow(dead_code)
+)]
+pub(crate) fn named_readiness_failure(
+    failure: RnodeReadinessFailure,
+) -> Option<(&'static str, &'static str)> {
+    match failure {
+        RnodeReadinessFailure::ConfigurationRejected(rejected) => Some((
+            configuration_rejection_message(rejected),
+            ratspeak_runtime::rnode_status::configuration_rejection_reason(rejected),
+        )),
+        RnodeReadinessFailure::RadioStartFailed => {
+            Some((RADIO_START_FAILED_MESSAGE, "radio_start_failed"))
+        }
+        RnodeReadinessFailure::RadioUnresponsive => {
+            Some((RADIO_UNRESPONSIVE_MESSAGE, "radio_unresponsive"))
+        }
+        _ => None,
+    }
+}
+
 /// Reduce the non-exhaustive upstream error to the command layer's stable,
 /// snapshot-free outcome vocabulary.
 pub(crate) fn classify_rnode_readiness_error(error: &RNodeReadinessError) -> RnodeReadinessFailure {
     match error {
-        RNodeReadinessError::Timeout { .. } => RnodeReadinessFailure::Timeout,
+        RNodeReadinessError::Timeout { .. } => timeout_failure(&error.last_snapshot()),
         RNodeReadinessError::ShuttingDown { .. } => RnodeReadinessFailure::ShuttingDown,
         RNodeReadinessError::Stopped { .. } => {
             let class = error.capability_admission_failure();
@@ -133,6 +179,40 @@ pub(crate) fn classify_rnode_readiness_error(error: &RNodeReadinessError) -> Rno
     }
 }
 
+/// Name what a bounded wait ran into, from the latest attempt's closed cause.
+fn timeout_failure(last: &RNodeRuntimeSnapshot) -> RnodeReadinessFailure {
+    let attempt = last.last_attempt_failure.map(|failure| failure.reason);
+    if last.reason == Some(RNodeRuntimeReason::RadioInitialisationFault)
+        || attempt == Some(RNodeRuntimeReason::RadioInitialisationFault)
+    {
+        RnodeReadinessFailure::RadioStartFailed
+    } else if attempt == Some(RNodeRuntimeReason::DeviceUnresponsive) {
+        RnodeReadinessFailure::RadioUnresponsive
+    } else {
+        RnodeReadinessFailure::Timeout
+    }
+}
+
+fn radio_start_keeps_failing(snapshot: &RNodeRuntimeSnapshot) -> bool {
+    snapshot.last_attempt_failure.is_some_and(|failure| {
+        failure.reason == RNodeRuntimeReason::RadioInitialisationFault
+            && failure.consecutive >= RNODE_RADIO_START_FAULTS_BEFORE_FAILING
+    })
+}
+
+/// Resolves once the radio has failed to start on consecutive attempts; the
+/// exact observer reports each attempt's cause even when watch updates merge.
+async fn repeated_radio_start_failure(mut observer: RNodeRuntimeObserver) {
+    loop {
+        if radio_start_keeps_failing(&observer.snapshot()) {
+            return;
+        }
+        if observer.changed().await.is_none() {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
 /// Wait for complete protocol readiness on the observer returned atomically
 /// with this exact runtime registration.
 ///
@@ -149,11 +229,14 @@ pub(crate) async fn await_spawned_rnode_ready(
     // RNS session was replaced; readiness remains a product concern, but no
     // Activity monitor may be rebased onto the replacement session.
     let covered = state.cover_rnode_activity_interface(spawned.interface_id, origin);
-    let ready_snapshot = spawned
-        .observer
-        .await_ready(RNODE_READINESS_TIMEOUT)
-        .await
-        .map_err(|error| classify_rnode_readiness_error(&error))?;
+    let ready_snapshot = tokio::select! {
+        result = spawned.observer.await_ready(RNODE_READINESS_TIMEOUT) => {
+            result.map_err(|error| classify_rnode_readiness_error(&error))?
+        }
+        () = repeated_radio_start_failure(spawned.observer.clone()) => {
+            return Err(RnodeReadinessFailure::RadioStartFailed);
+        }
+    };
     if !covered {
         return Err(RnodeReadinessFailure::ReadyStatsPublication(
             RnodeReadyStatsPublicationFailure::SessionReplaced,

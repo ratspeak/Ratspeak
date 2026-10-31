@@ -28,6 +28,7 @@ object RatspeakBleRnodeSupervisor {
     private var current: Entry? = null
 
     const val FAILURE_AUTO_RESUME_DISABLED = "auto_resume_disabled"
+    private const val LINK_LIMITED = "link_limited"
 
     private enum class RetryWaitOutcome {
         ELAPSED,
@@ -189,6 +190,8 @@ object RatspeakBleRnodeSupervisor {
 
     private fun run(entry: Entry) {
         var retry = 0
+        // Links that ended because the radio never answered, in a row.
+        var silentStreak = 0
         // A retry keeps showing why the previous attempt failed.
         var lastFailure: String? = null
         var forceDirect = false
@@ -197,7 +200,11 @@ object RatspeakBleRnodeSupervisor {
             forceDirect = false
             publishState(entry, RatspeakNativeBridge.BLE_CONNECTING, lastFailure)
             publishProgress(entry, if (retry == 0) "connecting" else "connecting_retry")
-            val physical = RatspeakBleGatt(entry.context) { phase -> publishProgress(entry, phase) }
+            val physical = RatspeakBleGatt(
+                entry.context,
+                progress = { phase -> publishProgress(entry, phase) },
+                pinRequest = { requestPin(entry) },
+            )
             entry.physical = physical
             if (!isCurrent(entry)) {
                 physical.disconnect(graceful = false)
@@ -260,17 +267,23 @@ object RatspeakBleRnodeSupervisor {
                 physical.disconnect(graceful = false)
                 break
             }
-            publishInitializing(entry)
+            publishInitializing(entry, physical.linkLimited())
             physical.startForwarding(entry.listener)
             physical.awaitStopped()
             entry.physical = null
             physical.disconnect(graceful = false)
+            val endReason = physical.endReason()
+            silentStreak = when {
+                physical.radioSpoke() -> 0
+                endReason == RatspeakBleGatt.FAILURE_RADIO_UNRESPONSIVE -> silentStreak + 1
+                else -> silentStreak
+            }
             if (!isCurrent(entry)) break
             if (!autoResume.get()) {
                 finishTerminal(entry, FAILURE_AUTO_RESUME_DISABLED)
                 break
             }
-            publishRetry(entry, "radio_disconnected")
+            publishRetry(entry, endReason ?: "radio_disconnected")
             val retryOutcome = if (bluetoothEnabled(entry.context) == false) {
                 if (waitForBluetooth(entry)) {
                     RetryWaitOutcome.ADAPTER_RECOVERED
@@ -278,7 +291,10 @@ object RatspeakBleRnodeSupervisor {
                     RetryWaitOutcome.STOPPED
                 }
             } else {
-                waitForRetry(entry, retry)
+                waitForRetry(
+                    entry,
+                    RatspeakMobilePolicy.bleRetryAttempt(endReason, silentStreak, retry),
+                )
             }
             if (retryOutcome == RetryWaitOutcome.STOPPED) {
                 finishManualHoldIfNeeded(entry)
@@ -290,6 +306,25 @@ object RatspeakBleRnodeSupervisor {
         try { entry.listener.close() } catch (_: Throwable) {}
     }
 
+    /** Hand the PIN entry for this exact operation to the visible app. */
+    private fun requestPin(entry: Entry): Boolean {
+        synchronized(entry.publishLock) {
+            if (!isCurrent(entry)) return false
+            return RatspeakAndroidObservers.blePinRequest(entry.token, entry.generation)
+        }
+    }
+
+    /** Deliver a PIN typed in the app to the exact operation that asked. */
+    @JvmStatic
+    fun submitPin(operationToken: String, installedGeneration: Long, pin: String): Boolean {
+        val physical = synchronized(lock) {
+            current?.takeIf {
+                it.active.get() && it.token == operationToken && it.generation == installedGeneration
+            }?.physical
+        } ?: return false
+        return physical.submitPin(pin)
+    }
+
     private fun publishProgress(entry: Entry, phase: String) {
         synchronized(entry.publishLock) {
             if (!isCurrent(entry)) return
@@ -297,7 +332,7 @@ object RatspeakBleRnodeSupervisor {
         }
     }
 
-    private fun publishInitializing(entry: Entry) {
+    private fun publishInitializing(entry: Entry, linkLimited: Boolean) {
         synchronized(entry.publishLock) {
             if (!isCurrent(entry)) return
             RatspeakNativeBridge.publishBleState(
@@ -305,7 +340,7 @@ object RatspeakBleRnodeSupervisor {
                 entry.generation,
                 RatspeakNativeBridge.BLE_INITIALIZING,
                 0,
-                null,
+                if (linkLimited) LINK_LIMITED else null,
             )
         }
     }
@@ -374,6 +409,7 @@ object RatspeakBleRnodeSupervisor {
             RatspeakBleGatt.FAILURE_NOT_REACHABLE,
             RatspeakBleGatt.FAILURE_LINK_LOST,
             RatspeakBleGatt.FAILURE_SERVICE_MISSING,
+            RatspeakBleGatt.FAILURE_RADIO_UNRESPONSIVE,
             RatspeakBleGatt.FAILURE_CONNECT,
             FAILURE_AUTO_RESUME_DISABLED -> reason
             else -> RatspeakBleGatt.FAILURE_CONNECT

@@ -1635,6 +1635,14 @@ class MainActivity : TauriActivity() {
         }
 
         @JavascriptInterface
+        fun submitBleRnodePin(operationToken: String, nativeGeneration: String, pin: String): Boolean {
+            if (!BLE_OPERATION_RE.matches(operationToken)) return false
+            val generation = nativeGeneration.toLongOrNull()?.takeIf { it >= 0 } ?: return false
+            if (!RatspeakMobilePolicy.validBleRnodePin(pin)) return false
+            return RatspeakBleRnodeSupervisor.submitPin(operationToken, generation, pin)
+        }
+
+        @JavascriptInterface
         fun exportIdentityBackup(fileName: String, backupBase64: String) {
             val safeName = sanitizeIdentityBackupFileName(fileName)
             val bytes = try {
@@ -2024,6 +2032,22 @@ class MainActivity : TauriActivity() {
                 null
             )
         }
+    }
+
+    internal fun onNativeBlePinRequest(token: String, generation: Long): Boolean {
+        if (!BLE_OPERATION_RE.matches(token) || generation < 0) return false
+        if (!lifecycle.currentState.isAtLeast(androidx.lifecycle.Lifecycle.State.RESUMED)) return false
+        if (webViewRef == null) return false
+        val payload = JSONObject()
+            .put("activity_operation", token)
+            .put("native_generation", generation.toString())
+        handler.post {
+            webViewRef?.evaluateJavascript(
+                "if(typeof window._onBleRnodePinRequest==='function')window._onBleRnodePinRequest($payload);",
+                null,
+            )
+        }
+        return true
     }
 
     internal fun onNativeBleProgress(token: String, generation: Long, phase: String) {

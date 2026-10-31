@@ -131,19 +131,33 @@ impl MobilePlatformBridge for AndroidPlatformBridge {
         let Ok(_replacement_guard) = BLE_REPLACEMENT_LOCK.lock() else {
             return false;
         };
-        let activity_operation = match owner {
-            NativeBleRnodeDisconnect::Current => None,
-            NativeBleRnodeDisconnect::ExactOperation(token) => Some(token),
-        };
-        let Some(generation) = PENDING_BLE_RNODE.lock().ok().and_then(|pending| {
+        let Some((token, generation)) = PENDING_BLE_RNODE.lock().ok().and_then(|pending| {
             pending
                 .as_ref()
-                .filter(|pending| {
-                    activity_operation.is_none_or(|token| token == pending.activity_operation)
+                .filter(|pending| match owner {
+                    NativeBleRnodeDisconnect::Current => true,
+                    NativeBleRnodeDisconnect::ExactOperation(token) => {
+                        token == pending.activity_operation
+                    }
+                    NativeBleRnodeDisconnect::Address(address) => {
+                        address.eq_ignore_ascii_case(&pending.address)
+                    }
                 })
-                .map(|pending| pending.native_generation)
+                .map(|pending| {
+                    (
+                        pending.activity_operation.clone(),
+                        pending.native_generation,
+                    )
+                })
         }) else {
             return false;
+        };
+        // An address-scoped disconnect names the exact operation it matched.
+        let activity_operation = match owner {
+            NativeBleRnodeDisconnect::Current => None,
+            NativeBleRnodeDisconnect::ExactOperation(_) | NativeBleRnodeDisconnect::Address(_) => {
+                Some(token.as_str())
+            }
         };
         let disconnected = android_disconnect_ble_rnode(activity_operation, generation);
         if disconnected {
@@ -543,7 +557,7 @@ fn take_pending_ble_request(token: &str, generation: u64) -> Option<NativeBleRno
 fn native_ble_failure_code(code: &str) -> ratspeak_tauri::commands::ble::BleRnodeNativeFailureCode {
     use ratspeak_tauri::commands::ble::BleRnodeNativeFailureCode;
     match code {
-        "bond_timeout" => BleRnodeNativeFailureCode::BondTimeout,
+        "bond_timeout" | "pairing_window_closed" => BleRnodeNativeFailureCode::BondTimeout,
         "bridge_unavailable" => BleRnodeNativeFailureCode::SetupTimeout,
         _ => BleRnodeNativeFailureCode::ConnectFailed,
     }
@@ -560,6 +574,7 @@ fn native_ble_waiting_reason(code: &str) -> Option<&'static str> {
         "bluetooth_off" => "bluetooth_off",
         "permission_needed" => "permission_needed",
         "radio_disconnected" => "radio_disconnected",
+        "radio_unresponsive" => "radio_unresponsive",
         "connect_failed" => "connect_failed",
         _ => return None,
     })
@@ -572,6 +587,8 @@ fn native_ble_hardware_reason(code: &str) -> &'static str {
         "permission_needed" => "permission_needed",
         "pairing_required" => "pairing_required",
         "bond_timeout" => "bond_timeout",
+        "pin_rejected" => "pin_rejected",
+        "pairing_window_closed" => "pairing_window_closed",
         "stale_bond" => "stale_bond",
         "bridge_unavailable" => "bridge_unavailable",
         "radio_disconnected" => "radio_disconnected",
@@ -609,7 +626,10 @@ pub extern "system" fn Java_org_ratspeak_android_RatspeakNativeBridge_nativeBleR
             // device name, or platform error detail. A retrying radio carries
             // its last closed failure reason so the user can act on it.
             let reason = if state_code == 3 {
-                None
+                // An initializing link is explained only when it stayed small.
+                decode_android_string(&env, error_code)
+                    .filter(|code| code == "link_limited")
+                    .map(|_| "link_limited")
             } else {
                 decode_android_string(&env, error_code)
                     .as_deref()
@@ -676,6 +696,8 @@ pub extern "system" fn Java_org_ratspeak_android_RatspeakNativeBridge_nativeBleR
                             | "permission_needed"
                             | "pairing_required"
                             | "bond_timeout"
+                            | "pin_rejected"
+                            | "pairing_window_closed"
                             | "stale_bond"
                             | "bridge_unavailable"
                             | "connect_failed"
@@ -994,6 +1016,7 @@ mod tests {
             "bluetooth_off",
             "permission_needed",
             "radio_disconnected",
+            "radio_unresponsive",
             "connect_failed",
         ] {
             assert_eq!(native_ble_waiting_reason(code), Some(code));

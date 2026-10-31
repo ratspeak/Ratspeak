@@ -1108,9 +1108,9 @@ RS.listen('ble_rnode_passkey_prompt', function(data) {
 
     rsPrompt({
         title: 'Pair with RNode',
-        message: 'Enter the 6-digit passkey shown on the RNode’s OLED display. ' +
-            'If the RNode has already left pairing mode, cancel here, hold the ' +
-            'RNode’s left button to re-arm pairing, then add the radio again.',
+        message: 'Enter the 6-digit PIN shown on the RNode. If the RNode has ' +
+            'already left pairing mode, cancel here, put it in pairing mode ' +
+            'again, then add the radio again.',
         confirmText: 'Pair',
         cancelText: 'Cancel',
         placeholder: '000000'
@@ -1162,7 +1162,7 @@ RS.listen('ble_rnode_pairing_finished', function(data) {
 // out so they never overwrite the explained waiting reason.
 var _BLE_RNODE_PHASES = {
     finding: 'Looking for the RNode nearby...',
-    bonding: 'Pairing... Enter the PIN shown on the RNode when Android asks.',
+    bonding: 'Pairing... Enter the PIN shown on the RNode.',
     pairing_settle: 'Paired. Reconnecting securely...',
     mtu: 'Negotiating link...',
     discovering: 'Discovering services...',
@@ -1171,7 +1171,76 @@ var _BLE_RNODE_PHASES = {
 window._onBleConnectProgress = function(progress) {
     var pd = window._activeProgressDialog;
     var message = progress && _BLE_RNODE_PHASES[progress.phase];
+    // Any later phase means the bond resolved without the prompt.
+    if (progress && progress.phase !== 'bonding') _dismissBleRnodePinPrompt();
     if (message && pd && pd.bleRnode && pd.isOpen()) pd.update(message);
+};
+
+// Android: Ratspeak, not Android's classic PIN dialog, asks for the RNode PIN.
+window._bleRnodePinPrompt = null;
+
+function _dismissBleRnodePinPrompt() {
+    var record = window._bleRnodePinPrompt;
+    if (!record) return;
+    window._bleRnodePinPrompt = null;
+    _bleRnodeDismissModal(record);
+}
+
+window._onBleRnodePinRequest = function(data) {
+    var operation = data && data.activity_operation;
+    var generation = data && data.native_generation;
+    var bridge = window.RatspeakAndroid;
+    if (typeof operation !== 'string' || typeof generation !== 'string' ||
+        !bridge || typeof bridge.submitBleRnodePin !== 'function') {
+        return;
+    }
+    _dismissBleRnodePinPrompt();
+    var record = { sheet: null, silent: false };
+    window._bleRnodePinPrompt = record;
+
+    rsPrompt({
+        title: 'Pair with RNode',
+        message: 'Enter the 6-digit PIN shown on the RNode.',
+        confirmText: 'Pair',
+        cancelText: 'Cancel',
+        placeholder: '000000'
+    }).then(function(value) {
+        if (window._bleRnodePinPrompt === record) window._bleRnodePinPrompt = null;
+        if (record.silent) return;
+        var pd = window._activeProgressDialog;
+        if (value === null || value === undefined) {
+            if (pd && pd.bleRnode && typeof pd.cancelBleConnect === 'function') {
+                pd.cancelBleConnect();
+                pd.close();
+                window._activeProgressDialog = null;
+            }
+            return;
+        }
+        var digits = String(value).replace(/\D+/g, '');
+        if (digits.length !== 6) {
+            showToast('Enter the 6-digit PIN shown on the RNode.', 'toast-warning', 4000);
+            window._onBleRnodePinRequest(data);
+            return;
+        }
+        var accepted = false;
+        try { accepted = bridge.submitBleRnodePin(operation, generation, digits) === true; } catch (_) {}
+        if (!accepted) {
+            showToast('Android did not take the PIN. Put the RNode in pairing mode and try again.',
+                'toast-error', 6000);
+        } else if (pd && pd.bleRnode && pd.isOpen()) {
+            pd.update('Checking the PIN...');
+        }
+    });
+
+    // rsPrompt mounts synchronously; capture the sheet for programmatic dismiss.
+    var sheets = document.querySelectorAll('.bottom-sheet');
+    record.sheet = sheets.length ? sheets[sheets.length - 1] : null;
+    var input = record.sheet && record.sheet.querySelector('.rs-dialog-input');
+    if (input) {
+        input.setAttribute('inputmode', 'numeric');
+        input.setAttribute('autocomplete', 'one-time-code');
+        input.maxLength = 6;
+    }
 };
 
 // Android hardware lifecycle is owned by Rust + the application-scoped native
@@ -1191,6 +1260,7 @@ RS.listen('mobile_hardware_state', function(data) {
         return;
     }
     if (data.kind !== 'ble_rnode') return;
+    if (data.state === 'failed' || data.state === 'disabled') _dismissBleRnodePinPrompt();
     var messages = {
         waiting_for_radio: 'Waiting for radio...',
         reconnecting: 'Waiting for radio...',
@@ -1207,8 +1277,12 @@ RS.listen('mobile_hardware_state', function(data) {
         service_missing: 'The device did not offer the RNode Bluetooth service. Retrying...',
         bluetooth_off: 'Turn on Bluetooth to reconnect the RNode.',
         permission_needed: 'Bluetooth permission is required to use the RNode.',
+        radio_unresponsive: 'The RNode connected but did not answer. Reconnecting...',
     };
     if (data.state === 'waiting_for_radio' && waiting[data.reason]) message = waiting[data.reason];
+    if (data.state === 'initializing' && data.reason === 'link_limited') {
+        message = 'Initializing RNode... This phone kept the Bluetooth link small, which some RNodes cannot use.';
+    }
     var pd = window._activeProgressDialog;
     if (data.state === 'failed') {
         var failures = {
@@ -1216,6 +1290,8 @@ RS.listen('mobile_hardware_state', function(data) {
             permission_needed: 'Bluetooth permission is required to use the RNode.',
             pairing_required: 'Put the RNode in pairing mode, then retry.',
             bond_timeout: 'Pairing timed out. Put the RNode in pairing mode, then retry.',
+            pin_rejected: 'The PIN did not match. Put the RNode in pairing mode, then retry.',
+            pairing_window_closed: 'Pairing ran out of time before the PIN was entered. Put the RNode in pairing mode again, then retry.',
             stale_bond: 'Remove the saved Android pairing, then pair the RNode again.',
             bridge_unavailable: 'The Bluetooth RNode service is unavailable.',
             radio_disconnected: 'The RNode disconnected. Ratspeak will keep trying.',

@@ -1744,6 +1744,9 @@ function submitRnodeInterface() {
             });
             // Native connect phases narrate only this dialog.
             window._activeProgressDialog.bleRnode = true;
+            window._activeProgressDialog.cancelBleConnect = function() {
+                RS.invoke('cancel_ble_connect', { name: bleName }).catch(function() {});
+            };
         } else if (_rnodeConnectionType === 'android-usb' && typeof rsProgress === 'function') {
             window._activeProgressDialog = rsProgress({
                 message: isEdit ? 'Restarting USB LoRa radio...' : 'Connecting USB LoRa radio...',
