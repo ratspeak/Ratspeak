@@ -34,7 +34,9 @@ for package in "$@"; do
       required=("${deb_runtime[@]}")
       ;;
     *.rpm)
-      (cd "$root" && rpm2cpio "$(realpath "$package")" | cpio --quiet -idm)
+      source="$(realpath "$package")"
+      # Some rpm2cpio builds exit 1 after a complete stream; cpio still fails on a short one.
+      (cd "$root" && { rpm2cpio "$source" || true; } | cpio --quiet -idm)
       mapfile -t declared < <(rpm -qpR "$package")
       required=("${rpm_runtime[@]}")
       ;;
