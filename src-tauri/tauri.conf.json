@@ -50,7 +50,12 @@
         }
       },
       "deb": {
-        "depends": ["libayatana-appindicator3-1"],
+        "depends": [
+          "libayatana-appindicator3-1",
+          "libpcsclite1",
+          "libasound2t64 | libasound2",
+          "libudev1"
+        ],
         "desktopTemplate": "resources/linux/Ratspeak.desktop",
         "files": {
           "/usr/share/metainfo/org.ratspeak.desktop.metainfo.xml": "resources/linux/org.ratspeak.desktop.metainfo.xml",
@@ -59,7 +64,12 @@
         "postInstallScript": "resources/linux/udev-postinst.sh"
       },
       "rpm": {
-        "depends": ["libayatana-appindicator3.so.1()(64bit)"],
+        "depends": [
+          "libayatana-appindicator3.so.1()(64bit)",
+          "libpcsclite.so.1()(64bit)",
+          "libasound.so.2()(64bit)",
+          "libudev.so.1()(64bit)"
+        ],
         "desktopTemplate": "resources/linux/Ratspeak.desktop",
         "files": {
           "/usr/share/metainfo/org.ratspeak.desktop.metainfo.xml": "resources/linux/org.ratspeak.desktop.metainfo.xml",

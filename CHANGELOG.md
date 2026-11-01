@@ -12,7 +12,7 @@ changes that materially affect how an artifact is reproduced.
 - A Bluetooth RNode that connects but stops answering now reconnects on its own.
 - Radio rows and the add dialog now say why a radio did not connect: wrong PIN, pairing timed out, radio not answering, radio failed to start, or a Bluetooth link that stayed too small.
 - A Bluetooth RNode can now be paused while it is reconnecting, so another radio can be added.
-- Fixed the Linux `.deb` and `.rpm` packages crashing at startup on systems without the tray icon library, such as a Raspberry Pi; the packages now install it.
+- Fixed the Linux `.deb` and `.rpm` packages failing to start on systems without the tray icon or smart card libraries, such as a Raspberry Pi; the packages now install them.
 - On Linux desktops without tray support, Ratspeak now starts without a tray icon, and closing its window quits.
 
 ## [1.0.36] - 2026-10-30

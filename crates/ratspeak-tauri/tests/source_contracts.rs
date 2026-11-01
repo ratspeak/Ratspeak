@@ -2459,21 +2459,32 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
                 .and_then(|value| value.as_str()),
             Some(metainfo_path)
         );
-        // tauri-cli misses the target-scoped tray-icon feature, so the tray library is declared.
-        let tray_library = if target == "deb" {
-            "libayatana-appindicator3-1"
+        // Tauri declares only WebKitGTK and GTK; the tray library and every other linked one are ours.
+        let required: &[&str] = if target == "deb" {
+            &[
+                "libayatana-appindicator3-1",
+                "libpcsclite1",
+                "libasound2t64 | libasound2",
+                "libudev1",
+            ]
         } else {
-            "libayatana-appindicator3.so.1()(64bit)"
+            &[
+                "libayatana-appindicator3.so.1()(64bit)",
+                "libpcsclite.so.1()(64bit)",
+                "libasound.so.2()(64bit)",
+                "libudev.so.1()(64bit)",
+            ]
         };
-        assert!(
-            config
-                .get("depends")
-                .and_then(|value| value.as_array())
-                .is_some_and(|depends| depends
-                    .iter()
-                    .any(|value| value.as_str() == Some(tray_library))),
-            "{target} must require {tray_library}"
-        );
+        let depends = config
+            .get("depends")
+            .and_then(|value| value.as_array())
+            .expect("linux package dependencies");
+        for library in required {
+            assert!(
+                depends.iter().any(|value| value.as_str() == Some(library)),
+                "{target} must require {library}"
+            );
+        }
     }
     let appimage_files = linux
         .get("appimage")
@@ -2525,6 +2536,8 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
     for requirement in [
         "libayatana-appindicator3-1",
         "libayatana-appindicator3.so.1()(64bit)",
+        "(NEEDED)",
+        "has no Debian package mapping",
     ] {
         assert!(verify_packages.contains(requirement));
     }
