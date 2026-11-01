@@ -1989,8 +1989,12 @@ pub(super) mod tests {
         let pool = r2d2::Pool::builder()
             .max_size(1)
             .connection_timeout(std::time::Duration::from_millis(200))
-            .build(manager)
-            .unwrap();
+            .build_unchecked(manager);
+        // Open the connection without the 200 ms read bound, which a loaded runner can miss.
+        drop(
+            pool.get_timeout(std::time::Duration::from_secs(30))
+                .unwrap(),
+        );
         db::init_schema(&pool).unwrap();
         for hash in [ACTIVE, OTHER] {
             db::save_identity(&pool, hash, &hash[..16], "", "");

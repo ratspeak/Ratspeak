@@ -35,8 +35,12 @@ fn fixture(pool_size: u32) -> Fixture {
     let pool = r2d2::Pool::builder()
         .max_size(pool_size)
         .connection_timeout(Duration::from_millis(200))
-        .build(manager)
-        .unwrap();
+        .build_unchecked(manager);
+    // Open every connection without the 200 ms read bound, which a loaded runner can miss.
+    let opened: Vec<_> = (0..pool_size)
+        .map(|_| pool.get_timeout(Duration::from_secs(30)).unwrap())
+        .collect();
+    drop(opened);
     db::init_schema(&pool).unwrap();
     db::save_identity(&pool, A, "a-lxmf", "A", "A");
     db::save_identity(&pool, B, "b-lxmf", "B", "B");

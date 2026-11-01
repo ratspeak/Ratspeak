@@ -69,11 +69,16 @@ impl Fixture {
                 .with_init(|conn| {
                     conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=30000;")
                 });
-            r2d2::Pool::builder()
+            let pool = r2d2::Pool::builder()
                 .max_size(1)
                 .connection_timeout(std::time::Duration::from_millis(200))
-                .build(manager)
-                .unwrap()
+                .build_unchecked(manager);
+            // Open the connection without the 200 ms read bound, which a loaded runner can miss.
+            drop(
+                pool.get_timeout(std::time::Duration::from_secs(30))
+                    .unwrap(),
+            );
+            pool
         })
     }
 
