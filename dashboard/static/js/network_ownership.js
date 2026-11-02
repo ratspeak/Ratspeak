@@ -95,7 +95,7 @@
         var external = current.local_interfaces_allowed === false;
         document.body.classList.toggle('network-external', external);
         var notice = el('notice');
-        notice.hidden = !external && !current.error && !current.share;
+        notice.hidden = !external && !current.error;
         notice.textContent = statusText(current) + (external ? ' Interfaces are managed in the other app. Your saved Ratspeak interfaces are retained.' : '');
         var remote = el('interfaces');
         remote.hidden = !external;
