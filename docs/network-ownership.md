@@ -3,7 +3,7 @@
 This guide describes the advanced ownership controls in this source tree.
 They are part of the normal Ratspeak app, not a separate web interface.
 
-Enable **Developer Mode**, then open **Settings → Network → Reticulum ownership**.
+Enable **Developer Mode**, then open **Settings → Network → Network Ownership**.
 Most users should keep **Managed by Ratspeak**.
 
 ## Managed by Ratspeak
@@ -15,12 +15,12 @@ packet socket and does not use shared RPC credentials.
 
 New profiles do not expose a shared instance by default. Existing profiles keep
 their prior private sharing configuration until you explicitly change it.
-Optional **Share Ratspeak's stack with other local apps** binds local TCP packet
+Optional **Share with local apps** binds local TCP packet
 port **37430** and control port **37431**. Both must be available; Ratspeak will
 not silently join another owner if either is occupied. Sharing does not enable
 LAN discovery, Transport mode or a public TCP server.
 
-**Copy access configuration** deliberately copies a secret RPC key. Give it only
+**Copy access…** deliberately copies a secret RPC key. Give it only
 to trusted local applications and clear clipboard history afterward. Ordinary
 status and configuration settings do not contain that key.
 
@@ -36,8 +36,8 @@ what the owner uses. Android cross-app access uses TCP, including when connectin
 to a compatible Sideband or Termux service. The other app must expose sharing
 and provide a usable RPC key; merely running it is not sufficient.
 
-Test the connection first. Testing checks packet availability and authenticated
-control without changing the current network. Apply then restarts this identity's
+Choose **Test connection** first. Testing checks packet availability and authenticated
+control without changing the current network. **Apply changes** then restarts this identity's
 network: current calls/transfers are interrupted, but identity, messages and saved
 managed interfaces are retained. Settings are committed only after readiness. A
 failed switch attempts to restore the previous selection and reports whether

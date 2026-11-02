@@ -38,7 +38,7 @@ its version row in one transaction.
 `init_core` reports any failure as a `StartupFailure`: the `StartupError` the
 window shows, plus the failing step and I/O error kind.
 
-Identity and factory reset stop their identity/storage workers before calling
+Factory reset stops the identity/storage workers before calling
 `clear_identity_storage_namespace`. Reset preserves the established database
 and identities roots, records its full child wipe in the outside namespace
 marker, and fences new imports while cleanup is pending. Initial startup can

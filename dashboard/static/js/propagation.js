@@ -59,7 +59,7 @@ function renderPropagationStatus(targetId) {
 
     if (mode === 'off') {
         html += '<div class="inline-hint">' +
-            'Offline Inbox is disabled. Any sync already in progress will finish; no new ones will start.' +
+            'Offline Inbox is disabled. An active sync is canceled, and no new syncs will start.' +
         '</div>';
     } else if (mode === 'auto') {
         html += renderAutoBody(autoActive, isConnected, msgCount, favorStatic, awaiting);

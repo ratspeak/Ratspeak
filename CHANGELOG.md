@@ -265,7 +265,12 @@ changes that materially affect how an artifact is reproduced.
 - Declared every first-party Ratspeak package non-publishable and recorded
   compatible versions alongside all sibling path dependencies.
 
-[Unreleased]: https://github.com/ratspeak/Ratspeak/compare/v1.0.32...HEAD
+[Unreleased]: https://github.com/ratspeak/Ratspeak/compare/v1.0.37...HEAD
+[1.0.37]: https://github.com/ratspeak/Ratspeak/compare/v1.0.36...v1.0.37
+[1.0.36]: https://github.com/ratspeak/Ratspeak/compare/v1.0.35...v1.0.36
+[1.0.35]: https://github.com/ratspeak/Ratspeak/compare/v1.0.34...v1.0.35
+[1.0.34]: https://github.com/ratspeak/Ratspeak/compare/v1.0.33...v1.0.34
+[1.0.33]: https://github.com/ratspeak/Ratspeak/compare/v1.0.32...v1.0.33
 [1.0.32]: https://github.com/ratspeak/Ratspeak/compare/v1.0.31...v1.0.32
 [1.0.31]: https://github.com/ratspeak/Ratspeak/compare/v1.0.30...v1.0.31
 [1.0.30]: https://github.com/ratspeak/Ratspeak/compare/v1.0.29...v1.0.30

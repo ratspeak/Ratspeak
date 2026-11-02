@@ -5177,7 +5177,7 @@ impl HubCore {
         raw_room: Option<&str>,
         out: &mut Vec<HubSend>,
     ) {
-        const USAGE: &str = "usage: /mode <room> (+m|-m|+i|-i|+t|-t|+n|-n|+p|-p|+k|-k|+r|-r) [key] | /mode <room> (+o|-o|+v|-v) <nick|hashprefix|hash>";
+        const USAGE: &str = "usage: /mode <room> (+m|-m|+i|-i|+t|-t|+n|-n|+p|-p|+k|-k) [key] | /mode <room> (+o|-o|+v|-v) <nick|hashprefix|hash>";
         let (Some(room_arg), Some(flag)) = (args.first(), args.get(1)) else {
             out.push(self.hub_notice(link_id, USAGE, None));
             return;
@@ -5346,7 +5346,7 @@ impl HubCore {
             _ => {
                 out.push(self.hub_notice(
                     link_id,
-                    "supported modes: +m -m +i -i +k -k +t -t +n -n +p -p +r -r +o -o +v -v",
+                    "supported modes: +m -m +i -i +k -k +t -t +n -n +p -p +o -o +v -v; use /register or /unregister for +r",
                     raw_room,
                 ));
             }

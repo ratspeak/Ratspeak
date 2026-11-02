@@ -268,10 +268,11 @@ def render_snapshot(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--metadata-only", action="store_true")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--metadata-only", action="store_true",
+                        help="check metadata, stored snapshot hashes, Git ancestry and Cargo library inventory without generating fresh API snapshots")
     parser.add_argument("--update", action="store_true",
-                        help="refresh snapshots from the working tree to commit alongside source changes")
+                        help="overwrite API snapshots and their ledger hashes/counts from the working tree; review the diff before committing")
     parser.add_argument("--snapshot-source-commit",
                         help="optional HEAD guard for --update; includes uncommitted source changes")
     args = parser.parse_args()

@@ -8,6 +8,7 @@ opportunistic to direct delivery. The stamp is attached, as in the pack that
 sends the message. Each case also records the size pack() gives the same
 message without a stamp.
 
+This overwrites crates/ratspeak-runtime/testdata/lxmf-opportunistic-golden.json.
 Run with the upstream Reticulum and LXMF checkouts, by default the
 `upstream/` directory beside this repository:
 
@@ -41,8 +42,12 @@ def head(checkout: Path) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--upstream", type=Path, default=ROOT.parent / "upstream")
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        epilog="Overwrites crates/ratspeak-runtime/testdata/lxmf-opportunistic-golden.json.",
+    )
+    parser.add_argument("--upstream", type=Path, default=ROOT.parent / "upstream",
+                        help="parent of the pinned Reticulum and LXMF checkouts; defaults to ../upstream relative to this repository")
     args = parser.parse_args()
     reticulum = args.upstream.resolve() / "Reticulum"
     lxmf = args.upstream.resolve() / "LXMF"

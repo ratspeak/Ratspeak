@@ -205,11 +205,12 @@ def verify_archive(manifest: dict, archive: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    parser.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST,
+                        help="boundary contract JSON; defaults to android-jni-boundaries.json beside this script")
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("source", help="verify manifest, Kotlin sources, Rust references, and R8 rules")
     archive_parser = subparsers.add_parser("archive", help="verify required classes and methods in an APK or AAB")
-    archive_parser.add_argument("artifact", type=Path)
+    archive_parser.add_argument("artifact", type=Path, help="APK or AAB whose DEX method definitions are checked")
     args = parser.parse_args()
 
     try:

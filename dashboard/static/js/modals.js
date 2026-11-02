@@ -2554,7 +2554,7 @@ function showAutoInterfaceConfigSheet() {
     var groupIdInput = makeInput('text', 'reticulum', 'reticulum');
     groupIdInput.maxLength = 63;
     built.body.appendChild(groupIdInput);
-    built.body.appendChild(makeHelp('Devices with the same Group ID auto-discover each other; different IDs create isolated subnets on the same physical network.'));
+    built.body.appendChild(makeHelp('Use the same Group ID on peers you want to discover. Different IDs select different discovery groups; they are not access controls.'));
 
     var details = document.createElement('details');
     details.style.marginTop = 'var(--space-3)';
@@ -2571,12 +2571,12 @@ function showAutoInterfaceConfigSheet() {
     var scopeSelect = makeSelect([
         { value: 'link', label: 'Link (default — same Wi-Fi / LAN)' },
         { value: 'admin', label: 'Admin (administrative boundary)' },
-        { value: 'site', label: 'Site (cross-router within a site)' },
+        { value: 'site', label: 'Site (IPv6 scope)' },
         { value: 'organisation', label: 'Organisation' },
-        { value: 'global', label: 'Global (Internet IPv6 multicast)' }
+        { value: 'global', label: 'Global (IPv6 scope)' }
     ], 'link');
     advBody.appendChild(scopeSelect);
-    advBody.appendChild(makeHelp('Most users want Link. Site/Global require IPv6 multicast routing in the upstream network.'));
+    advBody.appendChild(makeHelp('Link is the default for the local network. Other scopes change the multicast address; they do not configure multicast routing.'));
 
     var addrTypeSelect, discPortInput, dataPortInput, bitrateInput;
     var nicListContainer = null;
@@ -2586,10 +2586,10 @@ function showAutoInterfaceConfigSheet() {
         advBody.appendChild(makeLabel('Multicast Address Type'));
         addrTypeSelect = makeSelect([
             { value: 'temporary', label: 'Temporary (default — RFC 4291 transient)' },
-            { value: 'permanent', label: 'Permanent (well-known IANA prefix)' }
+            { value: 'permanent', label: 'Permanent (multicast flag)' }
         ], 'temporary');
         advBody.appendChild(addrTypeSelect);
-        advBody.appendChild(makeHelp('Most users want Temporary. Permanent reserves a stable group address.'));
+        advBody.appendChild(makeHelp('Use Temporary unless your network requires Permanent. Permanent changes the multicast flag; it does not reserve an address with IANA.'));
 
         advBody.appendChild(makeLabel('Discovery Port'));
         discPortInput = makeInput('number', '29716', '29716');
@@ -2602,7 +2602,7 @@ function showAutoInterfaceConfigSheet() {
         dataPortInput.min = 1;
         dataPortInput.max = 65535;
         advBody.appendChild(dataPortInput);
-        advBody.appendChild(makeHelp('Must differ from Discovery Port. Both must be free.'));
+        advBody.appendChild(makeHelp('Use different Discovery and Data ports, matching your peers. Port access also depends on the OS and other applications.'));
 
         advBody.appendChild(makeLabel('Network Interfaces'));
         nicListContainer = document.createElement('div');
@@ -2615,7 +2615,7 @@ function showAutoInterfaceConfigSheet() {
         loadingNote.textContent = 'Loading interfaces…';
         nicListContainer.appendChild(loadingNote);
         advBody.appendChild(nicListContainer);
-        advBody.appendChild(makeHelp('Leave all unchecked to use all available NICs (excluding loopback + platform-ignored).'));
+        advBody.appendChild(makeHelp('Leave all unchecked to use eligible interfaces with link-local IPv6 addresses. Loopback and platform-ignored interfaces are excluded.'));
 
         RS.invoke('api_list_network_interfaces', {}).then(function(resp) {
             var ifaces = (resp && resp.interfaces) || [];

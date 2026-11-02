@@ -3,7 +3,9 @@
 
 The packed bytes come from the upstream checkouts' own `LXMessage.pack()` for a
 Markdown message, as Sideband sends it (`fields[FIELD_RENDERER] =
-RENDERER_MARKDOWN`). Run with the upstream Reticulum and LXMF checkouts, by
+RENDERER_MARKDOWN`). This overwrites
+crates/ratspeak-runtime/testdata/lxmf-renderer-golden.json.
+Run with the upstream Reticulum and LXMF checkouts, by
 default the `upstream/` directory beside this repository:
 
     python3 -I tools/generate-lxmf-renderer-golden.py [--upstream DIR]
@@ -35,8 +37,12 @@ def head(checkout: Path) -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--upstream", type=Path, default=ROOT.parent / "upstream")
+    parser = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        epilog="Overwrites crates/ratspeak-runtime/testdata/lxmf-renderer-golden.json.",
+    )
+    parser.add_argument("--upstream", type=Path, default=ROOT.parent / "upstream",
+                        help="parent of the pinned Reticulum and LXMF checkouts; defaults to ../upstream relative to this repository")
     args = parser.parse_args()
     reticulum = args.upstream.resolve() / "Reticulum"
     lxmf = args.upstream.resolve() / "LXMF"

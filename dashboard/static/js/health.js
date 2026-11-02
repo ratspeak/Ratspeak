@@ -378,12 +378,10 @@ function buildIfaceActionItems(ifaceType, ifaceName) {
 var BLE_RNODE_HELP = {
     not_reachable: {
         title: 'Radio not found',
-        message: 'Ratspeak cannot reach this RNode over Bluetooth. Check that it is ' +
-            'powered on and charged (an e-paper screen keeps its last image when the ' +
-            'battery is empty), that its Bluetooth is enabled (installing RNode ' +
-            'firmware can turn it off), and that no other phone or computer is ' +
-            'connected to it. Ratspeak keeps trying, and tries again right away when ' +
-            'you return to the app.'
+        message: 'Ratspeak cannot reach this RNode over Bluetooth. Check that it is powered on and ' +
+            'charged (an e-paper screen keeps its last image when the battery is empty), that ' +
+            'Bluetooth is enabled, and that no other phone or computer is connected to it. ' +
+            'Ratspeak keeps trying. On Android, returning to the app wakes a waiting retry.'
     },
     link_lost: {
         title: 'Connection dropped',
@@ -402,17 +400,15 @@ var BLE_RNODE_HELP = {
     },
     stale_bond: {
         title: 'Pair again',
-        message: 'The RNode no longer recognizes the pairing saved on this phone. Forget ' +
-            'the RNode in Android Bluetooth settings, put the RNode in pairing mode, then ' +
-            'choose Retry Connection and enter the PIN it shows.',
+        message: 'The saved Bluetooth pairing did not work. Forget the RNode in Android Bluetooth ' +
+            'settings, put the RNode in pairing mode, then choose Retry Connection and enter the ' +
+            'PIN it shows.',
         bluetoothSettings: true
     },
     rejected_tx_power: {
         title: 'TX power not supported',
-        message: 'The RNode reported a different transmit power than this interface uses, ' +
-            'so Ratspeak kept it offline. Radios with a power amplifier, such as the ' +
-            'Heltec LoRa32 V4, cannot transmit below about 11 to 13 dBm, and most others ' +
-            'stop at 22 dBm. Choose a TX power this radio supports.',
+        message: 'The RNode reported a different transmit power than this interface uses, so Ratspeak ' +
+            'kept it offline. Choose a TX power supported by this radio and its firmware.',
         editInterface: true
     },
     rejected_settings: {
@@ -424,8 +420,8 @@ var BLE_RNODE_HELP = {
     },
     unsupported_firmware: {
         title: 'Firmware update needed',
-        message: 'This RNode\'s firmware is too old for Ratspeak. Update it with rnodeconf, ' +
-            'then choose Retry Connection.'
+        message: 'This RNode\'s firmware is too old for Ratspeak. Install a supported release using ' +
+            'the instructions for your radio, then choose Retry Connection.'
     },
     unsupported_radio: {
         title: 'Radio not supported',
@@ -439,25 +435,25 @@ var BLE_RNODE_HELP = {
     },
     radio_start_failed: {
         title: 'Radio failed to start',
-        message: 'The RNode reported that its LoRa radio could not start. Check that its ' +
-            'antenna is attached and restart it. If it keeps failing, the radio hardware ' +
-            'may be faulty.'
+        message: 'The RNode reported that its LoRa radio could not start. Restart it and check that ' +
+            'the firmware matches the board. If it keeps failing, follow the radio maker\'s ' +
+            'troubleshooting instructions.'
     },
     link_limited: {
         title: 'Bluetooth link too small',
-        message: 'This phone kept its Bluetooth link to the RNode at the smallest packet ' +
-            'size, and many RNodes cannot reply in full that way. Turn Bluetooth off and on, ' +
-            'then choose Retry Connection. Ratspeak asks for a larger size on every connect.'
+        message: 'The Bluetooth link stayed at its smallest packet size. If the radio does not answer ' +
+            'correctly, turn Bluetooth off and on, then choose Retry Connection. Ratspeak ' +
+            'requests a larger size during connection setup.'
     },
     pin_rejected: {
-        title: 'PIN did not match',
-        message: 'The PIN entered did not match the one the RNode showed. Put the RNode ' +
-            'in pairing mode, then choose Retry Connection and enter the PIN it shows.'
+        title: 'Pairing not accepted',
+        message: 'Bluetooth pairing authentication failed. Put the RNode in pairing mode, then choose ' +
+            'Retry Connection and enter the PIN it shows.'
     },
     pairing_window_closed: {
-        title: 'Pairing ran out of time',
-        message: 'Pairing ended before the PIN was entered. Put the RNode in pairing ' +
-            'mode again, then choose Retry Connection and enter the PIN soon after it shows.'
+        title: 'Pairing interrupted',
+        message: 'Pairing timed out or was cancelled. Put the RNode in pairing mode again, then ' +
+            'choose Retry Connection and enter the PIN soon after it shows.'
     },
 };
 
@@ -476,9 +472,8 @@ var RNODE_PORT_HELP = {
     },
     port_not_found: {
         title: 'Radio not found',
-        message: 'Nothing is attached at this interface\'s port. Check that the RNode is ' +
-            'plugged in, and edit the interface if its port name changed. Ratspeak keeps ' +
-            'trying.'
+        message: 'The configured radio port could not be found. Check that the RNode is plugged in, ' +
+            'and edit the interface if its port name changed. Ratspeak keeps trying.'
     },
     port_access_denied: {
         title: 'Port access denied',
@@ -488,8 +483,9 @@ var RNODE_PORT_HELP = {
     },
     port_in_use: {
         title: 'Port in use',
-        message: 'Another program, such as rnodeconf, a serial monitor or another ' +
-            'Reticulum instance, is using this radio. Close it and Ratspeak connects.'
+        message: 'The radio port could not be opened and may be held by another program. Close any ' +
+            'serial monitor, rnodeconf, or other Reticulum instance using it. Ratspeak keeps ' +
+            'trying.'
     },
 };
 

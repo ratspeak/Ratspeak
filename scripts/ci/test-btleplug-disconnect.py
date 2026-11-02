@@ -2,7 +2,8 @@
 """Exercise the shipped Java callback and future queue with a permission-denying GATT.
 
 The small Android doubles run only on the host JVM; they are never packaged.
-No Bluetooth adapter, native JNI library, or device is used.
+No Bluetooth adapter, native JNI library, or device is used. Set JAVA_HOME to
+a JDK with javac and java; --android-jar supplies the Android compile classes.
 """
 import argparse
 import os
@@ -96,7 +97,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=Path, default=ROOT,
                         help="app source root; permits an explicit unpatched negative control")
-    parser.add_argument("--android-jar", type=Path, required=True)
+    parser.add_argument("--android-jar", type=Path, required=True,
+                        help="Android SDK android.jar used to compile the Java sources")
     args = parser.parse_args()
     java_home = Path(os.environ["JAVA_HOME"])
     java = args.source_root / "src-tauri/gen/android/app/src/main/java"

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Keep the packaged Android bridge and its Rust/JNI dependencies in lockstep."""
+"""Keep the packaged Android bridge and its Rust/JNI dependencies in lockstep.
+
+Checks the source checkout before parsing options, including --help.
+"""
 import argparse
 import importlib.util
 import hashlib

@@ -122,17 +122,17 @@ def render_contract() -> str:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--print",
         action="store_true",
         dest="print_contract",
-        help="print the current canonical contract for reviewed application",
+        help="print the current contract from Cargo metadata without changing the stored contract",
     )
     parser.add_argument(
         "--update",
         action="store_true",
-        help="write the current reviewed manifest contract",
+        help="overwrite api/snapshots/manifest-contract.json with current Cargo metadata; review the diff before committing",
     )
     args = parser.parse_args()
     if args.print_contract and args.update:
