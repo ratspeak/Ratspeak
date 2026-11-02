@@ -2,10 +2,10 @@
 
 ### Fixed and improved
 
-- Fixed Bluetooth RNodes based on ESP32 (such as the Heltec V3 and V4) staying on "Initializing RNode" on some Android phones.
-- Ratspeak now asks for the RNode's pairing PIN itself instead of Android's generic pairing dialog.
-- A Bluetooth RNode that connects but stops answering now reconnects on its own.
-- Radio rows and the add dialog now say why a radio did not connect: wrong PIN, pairing timed out, radio not answering, radio failed to start, or a Bluetooth link that stayed too small.
-- A Bluetooth RNode can now be paused while it is reconnecting, so another radio can be added.
-- Fixed the Linux `.deb` and `.rpm` packages failing to start on systems without the tray icon or smart card libraries, such as a Raspberry Pi; the packages now install them.
-- On Linux desktops without tray support, Ratspeak now starts without a tray icon, and closing its window quits.
+- Fixed ESP32 Bluetooth RNodes (such as the Heltec V3 and V4) getting stuck on "Initializing RNode" on older Android versions.
+- Ratspeak now asks for your RNode's pairing PIN itself, instead of Android's pairing dialog.
+- Bluetooth RNodes that stop answering now reconnect on their own.
+- Radios now say why they didn't connect, such as a wrong PIN, pairing timeout, or a radio that isn't answering.
+- Bluetooth RNodes can now be paused while they reconnect, so you can add another radio.
+- Fixed the Linux `.deb` and `.rpm` packages not starting on some systems, such as a Raspberry Pi.
+- On Linux desktops without a tray, Ratspeak now runs without a tray icon, and closing the window quits.

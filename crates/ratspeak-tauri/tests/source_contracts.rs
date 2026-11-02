@@ -6423,13 +6423,13 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "staying on \"Initializing RNode\" on some Android phones",
-        "asks for the RNode's pairing PIN itself",
-        "stops answering now reconnects on its own",
-        "say why a radio did not connect",
-        "can now be paused while it is reconnecting",
-        "without the tray icon or smart card libraries",
-        "closing its window quits",
+        "getting stuck on \"Initializing RNode\" on older Android versions",
+        "asks for your RNode's pairing PIN itself",
+        "stop answering now reconnect on their own",
+        "say why they didn't connect",
+        "can now be paused while they reconnect",
+        "packages not starting on some systems, such as a Raspberry Pi",
+        "closing the window quits",
     ];
 
     for workflow_path in [
