@@ -1303,9 +1303,6 @@ fn android_ble_rnode_setup_serializes_gatt_and_requests_mtu_last() {
     let kotlin_root = root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android");
     let gatt =
         read_source(kotlin_root.join("RatspeakBleGatt.kt")).expect("BLE RNode physical generation");
-    let trace = read_source(kotlin_root.join("RatspeakBleTrace.kt")).expect("BLE RNode trace");
-    let main = read_source(kotlin_root.join("MainActivity.kt")).expect("main activity");
-    let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
 
     let setup = gatt
         .split("private fun openGattBridge(")
@@ -1332,15 +1329,8 @@ fn android_ble_rnode_setup_serializes_gatt_and_requests_mtu_last() {
         .expect("MTU negotiation");
     // An unanswered request may still be queued; it is never reissued.
     assert!(negotiate.contains(
-        "trace(\"MTU request unanswered after ${MTU_RESPONSE_TIMEOUT_SEC}s\")\n                    return"
+        "Log.w(TAG, \"MTU response timed out; not reissuing a request that may still be queued\")\n                    return"
     ));
-
-    assert!(!trace.contains(".address") && !trace.contains(".name"));
-    assert!(gatt.contains("payload bytes never enter the trace"));
-    assert!(main.contains("fun getBleRnodeTrace(): String = RatspeakBleTrace.text()"));
-    assert!(health.contains("label: 'Copy Bluetooth Details'"));
-    let modals = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
-    assert!(modals.contains("? { label: 'Copy Details', onSelect: copyBleRnodeTrace }"));
 }
 
 #[test]

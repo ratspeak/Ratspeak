@@ -75,8 +75,6 @@ class RatspeakBleGatt(
         private const val BONDED_GATT_RETRY_DELAY_MS = 1200L
         private const val BLE_WRITE_REJECT_RETRY_MS = 20L
         private const val RNODE_DETACH_SETTLE_MS = 80L
-        // Enough to cover radio setup and its replies, bounded for live traffic.
-        private const val TRACE_FRAMES_PER_GENERATION = 48
         private const val PENDING_INBOUND_MAX_RECORDS = 256
         private const val PENDING_INBOUND_MAX_BYTES = 64 * 1024
         private const val PENDING_CONTROL_MAX_RECORDS = 256
@@ -187,12 +185,6 @@ class RatspeakBleGatt(
     // The link that reached the bridge never got past the default ATT MTU.
     @Volatile private var linkLimited = false
     @Volatile private var mtuStatus = -1
-    // Per-generation traffic totals for the connection trace.
-    private val notifyCount = AtomicInteger(0)
-    private val notifyBytes = AtomicInteger(0)
-    private val notifyMax = AtomicInteger(0)
-    private val writeCount = AtomicInteger(0)
-    private val writeBytes = AtomicInteger(0)
 
     private val handler = Handler(Looper.getMainLooper())
 
@@ -268,7 +260,6 @@ class RatspeakBleGatt(
             }
 
             Log.i(TAG, "Device: name=${device.name} bondState=${bondStr(device.bondState)} type=${device.type}")
-            trace("connect start bond=${bondStr(device.bondState)} type=${device.type} background=$background")
 
             // A forgotten pairing leaves Android no type for the radio; bond the
             // device a fresh scan reports, which carries its LE address type.
@@ -335,7 +326,7 @@ class RatspeakBleGatt(
                             "reason=${unbondReason.get()})"
                     )
                 }
-                trace("paired")
+                Log.i(TAG, "Phase 0 COMPLETE: Bonded")
                 bondedDuringThisConnect = true
             }
             unregisterBondReceiver()
@@ -374,7 +365,7 @@ class RatspeakBleGatt(
                 gattError = openGattBridge(device, attempt, attempts, waitInBackground)
                 if (gattError == null) break
 
-                trace("setup attempt $attempt/$attempts failed: $gattError")
+                Log.w(TAG, "GATT setup attempt $attempt/$attempts failed: $gattError")
                 if (bondPreexisting && setupLinkLost.get()) awaitBondLossEvidence()
                 closeGattOnly("retry after failed setup")
                 // Each retry against a rejected key re-triggers the system
@@ -411,7 +402,7 @@ class RatspeakBleGatt(
             // The process supervisor owns the stable TCP listener. This
             // physical generation owns only GATT and the exact accepted client.
             running.set(true)
-            trace("connected; radio setup starts")
+            Log.i(TAG, "=== BLE CONNECT SUCCESS ===")
             emitProgress("ready")
             return null
 
@@ -433,7 +424,6 @@ class RatspeakBleGatt(
         rxChar = null
         txChar = null
         setupLinkLost.set(false)
-        listOf(notifyCount, notifyBytes, notifyMax, writeCount, writeBytes).forEach { it.set(0) }
 
         // Phase 1: GATT connect over the bonded (encrypted) link.
         connectLatch = CountDownLatch(1)
@@ -444,7 +434,7 @@ class RatspeakBleGatt(
         if (background) {
             Log.i(TAG, "Phase 1: Waiting for the radio (background connect)...")
         } else {
-            trace("GATT connect attempt $attempt/$attempts")
+            Log.i(TAG, "Phase 1: Connecting GATT (attempt $attempt/$attempts)...")
         }
         val latch = connectLatch!!
         handler.post {
@@ -529,7 +519,7 @@ class RatspeakBleGatt(
                 serviceMissing.set(true)
                 return "NUS TX characteristic not found"
             }
-        trace("RNode service found")
+        Log.i(TAG, "Phase 2 COMPLETE: NUS found")
 
         // Phase 3: Subscribe to TX notifications (now authenticated).
         emitProgress("subscribing")
@@ -566,7 +556,6 @@ class RatspeakBleGatt(
         if (adapterUnavailable.get()) return "Bluetooth is turned off"
         linkLostDuring("MTU negotiation")?.let { return it }
         linkLimited = RatspeakMobilePolicy.bleLinkLimited(negotiatedMtu)
-        trace("link ready payload=$negotiatedMtu" + if (linkLimited) " (default size)" else "")
         if (linkLimited) Log.w(TAG, "ATT MTU stayed at the default; payload=$negotiatedMtu")
         return null
     }
@@ -583,12 +572,12 @@ class RatspeakBleGatt(
             val latch = mtuLatch ?: return
             if (requestMtuOnMain()) {
                 if (!latch.await(MTU_RESPONSE_TIMEOUT_SEC, TimeUnit.SECONDS)) {
-                    trace("MTU request unanswered after ${MTU_RESPONSE_TIMEOUT_SEC}s")
+                    Log.w(TAG, "MTU response timed out; not reissuing a request that may still be queued")
                     return
                 }
                 if (mtuStatus == BluetoothGatt.GATT_SUCCESS) return
             } else {
-                trace("MTU request rejected (attempt $attempt/$MTU_REQUEST_ATTEMPTS)")
+                Log.w(TAG, "MTU request rejected (attempt $attempt/$MTU_REQUEST_ATTEMPTS)")
             }
             if (adapterUnavailable.get() || setupLinkLost.get()) return
             if (attempt < MTU_REQUEST_ATTEMPTS) Thread.sleep(MTU_RETRY_DELAY_MS * attempt)
@@ -650,7 +639,7 @@ class RatspeakBleGatt(
         }
         val timedOut = !servicesLatch!!.await(timeoutSec, TimeUnit.SECONDS)
         if (timedOut) {
-            trace("service discovery unanswered after ${timeoutSec}s")
+            Log.w(TAG, "Service discovery timed out after ${timeoutSec}s")
             return DiscoveryResult.TIMED_OUT
         }
         return if (servicesStatus.get()) DiscoveryResult.OK else DiscoveryResult.FAILED
@@ -731,7 +720,6 @@ class RatspeakBleGatt(
                 running.set(false)
             }
         } finally {
-            traceGenerationTotals(endReason ?: "disconnected")
             cleanup()
         }
     }
@@ -1303,36 +1291,7 @@ class RatspeakBleGatt(
         bondReceiver = null
     }
 
-    private fun err(msg: String): String {
-        Log.e(TAG, msg)
-        trace("connect failed: $msg")
-        return msg
-    }
-
-    private fun trace(event: String) {
-        Log.i(TAG, event)
-        RatspeakBleTrace.add(event)
-    }
-
-    /** Size and KISS command of one frame; payload bytes never enter the trace. */
-    private fun traceFrame(direction: String, count: Int, data: ByteArray) {
-        if (count > TRACE_FRAMES_PER_GENERATION) return
-        val command = if (data.size > 1 && data[0] == 0xC0.toByte()) {
-            String.format(java.util.Locale.ROOT, "cmd=0x%02X", data[1].toInt() and 0xFF)
-        } else {
-            "continuation"
-        }
-        val note = if (count == TRACE_FRAMES_PER_GENERATION) " (later frames counted only)" else ""
-        RatspeakBleTrace.add("$direction #$count len=${data.size} $command$note")
-    }
-
-    private fun traceGenerationTotals(reason: String) {
-        RatspeakBleTrace.add(
-            "link ended ($reason): received ${notifyCount.get()} notifications/" +
-                "${notifyBytes.get()} B (largest ${notifyMax.get()} B), " +
-                "sent ${writeCount.get()} writes/${writeBytes.get()} B"
-        )
-    }
+    private fun err(msg: String): String { Log.e(TAG, msg); return msg }
 
     private fun logEx(where: String, e: Exception) {
         Log.d(TAG, "cleanup($where): ${e.javaClass.simpleName}: ${e.message}")
@@ -1471,11 +1430,8 @@ class RatspeakBleGatt(
             ) ?: false
             val ok = completed && writeStatus.get()
             writeLatch = null
-            if (ok) {
-                writeBytes.addAndGet(value.size)
-                traceFrame("sent", writeCount.incrementAndGet(), value)
-            } else {
-                trace("$reason BLE write failed completed=$completed len=${value.size}")
+            if (!ok) {
+                Log.e(TAG, "$reason BLE write failed completed=$completed len=${value.size}")
             }
             return ok
         }
@@ -1510,9 +1466,6 @@ class RatspeakBleGatt(
     private fun handleCharacteristicChanged(ch: BluetoothGattCharacteristic, data: ByteArray) {
         if (ch.uuid != BleUuids.NUS_TX_CHAR) return
         if (data.isNotEmpty()) radioSpoke.set(true)
-        notifyBytes.addAndGet(data.size)
-        notifyMax.accumulateAndGet(data.size, ::maxOf)
-        traceFrame("received", notifyCount.incrementAndGet(), data)
 
         val assembly = synchronized(inboundKissAssembler) {
             inboundKissAssembler.offer(data)
@@ -1550,7 +1503,7 @@ class RatspeakBleGatt(
                 BluetoothProfile.STATE_DISCONNECTED -> "DISCONNECTED"
                 else -> "OTHER($newState)"
             }
-            trace("GATT status=$status state=$s bond=${bondStr(bondStateOrNone(gatt))}")
+            Log.i(TAG, "GATT: status=$status state=$s bondState=${bondStr(bondStateOrNone(gatt))}")
             lastGattStatus.set(status)
 
             when (newState) {
@@ -1588,14 +1541,14 @@ class RatspeakBleGatt(
                 status == BluetoothGatt.GATT_SUCCESS,
             )
             mtuStatus = status
-            trace("MTU changed mtu=$mtu status=$status")
+            Log.i(TAG, "MTU: $mtu (payload=$negotiatedMtu) status=$status")
             mtuLatch?.countDown()
         }
 
         override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) {
             if (!isActiveGatt(gatt, "onServicesDiscovered")) return
             servicesStatus.set(status == BluetoothGatt.GATT_SUCCESS)
-            trace("services discovered status=$status")
+            Log.i(TAG, "Services discovered: status=$status ok=${servicesStatus.get()}")
             servicesLatch?.countDown()
         }
 
@@ -1606,7 +1559,7 @@ class RatspeakBleGatt(
             // An encrypted CCCD still rejected after Android's own
             // authentication retry is a key rejection, like a link status.
             if (status == 5 || status == 15 || status == 137) lastGattStatus.set(status)
-            trace("notification subscribe status=$status")
+            Log.i(TAG, "Descriptor write: ${desc.uuid} status=$status")
             descriptorLatch?.countDown()
         }
 

@@ -155,7 +155,6 @@ object RatspeakBleRnodeSupervisor {
                 old
             }
             displaced?.let(::closeEntry)
-            RatspeakBleTrace.begin()
             publishListenerReady(replacement)
             replacement.worker = Thread({ run(replacement) }, "ble-rnode-supervisor").apply {
                 isDaemon = true
@@ -178,7 +177,6 @@ object RatspeakBleRnodeSupervisor {
                 candidate
             }
             closeEntry(removed)
-            RatspeakBleTrace.add("state: disconnected by Ratspeak")
             RatspeakNativeBridge.publishBleState(
                 removed.token,
                 removed.generation,
@@ -335,7 +333,6 @@ object RatspeakBleRnodeSupervisor {
     }
 
     private fun publishInitializing(entry: Entry, linkLimited: Boolean) {
-        RatspeakBleTrace.add("state: initializing" + if (linkLimited) " (link_limited)" else "")
         synchronized(entry.publishLock) {
             if (!isCurrent(entry)) return
             RatspeakNativeBridge.publishBleState(
@@ -349,7 +346,6 @@ object RatspeakBleRnodeSupervisor {
     }
 
     private fun publishRetry(entry: Entry, reason: String) {
-        RatspeakBleTrace.add("state: waiting to retry ($reason)")
         synchronized(entry.publishLock) {
             if (!isCurrent(entry)) return
             RatspeakNativeBridge.publishBleState(
@@ -394,7 +390,6 @@ object RatspeakBleRnodeSupervisor {
             try { removed.listener.close() } catch (_: Throwable) {}
             try { removed.physical?.disconnect(graceful = false) } catch (_: Throwable) {}
             if (removed.terminalPublished.compareAndSet(false, true)) {
-                RatspeakBleTrace.add("state: failed ($code)")
                 RatspeakNativeBridge.publishBleState(
                     removed.token,
                     removed.generation,
