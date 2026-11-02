@@ -1,6 +1,6 @@
 [package]
 name = "ratspeak"
-version = "1.0.37"
+version = "1.0.38"
 description = "Ratspeak: An all-in-one Reticulum & LXMF client in Rust."
 authors = ["Ratspeak Contributors"]
 license = "AGPL-3.0-or-later"
@@ -35,7 +35,7 @@ tokio = { version = "1", features = ["full"] }
 base64 = "0.22"
 zeroize = "1"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
-ratspeak-tauri = { path = "../crates/ratspeak-tauri", version = "1.0.37", features = ["ble", "hardware"] }
+ratspeak-tauri = { path = "../crates/ratspeak-tauri", version = "1.0.38", features = ["ble", "hardware"] }
 arboard = { version = "3.7", default-features = false }
 rfd = "0.15"
 dirs = "6"
@@ -43,7 +43,7 @@ tauri = { version = "2", features = ["tray-icon", "devtools"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
-ratspeak-tauri = { path = "../crates/ratspeak-tauri", version = "1.0.37", default-features = false, features = ["ble", "rnode-tcp", "mobile-throttle", "seed"] }
+ratspeak-tauri = { path = "../crates/ratspeak-tauri", version = "1.0.38", default-features = false, features = ["ble", "rnode-tcp", "mobile-throttle", "seed"] }
 tauri-plugin-haptics = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]

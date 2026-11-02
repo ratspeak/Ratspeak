@@ -5,9 +5,11 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+## [1.0.38] - 2026-11-02
+
 ### Fixed and improved
 
-- Fixed ESP32 Bluetooth RNodes still getting stuck on "Initializing RNode" on some older Android versions.
+- Fixed ESP32 Bluetooth RNodes still getting stuck on "Initializing RNode" on some older Android versions. If not I quit.
 
 ## [1.0.37] - 2026-11-01
 

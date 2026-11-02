@@ -6461,13 +6461,7 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "getting stuck on \"Initializing RNode\" on older Android versions",
-        "asks for your RNode's pairing PIN itself",
-        "stop answering now reconnect on their own",
-        "say why they didn't connect",
-        "can now be paused while they reconnect",
-        "packages not starting on some systems, such as a Raspberry Pi",
-        "closing the window quits",
+        "still getting stuck on \"Initializing RNode\" on some older Android versions. If not I quit.",
     ];
 
     for workflow_path in [
