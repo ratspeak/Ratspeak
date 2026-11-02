@@ -5,6 +5,8 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+## [1.0.37] - 2026-11-01
+
 ### Fixed and improved
 
 - Fixed Bluetooth RNodes based on ESP32 (such as the Heltec V3 and V4) staying on "Initializing RNode" on some Android phones.

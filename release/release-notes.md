@@ -1,17 +1,11 @@
-## v1.0.36
-
-### Added
-
-- Added Markdown support to messages: bold, italic, strikethrough, code, links, headings, lists, quotes and code blocks.
-- Added spoilers: put text between two bars on each side, like `||this||`. Or use `>!` and/or `!<`
-- Added deleting messages: select one or multiple messages to delete.
-- Added outbound URL security warning.
-- Added markdown hotkey shortcuts on desktop: Cmd or Ctrl with B, I or E formats the selected text.
-- Added changelog viewing to the in-app "Check For Updates" feature.
+## v1.0.37
 
 ### Fixed and improved
 
-- Text across the app is larger and easier to read. Again.
-- The message reaction menu now opens beside the message and got a design uplift.
-- Links in messages are easier to read.
-- Locked zoom in the app outside of enlarged photos.
+- Fixed Bluetooth RNodes based on ESP32 (such as the Heltec V3 and V4) staying on "Initializing RNode" on some Android phones.
+- Ratspeak now asks for the RNode's pairing PIN itself instead of Android's generic pairing dialog.
+- A Bluetooth RNode that connects but stops answering now reconnects on its own.
+- Radio rows and the add dialog now say why a radio did not connect: wrong PIN, pairing timed out, radio not answering, radio failed to start, or a Bluetooth link that stayed too small.
+- A Bluetooth RNode can now be paused while it is reconnecting, so another radio can be added.
+- Fixed the Linux `.deb` and `.rpm` packages failing to start on systems without the tray icon or smart card libraries, such as a Raspberry Pi; the packages now install them.
+- On Linux desktops without tray support, Ratspeak now starts without a tray icon, and closing its window quits.

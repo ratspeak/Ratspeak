@@ -6423,16 +6423,13 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "Added Markdown support to messages",
-        "put text between two bars on each side",
-        "select one or multiple messages to delete",
-        "Added outbound URL security warning",
-        "Cmd or Ctrl with B, I or E formats the selected text",
-        "changelog viewing to the in-app",
-        "Text across the app is larger and easier to read",
-        "message reaction menu now opens beside the message",
-        "Links in messages are easier to read",
-        "Locked zoom in the app outside of enlarged photos",
+        "staying on \"Initializing RNode\" on some Android phones",
+        "asks for the RNode's pairing PIN itself",
+        "stops answering now reconnects on its own",
+        "say why a radio did not connect",
+        "can now be paused while it is reconnecting",
+        "without the tray icon or smart card libraries",
+        "closing its window quits",
     ];
 
     for workflow_path in [
