@@ -1741,6 +1741,11 @@ function submitRnodeInterface() {
                     RS.invoke('cancel_ble_connect', { name: bleName }).catch(function() {});
                     window._activeProgressDialog = null;
                 },
+                // A failed add removes its row, so the details are offered here.
+                errorAction: window.RatspeakAndroid &&
+                    typeof window.RatspeakAndroid.getBleRnodeTrace === 'function'
+                    ? { label: 'Copy Details', onSelect: copyBleRnodeTrace }
+                    : null,
             });
             // Native connect phases narrate only this dialog.
             window._activeProgressDialog.bleRnode = true;

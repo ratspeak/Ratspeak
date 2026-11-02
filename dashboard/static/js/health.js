@@ -279,6 +279,7 @@ var ICON_RADIO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 var ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
 var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
 var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
+var ICON_COPY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><rect x="2" y="2" width="13" height="13" rx="2"/></svg>';
 var ICON_INFO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>';
 
 function buildIfaceActionItems(ifaceType, ifaceName) {
@@ -362,6 +363,14 @@ function buildIfaceActionItems(ifaceType, ifaceName) {
                 }
             });
         }
+        if (isBleRnode && window.RatspeakAndroid &&
+            typeof window.RatspeakAndroid.getBleRnodeTrace === 'function') {
+            items.push({
+                label: 'Copy Bluetooth Details',
+                icon: ICON_COPY,
+                onSelect: copyBleRnodeTrace
+            });
+        }
         items.push({ separator: true });
     }
     if (isLoraInterfaceType(ifaceType)) {
@@ -372,6 +381,19 @@ function buildIfaceActionItems(ifaceType, ifaceName) {
     items.push({ label: 'Rename', icon: ICON_PENCIL, onSelect: function() { openRenameInterfaceDialog(ifaceName); } });
     items.push({ label: 'Remove', icon: ICON_TRASH, danger: true, onSelect: function() { confirmRemoveInterface(ifaceType, ifaceName); } });
     return items;
+}
+
+// The native connection record for support; it holds no addresses or payloads.
+function copyBleRnodeTrace() {
+    var trace = '';
+    try { trace = window.RatspeakAndroid.getBleRnodeTrace() || ''; } catch (_) {}
+    if (!trace) {
+        showToast('No Bluetooth connection details yet', 'toast-warning', 2500);
+        return;
+    }
+    RS.copyText(trace).then(function(ok) {
+        if (ok) showCopyConfirmationToast('Bluetooth details');
+    });
 }
 
 // Guidance for BLE RNode failures only a person at the radio or phone can fix.

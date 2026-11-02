@@ -257,12 +257,7 @@ class RatspeakBlePeerClient(private val context: Context) {
             // connection never leaves a stale entry behind.
             clients[address] = this
 
-            // ── Phase 2: MTU negotiation (best-effort) ──
-            mtuLatch = CountDownLatch(1)
-            handler.post { gatt?.requestMtu(TARGET_MTU) }
-            mtuLatch!!.await(5, TimeUnit.SECONDS)
-
-            // ── Phase 3: Service discovery ──
+            // ── Phase 2: Service discovery ──
             servicesLatch = CountDownLatch(1)
             servicesStatus.set(false)
             handler.post { gatt?.discoverServices() }
@@ -270,12 +265,12 @@ class RatspeakBlePeerClient(private val context: Context) {
                 cleanup(); return errFalse("Service discovery failed")
             }
 
-            // ── Phase 4: Pick Ratspeak or Columba ──
+            // ── Phase 3: Pick Ratspeak or Columba ──
             if (!discoverAndPickService()) {
                 cleanup(); return errFalse("Neither Ratspeak nor Columba service found")
             }
 
-            // ── Phase 5: Subscribe to TX notifications ──
+            // ── Phase 4: Subscribe to TX notifications ──
             descriptorLatch = CountDownLatch(1)
             val tx = txChar ?: run { cleanup(); return errFalse("TX characteristic missing") }
             gatt?.setCharacteristicNotification(tx, true)
@@ -289,6 +284,12 @@ class RatspeakBlePeerClient(private val context: Context) {
                 }
             } ?: run { cleanup(); return errFalse("CCCD descriptor missing") }
             descriptorLatch!!.await(10, TimeUnit.SECONDS)
+
+            // ── Phase 5: MTU negotiation (best-effort), last and alone: Android
+            // 13 and older drop a GATT command queued behind another one ──
+            mtuLatch = CountDownLatch(1)
+            handler.post { gatt?.requestMtu(TARGET_MTU) }
+            mtuLatch!!.await(5, TimeUnit.SECONDS)
 
             running.set(true)
             Log.i(TAG, "=== PEER CONNECT SUCCESS === protocol=$protocol mtu=$negotiatedMtu")

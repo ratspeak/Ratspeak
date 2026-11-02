@@ -1916,6 +1916,9 @@ class MainActivity : TauriActivity() {
         }
 
         @JavascriptInterface
+        fun getBleRnodeTrace(): String = RatspeakBleTrace.text()
+
+        @JavascriptInterface
         fun playCallRingtone(mode: String): Boolean {
             return this@MainActivity.runOnMainForBoolean {
                 this@MainActivity.startNativeCallRingtone(mode)

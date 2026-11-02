@@ -5,6 +5,11 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+### Fixed and improved
+
+- Fixed ESP32 Bluetooth RNodes still getting stuck on "Initializing RNode" on some older Android versions.
+- Added "Copy Bluetooth Details" to Bluetooth RNode interfaces on Android, to share with us when a radio won't connect.
+
 ## [1.0.37] - 2026-11-01
 
 ### Fixed and improved

@@ -715,6 +715,7 @@ function rsPromptContact(opts) {
 }
 
 // Returns a controller { update, success, error, close, isOpen, onClose }.
+// opts.errorAction { label, onSelect } adds a button beside Close on error.
 function rsProgress(opts) {
     opts = opts || {};
     var resolved = false;
@@ -778,8 +779,15 @@ function rsProgress(opts) {
         spinner.textContent = '✗';
         statusText.textContent = text;
         bodyInner.classList.add('rs-progress-done');
-        // Replace any prior footer buttons so only Close remains.
+        // Replace any prior footer buttons so only Close (and errorAction) remain.
         built.footer.innerHTML = '';
+        if (opts.errorAction) {
+            var actionBtn = document.createElement('button');
+            actionBtn.className = 'rs-dialog-cancel';
+            actionBtn.textContent = opts.errorAction.label;
+            actionBtn.addEventListener('click', function() { opts.errorAction.onSelect(); });
+            built.footer.appendChild(actionBtn);
+        }
         var closeBtn = document.createElement('button');
         closeBtn.className = 'rs-dialog-confirm';
         closeBtn.textContent = 'Close';

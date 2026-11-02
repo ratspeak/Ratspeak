@@ -1295,6 +1295,54 @@ fn android_ble_rnode_auto_resume_is_persisted_adapter_aware_and_single_owned() {
     assert!(gatt.contains("closeBridgeClient()"));
 }
 
+/// Android 13 and older drop a second queued GATT command without a callback,
+/// so setup runs one command at a time and asks for the MTU last.
+#[test]
+fn android_ble_rnode_setup_serializes_gatt_and_requests_mtu_last() {
+    let root = repo_root();
+    let kotlin_root = root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android");
+    let gatt =
+        read_source(kotlin_root.join("RatspeakBleGatt.kt")).expect("BLE RNode physical generation");
+    let trace = read_source(kotlin_root.join("RatspeakBleTrace.kt")).expect("BLE RNode trace");
+    let main = read_source(kotlin_root.join("MainActivity.kt")).expect("main activity");
+    let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
+
+    let setup = gatt
+        .split("private fun openGattBridge(")
+        .nth(1)
+        .and_then(|tail| tail.split("private fun negotiateMtu()").next())
+        .expect("GATT setup");
+    let discover = setup
+        .find("discoverServicesWithLatch(15)")
+        .expect("discovery");
+    let subscribe = setup.find("writeDescriptorCompat(").expect("CCCD write");
+    let mtu = setup.find("negotiateMtu()").expect("MTU request");
+    assert!(discover < subscribe && subscribe < mtu);
+    assert_eq!(setup.matches("negotiateMtu()").count(), 1);
+    assert!(
+        setup.contains(
+            "if (discovery == DiscoveryResult.FAILED) gatt?.let { refreshGattCache(it) }"
+        )
+    );
+
+    let negotiate = gatt
+        .split("private fun negotiateMtu()")
+        .nth(1)
+        .and_then(|tail| tail.split("private fun requestMtuOnMain()").next())
+        .expect("MTU negotiation");
+    // An unanswered request may still be queued; it is never reissued.
+    assert!(negotiate.contains(
+        "trace(\"MTU request unanswered after ${MTU_RESPONSE_TIMEOUT_SEC}s\")\n                    return"
+    ));
+
+    assert!(!trace.contains(".address") && !trace.contains(".name"));
+    assert!(gatt.contains("payload bytes never enter the trace"));
+    assert!(main.contains("fun getBleRnodeTrace(): String = RatspeakBleTrace.text()"));
+    assert!(health.contains("label: 'Copy Bluetooth Details'"));
+    let modals = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    assert!(modals.contains("? { label: 'Copy Details', onSelect: copyBleRnodeTrace }"));
+}
+
 #[test]
 fn android_ble_product_state_waits_for_exact_protocol_readiness() {
     let root = repo_root();
