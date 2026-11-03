@@ -88,13 +88,13 @@ assert.strictEqual(
 );
 assert.strictEqual(storage['rs-theme'], undefined, 'invalid legacy mode cache must be removed');
 assert.strictEqual(storage['rs-theme-family'], undefined, 'invalid family cache must be removed');
-assert.strictEqual(firstBoot.attrs['data-theme-family'], 'ratspeak');
+assert.strictEqual(firstBoot.attrs['data-theme-family'], 'nord');
 assert.strictEqual(firstBoot.attrs['data-theme-preference'], 'auto');
 assert.strictEqual(firstBoot.attrs['data-theme'], 'dark');
-assert.strictEqual(firstBoot.meta.content, '#18171A');
+assert.strictEqual(firstBoot.meta.content, '#252A34');
 
 appearance.commit('nord', 'light');
-assert.strictEqual(storage['rs-theme-family'], 'nord');
+assert.strictEqual(storage['rs-theme-family'], undefined, 'the default family is not cached');
 assert.strictEqual(storage['rs-theme'], 'light');
 assert.strictEqual(firstBoot.attrs['data-theme-family'], 'nord');
 assert.strictEqual(firstBoot.attrs['data-theme'], 'light');
@@ -150,6 +150,8 @@ assert.strictEqual(legacyStorage['rs-theme-family'], 'everforest',
     'the retired Solarized cache must migrate without losing the selected family');
 
 autoRestart.appearance.commit('ratspeak', 'auto');
+assert.strictEqual(storage['rs-theme-family'], 'ratspeak', 'the Ratspeak family is a choice now, not the default');
+autoRestart.appearance.commit('nord', 'auto');
 assert.strictEqual(storage['rs-theme-family'], undefined, 'default family should not need a cache entry');
 assert.strictEqual(storage['rs-theme'], undefined, 'default mode should not need a cache entry');
 

@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Dashboard light theme tokens -->
-    <color name="splash_bg">#FFE8E4DF</color>
+    <!-- Default (Nord) theme page colours -->
+    <color name="splash_bg">#FFECEFF4</color>
 
     <!-- Dark theme variants (used by values-night) -->
-    <color name="splash_bg_dark">#FF18171A</color>
+    <color name="splash_bg_dark">#FF252A34</color>
 </resources>

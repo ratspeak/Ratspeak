@@ -5,7 +5,7 @@
 
     var MODE_STORAGE_KEY = 'rs-theme';
     var FAMILY_STORAGE_KEY = 'rs-theme-family';
-    var DEFAULT_FAMILY = 'ratspeak';
+    var DEFAULT_FAMILY = 'nord';
     var DEFAULT_MODE = 'auto';
     var MODES = ['light', 'auto', 'dark'];
     var lastNativeMode = null;
@@ -69,7 +69,7 @@
     function normalizeFamily(value) {
         // Solarized shipped in an early preview. Preserve that preference by
         // moving it to the family that replaced it instead of silently falling
-        // back to Ratspeak on the next cold start.
+        // back to the default family on the next cold start.
         if (value === 'solarized') return 'everforest';
         return isFamily(value) ? value : DEFAULT_FAMILY;
     }

@@ -19,7 +19,7 @@
                             <label opaque="NO" userInteractionEnabled="NO" contentMode="left" horizontalHuggingPriority="251" verticalHuggingPriority="251" text="RATSPEAK" textAlignment="center" lineBreakMode="tailTruncation" baselineAdjustment="alignBaselines" adjustsFontSizeToFit="NO" translatesAutoresizingMaskIntoConstraints="NO" id="lbl-title">
                                 <rect key="frame" x="107" y="460" width="200" height="30"/>
                                 <fontDescription key="fontDescription" type="system" weight="bold" pointSize="22"/>
-                                <color key="textColor" red="0.4117647059" green="0.2549019608" blue="0.1568627451" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                                <color key="textColor" name="LaunchText"/>
                                 <nil key="highlightedColor"/>
                             </label>
                         </subviews>
@@ -28,12 +28,20 @@
                             <constraint firstItem="lbl-title" firstAttribute="centerX" secondItem="5EZ-qb-Rvc" secondAttribute="centerX" id="cx1"/>
                             <constraint firstItem="lbl-title" firstAttribute="centerY" secondItem="5EZ-qb-Rvc" secondAttribute="centerY" constant="20" id="cy1"/>
                         </constraints>
-                        <!-- Launch background follows the site light surface (#FAF7F3). -->
-                        <color key="backgroundColor" red="0.9803921569" green="0.9686274510" blue="0.9529411765" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+                        <!-- Launch colours follow the default (Nord) theme page, light and dark. -->
+                        <color key="backgroundColor" name="LaunchBackground"/>
                     </view>
                 </viewController>
                 <placeholder placeholderIdentifier="IBFirstResponder" id="Ief-a0-LHa" userLabel="First Responder" customClass="UIResponder" sceneMemberID="firstResponder"/>
             </objects>
         </scene>
     </scenes>
+    <resources>
+        <namedColor name="LaunchBackground">
+            <color red="0.9254901961" green="0.9372549020" blue="0.9568627451" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+        </namedColor>
+        <namedColor name="LaunchText">
+            <color red="0.2745098039" green="0.3960784314" blue="0.5411764706" alpha="1" colorSpace="custom" customColorSpace="sRGB"/>
+        </namedColor>
+    </resources>
 </document>

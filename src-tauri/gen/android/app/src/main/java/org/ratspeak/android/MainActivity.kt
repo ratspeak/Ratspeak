@@ -291,7 +291,7 @@ class MainActivity : TauriActivity() {
         val isDarkMode = (resources.configuration.uiMode and
             android.content.res.Configuration.UI_MODE_NIGHT_MASK) ==
             android.content.res.Configuration.UI_MODE_NIGHT_YES
-        val bgColor = if (isDarkMode) "#18171a" else "#FAF7F3"
+        val bgColor = if (isDarkMode) "#252A34" else "#ECEFF4"
         window.decorView.setBackgroundColor(bgColor.toColorInt())
 
         setTransparentSystemBars()
