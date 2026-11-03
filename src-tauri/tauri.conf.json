@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Ratspeak",
-  "version": "1.0.38",
+  "version": "1.0.39",
   "identifier": "org.ratspeak.desktop",
   "build": {
     "frontendDist": "../dashboard"
@@ -34,10 +34,10 @@
       "icons/icon.ico"
     ],
     "android": {
-      "versionCode": 1000068
+      "versionCode": 1000069
     },
     "iOS": {
-      "bundleVersion": "1000068"
+      "bundleVersion": "1000069"
     },
     "linux": {
       "appimage": {

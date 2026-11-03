@@ -5,6 +5,13 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+## [1.0.39] - 2026-11-03
+
+### Fixed and improved
+
+- Nord is now the default theme.
+- Updated branding and installer assets.
+
 ## [1.0.38] - 2026-11-02
 
 ### Fixed and improved

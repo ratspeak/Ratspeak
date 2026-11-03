@@ -2602,7 +2602,9 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
     assert!(metainfo.contains("<summary>End-to-end encrypted mesh messenger</summary>"));
     assert!(metainfo.contains("<developer_name>Ratspeak Contributors</developer_name>"));
     assert!(metainfo.contains("<url type=\"homepage\">https://ratspeak.org</url>"));
-    assert!(metainfo.contains("<url type=\"vcs-browser\">https://github.com/ratspeak/Ratspeak</url>"));
+    assert!(
+        metainfo.contains("<url type=\"vcs-browser\">https://github.com/ratspeak/Ratspeak</url>")
+    );
     assert!(metainfo.contains("<content_rating type=\"oars-1.1\">"));
     assert!(metainfo.contains("<launchable type=\"desktop-id\">Ratspeak.desktop</launchable>"));
     assert!(metainfo.contains("<icon type=\"stock\">ratspeak</icon>"));
@@ -6462,7 +6464,8 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "still getting stuck on \"Initializing RNode\" on some older Android versions. If not I quit.",
+        "Nord is now the default theme.",
+        "Updated branding and installer assets.",
     ];
 
     for workflow_path in [

@@ -1,5 +1,6 @@
-## v1.0.38
+## v1.0.39
 
 ### Fixed and improved
 
-- Fixed ESP32 Bluetooth RNodes still getting stuck on "Initializing RNode" on some older Android versions. If not I quit.
+- Nord is now the default theme.
+- Updated branding and installer assets.
