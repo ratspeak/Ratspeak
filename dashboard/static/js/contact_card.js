@@ -395,7 +395,7 @@ z`,
             ctx.translate(cx - size / 2, cy - size / 2);
             ctx.scale(scale, scale);
             ctx.translate(-205, -205);
-            ctx.fillStyle = color || '#D2693B';
+            ctx.fillStyle = color || '#0a0f2e';
             for (var i = 0; i < RATSPEAK_MARK_PATHS.length; i++) {
                 ctx.fill(new Path2D(RATSPEAK_MARK_PATHS[i]));
             }
@@ -411,7 +411,7 @@ z`,
         var h = size * 0.40;
         var x = cx - w / 2;
         var y = cy - h / 2;
-        ctx.strokeStyle = '#D2693B';
+        ctx.strokeStyle = '#0a0f2e';
         ctx.lineWidth = Math.max(3, size * 0.05);
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
@@ -427,18 +427,18 @@ z`,
 
     function drawRatspeakLogo(ctx, cx, cy, size, surface) {
         ctx.save();
-        ctx.shadowColor = 'rgba(42, 37, 34, 0.12)';
+        ctx.shadowColor = 'rgba(10, 15, 46, 0.16)';
         ctx.shadowBlur = size * 0.14;
         ctx.shadowOffsetY = size * 0.035;
         roundRect(ctx, cx - size / 2, cy - size / 2, size, size, size * 0.18);
-        ctx.fillStyle = surface || '#fffaf3';
+        ctx.fillStyle = surface || '#ffffff';
         ctx.fill();
         ctx.shadowColor = 'transparent';
-        ctx.lineWidth = Math.max(2, size * 0.025);
-        ctx.strokeStyle = 'rgba(210, 105, 59, 0.22)';
+        ctx.lineWidth = Math.max(3, size * 0.07);
+        ctx.strokeStyle = '#0a0f2e';
         ctx.stroke();
-        if (!drawOfficialRatspeakMark(ctx, cx, cy, size * 0.84, '#D2693B')) {
-            drawFallbackRatspeakMark(ctx, cx, cy, size * 0.84);
+        if (!drawOfficialRatspeakMark(ctx, cx, cy, size * 0.7, '#0a0f2e')) {
+            drawFallbackRatspeakMark(ctx, cx, cy, size * 0.7);
         }
         ctx.restore();
     }
@@ -451,7 +451,7 @@ z`,
         canvas.width = pixels;
         canvas.height = pixels;
         var ctx = canvas.getContext('2d');
-        var qrSurface = '#fffaf3';
+        var qrSurface = '#ffffff';
         ctx.fillStyle = qrSurface;
         ctx.fillRect(0, 0, pixels, pixels);
         var cell = pixels / modules;
