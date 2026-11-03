@@ -1,10 +1,10 @@
 [package]
 name = "ratspeak"
 version = "1.0.38"
-description = "Ratspeak: An all-in-one Reticulum & LXMF client in Rust."
+description = "End-to-end encrypted mesh messenger"
 authors = ["Ratspeak Contributors"]
 license = "AGPL-3.0-or-later"
-homepage = "https://github.com/ratspeak/Ratspeak"
+homepage = "https://ratspeak.org"
 repository = "https://github.com/ratspeak/Ratspeak"
 edition = "2021"
 rust-version = "1.89"

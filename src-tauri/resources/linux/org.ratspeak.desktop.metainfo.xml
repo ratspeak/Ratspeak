@@ -4,17 +4,41 @@
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>AGPL-3.0-or-later</project_license>
   <name>Ratspeak</name>
-  <summary>Ratspeak: An all-in-one Reticulum &amp; LXMF client in Rust.</summary>
+  <summary>End-to-end encrypted mesh messenger</summary>
   <description>
-    <p>https://github.com/ratspeak/Ratspeak</p>
+    <p>
+      Ratspeak is an end-to-end encrypted messenger for desktop, mobile, and LoRa handhelds.
+      If the internet goes down, messages can still travel over Wi-Fi, Bluetooth, or radio.
+    </p>
+    <p>
+      There is no sign-up. Ratspeak makes your address on your device, and it says nothing
+      about who you are. It is built on Reticulum and speaks LXMF, so it works with other
+      Reticulum apps.
+    </p>
+    <ul>
+      <li>Messages, photos, and files, end-to-end encrypted</li>
+      <li>Connects over the internet, your local network, Bluetooth, or a LoRa radio</li>
+      <li>Free and open source, with no account or phone number</li>
+    </ul>
   </description>
   <developer_name>Ratspeak Contributors</developer_name>
   <developer id="org.ratspeak">
     <name>Ratspeak Contributors</name>
   </developer>
-  <url type="homepage">https://github.com/ratspeak/Ratspeak</url>
+  <url type="homepage">https://ratspeak.org</url>
+  <url type="help">https://docs.ratspeak.org</url>
+  <url type="bugtracker">https://github.com/ratspeak/Ratspeak/issues</url>
+  <url type="vcs-browser">https://github.com/ratspeak/Ratspeak</url>
   <launchable type="desktop-id">Ratspeak.desktop</launchable>
   <icon type="stock">ratspeak</icon>
+  <branding>
+    <color type="primary" scheme_preference="light">#f1f5ff</color>
+    <color type="primary" scheme_preference="dark">#0a0f2e</color>
+  </branding>
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-info">mild</content_attribute>
+  </content_rating>
   <categories>
     <category>Network</category>
     <category>Chat</category>

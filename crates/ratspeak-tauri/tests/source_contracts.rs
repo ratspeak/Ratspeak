@@ -2410,15 +2410,17 @@ fn profile_status_frontend_contract_is_wired() {
 #[test]
 fn linux_package_metadata_is_explicit_for_app_stores() {
     let root = repo_root();
-    let summary = "Ratspeak: An all-in-one Reticulum & LXMF client in Rust.";
-    let homepage = "https://github.com/ratspeak/Ratspeak";
+    let summary = "End-to-end encrypted mesh messenger";
+    let homepage = "https://ratspeak.org";
+    let repository = "https://github.com/ratspeak/Ratspeak";
+    let long_description = "End-to-end encrypted messenger for desktop, mobile, and LoRa handhelds. If the internet goes down, messages can still travel over Wi-Fi, Bluetooth, or radio. Built on Reticulum and LXMF.";
     let metainfo_path = "resources/linux/org.ratspeak.desktop.metainfo.xml";
     let desktop_template_path = "resources/linux/Ratspeak.desktop";
 
     let cargo_toml = read_source(root.join("src-tauri/Cargo.toml")).expect("tauri Cargo.toml");
     assert!(cargo_toml.contains(&format!("description = \"{summary}\"")));
     assert!(cargo_toml.contains(&format!("homepage = \"{homepage}\"")));
-    assert!(cargo_toml.contains(&format!("repository = \"{homepage}\"")));
+    assert!(cargo_toml.contains(&format!("repository = \"{repository}\"")));
     assert!(
         !cargo_toml.contains("Ratspeak \u{2014}"),
         "Linux package descriptions must stay ASCII-clean for app-store display"
@@ -2449,7 +2451,7 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
         bundle
             .get("longDescription")
             .and_then(|value| value.as_str()),
-        Some(homepage)
+        Some(long_description)
     );
     assert_eq!(
         bundle.get("category").and_then(|value| value.as_str()),
@@ -2597,12 +2599,11 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
 
     let metainfo = read_source(root.join("src-tauri").join(metainfo_path)).expect("metainfo");
     assert!(metainfo.contains("<name>Ratspeak</name>"));
-    assert!(metainfo.contains(
-        "<summary>Ratspeak: An all-in-one Reticulum &amp; LXMF client in Rust.</summary>"
-    ));
-    assert!(metainfo.contains("<p>https://github.com/ratspeak/Ratspeak</p>"));
+    assert!(metainfo.contains("<summary>End-to-end encrypted mesh messenger</summary>"));
     assert!(metainfo.contains("<developer_name>Ratspeak Contributors</developer_name>"));
-    assert!(metainfo.contains("<url type=\"homepage\">https://github.com/ratspeak/Ratspeak</url>"));
+    assert!(metainfo.contains("<url type=\"homepage\">https://ratspeak.org</url>"));
+    assert!(metainfo.contains("<url type=\"vcs-browser\">https://github.com/ratspeak/Ratspeak</url>"));
+    assert!(metainfo.contains("<content_rating type=\"oars-1.1\">"));
     assert!(metainfo.contains("<launchable type=\"desktop-id\">Ratspeak.desktop</launchable>"));
     assert!(metainfo.contains("<icon type=\"stock\">ratspeak</icon>"));
 }
