@@ -287,14 +287,14 @@ function flush() { return new Promise(function(resolve) { setImmediate(resolve);
     assert.deepStrictEqual(dialogs.pop(), ['alert', 'Radio not found']);
 
     [[unresponsive, 'Radio not answering'], [startFailed, 'Radio failed to start'],
-        [linkLimited, 'Bluetooth link too small'], [pinRejected, 'PIN did not match'],
-        [windowClosed, 'Pairing ran out of time']].forEach(function(row) {
+        [linkLimited, 'Bluetooth link too small'], [pinRejected, 'Pairing not accepted'],
+        [windowClosed, 'Pairing interrupted']].forEach(function(row) {
         help(row[0]).onSelect();
     });
     await flush();
     assert.deepStrictEqual(dialogs.splice(-5).map(function(d) { return d[1]; }),
         ['Radio not answering', 'Radio failed to start', 'Bluetooth link too small',
-            'PIN did not match', 'Pairing ran out of time']);
+            'Pairing not accepted', 'Pairing interrupted']);
 
     help(stale).onSelect();
     await flush();
