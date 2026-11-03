@@ -1,5 +1,5 @@
 {
-  "$schema": "https://raw.githubusercontent.com/nicholasgasior/tauri-apps/tauri-v2/crates/tauri-cli/schema.json",
+  "$schema": "https://schema.tauri.app/config/2",
   "productName": "Ratspeak",
   "version": "1.0.38",
   "identifier": "org.ratspeak.desktop",
@@ -100,6 +100,17 @@
           "x": 660,
           "y": 246
         }
+      }
+    },
+    "windows": {
+      "wix": {
+        "bannerPath": "resources/windows/wix-banner.bmp",
+        "dialogImagePath": "resources/windows/wix-dialog.bmp"
+      },
+      "nsis": {
+        "headerImage": "resources/windows/nsis-header.bmp",
+        "sidebarImage": "resources/windows/nsis-sidebar.bmp",
+        "installerIcon": "icons/icon.ico"
       }
     }
   },
