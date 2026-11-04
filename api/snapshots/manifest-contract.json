@@ -367,6 +367,17 @@
           "sourceKind": "registry"
         },
         {
+          "name": "gtk",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"linux\")",
+          "requirement": "^0.18",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "registry"
+        },
+        {
           "name": "libloading",
           "rename": null,
           "kind": null,
