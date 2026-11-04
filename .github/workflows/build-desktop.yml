@@ -157,8 +157,8 @@ jobs:
             rpm \
             file
 
-      # dpkg-dev: GTK plugin; GStreamer: bundleMediaFramework copies every
-      # installed plugin; squashfs-tools: AppImage gate extraction.
+      # dpkg-dev: GTK plugin; GStreamer: source of the plugins staged for
+      # bundleMediaFramework; squashfs-tools: AppImage gate extraction.
       - name: Install AppImage bundling deps
         if: ${{ matrix.os == 'ubuntu-22.04' }}
         run: |
@@ -175,7 +175,7 @@ jobs:
         working-directory: Ratspeak
         run: bash scripts/release/install-tauri-cli.sh "${{ steps.source.outputs.tauri_cli }}"
 
-      - name: Stage AppImage indicator runtime
+      - name: Stage AppImage indicator runtime and GStreamer plugins
         if: ${{ matrix.os == 'ubuntu-22.04' }}
         working-directory: Ratspeak
         run: bash scripts/release/stage-appimage-runtime.sh

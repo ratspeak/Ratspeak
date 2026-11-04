@@ -2593,16 +2593,44 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
         "-type f -perm -0100 ! -perm -0001",
         "-type d ! -perm -0555",
         "gst_dir=\"$runtime_dir/gstreamer-1.0\"",
-        "libgstapp.so",
-        "libgstautodetect.so",
-        "libgstplayback.so",
-        "libgstwavparse.so",
+        "appimage-gstreamer-plugins.txt",
+        "AppImage bundles unlisted GStreamer plugins",
         "gst-plugin-scanner",
         "GST_PLUGIN_SYSTEM_PATH_1_0",
     ] {
         assert!(
             verify_runtime.contains(check),
             "AppImage verifier is missing {check}"
+        );
+    }
+    assert!(stage_runtime.contains("appimage-gstreamer-plugins.txt"));
+    assert!(stage_runtime.contains("GSTREAMER_PLUGINS_DIR="));
+    let gst_plugins = read_source(root.join("scripts/release/appimage-gstreamer-plugins.txt"))
+        .expect("AppImage GStreamer plugin list");
+    let gst_plugins: Vec<&str> = gst_plugins
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    // Elements WebKitGTK instantiated for voice memos and ringtones in the Linux lab.
+    for plugin in [
+        "coreelements",
+        "app",
+        "playback",
+        "typefindfunctions",
+        "gio",
+        "wavparse",
+        "audiofx",
+        "audioconvert",
+        "audioresample",
+        "volume",
+        "interleave",
+        "autodetect",
+        "pulseaudio",
+    ] {
+        assert!(
+            gst_plugins.contains(&plugin),
+            "AppImage must bundle GStreamer plugin {plugin}"
         );
     }
     let verify_packages = read_source(root.join("scripts/release/verify-linux-package-deps.sh"))

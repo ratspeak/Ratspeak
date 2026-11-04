@@ -40,3 +40,22 @@ for soname in "${sonames[@]}"; do
 done
 
 echo "Staged ${#sonames[@]} AppImage indicator runtime libraries"
+
+# bundleMediaFramework copies every plugin in GSTREAMER_PLUGINS_DIR; expose only the listed ones.
+system_plugins="/usr/lib/x86_64-linux-gnu/gstreamer-1.0"
+plugin_dir="$repo_root/src-tauri/target/appimage-gstreamer-plugins"
+rm -rf "$plugin_dir"
+mkdir -p "$plugin_dir"
+mapfile -t plugins < <(grep -Ev '^[[:space:]]*(#|$)' "$repo_root/scripts/release/appimage-gstreamer-plugins.txt")
+for plugin in "${plugins[@]}"; do
+  source_path="$system_plugins/libgst$plugin.so"
+  if [[ ! -f "$source_path" ]]; then
+    echo "Unable to resolve AppImage GStreamer plugin: $plugin" >&2
+    exit 1
+  fi
+  ln -s "$source_path" "$plugin_dir/libgst$plugin.so"
+done
+if [[ -n "${GITHUB_ENV:-}" ]]; then
+  echo "GSTREAMER_PLUGINS_DIR=$plugin_dir" >> "$GITHUB_ENV"
+fi
+echo "Staged ${#plugins[@]} AppImage GStreamer plugins in $plugin_dir"

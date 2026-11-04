@@ -1,0 +1,23 @@
+# GStreamer plugins the AppImage bundles; WebKitGTK media needs nothing else.
+# Voice memos: playbin3/decodebin3, typefind, wavparse, scaletempo, giostreamsrc.
+coreelements
+app
+playback
+typefindfunctions
+gio
+wavparse
+audiofx
+# Web Audio (ringtones) and output.
+audioconvert
+audioresample
+volume
+interleave
+autodetect
+pulseaudio
+alsa
+# Camera capture for QR scanning.
+video4linux2
+videoconvert
+videoscale
+jpeg
+opengl

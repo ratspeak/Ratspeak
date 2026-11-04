@@ -105,32 +105,20 @@ report "AppImage executables must be world-executable:" \
 report "AppImage directories must be world-traversable:" \
   "$(find "$appdir" -type d ! -perm -0555)"
 
-# WebKit media: <audio> WAV voice memos, Web Audio ringtones, and camera capture.
+# WebKit media needs exactly the listed plugins; extras only add size.
 gst_dir="$runtime_dir/gstreamer-1.0"
-gst_plugins=(
-  libgstcoreelements.so
-  libgstapp.so
-  libgstplayback.so
-  libgsttypefindfunctions.so
-  libgstaudioconvert.so
-  libgstaudioresample.so
-  libgstvolume.so
-  libgstwavparse.so
-  libgstautodetect.so
-  libgstpulseaudio.so
-  libgstalsa.so
-  libgstvideo4linux2.so
-  libgstvideoconvert.so
-  libgstvideoscale.so
-  libgstjpeg.so
-  libgstopengl.so
-)
+gst_plugins=()
+while IFS= read -r plugin; do
+  gst_plugins+=("$plugin")
+done < <(grep -Ev '^[[:space:]]*(#|$)' "$(dirname "${BASH_SOURCE[0]}")/appimage-gstreamer-plugins.txt" | sed 's/.*/libgst&.so/' | sort)
 if [[ ! -d "$gst_dir" ]]; then
   fail "AppImage is missing its GStreamer plugin directory: usr/lib/gstreamer-1.0"
 else
   for plugin in "${gst_plugins[@]}"; do
     [[ -s "$gst_dir/$plugin" ]] || fail "AppImage is missing GStreamer plugin: $plugin"
   done
+  report "AppImage bundles unlisted GStreamer plugins:" \
+    "$(comm -13 <(printf '%s\n' "${gst_plugins[@]}") <(find "$gst_dir" -maxdepth 1 -type f -name '*.so' -exec basename {} \; | sort))"
 fi
 [[ -x "$runtime_dir/gstreamer1.0/gstreamer-1.0/gst-plugin-scanner" ]] ||
   fail "AppImage is missing gst-plugin-scanner"
