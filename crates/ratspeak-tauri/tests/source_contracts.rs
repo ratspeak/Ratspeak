@@ -9834,6 +9834,14 @@ fn voice_memos_share_lxst_capture_and_use_first_class_lxmf_audio() {
     assert!(voice_memos.contains("'voice_memo_playback_session_stop'"));
     assert!(voice_memos.contains("return createNativeMobilePlayback(item)"));
     assert!(voice_memos.contains("return createMediaPlayback(item)"));
+    // Desktop playback is a blob: URL; without media-src the CSP falls back to default-src 'self'.
+    assert!(voice_memos.contains("URL.createObjectURL(new Blob([item.wavBytes]"));
+    let tauri_conf: serde_json::Value = serde_json::from_str(
+        &read_source(root.join("src-tauri/tauri.conf.json")).expect("tauri conf"),
+    )
+    .expect("tauri conf json");
+    let csp = tauri_conf["app"]["security"]["csp"].as_str().expect("csp");
+    assert!(csp.contains("media-src 'self' blob:"), "{csp}");
     assert!(voice_memos.contains("classes = ['is-recorded']"));
     assert!(voice_memos.contains("classes.push('is-live')"));
     assert!(voice_memos.contains("class=\"is-empty\""));
