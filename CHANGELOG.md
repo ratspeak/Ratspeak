@@ -5,6 +5,11 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+### Fixed and improved
+
+- Pasting a screenshot into a message on Linux now attaches it.
+
+
 ## [1.0.40] - 2026-11-03
 
 ### Fixed and improved
