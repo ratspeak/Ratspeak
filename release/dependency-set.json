@@ -24,7 +24,7 @@
     "rustRelease": "1.96.0",
     "rustMsrv": "1.89.0",
     "node": "22.22.0",
-    "tauriCli": "2.11.1",
+    "tauriCli": "2.12.4",
     "java": "17",
     "androidNdk": "27.0.12077973",
     "xcode": "26.3",

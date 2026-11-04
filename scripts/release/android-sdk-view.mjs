@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-// Tauri CLI 2.11.1 selects the last entry in ANDROID_HOME/ndk, even when
-// NDK_HOME is already set. Keep the installed SDK intact and expose only the
-// reviewed NDK for the entire build job, including later Gradle/JNI consumers.
+// The runner SDK ships several NDKs and Gradle pins no ndkVersion. Keep the
+// installed SDK intact and expose only the reviewed NDK for the entire build
+// job, so the Tauri CLI and later Gradle/JNI consumers all resolve the same one.
 import { execFileSync } from "node:child_process";
 import {
   appendFileSync, copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,

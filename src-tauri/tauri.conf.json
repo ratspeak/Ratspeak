@@ -37,10 +37,12 @@
       "versionCode": 1000069
     },
     "iOS": {
-      "bundleVersion": "1000069"
+      "bundleVersion": "1000069",
+      "minimumSystemVersion": "14.0"
     },
     "linux": {
       "appimage": {
+        "bundleMediaFramework": true,
         "files": {
           "/usr/share/metainfo/org.ratspeak.desktop.metainfo.xml": "resources/linux/org.ratspeak.desktop.metainfo.xml",
           "/usr/lib/libayatana-appindicator3.so.1": "resources/linux/appimage-runtime/libayatana-appindicator3.so.1",
@@ -52,7 +54,6 @@
       },
       "deb": {
         "depends": [
-          "libayatana-appindicator3-1",
           "libpcsclite1",
           "libasound2t64 | libasound2",
           "libudev1"
@@ -66,7 +67,6 @@
       },
       "rpm": {
         "depends": [
-          "libayatana-appindicator3.so.1()(64bit)",
           "libpcsclite.so.1()(64bit)",
           "libasound.so.2()(64bit)",
           "libudev.so.1()(64bit)"

@@ -172,9 +172,9 @@ jobs:
         env:
           PINNED_ANDROID_NDK: ${{ steps.source.outputs.android_ndk }}
         run: |
-          # Tauri 2.11.1 ignores an existing NDK_HOME and selects the last SDK/ndk
-          # entry. Keep this view alive until the job ends: generated JNI links,
-          # Gradle lint, and the optional AAB still depend on it after APK build.
+          # Expose only the reviewed NDK under ANDROID_HOME/ndk. Keep this view
+          # alive until the job ends: generated JNI links, Gradle lint, and the
+          # optional AAB still depend on it after APK build.
           node scripts/release/android-sdk-view.mjs create \
             --sdk "$ANDROID_HOME" --ndk "$PINNED_ANDROID_NDK" \
             --parent "$RUNNER_TEMP" --github-env "$GITHUB_ENV"

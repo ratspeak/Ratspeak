@@ -75,6 +75,17 @@ jobs:
           path: Ratspeak
           fetch-depth: 0
 
+      - name: Setup source qualification Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22.22.0
+
+      - name: Load reviewed source set
+        id: source
+        shell: bash
+        working-directory: Ratspeak
+        run: node scripts/release/source-integrity.mjs github-outputs >> "$GITHUB_OUTPUT"
+
       - name: Checkout rsReticulum sibling
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -119,7 +130,8 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          cache-bin: false
+          cache-bin: true
+          key: tauri-${{ steps.source.outputs.tauri_cli }}
           workspaces: |
             Ratspeak
             Ratspeak/src-tauri
@@ -145,8 +157,23 @@ jobs:
             rpm \
             file
 
+      # dpkg-dev: GTK plugin; GStreamer: bundleMediaFramework copies every
+      # installed plugin; squashfs-tools: AppImage gate extraction.
+      - name: Install AppImage bundling deps
+        if: ${{ matrix.os == 'ubuntu-22.04' }}
+        run: |
+          sudo apt-get install -y \
+            dpkg-dev \
+            squashfs-tools \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-alsa \
+            gstreamer1.0-gl
+
       - name: Install Tauri CLI
-        run: cargo install tauri-cli --version "2.11.1" --locked
+        shell: bash
+        working-directory: Ratspeak
+        run: bash scripts/release/install-tauri-cli.sh "${{ steps.source.outputs.tauri_cli }}"
 
       - name: Stage AppImage indicator runtime
         if: ${{ matrix.os == 'ubuntu-22.04' }}

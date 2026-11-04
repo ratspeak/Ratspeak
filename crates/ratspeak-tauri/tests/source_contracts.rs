@@ -2499,21 +2499,21 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
                 .and_then(|value| value.as_str()),
             Some(metainfo_path)
         );
-        // Tauri declares only WebKitGTK and GTK; the tray library and every other linked one are ours.
-        let required: &[&str] = if target == "deb" {
-            &[
+        // The CLI declares WebKitGTK, GTK, and the tray library; every other linked one is ours.
+        let (required, cli_injected): (&[&str], &str) = if target == "deb" {
+            (
+                &["libpcsclite1", "libasound2t64 | libasound2", "libudev1"],
                 "libayatana-appindicator3-1",
-                "libpcsclite1",
-                "libasound2t64 | libasound2",
-                "libudev1",
-            ]
+            )
         } else {
-            &[
+            (
+                &[
+                    "libpcsclite.so.1()(64bit)",
+                    "libasound.so.2()(64bit)",
+                    "libudev.so.1()(64bit)",
+                ],
                 "libayatana-appindicator3.so.1()(64bit)",
-                "libpcsclite.so.1()(64bit)",
-                "libasound.so.2()(64bit)",
-                "libudev.so.1()(64bit)",
-            ]
+            )
         };
         let depends = config
             .get("depends")
@@ -2525,7 +2525,18 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
                 "{target} must require {library}"
             );
         }
+        assert!(
+            !depends
+                .iter()
+                .any(|value| value.as_str() == Some(cli_injected)),
+            "{target} must leave {cli_injected} to the Tauri CLI so it is declared once"
+        );
     }
+    assert_eq!(
+        linux["appimage"]["bundleMediaFramework"],
+        serde_json::Value::Bool(true),
+        "AppImage must bundle GStreamer for WebKit media"
+    );
     let appimage_files = linux
         .get("appimage")
         .and_then(|value| value.get("files"))
@@ -2569,8 +2580,31 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
         assert!(stage_runtime.contains(soname));
         assert!(verify_runtime.contains(soname));
     }
-    assert!(verify_runtime.contains("--appimage-extract"));
-    assert!(verify_runtime.contains("LD_LIBRARY_PATH=\"$runtime_dir\" ldd"));
+    for check in [
+        "--appimage-offset",
+        "umask 0000",
+        "unsquashfs -no-progress -no-xattrs",
+        "LD_LIBRARY_PATH=\"$runtime_dir\" ldd",
+        "-name 'libwayland-*'",
+        "line ~ /GDK_BACKEND/",
+        "for launcher in AppRun AppRun.wrapped",
+        "-prune -perm 0755",
+        "-type f ! -perm -0444",
+        "-type f -perm -0100 ! -perm -0001",
+        "-type d ! -perm -0555",
+        "gst_dir=\"$runtime_dir/gstreamer-1.0\"",
+        "libgstapp.so",
+        "libgstautodetect.so",
+        "libgstplayback.so",
+        "libgstwavparse.so",
+        "gst-plugin-scanner",
+        "GST_PLUGIN_SYSTEM_PATH_1_0",
+    ] {
+        assert!(
+            verify_runtime.contains(check),
+            "AppImage verifier is missing {check}"
+        );
+    }
     let verify_packages = read_source(root.join("scripts/release/verify-linux-package-deps.sh"))
         .expect("Linux package dependency gate");
     for requirement in [
@@ -2578,6 +2612,8 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
         "libayatana-appindicator3.so.1()(64bit)",
         "(NEEDED)",
         "has no Debian package mapping",
+        "sort | uniq -d",
+        "declares duplicate dependencies",
     ] {
         assert!(verify_packages.contains(requirement));
     }
@@ -6442,6 +6478,10 @@ fn settings_version_display_uses_package_version_api() {
         dependency_set["product"]["platformBuilds"]["iosBundleVersion"]
     );
     assert_eq!(
+        tauri_conf_json["bundle"]["iOS"]["minimumSystemVersion"], "14.0",
+        "Tauri CLI 2.12 defaults iOS to 15.0; keep it equal to project.yml"
+    );
+    assert_eq!(
         tauri_conf_json["bundle"]["resources"]["../third_party/opus-rs-0.1.29-COPYING"],
         "third-party/opus-rs-0.1.29-COPYING.txt"
     );
@@ -6481,6 +6521,21 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
             );
         }
     }
+
+    let build_desktop =
+        read_source(root.join(".github/workflows/build-desktop.yml")).expect("desktop build");
+    for required in [
+        "source-integrity.mjs github-outputs",
+        "cache-bin: true",
+        "key: tauri-${{ steps.source.outputs.tauri_cli }}",
+        "scripts/release/install-tauri-cli.sh \"${{ steps.source.outputs.tauri_cli }}\"",
+    ] {
+        assert!(
+            build_desktop.contains(required),
+            "build-desktop.yml is missing {required}"
+        );
+    }
+    assert!(!build_desktop.contains("cargo install tauri-cli --version"));
 
     for workflow_path in [
         ".github/workflows/release-android.yml",
@@ -6782,6 +6837,21 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     ] {
         assert!(desktop.contains(gate), "desktop build is missing {gate}");
     }
+    for workflow in [&linux, &desktop] {
+        for package in [
+            "dpkg-dev",
+            "squashfs-tools",
+            "gstreamer1.0-plugins-base",
+            "gstreamer1.0-plugins-good",
+            "gstreamer1.0-alsa",
+            "gstreamer1.0-gl",
+        ] {
+            assert!(
+                workflow.contains(package),
+                "AppImage builds must install {package}"
+            );
+        }
+    }
 
     let ios =
         read_source(root.join(".github/workflows/release-ios.yml")).expect("iOS release workflow");
@@ -6828,6 +6898,7 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
 
     let ios_project = read_source(root.join("src-tauri/gen/apple/project.yml"))
         .expect("iOS project specification");
+    assert!(ios_project.contains("deploymentTarget:\n    iOS: 14.0"));
     assert!(ios_project.contains("path: ratspeak_iOS/PrivacyInfo.xcprivacy"));
     assert!(ios_project.contains("buildPhase: resources"));
     assert!(ios_project.contains("entitlements:"));

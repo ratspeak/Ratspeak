@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Tauri declares only WebKitGTK and GTK; every other library the binary links,
-# plus the tray library it loads at runtime, must be declared in tauri.conf.json.
+# Tauri declares WebKitGTK, GTK, and the tray library it loads at runtime; every
+# other library the binary links must be declared once in tauri.conf.json.
 if [[ "$#" -lt 1 ]]; then
   echo "usage: $0 <package.deb|package.rpm>..." >&2
   exit 2
@@ -45,6 +45,13 @@ for package in "$@"; do
       exit 2
       ;;
   esac
+
+  duplicates="$(printf '%s\n' "${declared[@]}" | sort | uniq -d)"
+  if [[ -n "$duplicates" ]]; then
+    echo "$package declares duplicate dependencies:" >&2
+    printf '%s\n' "$duplicates" >&2
+    exit 1
+  fi
 
   binary="$root/usr/bin/ratspeak"
   if [[ ! -x "$binary" ]]; then

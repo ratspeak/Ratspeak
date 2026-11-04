@@ -164,6 +164,20 @@ jobs:
             rpm \
             file
 
+      # dpkg-dev: GTK plugin; GStreamer: bundleMediaFramework copies every
+      # installed plugin; squashfs-tools: AppImage gate extraction.
+      - name: Install AppImage bundling deps
+        if: ${{ matrix.appimage_name != '' }}
+        shell: bash
+        run: |
+          sudo apt-get install -y \
+            dpkg-dev \
+            squashfs-tools \
+            gstreamer1.0-plugins-base \
+            gstreamer1.0-plugins-good \
+            gstreamer1.0-alsa \
+            gstreamer1.0-gl
+
       - name: Install Tauri CLI
         shell: bash
         working-directory: Ratspeak
