@@ -1091,6 +1091,21 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_notification::init());
 
+    // WebKitGTK denies camera requests the app does not answer; grant only our
+    // own page so the contact QR scanner works.
+    #[cfg(target_os = "linux")]
+    let builder = builder.on_permission_request(|webview, kind| {
+        let own_page = webview
+            .url()
+            .is_ok_and(|url| url.scheme() == "tauri" && url.host_str() == Some("localhost"));
+        match kind {
+            tauri::webview::PermissionKind::Camera if own_page => {
+                tauri::webview::PermissionResponse::Allow
+            }
+            _ => tauri::webview::PermissionResponse::Default,
+        }
+    });
+
     // Mobile haptics bridge — navigator.vibrate is a no-op in WKWebView so
     // iOS needs UIImpactFeedbackGenerator via this plugin.
     #[cfg(any(target_os = "ios", target_os = "android"))]

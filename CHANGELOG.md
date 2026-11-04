@@ -8,6 +8,7 @@ changes that materially affect how an artifact is reproduced.
 ### Fixed and improved
 
 - Pasting a screenshot into a message on Linux now attaches it.
+- The contact QR scanner can now use the camera on Linux.
 
 ### Build and compatibility
 
