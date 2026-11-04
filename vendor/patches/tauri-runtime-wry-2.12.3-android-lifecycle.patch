@@ -1,0 +1,23 @@
+diff --git a/tauri-runtime-wry-2.12.3/src/lib.rs b/tauri-runtime-wry-2.12.3/src/lib.rs
+--- a/tauri-runtime-wry-2.12.3/src/lib.rs
++++ b/tauri-runtime-wry-2.12.3/src/lib.rs
+@@ -4561,6 +4561,7 @@
+       });
+   }
+ 
++  #[cfg(not(target_os = "android"))]
+   context.window_id_map.insert(window.id(), window_id);
+ 
+   if let Some(handler) = after_window_creation {
+@@ -4613,6 +4614,11 @@
+       focused_webview.clone(),
+     )?);
+   }
++
++  // Android construction can lose its Activity between the native window and
++  // webview stages. Publish its mapping only after both stages succeeded.
++  #[cfg(target_os = "android")]
++  context.window_id_map.insert(window.id(), window_id);
+ 
+   let window = Arc::new(window);
+ 

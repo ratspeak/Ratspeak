@@ -7,7 +7,7 @@ license = "AGPL-3.0-or-later"
 homepage = "https://ratspeak.org"
 repository = "https://github.com/ratspeak/Ratspeak"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.90"
 publish = false
 resolver = "3"
 
@@ -81,6 +81,6 @@ panic = "unwind"
 
 # Keep the standalone shell and library workspace on the same reviewed sources.
 [patch.crates-io]
-tao = { path = "../vendor/tao-0.35.3" }
-wry = { path = "../vendor/wry-0.55.1" }
-tauri-runtime-wry = { path = "../vendor/tauri-runtime-wry-2.11.4" }
+tao = { path = "../vendor/tao-0.37.2" }
+wry = { path = "../vendor/wry-0.57.1" }
+tauri-runtime-wry = { path = "../vendor/tauri-runtime-wry-2.12.3" }

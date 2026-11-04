@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-exclude = ["src-tauri", "vendor/tao-0.35.3", "vendor/wry-0.55.1", "vendor/tauri-runtime-wry-2.11.4"]
+exclude = ["src-tauri", "vendor/tao-0.37.2", "vendor/wry-0.57.1", "vendor/tauri-runtime-wry-2.12.3"]
 members = [
     "crates/ratspeak-core",
     "crates/ratspeak-db",
@@ -12,7 +12,7 @@ members = [
 version = "1.0.40"
 edition = "2024"
 license = "AGPL-3.0-or-later"
-rust-version = "1.89"
+rust-version = "1.90"
 publish = false
 
 [workspace.dependencies]
@@ -79,13 +79,13 @@ r2d2_sqlite = "0.25"
 # Misc
 hex = "0.4"
 # Keep this exact image version until its newer dependency surface is reviewed
-# independently; the Rust 1.89 MSRV lift does not implicitly authorize it.
+# independently; the Rust 1.90 MSRV lift does not implicitly authorize it.
 image = { version = "=0.25.5", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 
 # Testing
 
 # Narrow Android Activity lifetime fixes; see vendor/README.md for provenance.
 [patch.crates-io]
-tao = { path = "vendor/tao-0.35.3" }
-wry = { path = "vendor/wry-0.55.1" }
-tauri-runtime-wry = { path = "vendor/tauri-runtime-wry-2.11.4" }
+tao = { path = "vendor/tao-0.37.2" }
+wry = { path = "vendor/wry-0.57.1" }
+tauri-runtime-wry = { path = "vendor/tauri-runtime-wry-2.12.3" }

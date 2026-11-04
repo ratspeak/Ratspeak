@@ -5,7 +5,7 @@
     {
       "name": "ratspeak",
       "version": "1.0.40",
-      "rustVersion": "1.89",
+      "rustVersion": "1.90",
       "edition": "2021",
       "features": {
         "default": [
@@ -426,7 +426,7 @@
     {
       "name": "ratspeak-core",
       "version": "1.0.40",
-      "rustVersion": "1.89",
+      "rustVersion": "1.90",
       "edition": "2024",
       "features": {},
       "targets": [
@@ -493,7 +493,7 @@
     {
       "name": "ratspeak-db",
       "version": "1.0.40",
-      "rustVersion": "1.89",
+      "rustVersion": "1.90",
       "edition": "2024",
       "features": {},
       "targets": [
@@ -652,7 +652,7 @@
     {
       "name": "ratspeak-runtime",
       "version": "1.0.40",
-      "rustVersion": "1.89",
+      "rustVersion": "1.90",
       "edition": "2024",
       "features": {
         "ble": [
@@ -1228,7 +1228,7 @@
     {
       "name": "ratspeak-tauri",
       "version": "1.0.40",
-      "rustVersion": "1.89",
+      "rustVersion": "1.90",
       "edition": "2024",
       "features": {
         "ble": [

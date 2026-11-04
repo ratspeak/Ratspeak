@@ -7,7 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
-const android = path.join(root, "vendor/wry-0.55.1/src/android");
+const android = path.join(root, "vendor/wry-0.57.1/src/android");
 const generated = path.join(root, "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/generated");
 
 test("native callback authority passes portable Rust retirement and replacement regressions", () => {
@@ -15,7 +15,7 @@ test("native callback authority passes portable Rust retirement and replacement 
   try {
     const source = path.join(directory, "callback-tests.rs");
     const binary = path.join(directory, process.platform === "win32" ? "callback-tests.exe" : "callback-tests");
-    writeFileSync(source, `#[path = ${JSON.stringify(path.join(android, "callback_registry.rs"))}]\nmod callback_registry;\n#[path = ${JSON.stringify(path.join(android, "native_creation.rs"))}]\nmod native_creation;\n#[path = ${JSON.stringify(path.join(android, "handler_key.rs"))}]\nmod handler_key;\n#[path = ${JSON.stringify(path.join(root, "vendor/tao-0.35.3/src/platform_impl/android/event_queue.rs"))}]\nmod event_queue;\n`);
+    writeFileSync(source, `#[path = ${JSON.stringify(path.join(android, "callback_registry.rs"))}]\nmod callback_registry;\n#[path = ${JSON.stringify(path.join(android, "native_creation.rs"))}]\nmod native_creation;\n#[path = ${JSON.stringify(path.join(android, "handler_key.rs"))}]\nmod handler_key;\n#[path = ${JSON.stringify(path.join(root, "vendor/tao-0.37.2/src/platform_impl/android/event_queue.rs"))}]\nmod event_queue;\n`);
     const compile = spawnSync("rustc", ["--edition=2021", "--test", source, "-o", binary], {
       encoding: "utf8", timeout: 30_000, maxBuffer: 1024 * 1024,
     });
@@ -31,11 +31,10 @@ test("native callback authority passes portable Rust retirement and replacement 
 });
 
 test("Android runtime drains coalesced wakes after every native poll result", () => {
-  const source = readFileSync(path.join(root, "vendor/tao-0.35.3/src/platform_impl/android/mod.rs"), "utf8");
+  const source = readFileSync(path.join(root, "vendor/tao-0.37.2/src/platform_impl/android/mod.rs"), "utf8");
   assert.doesNotMatch(source, /\.poll_all(?:_timeout)?\(/);
   assert.match(source, /Poll::Callback => Some\(EventSource::User\)/);
   assert.match(source, /dispatch_pending\(\s*!matches!\(control_flow, ControlFlow::ExitWithCode\(_\)\)/);
-  assert.match(source, /Some\(EventSource::User\) \| None => \{\}\s*\}\s*\/\/[^]*?event_queue::dispatch_pending\(/);
   const drain = source.indexOf("event_queue::dispatch_pending(");
   assert.ok(drain > source.indexOf("match self.first_event.take()"));
   assert.ok(drain < source.indexOf("event::Event::MainEventsCleared"));
@@ -49,15 +48,17 @@ test("completed readiness follows publication and physical creation is fenced", 
   assert.match(pipe, /creation\s*\.begin\(native_generation\)/);
   assert.match(activity, /open fun onWebViewReady\(webView: WebView\)/);
   assert.ok(activity.indexOf("Rust.onWebviewDestroy") < activity.indexOf("mWebView.destroy()"));
-  assert.ok(activity.indexOf("Rust.onWebviewDestroy(this") < activity.indexOf("Rust.onActivityDestroy(this"));
+  assert.ok(activity.indexOf("Rust.onWebviewDestroy(this") < activity.indexOf("Rust.onDestroy(this"));
   const navigation = pipe.indexOf('phase = "navigation"');
   assert.ok(navigation > pipe.indexOf('"setWebViewClient"'));
   assert.ok(navigation > pipe.indexOf('"addJavascriptInterface"'));
   assert.ok(navigation < pipe.indexOf('"onWebViewReady"'));
+  // Chrome client permission and title callbacks carry the native-view key too.
+  assert.match(pipe, /RustWebChromeClient[^]*?&\[\(&activity\)\.into\(\), \(&callback_key\)\.into\(\)\]/);
 });
 
 test("every Java callback uses the native-view key in templates and generated sources", () => {
-  const callback = /Rust\.(?:handleRequest|withAssetLoader|assetLoaderDomain|shouldOverride|onEval|onPageLoading|onPageLoaded|ipc|handleReceivedTitle)\([^\n]+/g;
+  const callback = /Rust\.(?:handleRequest|assetLoaderDomain|shouldOverride|onEval|onPageLoading|onPageLoaded|ipc|handleReceivedTitle)\([^\n]+/g;
   let count = 0;
   for (const filename of ["RustWebView.kt", "RustWebViewClient.kt", "RustWebChromeClient.kt", "Ipc.kt"]) {
     const template = readFileSync(path.join(android, "kotlin", filename), "utf8");
@@ -71,7 +72,7 @@ test("every Java callback uses the native-view key in templates and generated so
     }
     count += expectedCalls.length;
   }
-  assert.equal(count, 11);
+  assert.equal(count, 10);
   const webview = readFileSync(path.join(android, "kotlin/RustWebView.kt"), "utf8");
   assert.match(webview, /val id: String, val callbackKey: String/);
 });
@@ -79,9 +80,10 @@ test("every Java callback uses the native-view key in templates and generated so
 test("JNI dispatch resolves immutable snapshots without re-reading logical handler maps", () => {
   const binding = readFileSync(path.join(android, "binding.rs"), "utf8");
   const snapshots = readFileSync(path.join(android, "callbacks.rs"), "utf8");
-  assert.doesNotMatch(binding, /\b(?:REQUEST_HANDLER|IPC|TITLE_CHANGE_HANDLER|URL_LOADING_OVERRIDE|ON_LOAD_HANDLER|WITH_ASSET_LOADER|ASSET_LOADER_DOMAIN)\b/);
+  assert.doesNotMatch(binding, /\b(?:REQUEST_HANDLER|IPC|TITLE_CHANGE_HANDLER|URL_LOADING_OVERRIDE|ON_LOAD_HANDLER|PERMISSION_HANDLER|ASSET_LOADER_DOMAIN)\s*\.lock\(/);
+  assert.doesNotMatch(binding, /use super::\{[^}]*\b(?:REQUEST_HANDLER|IPC|TITLE_CHANGE_HANDLER|URL_LOADING_OVERRIDE|ON_LOAD_HANDLER|PERMISSION_HANDLER|ASSET_LOADER_DOMAIN)\b/);
   assert.match(binding, /&callbacks\.logical_id/); // Tauri protocol handlers still receive their public label.
-  for (const field of ["request", "ipc", "title", "navigation", "load", "with_asset_loader", "asset_loader_domain"]) {
+  for (const field of ["request", "ipc", "title", "navigation", "load", "permission", "asset_loader_domain"]) {
     assert.ok(new RegExp(`callbacks\\s*\\.${field}\\b`).test(binding), `missing immutable ${field} snapshot dispatch`);
   }
   assert.match(binding, /retire_activity_view\(activity_id\)/);

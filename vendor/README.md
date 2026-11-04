@@ -7,9 +7,9 @@ in each crate; Ratspeak's license does not replace their upstream licenses.
 
 | Package | Version | Original archive SHA-256 |
 | --- | --- | --- |
-| tao | 0.35.3 | d1c93047acf68669466a34690ac58cca7010bd1b201e1ec86f1fd0a75d3dd4a9 |
-| wry | 0.55.1 | 186f9871daa55fd9c016578b810d149de58367113db7fb72b462d2323ce19514 |
-| tauri-runtime-wry | 2.11.4 | 4e6fac707727b7a2f48e4ded90976324267371073edbb415ffb73bb0458d203f |
+| tao | 0.37.2 | d5777b06fe6435126ae8d816eba269e050e1e10d302cf5461e9c49eccabc3548 |
+| wry | 0.57.1 | 759c50ddad0ef9913bb5496cb9d509a50433a3b78cb0238d61105526589cf0e9 |
+| tauri-runtime-wry | 2.12.3 | e1aa9d8b7a120f879f44fdc1053f7b7dbf416bf0bbc6a72b714dec46b782b52f |
 
 Archives: `https://static.crates.io/crates/<package>/<package>-<version>.crate`.
 Reviewable changes relative to those archives are in `patches/`. To reproduce,
@@ -26,24 +26,28 @@ otherwise exits that process or cannot safely reconstruct the window:
 
 - Tao captures an exact requested Activity and retains a valid JVM raw-window
   handle through native construction and teardown.
-- Tao uses `ALooper_pollOnce` and drains queued runtime work after every poll
-  result. Android can coalesce a wake with Activity FD readiness; requiring a
-  distinct wake result could leave UI restoration queued indefinitely. The NDK
-  `android/looper.h` contract explicitly prohibits relying on `pollAll` wakes.
+- Tao uses `ALooper_pollOnce` in every control-flow mode and stops dispatching
+  queued runtime work once an exit is accepted. Upstream already drains the queue
+  after every poll result (the NDK `android/looper.h` contract prohibits relying
+  on `pollAll` wakes), but still polls with `pollAll` and keeps dispatching after
+  an accepted exit.
 - Wry fences every queued message by Activity lifetime, retires handler maps
   synchronously on non-configuration destruction, and never waits for a protocol
-  response while holding those global maps. Per-handler mutexes preserve callback
-  serialization. Stale/missing targets and canceled replies do not panic.
+  response while holding those global maps. Per-handler mutexes serialize every
+  callback except protocol requests, which run concurrently as upstream does.
+  Stale/missing targets and canceled replies do not panic.
 - Configuration recreation preserves the logical window/lifetime and processes
   its saved WebView creation inline on Android's main thread, avoiding a send to
   that same thread's full bounded queue. A separate physical Activity epoch
   rejects an older queued creation and prevents duplicate creation. Queue
   capacity is unchanged.
 - Each Java WebView receives an opaque callback key bound to immutable handler
-  snapshots. IPC, protocol, load, title, navigation, eval, and asset callbacks
-  cannot use a replacement view's handlers through a reused logical label.
-  Retirement does not wait for an in-flight protocol handler; a queued handler
-  rechecks its authority after acquiring its serialization lock.
+  snapshots. IPC, protocol, load, title, navigation, eval, permission, and asset
+  callbacks cannot use a replacement view's handlers through a reused logical
+  label; its per-view WebChromeClient carries the same key. A retired view's
+  permission requests are denied. Retirement does not wait for an in-flight
+  protocol handler; a queued handler rechecks its authority after acquiring its
+  serialization lock, and a protocol request rechecks before it starts.
 - Rust handler maps are keyed by Activity ID, logical generation, and label.
   Late teardown cannot delete a replacement's handlers through the reused
   `main` label. Wry retirement completes before Tao wakes window-destruction
@@ -53,13 +57,13 @@ otherwise exits that process or cannot safely reconstruct the window:
 - Detached WebViews are removed and destroyed on Android's UI thread after
   callback retirement, including during configuration recreation. Pending eval
   callbacks are released when their native view retires.
-- Unrelated notification intent extras no longer accidentally assign Activity
-  ID zero. Copy JNI handles also carry a monotonically allocated lifetime ID.
+- Copy JNI handles carry a monotonically allocated lifetime ID. (Upstream wry
+  0.57.1 now reads the Activity ID only when the intent or saved state holds it.)
 - A failed Java operation reports a content-free error and leaves the native
   queue available for a subsequent UI recreation.
-- tauri-runtime-wry returns actual native construction errors when invoked on
-  its Rust runtime thread, and installs the native map only after success.
-  Its existing off-thread asynchronous API is unchanged.
+- tauri-runtime-wry publishes the native window mapping only after both the
+  window and its WebView were constructed. (Upstream 2.12 now waits for and
+  returns the native construction result itself.)
 
 The application schedules creation on the Rust runtime event thread inside
 `tao::platform::android::prelude::with_activity(captured_target, ...)`. Capture
