@@ -6504,8 +6504,8 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "Nord is now the default theme.",
-        "Updated branding and installer assets.",
+        "Fixed the Linux AppImage opening a blank window with recent Mesa graphics drivers",
+        "The Linux AppImage now runs natively on Wayland, including niri without Xwayland.",
     ];
 
     for workflow_path in [
