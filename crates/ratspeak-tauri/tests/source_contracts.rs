@@ -2585,7 +2585,7 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
         "umask 0000",
         "unsquashfs -no-progress -no-xattrs",
         "LD_LIBRARY_PATH=\"$runtime_dir\" ldd",
-        "-name 'libwayland-*'",
+        "-name 'libwayland-client.so*'",
         "line ~ /GDK_BACKEND/",
         "for launcher in AppRun AppRun.wrapped",
         "-prune -perm 0755",

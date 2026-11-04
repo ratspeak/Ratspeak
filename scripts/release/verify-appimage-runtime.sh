@@ -76,9 +76,9 @@ else
   echo "Skipping indicator closure check: ldd needs Linux" >&2
 fi
 
-# Bundled libwayland breaks EGL against newer host Mesa; the host copy must win.
-report "AppImage bundles libwayland, which must come from the host:" \
-  "$(find "$appdir" -name 'libwayland-*' \( -type f -o -type l \))"
+# A bundled libwayland-client breaks EGL against newer host Mesa (mesa#11316); the host copy must win.
+report "AppImage bundles libwayland-client, which must come from the host:" \
+  "$(find "$appdir" -name 'libwayland-client.so*' \( -type f -o -type l \))"
 
 # Forcing X11 leaves Wayland sessions without Xwayland unable to open a display.
 hooks=()
