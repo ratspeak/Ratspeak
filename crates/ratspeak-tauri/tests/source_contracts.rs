@@ -3905,11 +3905,14 @@ fn linux_window_decorations_preference_is_wired_end_to_end() {
     assert!(prefs.contains("HYPRLAND_INSTANCE_SIGNATURE"));
 
     // Shell: preference read before the window is built, applied at builder
-    // time, and adjustable live via the command.
+    // time, and live through the command on X11 only.
     assert!(shell.contains("window_decorations"));
     assert!(shell.contains(".decorations(decorations)"));
     assert!(shell.contains("fn set_window_decorations("));
     assert!(shell.contains("set_window_decorations,"));
+    // Wayland decorations are fixed at window creation, so the reply says when a restart applies them.
+    assert!(shell.contains("\"restart_required\": restart_required"));
+    assert!(settings_js.contains("result.restart_required"));
 
     // Devtools must be reachable in release builds for field diagnostics.
     assert!(shell.contains(".devtools(diagnostics_enabled() || developer_mode)"));

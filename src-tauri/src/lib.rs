@@ -302,21 +302,30 @@ async fn set_window_decorations(
     .map_err(|_| "set_window_decorations db task panicked".to_string())?
     .map_err(|e| format!("Failed to save window decorations: {e}"))?;
 
+    #[allow(unused_mut)]
+    let mut restart_required = false;
     #[cfg(target_os = "linux")]
     if let Some(window) = app.get_webview_window("main") {
         use ratspeak_tauri::window_prefs::{self, DecorationsPref};
+        let session = window_prefs::detect_session_env();
         let decorations = window_prefs::resolve_window_decorations(
             DecorationsPref::from_setting(Some(&mode)),
-            window_prefs::detect_session_env(),
+            session,
         );
-        // GTK applies this live on Wayland; if a compositor ignores it, the
-        // builder-time path still applies it on next launch.
-        let _ = window.set_decorations(decorations);
+        if window.is_decorated().ok() != Some(decorations) {
+            // Tao fixes Wayland decorations at creation (server-side when
+            // offered, an empty titlebar when undecorated); X11 toggles live.
+            if session.wayland_session {
+                restart_required = true;
+            } else {
+                let _ = window.set_decorations(decorations);
+            }
+        }
     }
     #[cfg(not(target_os = "linux"))]
     let _ = &app;
 
-    Ok(serde_json::json!({ "window_decorations": mode }))
+    Ok(serde_json::json!({ "window_decorations": mode, "restart_required": restart_required }))
 }
 
 fn validate_http_url(raw: &str) -> Result<String, String> {

@@ -375,7 +375,13 @@ function setWindowDecorationsMode(mode) {
     if (['auto', 'on', 'off'].indexOf(mode) === -1) return;
     _settingsWindowDecorationsMode = mode;
     syncWindowDecorationsRadioState();
-    RS.invoke('set_window_decorations', { mode: mode }).catch(function() {});
+    RS.invoke('set_window_decorations', { mode: mode }).then(function(result) {
+        if (result && result.restart_required) {
+            showToast('Restart Ratspeak to apply the title bar change', 'toast-info', 4000);
+        }
+    }).catch(function() {
+        showToast('Could not update window decorations', 'toast-error', 4000);
+    });
 }
 
 function adoptWindowDecorationsFromBackend(mode) {

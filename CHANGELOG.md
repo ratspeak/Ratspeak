@@ -9,6 +9,7 @@ changes that materially affect how an artifact is reproduced.
 
 - Pasting a screenshot into a message on Linux now attaches it.
 - The contact QR scanner can now use the camera on Linux.
+- On Wayland, changing Window Decorations now says it applies after a restart.
 
 ### Build and compatibility
 
