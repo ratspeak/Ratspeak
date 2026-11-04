@@ -6905,18 +6905,7 @@ function closeFabContactPicker() {
 (function() {
     var chatArea = document.getElementById('lxmf-chat-area');
     if (!chatArea) return;
-    chatArea.addEventListener('paste', function(e) {
-        var items = e.clipboardData && e.clipboardData.items;
-        if (!items) return;
-        var file = null;
-        for (var i = 0; i < items.length; i++) {
-            if (items[i].kind === 'file') {
-                file = items[i].getAsFile();
-                break;
-            }
-        }
-        if (!file) return;
-        e.preventDefault();
+    function attachPastedFile(file) {
         if (!lxmfActiveContact) { showPreConditionToast('Select a conversation first'); return; }
         // Rename pasted 'image.png' with a timestamp to avoid backend collisions.
         if (typeof File !== 'undefined' && (file.name === 'image.png' || !file.name)) {
@@ -6925,6 +6914,38 @@ function closeFabContactPicker() {
             file = new File([file], 'paste-' + ts + '.' + ext, { type: file.type });
         }
         handleFileSelected({ files: [file], value: '' });
+    }
+
+    // WebKitGTK pastes an image as nothing at all (WebKit bug 218519), and
+    // lists no items or types even for text, so only getData tells them apart.
+    function pastesImagesAsNothing() {
+        return isTauriDesktop() && /linux/i.test(navigator.userAgent);
+    }
+
+    chatArea.addEventListener('paste', function(e) {
+        var data = e.clipboardData;
+        var items = data && data.items;
+        if (!items) return;
+        var file = null;
+        for (var i = 0; i < items.length; i++) {
+            if (items[i].kind === 'file') {
+                file = items[i].getAsFile();
+                break;
+            }
+        }
+        if (file) {
+            e.preventDefault();
+            attachPastedFile(file);
+            return;
+        }
+        if (!pastesImagesAsNothing() || data.getData('text/plain')) return;
+        e.preventDefault();
+        RS.invoke('read_clipboard_image').then(function(raw) {
+            var bytes = _rsRawIpcBytes(raw);
+            if (bytes.byteLength) attachPastedFile(new File([bytes], 'image.png', { type: 'image/png' }));
+        }).catch(function() {
+            showToast('Could not paste the image', 'toast-error', 3500);
+        });
     });
 })();
 

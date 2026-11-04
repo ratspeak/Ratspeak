@@ -1,6 +1,8 @@
 #[cfg(any(target_os = "android", test))]
 mod android_lifecycle;
 mod channel_deep_link;
+#[cfg(target_os = "linux")]
+mod clipboard_image;
 #[cfg(any(target_os = "android", target_os = "ios", test))]
 #[cfg_attr(
     all(test, not(any(target_os = "android", target_os = "ios"))),
@@ -1116,6 +1118,8 @@ pub fn run() {
                 save_stored_attachment_native,
                 request_microphone_permission,
                 secret_clipboard::copy_secret,
+                #[cfg(target_os = "linux")]
+                clipboard_image::read_clipboard_image,
                 channel_deep_link::peek_native_channel_share,
                 channel_deep_link::ack_native_channel_share,
                 text_share::list_text_shares,
