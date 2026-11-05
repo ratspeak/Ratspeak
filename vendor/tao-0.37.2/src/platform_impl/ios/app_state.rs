@@ -14,8 +14,10 @@ use std::{
 };
 
 use objc2::{rc::Retained, runtime::AnyObject, MainThreadMarker, Message};
-use objc2_foundation::NSObjectProtocol;
-use objc2_ui_kit::{UIApplication, UIScene, UISceneConnectionOptions, UIWindowScene};
+use objc2_foundation::{NSObjectProtocol, NSSet, NSUserActivity};
+use objc2_ui_kit::{
+  UIApplication, UIOpenURLContext, UIScene, UISceneConnectionOptions, UIWindowScene,
+};
 
 use crate::{
   dpi::LogicalSize,
@@ -527,6 +529,27 @@ pub unsafe fn connect_scene(scene: &UIScene, options: &UISceneConnectionOptions)
   if !did_first_scene_connect {
     AppState::get_mut().did_first_scene_connect = true;
     on_app_ready();
+  }
+
+  // A cold launch delivers its URL or universal link only in the connection
+  // options; scene:openURLContexts: and continueUserActivity cover a running app.
+  // UIKit returns nil for these sets on a plain launch despite their nonnull annotation.
+  let url_contexts: Option<Retained<NSSet<UIOpenURLContext>>> = msg_send![options, URLContexts];
+  let activities: Option<Retained<NSSet<NSUserActivity>>> = msg_send![options, userActivities];
+  let urls: Vec<url::Url> = url_contexts
+    .iter()
+    .flat_map(|contexts| contexts.iter())
+    .filter_map(|ctx| ctx.URL().absoluteString())
+    .chain(
+      activities
+        .iter()
+        .flat_map(|activities| activities.iter())
+        .filter_map(|activity| activity.webpageURL().and_then(|url| url.absoluteString())),
+    )
+    .filter_map(|url| url.to_string().parse().ok())
+    .collect();
+  if !urls.is_empty() {
+    handle_nonuser_event(EventWrapper::StaticEvent(Event::Opened { urls }));
   }
 
   if let Some(window_scene) = scene.downcast_ref::<UIWindowScene>() {

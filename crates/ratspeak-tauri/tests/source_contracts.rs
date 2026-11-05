@@ -610,6 +610,15 @@ fn native_channel_share_lifecycle_uses_rust_inbox_and_requires_preview() {
     assert!(android_manifest.contains("android.intent.category.BROWSABLE"));
     assert!(ios_info.contains("<key>CFBundleURLTypes</key>"));
     assert!(ios_info.contains("<string>ratspeak</string>"));
+    // Single-scene lifecycle (required by the iOS 27 SDK). A cold launch then
+    // delivers its link only in the scene connection options, which Tao reports.
+    assert!(ios_info.contains(
+        "<key>UIApplicationSceneManifest</key>\n\t<dict>\n\t\t<key>UIApplicationSupportsMultipleScenes</key>\n\t\t<false/>"
+    ));
+    let tao_scene = read_source(root.join("vendor/tao-0.37.2/src/platform_impl/ios/app_state.rs"))
+        .expect("Tao iOS app state");
+    assert!(tao_scene.contains("msg_send![options, URLContexts]"));
+    assert!(tao_scene.contains("msg_send![options, userActivities]"));
     assert!(ios_entitlements.contains("com.apple.developer.networking.multicast"));
     assert!(ios_entitlements.contains("<true/>"));
     assert!(!ios_entitlements.contains("com.apple.developer.associated-domains"));

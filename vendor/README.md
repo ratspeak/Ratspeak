@@ -1,8 +1,8 @@
-# Maintained Android lifecycle patches
+# Maintained lifecycle patches
 
 These are exact crates.io source archives plus narrowly maintained Android
-Activity/WebView lifetime fixes. Both Cargo roots select the same local sources.
-Desktop and iOS behavior is unchanged. Original licenses and VCS provenance remain
+Activity/WebView lifetime fixes and one iOS scene fix. Both Cargo roots select
+the same local sources. Desktop behavior is unchanged. Original licenses and VCS provenance remain
 in each crate; Ratspeak's license does not replace their upstream licenses.
 
 | Package | Version | Original archive SHA-256 |
@@ -64,6 +64,12 @@ otherwise exits that process or cannot safely reconstruct the window:
 - tauri-runtime-wry publishes the native window mapping only after both the
   window and its WebView were constructed. (Upstream 2.12 now waits for and
   returns the native construction result itself.)
+
+On iOS, Tao reports the URLs and universal links in a scene's connection
+options as `Opened`. Under the scene lifecycle a cold launch delivers its link
+only there; upstream handles only `scene:openURLContexts:` and
+`scene:continueUserActivity:`, which cover a running app. UIKit returns nil for
+those option sets on a plain launch, so they are read as optional.
 
 The application schedules creation on the Rust runtime event thread inside
 `tao::platform::android::prelude::with_activity(captured_target, ...)`. Capture

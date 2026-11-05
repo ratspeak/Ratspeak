@@ -1823,6 +1823,46 @@ fn prepare_file_export_ios(
     Ok(export_path)
 }
 
+/// The key window of a connected window scene (else its first window);
+/// `UIApplication.windows` is deprecated under the scene lifecycle.
+#[cfg(target_os = "ios")]
+unsafe fn scene_key_window(
+    application: *mut objc2::runtime::AnyObject,
+) -> *mut objc2::runtime::AnyObject {
+    use objc2::msg_send;
+    use objc2::runtime::{AnyClass, AnyObject, Bool};
+
+    let Some(window_scene_class) = AnyClass::get(c"UIWindowScene") else {
+        return std::ptr::null_mut();
+    };
+    let mut fallback: *mut AnyObject = std::ptr::null_mut();
+    unsafe {
+        let scenes: *mut AnyObject = msg_send![application, connectedScenes];
+        let scenes: *mut AnyObject = msg_send![scenes, allObjects];
+        let scene_count: usize = msg_send![scenes, count];
+        for index in 0..scene_count {
+            let scene: *mut AnyObject = msg_send![scenes, objectAtIndex: index];
+            let is_window_scene: Bool = msg_send![scene, isKindOfClass: window_scene_class];
+            if !is_window_scene.as_bool() {
+                continue;
+            }
+            let windows: *mut AnyObject = msg_send![scene, windows];
+            let window_count: usize = msg_send![windows, count];
+            for window_index in 0..window_count {
+                let window: *mut AnyObject = msg_send![windows, objectAtIndex: window_index];
+                let is_key: Bool = msg_send![window, isKeyWindow];
+                if is_key.as_bool() {
+                    return window;
+                }
+                if fallback.is_null() {
+                    fallback = window;
+                }
+            }
+        }
+    }
+    fallback
+}
+
 #[cfg(target_os = "ios")]
 fn present_file_export_ios(path: &std::path::Path) -> Result<(), String> {
     use objc2::msg_send;
@@ -1852,9 +1892,12 @@ fn present_file_export_ios(path: &std::path::Path) -> Result<(), String> {
         let allocated: *mut AnyObject = msg_send![picker_class, alloc];
         let picker: *mut AnyObject = msg_send![allocated, initForExportingURLs: urls, asCopy: true];
         let application: *mut AnyObject = msg_send![application_class, sharedApplication];
-        let windows: *mut AnyObject = msg_send![application, windows];
-        let window: *mut AnyObject = msg_send![windows, firstObject];
-        let mut controller: *mut AnyObject = msg_send![window, rootViewController];
+        let window = scene_key_window(application);
+        let mut controller: *mut AnyObject = if window.is_null() {
+            ptr::null_mut()
+        } else {
+            msg_send![window, rootViewController]
+        };
         if string.is_null()
             || url.is_null()
             || urls.is_null()

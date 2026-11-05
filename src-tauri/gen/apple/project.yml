@@ -59,6 +59,9 @@ targets:
         NSMicrophoneUsageDescription: Ratspeak uses your microphone for voice calls, voice messages, and videos you choose to record.
         NSPhotoLibraryAddUsageDescription: Ratspeak saves received images to your photo library when you choose Save to Photos.
         NSPhotoLibraryUsageDescription: Ratspeak accesses your photo library so you can attach existing photos or videos to a message.
+        # iOS 27 SDK apps must use the scene lifecycle; one scene, no multi-window.
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
         UIBackgroundModes:
           - audio
           - bluetooth-central
