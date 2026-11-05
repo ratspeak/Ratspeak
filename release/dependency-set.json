@@ -1,23 +1,23 @@
 {
   "schemaVersion": 1,
   "product": {
-    "displayVersion": "1.0.40",
-    "marketingVersion": "1.0.40",
+    "displayVersion": "1.0.41",
+    "marketingVersion": "1.0.41",
     "androidArtifactTargets": [
       "aarch64",
       "armv7",
       "x86_64"
     ],
     "platformBuilds": {
-      "androidVersionCode": 1000070,
-      "iosBundleVersion": "1000070"
+      "androidVersionCode": 1000071,
+      "iosBundleVersion": "1000071"
     },
     "predecessor": {
-      "displayVersion": "1.0.39",
-      "tag": "v1.0.39",
-      "commit": "cb43b2ab313e11a928a33143ae5459fbf590e943",
-      "androidVersionCode": 1000069,
-      "iosBundleVersion": "1000069"
+      "displayVersion": "1.0.40",
+      "tag": "v1.0.40",
+      "commit": "15831404cd792dbdc56aa682ba9221a9039821f5",
+      "androidVersionCode": 1000070,
+      "iosBundleVersion": "1000070"
     }
   },
   "toolchains": {
@@ -36,36 +36,36 @@
       "name": "rsReticulum",
       "repository": "https://github.com/ratspeak/rsReticulum.git",
       "path": "../rsReticulum",
-      "commit": "7071bae90e6b116ca94dedf0a62e0b317d78d9e9",
+      "commit": "fdedbd2c8b8112444cdd4b338d0b00a93ef42f18",
       "version": "1.4.0",
-      "integrationTag": "ratspeak-v1.0.40"
+      "integrationTag": "ratspeak-v1.0.41"
     },
     {
       "id": "rslxmf",
       "name": "rsLXMF",
       "repository": "https://github.com/ratspeak/rsLXMF.git",
       "path": "../rsLXMF",
-      "commit": "b5c3365b5715f1f36f74963a9d2136238d956467",
+      "commit": "18b99b8932e347514cae30d306c9b062a9c72919",
       "version": "1.4.0",
-      "integrationTag": "ratspeak-v1.0.40"
+      "integrationTag": "ratspeak-v1.0.41"
     },
     {
       "id": "rslxst",
       "name": "rsLXST",
       "repository": "https://github.com/ratspeak/rsLXST.git",
       "path": "../rsLXST",
-      "commit": "c95af2b0aef472255fb919ecc81aea385129ed9c",
+      "commit": "65c21b6e94b75e82106480623c5d89fe445b269c",
       "version": "0.3.0",
-      "integrationTag": "ratspeak-v1.0.40"
+      "integrationTag": "ratspeak-v1.0.41"
     },
     {
       "id": "lrgp",
       "name": "lrgp-rs",
       "repository": "https://github.com/ratspeak/lrgp-rs.git",
       "path": "../lrgp-rs",
-      "commit": "660e4cf100a74eec8d3521594d3fb74587de05ef",
+      "commit": "f44147a851588948b6faba2640c3baae258ab079",
       "version": "0.4.1",
-      "integrationTag": "ratspeak-v1.0.40"
+      "integrationTag": "ratspeak-v1.0.41"
     }
   ]
 }
