@@ -592,7 +592,7 @@ fn native_channel_share_lifecycle_uses_rust_inbox_and_requires_preview() {
         .expect("valid desktop Tauri config");
         assert_eq!(
             config["plugins"]["deep-link"]["desktop"]["schemes"],
-            serde_json::json!(["ratspeak"])
+            serde_json::json!(["ratspeak", "lxm"])
         );
         assert!(config["plugins"]["deep-link"]["mobile"].is_null());
     }
@@ -651,7 +651,9 @@ fn native_channel_share_lifecycle_uses_rust_inbox_and_requires_preview() {
         .find("channel_deep_link::configure_android_runtime(context.config_mut())")
         .expect("Android runtime-only plugin filter");
     assert!(runtime_configuration < lib.find(".build(context)").unwrap());
-    assert!(native.contains(r#""mobile": [{ "scheme": ["ratspeak"], "host": "channel" }]"#));
+    assert!(native.contains(
+        r#""mobile": [{ "scheme": ["ratspeak"], "host": "channel" }, { "scheme": ["lxm"] }]"#
+    ));
 
     assert!(native.contains("state: Mutex<InboxState>"));
     assert!(native.contains("pending: Option<PendingShare>"));
@@ -7780,13 +7782,9 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
         "share sheet must appear before contact-card generation begins"
     );
     assert!(contact_card_js.contains("function QrContactCard(text)"));
-    assert!(contact_card_js.contains("var VERSION = 13;"));
-    assert!(contact_card_js.contains("var ERROR_CORRECTION_FORMAT_BITS = 3;"));
+    // Contact cards stay pinned to v13-Q mask 0; test_qr_encoder.js proves byte identity.
+    assert!(contact_card_js.contains("return QrEncode(text, { version: 13, ecc: 'Q', mask: 0 });"));
     assert!(contact_card_js.contains("var BYTE_COUNT_BITS = VERSION >= 10 ? 16 : 8;"));
-    assert!(
-        contact_card_js
-            .contains("var DATA_BLOCK_SIZES = [20, 20, 20, 20, 20, 20, 20, 20, 21, 21, 21, 21];")
-    );
     assert!(contact_card_js.contains("function drawVersionBits()"));
     assert!(contact_card_js.contains("0x1f25"));
     assert!(contact_card_js.contains("drawVersionBits();"));

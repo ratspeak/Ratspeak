@@ -3,7 +3,8 @@
     "deep-link": {
       "desktop": {
         "schemes": [
-          "ratspeak"
+          "ratspeak",
+          "lxm"
         ]
       }
     }

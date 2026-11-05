@@ -203,6 +203,7 @@ pub ratspeak_runtime::activity::producer::HubTrustChange::KlineRemoved
 pub enum ratspeak_runtime::activity::producer::InboundLxmfMethod
 pub ratspeak_runtime::activity::producer::InboundLxmfMethod::Direct
 pub ratspeak_runtime::activity::producer::InboundLxmfMethod::Opportunistic
+pub ratspeak_runtime::activity::producer::InboundLxmfMethod::Paper
 pub ratspeak_runtime::activity::producer::InboundLxmfMethod::Propagated
 pub enum ratspeak_runtime::activity::producer::InterfaceClass
 pub ratspeak_runtime::activity::producer::InterfaceClass::Auto
@@ -1835,6 +1836,61 @@ pub async fn ratspeak_runtime::network_ownership::test_connection(alloc::sync::A
 pub mod ratspeak_runtime::owner_lock
 pub struct ratspeak_runtime::owner_lock::ProfileInUse
 pub fn ratspeak_runtime::owner_lock::unenforced(&std::path::Path) -> bool
+pub mod ratspeak_runtime::paper
+pub enum ratspeak_runtime::paper::PaperError
+pub ratspeak_runtime::paper::PaperError::Blocked
+pub ratspeak_runtime::paper::PaperError::DecryptFailed
+pub ratspeak_runtime::paper::PaperError::Empty
+pub ratspeak_runtime::paper::PaperError::Invalid
+pub ratspeak_runtime::paper::PaperError::InvalidDestination
+pub ratspeak_runtime::paper::PaperError::NotForYou
+pub ratspeak_runtime::paper::PaperError::NotFound
+pub ratspeak_runtime::paper::PaperError::SignatureInvalid
+pub ratspeak_runtime::paper::PaperError::Storage
+pub ratspeak_runtime::paper::PaperError::TooLong
+pub ratspeak_runtime::paper::PaperError::TooLong::overage_chars: usize
+pub ratspeak_runtime::paper::PaperError::Unavailable
+pub ratspeak_runtime::paper::PaperError::UnknownIdentity
+impl ratspeak_runtime::paper::PaperError
+pub fn ratspeak_runtime::paper::PaperError::code(self) -> &'static str
+pub fn ratspeak_runtime::paper::PaperError::message(self) -> alloc::string::String
+pub enum ratspeak_runtime::paper::PaperSignature
+pub ratspeak_runtime::paper::PaperSignature::Invalid
+pub ratspeak_runtime::paper::PaperSignature::Unknown
+pub ratspeak_runtime::paper::PaperSignature::Verified
+pub struct ratspeak_runtime::paper::BuiltPaperMessage
+pub ratspeak_runtime::paper::BuiltPaperMessage::message_id: alloc::string::String
+pub ratspeak_runtime::paper::BuiltPaperMessage::paper_uri: alloc::string::String
+pub ratspeak_runtime::paper::BuiltPaperMessage::timestamp: f64
+pub struct ratspeak_runtime::paper::CreatedPaperMessage
+pub ratspeak_runtime::paper::CreatedPaperMessage::message: serde_json::value::Value
+pub ratspeak_runtime::paper::CreatedPaperMessage::paper_uri: alloc::string::String
+pub struct ratspeak_runtime::paper::DecodedPaperMessage
+pub ratspeak_runtime::paper::DecodedPaperMessage::message: lxmf_core::message::LxMessage
+pub ratspeak_runtime::paper::DecodedPaperMessage::signature: ratspeak_runtime::paper::PaperSignature
+pub struct ratspeak_runtime::paper::PaperAdded
+pub ratspeak_runtime::paper::PaperAdded::message_id: alloc::string::String
+pub ratspeak_runtime::paper::PaperAdded::source_hash: alloc::string::String
+pub ratspeak_runtime::paper::PaperAdded::status: &'static str
+pub ratspeak_runtime::paper::PaperAdded::timestamp: f64
+pub struct ratspeak_runtime::paper::PaperPreview
+pub ratspeak_runtime::paper::PaperPreview::blocked: bool
+pub ratspeak_runtime::paper::PaperPreview::content: alloc::string::String
+pub ratspeak_runtime::paper::PaperPreview::display_name: core::option::Option<alloc::string::String>
+pub ratspeak_runtime::paper::PaperPreview::message_id: alloc::string::String
+pub ratspeak_runtime::paper::PaperPreview::signature: ratspeak_runtime::paper::PaperSignature
+pub ratspeak_runtime::paper::PaperPreview::source_hash: alloc::string::String
+pub ratspeak_runtime::paper::PaperPreview::status: &'static str
+pub ratspeak_runtime::paper::PaperPreview::timestamp: f64
+pub ratspeak_runtime::paper::PaperPreview::title: alloc::string::String
+pub const ratspeak_runtime::paper::PAPER_URI_INPUT_LIMIT: usize
+pub async fn ratspeak_runtime::paper::add_paper_message(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, &str) -> core::result::Result<ratspeak_runtime::paper::PaperAdded, ratspeak_runtime::paper::PaperError>
+pub fn ratspeak_runtime::paper::build_paper_message(&ratspeak_runtime::lxmf::LxmfManager, &str, &str, &str) -> core::result::Result<ratspeak_runtime::paper::BuiltPaperMessage, ratspeak_runtime::paper::PaperError>
+pub async fn ratspeak_runtime::paper::create_paper_message(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, &str, &str, &str) -> core::result::Result<ratspeak_runtime::paper::CreatedPaperMessage, ratspeak_runtime::paper::PaperError>
+pub fn ratspeak_runtime::paper::decode_paper_message(&ratspeak_runtime::lxmf::LxmfManager, &str) -> core::result::Result<ratspeak_runtime::paper::DecodedPaperMessage, ratspeak_runtime::paper::PaperError>
+pub fn ratspeak_runtime::paper::normalize_paper_uri(&str) -> core::option::Option<alloc::string::String>
+pub fn ratspeak_runtime::paper::paper_source_hash(&ratspeak_runtime::state::AppState, &str) -> core::result::Result<alloc::string::String, ratspeak_runtime::paper::PaperError>
+pub async fn ratspeak_runtime::paper::preview_paper_message(&ratspeak_runtime::state::AppState, &str) -> core::result::Result<ratspeak_runtime::paper::PaperPreview, ratspeak_runtime::paper::PaperError>
 pub mod ratspeak_runtime::propagation
 pub enum ratspeak_runtime::propagation::PropagationMode
 pub ratspeak_runtime::propagation::PropagationMode::Auto
@@ -2339,6 +2395,7 @@ pub fn ratspeak_runtime::state::AppState::publish_ready_rnode_interface_stats(&s
 pub fn ratspeak_runtime::state::AppState::release_attachment_delivery_lease(&self, &str) -> bool
 pub fn ratspeak_runtime::state::AppState::release_inbound_attachment_link(&self, [u8; 16]) -> usize
 pub fn ratspeak_runtime::state::AppState::release_retained_identity_except(&self, &str)
+pub fn ratspeak_runtime::state::AppState::request_announce_poll(&self)
 pub fn ratspeak_runtime::state::AppState::request_poll_now(&self)
 pub fn ratspeak_runtime::state::AppState::reserve_attachment_transfer(&alloc::sync::Arc<Self>, usize) -> core::result::Result<ratspeak_runtime::state::AttachmentTransferLease, ratspeak_runtime::state::AttachmentTransferAdmissionError>
 pub fn ratspeak_runtime::state::AppState::reset_message_send_times_on_resume(&self) -> usize

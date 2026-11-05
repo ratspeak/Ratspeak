@@ -28,6 +28,7 @@ pub mod mobile_platform;
 pub mod network_ownership;
 mod network_secrets;
 pub mod owner_lock;
+pub mod paper;
 mod path_response;
 pub mod propagation;
 pub mod propagation_recovery;
@@ -660,13 +661,23 @@ pub(crate) fn contact_label_from_db(
     source_hash: &str,
     identity_id: &str,
 ) -> String {
+    contact_name_from_db(pool, source_hash, identity_id)
+        .unwrap_or_else(|| compact_hash_label(source_hash))
+}
+
+/// Contact name, else announced name.
+pub(crate) fn contact_name_from_db(
+    pool: &db::DbPool,
+    source_hash: &str,
+    identity_id: &str,
+) -> Option<String> {
     if let Some(label) = db::get_contact(pool, source_hash, identity_id).and_then(|c| {
         c.get("display_name")
             .and_then(|v| v.as_str())
             .filter(|s| !s.trim().is_empty())
             .map(str::to_string)
     }) {
-        return label;
+        return Some(label);
     }
 
     let hashes = [source_hash.to_string()];
@@ -680,7 +691,6 @@ pub(crate) fn contact_label_from_db(
                 Some(display_name.to_string())
             }
         })
-        .unwrap_or_else(|| compact_hash_label(source_hash))
 }
 
 fn notification_body(content: &str, renderer: Option<u8>, has_attachment: bool) -> String {
@@ -4952,6 +4962,8 @@ enum InboundLxmfSource {
     },
     /// Downloaded from a propagation node.
     Propagated,
+    /// Filed by the user from an `lxm://` paper URI.
+    Paper,
 }
 
 impl InboundLxmfSource {
@@ -4960,12 +4972,16 @@ impl InboundLxmfSource {
             InboundLxmfSource::Opportunistic { .. } => "opportunistic",
             InboundLxmfSource::Link { .. } => "link",
             InboundLxmfSource::Propagated => "propagated",
+            InboundLxmfSource::Paper => "paper",
         }
     }
 
-    /// Propagated messages say nothing about the sender being reachable now.
+    /// Stored and paper messages say nothing about the sender being reachable now.
     fn marks_sender_seen(&self) -> bool {
-        !matches!(self, InboundLxmfSource::Propagated)
+        !matches!(
+            self,
+            InboundLxmfSource::Propagated | InboundLxmfSource::Paper
+        )
     }
 
     fn activity_method(&self) -> producer::InboundLxmfMethod {
@@ -4973,8 +4989,31 @@ impl InboundLxmfSource {
             InboundLxmfSource::Opportunistic { .. } => producer::InboundLxmfMethod::Opportunistic,
             InboundLxmfSource::Link { .. } => producer::InboundLxmfMethod::Direct,
             InboundLxmfSource::Propagated => producer::InboundLxmfMethod::Propagated,
+            InboundLxmfSource::Paper => producer::InboundLxmfMethod::Paper,
         }
     }
+
+    /// The stored `delivery_method` of an inbound row; only paper is recorded.
+    fn stored_delivery_method(&self) -> Option<&'static str> {
+        matches!(self, InboundLxmfSource::Paper).then_some("paper")
+    }
+}
+
+/// What the inbound pipeline did with one message.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum InboundOutcome {
+    NotForUs,
+    Blackholed,
+    SignatureInvalid,
+    StampRejected,
+    Duplicate,
+    Blocked,
+    /// Handled without a chat row: reaction, LRGP, or service envelope.
+    Consumed,
+    SaveFailed,
+    Stored {
+        timestamp: f64,
+    },
 }
 
 /// LRGP participant binding is only meaningful when `sender_hash` came from
@@ -5342,7 +5381,7 @@ async fn process_inbound_lxmf(
     source: InboundLxmfSource,
     activity_origin: ActivityRequestFence,
     session: rns_runtime::lifecycle::ShutdownSignal,
-) {
+) -> InboundOutcome {
     let source_hash = hex::encode(msg.source_hash());
     let dest_hash = hex::encode(msg.destination_hash());
     let inbound_method = source.activity_method();
@@ -5355,7 +5394,7 @@ async fn process_inbound_lxmf(
             source = source.label(),
             "inbound LXMF for no live local identity — dropping"
         );
-        return;
+        return InboundOutcome::NotForUs;
     };
 
     tracing::info!(
@@ -5366,7 +5405,7 @@ async fn process_inbound_lxmf(
     );
     if inbound_source_blackholed(sender.identity, sender.transport).await {
         tracing::debug!(from = %short_id(&source_hash), "Dropping LXM from blackholed identity");
-        return;
+        return InboundOutcome::Blackholed;
     }
 
     let verification = sender.public_key.as_ref().map(|key| msg.verify(key));
@@ -5375,13 +5414,16 @@ async fn process_inbound_lxmf(
         Some(true) => tracing::debug!("inbound signature validated"),
         Some(false) => {
             tracing::warn!("inbound signature INVALID — dropping message");
-            return;
+            return InboundOutcome::SignatureInvalid;
         }
         None => tracing::debug!("sender unknown — signature not validated"),
     }
 
-    if !inbound_stamp_allowed(state, &receiver.identity_id, &msg) {
-        return;
+    // Paper messages carry no stamp requirement (LXMRouter.lxmf_propagation).
+    if !matches!(source, InboundLxmfSource::Paper)
+        && !inbound_stamp_allowed(state, &receiver.identity_id, &msg)
+    {
+        return InboundOutcome::StampRejected;
     }
 
     if let Some(Ok(verified)) = verification.as_ref()
@@ -5435,7 +5477,7 @@ async fn process_inbound_lxmf(
     .expect("db task panicked");
     if already_exists {
         tracing::debug!(msg_id = %short_id(&msg_id), identity_id = %short_id(&identity_id), "inbound LXMF duplicate — skipping");
-        return;
+        return InboundOutcome::Duplicate;
     }
 
     // Blocked senders silently discarded; any source-level ACK already
@@ -5449,7 +5491,7 @@ async fn process_inbound_lxmf(
     .expect("db task panicked");
     if blocked {
         tracing::debug!(from = %short_id(&source_hash), "inbound message from blocked user — discarding");
-        return;
+        return InboundOutcome::Blocked;
     }
 
     if let InboundLxmfSource::Link {
@@ -5488,7 +5530,7 @@ async fn process_inbound_lxmf(
             action,
         )
         .await;
-        return;
+        return InboundOutcome::Consumed;
     }
 
     // LRGP tunnels over LXMF; don't surface in conversation UI.
@@ -5510,7 +5552,7 @@ async fn process_inbound_lxmf(
         // game lock order.
         outcome.label_alert(state, &identity_id).await;
         fence.publish(state, || outcome.publish(state)).await;
-        return;
+        return InboundOutcome::Consumed;
     }
 
     // LXMF is also a service envelope (telemetry, commands, tickets, future
@@ -5524,12 +5566,13 @@ async fn process_inbound_lxmf(
             reason = "no_chat_content",
             "Consumed non-chat LXMF envelope"
         );
-        return;
+        return InboundOutcome::Consumed;
     }
 
     let received_at = next_chat_observed_timestamp(state, &source_hash, &identity_id).await;
     let (reply_to_id, reply_to_preview) = inbound_reply_fields(chat_extension.as_ref());
     let renderer = lxmf::message_renderer(&msg);
+    let delivery_method = source.stored_delivery_method();
     // The receiver's media is written to its own files with the row that
     // names it, in one blocking task off the manager lock.
     let saved = {
@@ -5576,7 +5619,7 @@ async fn process_inbound_lxmf(
                 &img_stored,
                 &reply_to_id,
                 &reply_to_preview,
-                None,
+                delivery_method,
                 audio.as_ref().map(|audio| audio.mode),
                 audio
                     .as_ref()
@@ -5602,7 +5645,7 @@ async fn process_inbound_lxmf(
     let (msg, attachment_file, audio_file, save_result) = saved;
     if let Err(error) = save_result {
         tracing::warn!(%error, "failed to persist inbound LXMF message");
-        return;
+        return InboundOutcome::SaveFailed;
     }
     // "Accepted" is intentionally recorded only after every authentication,
     // policy, duplicate, extension-routing, and persistence gate succeeds.
@@ -5640,6 +5683,7 @@ async fn process_inbound_lxmf(
         "reply_to_id": reply_to_id,
         "reply_to_preview": reply_to_preview,
         "renderer": renderer,
+        "delivery_method": delivery_method,
     });
     if let Some(ref att) = attachment_file {
         let obj = event_data.as_object_mut().unwrap();
@@ -5659,9 +5703,12 @@ async fn process_inbound_lxmf(
             .insert("audio".to_string(), extracted_audio_json(audio));
     }
 
+    let stored_outcome = InboundOutcome::Stored {
+        timestamp: received_at,
+    };
     let _lifecycle = state.identity_switch_lock.lock_routine().await;
     if !fence.is_current(state) {
-        return;
+        return stored_outcome;
     }
     let current = state.conversation_list_revision() == revision;
     let stored = match &lists {
@@ -5669,7 +5716,7 @@ async fn process_inbound_lxmf(
         _ => inbound_message_stored(state, &msg_id, &identity_id).await,
     };
     if !stored {
-        return;
+        return stored_outcome;
     }
     notify_inbound_message_if_background(
         state,
@@ -5693,6 +5740,7 @@ async fn process_inbound_lxmf(
             "list refresh after inbound message failed"
         ),
     }
+    stored_outcome
 }
 
 // Single stats fetch + emit; used for eager post-init push.

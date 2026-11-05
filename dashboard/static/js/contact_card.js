@@ -65,15 +65,90 @@
         return out;
     }
 
-    function QrContactCard(text) {
-        var VERSION = 13;
-        var SIZE = 69;
-        var ALIGNMENT_POSITIONS = [6, 34, 62];
-        var ERROR_CORRECTION_FORMAT_BITS = 3; // Error correction Q, mask value added separately.
+    // ISO/IEC 18004 block structure, indexed [ecc][version]; index 0 unused.
+    var QR_ECC_ORDER = ['L', 'M', 'Q', 'H'];
+    var QR_ECC_FORMAT_BITS = { L: 1, M: 0, Q: 3, H: 2 };
+    var QR_ECC_CODEWORDS_PER_BLOCK = {
+        L: [-1, 7, 10, 15, 20, 26, 18, 20, 24, 30, 18, 20, 24, 26, 30, 22, 24, 28, 30, 28, 28, 28, 28, 30, 30, 26, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
+        M: [-1, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28],
+        Q: [-1, 13, 22, 18, 26, 18, 24, 18, 22, 20, 24, 28, 26, 24, 20, 30, 24, 28, 28, 26, 30, 28, 30, 30, 30, 30, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
+        H: [-1, 17, 28, 22, 16, 22, 28, 26, 26, 24, 28, 24, 28, 22, 24, 24, 30, 28, 28, 26, 28, 30, 24, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30],
+    };
+    var QR_ECC_BLOCKS = {
+        L: [-1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 4, 4, 4, 4, 4, 6, 6, 6, 6, 7, 8, 8, 9, 9, 10, 12, 12, 12, 13, 14, 15, 16, 17, 18, 19, 19, 20, 21, 22, 24, 25],
+        M: [-1, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29, 31, 33, 35, 37, 38, 40, 43, 45, 47, 49],
+        Q: [-1, 1, 1, 2, 2, 4, 4, 6, 6, 8, 8, 8, 10, 12, 16, 12, 17, 16, 18, 21, 20, 23, 23, 25, 27, 29, 34, 34, 35, 38, 40, 43, 45, 48, 51, 53, 56, 59, 62, 65, 68],
+        H: [-1, 1, 1, 2, 4, 4, 4, 5, 6, 8, 8, 11, 11, 16, 16, 18, 16, 19, 21, 25, 25, 25, 34, 30, 32, 35, 37, 40, 42, 45, 48, 51, 54, 57, 60, 63, 66, 70, 74, 77, 81],
+    };
+
+    function qrRawDataModules(version) {
+        var result = (16 * version + 128) * version + 64;
+        if (version >= 2) {
+            var numAlign = Math.floor(version / 7) + 2;
+            result -= (25 * numAlign - 10) * numAlign - 55;
+            if (version >= 7) result -= 36;
+        }
+        return result;
+    }
+
+    function qrDataCodewords(version, ecc) {
+        return Math.floor(qrRawDataModules(version) / 8) -
+            QR_ECC_CODEWORDS_PER_BLOCK[ecc][version] * QR_ECC_BLOCKS[ecc][version];
+    }
+
+    function qrByteCapacity(version, ecc) {
+        return Math.floor((qrDataCodewords(version, ecc) * 8 - 4 - (version >= 10 ? 16 : 8)) / 8);
+    }
+
+    function qrAlignmentPositions(version) {
+        if (version === 1) return [];
+        var size = version * 4 + 17;
+        var numAlign = Math.floor(version / 7) + 2;
+        var step = version === 32 ? 26 : Math.ceil((version * 4 + 4) / (numAlign * 2 - 2)) * 2;
+        var result = [6];
+        for (var pos = size - 7; result.length < numAlign; pos -= step) result.splice(1, 0, pos);
+        return result;
+    }
+
+    // Smallest version (within maxVersion) holding the UTF-8 bytes at this ECC, or 0.
+    function qrFitVersion(byteLength, ecc, maxVersion) {
+        for (var v = 1; v <= (maxVersion || 40); v++) {
+            if (qrByteCapacity(v, ecc) >= byteLength) return v;
+        }
+        return 0;
+    }
+
+    function qrMaskBit(mask, x, y) {
+        switch (mask) {
+            case 0: return (x + y) % 2 === 0;
+            case 1: return y % 2 === 0;
+            case 2: return x % 3 === 0;
+            case 3: return (x + y) % 3 === 0;
+            case 4: return (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0;
+            case 5: return x * y % 2 + x * y % 3 === 0;
+            case 6: return (x * y % 2 + x * y % 3) % 2 === 0;
+            default: return ((x + y) % 2 + x * y % 3) % 2 === 0;
+        }
+    }
+
+    // Byte-mode QR. Omitting `mask` selects the lowest-penalty mask.
+    function QrEncode(text, opts) {
+        var VERSION = opts.version;
+        var ECC = opts.ecc;
+        var SIZE = VERSION * 4 + 17;
+        var ALIGNMENT_POSITIONS = qrAlignmentPositions(VERSION);
+        var ERROR_CORRECTION_FORMAT_BITS = QR_ECC_FORMAT_BITS[ECC];
         var BYTE_COUNT_BITS = VERSION >= 10 ? 16 : 8;
-        var DATA_BLOCK_SIZES = [20, 20, 20, 20, 20, 20, 20, 20, 21, 21, 21, 21];
-        var DATA_CODEWORDS = DATA_BLOCK_SIZES.reduce(function(sum, count) { return sum + count; }, 0);
-        var ECC_CODEWORDS_PER_BLOCK = 24;
+        var NUM_BLOCKS = QR_ECC_BLOCKS[ECC][VERSION];
+        var ECC_CODEWORDS_PER_BLOCK = QR_ECC_CODEWORDS_PER_BLOCK[ECC][VERSION];
+        var DATA_CODEWORDS = qrDataCodewords(VERSION, ECC);
+        var RAW_CODEWORDS = Math.floor(qrRawDataModules(VERSION) / 8);
+        var SHORT_BLOCK_LEN = Math.floor(RAW_CODEWORDS / NUM_BLOCKS);
+        var NUM_SHORT_BLOCKS = NUM_BLOCKS - RAW_CODEWORDS % NUM_BLOCKS;
+        var DATA_BLOCK_SIZES = [];
+        for (var bi = 0; bi < NUM_BLOCKS; bi++) {
+            DATA_BLOCK_SIZES.push(SHORT_BLOCK_LEN - ECC_CODEWORDS_PER_BLOCK + (bi < NUM_SHORT_BLOCKS ? 0 : 1));
+        }
         var modules = [];
         var functionModules = [];
         for (var y = 0; y < SIZE; y++) {
@@ -123,7 +198,7 @@
                 });
             });
             setFunction(8, 4 * VERSION + 9, true);
-            drawVersionBits();
+            if (VERSION >= 7) drawVersionBits();
             drawFormatBits(0);
         }
 
@@ -264,19 +339,104 @@
                     for (var j = 0; j < 2; j++) {
                         var x = right - j;
                         if (functionModules[y][x]) continue;
-                        var bit = bitIndex < bits.length ? bits[bitIndex++] : 0;
-                        var mask = ((x + y) % 2) === 0;
-                        modules[y][x] = !!(bit ^ (mask ? 1 : 0));
+                        modules[y][x] = !!(bitIndex < bits.length ? bits[bitIndex++] : 0);
                     }
                 }
                 upward = !upward;
             }
-            drawFormatBits(0);
+        }
+
+        function applyMask(mask) {
+            for (var y = 0; y < SIZE; y++) {
+                for (var x = 0; x < SIZE; x++) {
+                    if (!functionModules[y][x] && qrMaskBit(mask, x, y)) modules[y][x] = !modules[y][x];
+                }
+            }
+        }
+
+        function finderLikeRuns(run) {
+            var n = run[1];
+            var core = n > 0 && run[2] === n && run[3] === n * 3 && run[4] === n && run[5] === n;
+            return (core && run[0] >= n * 4 && run[6] >= n ? 1 : 0) +
+                (core && run[6] >= n * 4 && run[0] >= n ? 1 : 0);
+        }
+
+        function penaltyLine(get) {
+            var score = 0;
+            var runColor = false;
+            var runLen = 0;
+            var history = [0, 0, 0, 0, 0, 0, 0];
+            function push(len) {
+                if (history[0] === 0) len += SIZE;
+                history.pop();
+                history.unshift(len);
+            }
+            for (var i = 0; i < SIZE; i++) {
+                if (get(i) === runColor) {
+                    runLen++;
+                    if (runLen === 5) score += 3;
+                    else if (runLen > 5) score++;
+                } else {
+                    push(runLen);
+                    if (!runColor) score += finderLikeRuns(history) * 40;
+                    runColor = get(i);
+                    runLen = 1;
+                }
+            }
+            if (runColor) {
+                push(runLen);
+                runLen = 0;
+            }
+            runLen += SIZE;
+            push(runLen);
+            return score + finderLikeRuns(history) * 40;
+        }
+
+        function penaltyScore() {
+            var score = 0;
+            var dark = 0;
+            for (var y = 0; y < SIZE; y++) {
+                score += penaltyLine(function(i) { return modules[y][i]; });
+                score += penaltyLine(function(i) { return modules[i][y]; });
+            }
+            for (var by = 0; by < SIZE - 1; by++) {
+                for (var bx = 0; bx < SIZE - 1; bx++) {
+                    var c = modules[by][bx];
+                    if (c === modules[by][bx + 1] && c === modules[by + 1][bx] && c === modules[by + 1][bx + 1]) score += 3;
+                }
+            }
+            for (var ry = 0; ry < SIZE; ry++) {
+                for (var rx = 0; rx < SIZE; rx++) if (modules[ry][rx]) dark++;
+            }
+            var total = SIZE * SIZE;
+            score += (Math.ceil(Math.abs(dark * 20 - total * 10) / total) - 1) * 10;
+            return score;
         }
 
         drawFunctionPatterns();
         drawCodewords(encodeCodewords(text));
-        return { size: SIZE, modules: modules };
+        var mask = opts.mask;
+        if (mask === undefined || mask === null) {
+            var best = Infinity;
+            for (var m = 0; m < 8; m++) {
+                applyMask(m);
+                drawFormatBits(m);
+                var penalty = penaltyScore();
+                if (penalty < best) {
+                    best = penalty;
+                    mask = m;
+                }
+                applyMask(m);
+            }
+        }
+        applyMask(mask);
+        drawFormatBits(mask);
+        return { size: SIZE, modules: modules, version: VERSION, ecc: ECC, mask: mask };
+    }
+
+    // Fixed v13-Q, mask 0: the contact card symbol is part of its shared look.
+    function QrContactCard(text) {
+        return QrEncode(text, { version: 13, ecc: 'Q', mask: 0 });
     }
 
     function roundRect(ctx, x, y, w, h, r) {
@@ -443,18 +603,17 @@ z`,
         ctx.restore();
     }
 
-    function renderQrCanvas(canvas, payload) {
-        var qr = QrContactCard(payload);
-        var quiet = 4;
-        var modules = qr.size + quiet * 2;
-        var pixels = 900;
+    var QR_QUIET_MODULES = 4;
+    var PAPER_QR_EXPORT_PX_PER_MODULE = 8;
+
+    function drawQrSymbol(canvas, qr, pixels, cell, logo, rounded) {
+        var quiet = QR_QUIET_MODULES;
         canvas.width = pixels;
         canvas.height = pixels;
         var ctx = canvas.getContext('2d');
         var qrSurface = '#ffffff';
         ctx.fillStyle = qrSurface;
         ctx.fillRect(0, 0, pixels, pixels);
-        var cell = pixels / modules;
         var logoSize = pixels * 0.155;
         var logoClearSize = logoSize * 1.18;
         var logoClearMin = (pixels - logoClearSize) / 2;
@@ -470,16 +629,106 @@ z`,
                 if (!qr.modules[y][x]) continue;
                 var px = (x + quiet) * cell;
                 var py = (y + quiet) * cell;
-                if (moduleFallsBehindLogo(px, py)) continue;
+                if (logo && moduleFallsBehindLogo(px, py)) continue;
+                if (!rounded) {
+                    ctx.fillRect(px, py, cell, cell);
+                    continue;
+                }
                 roundRect(ctx, px + cell * 0.08, py + cell * 0.08, cell * 0.84, cell * 0.84, cell * 0.24);
                 ctx.fill();
             }
         }
+        if (!logo) return canvas;
         roundRect(ctx, (pixels - logoClearSize) / 2, (pixels - logoClearSize) / 2, logoClearSize, logoClearSize, logoClearSize * 0.18);
         ctx.fillStyle = qrSurface;
         ctx.fill();
         drawRatspeakLogo(ctx, pixels / 2, pixels / 2, logoSize, qrSurface);
         return canvas;
+    }
+
+    function renderQrCanvas(canvas, payload) {
+        var qr = QrContactCard(payload);
+        var pixels = 900;
+        return drawQrSymbol(canvas, qr, pixels, pixels / (qr.size + QR_QUIET_MODULES * 2), true, true);
+    }
+
+    // Up to v20 at ECC Q keeps the centre logo; larger payloads use the smallest
+    // ECC L symbol (upstream LXMF), which cannot absorb one. Paper modules are
+    // always square: jsQR (Scan Photo) misreads rounded modules above v10.
+    function paperQrPlan(text) {
+        var length = textBytes(text).length;
+        var version = qrFitVersion(length, 'Q', 20);
+        if (version) return { version: version, ecc: 'Q', logo: true, modules: version * 4 + 17 + QR_QUIET_MODULES * 2 };
+        version = qrFitVersion(length, 'L', 40);
+        if (!version) throw new Error('Paper message is too large for a QR code');
+        return { version: version, ecc: 'L', logo: false, modules: version * 4 + 17 + QR_QUIET_MODULES * 2 };
+    }
+
+    // Integer pixels per module: no fractional cells, so no anti-aliased edges.
+    function renderPaperQrCanvas(canvas, payload, options) {
+        options = options || {};
+        var plan = paperQrPlan(payload);
+        var qr = QrEncode(payload, { version: plan.version, ecc: plan.ecc });
+        var cell = options.pixelsPerModule;
+        if (!cell) {
+            // Whole device pixels per module, shown 1:1: no resampling at any DPR.
+            var cssWidth = options.cssWidth || canvas.clientWidth || 400;
+            var dpr = options.devicePixelRatio || window.devicePixelRatio || 1;
+            cell = Math.max(1, Math.floor(cssWidth * dpr / plan.modules));
+            if (canvas.style) {
+                canvas.style.width = canvas.style.height = (cell * plan.modules / dpr) + 'px';
+            }
+        }
+        drawQrSymbol(canvas, qr, cell * plan.modules, cell, plan.logo, false);
+        return plan;
+    }
+
+    // Morphological closing (dilate dark, then erode) on luminance. jsQR's
+    // finder search needs solid runs, so rounded, gapped modules (contact card,
+    // short paper links) only decode once the gaps between them are filled.
+    function closeQrGaps(rgba, width, height, radius) {
+        var n = width * height;
+        var a = new Uint8ClampedArray(n);
+        var b = new Uint8ClampedArray(n);
+        for (var i = 0, j = 0; i < n; i++, j += 4) {
+            a[i] = (rgba[j] * 299 + rgba[j + 1] * 587 + rgba[j + 2] * 114) / 1000;
+        }
+        function pass(src, dst, horizontal, takeMin) {
+            for (var y = 0; y < height; y++) {
+                for (var x = 0; x < width; x++) {
+                    var best = takeMin ? 255 : 0;
+                    for (var k = -radius; k <= radius; k++) {
+                        var xx = horizontal ? x + k : x;
+                        var yy = horizontal ? y : y + k;
+                        if (xx < 0 || yy < 0 || xx >= width || yy >= height) continue;
+                        var v = src[yy * width + xx];
+                        if (takeMin ? v < best : v > best) best = v;
+                    }
+                    dst[y * width + x] = best;
+                }
+            }
+        }
+        pass(a, b, true, true);
+        pass(b, a, false, true);
+        pass(a, b, true, false);
+        pass(b, a, false, false);
+        var out = new Uint8ClampedArray(n * 4);
+        for (var p = 0, q = 0; p < n; p++, q += 4) {
+            out[q] = out[q + 1] = out[q + 2] = a[p];
+            out[q + 3] = 255;
+        }
+        return out;
+    }
+
+    function decodeRoundedQr(rgba, width, height) {
+        if (typeof window.jsQR !== 'function') return null;
+        var base = Math.max(1, Math.round(Math.max(width, height) / 900));
+        var radii = [base, base * 2];
+        for (var i = 0; i < radii.length; i++) {
+            var code = window.jsQR(closeQrGaps(rgba, width, height, radii[i]), width, height, { inversionAttempts: 'dontInvert' });
+            if (code && code.data) return code;
+        }
+        return null;
     }
 
     function canvasBlob(canvas) {
@@ -668,6 +917,217 @@ z`,
         loadCard();
     }
 
+    function paperFileStamp(date) {
+        function pad(n) { return (n < 10 ? '0' : '') + n; }
+        return date.getFullYear() + pad(date.getMonth() + 1) + pad(date.getDate()) + '-' +
+            pad(date.getHours()) + pad(date.getMinutes());
+    }
+
+    function paperShareFilesSupported() {
+        if (!window.File || !navigator.canShare || !navigator.share) return false;
+        try {
+            return !!navigator.canShare({ files: [new File([], 'ratspeak-paper.png', { type: 'image/png' })] });
+        } catch (_) {
+            return false;
+        }
+    }
+
+    // opts: { recipientHash, recipientName, uri } or { ..., loadUri: () => Promise<uri> }.
+    function showPaperShareScreen(opts) {
+        opts = opts || {};
+        var built = buildSheet('contact-share-sheet paper-share-sheet');
+        var closed = false;
+        var loadGeneration = 0;
+        var name = opts.recipientName || shortValue(opts.recipientHash || '', 8, 4) || 'Recipient';
+        built.sheet.setAttribute('role', 'dialog');
+        built.sheet.setAttribute('aria-modal', 'true');
+        built.sheet.setAttribute('tabindex', '-1');
+
+        function closeShareScreen() {
+            if (closed) return;
+            closed = true;
+            closeSheet(built.overlay, built.sheet, opts.onClose);
+        }
+
+        function bindCloseButton() {
+            var closeButton = built.sheet.querySelector('.contact-card-close');
+            if (closeButton) closeButton.addEventListener('click', closeShareScreen);
+            return closeButton;
+        }
+
+        function renderLoading() {
+            built.sheet.setAttribute('aria-busy', 'true');
+            built.sheet.setAttribute('aria-label', name);
+            built.sheet.innerHTML =
+                '<div class="contact-card-topbar">' +
+                    '<button class="contact-card-close" type="button" aria-label="Close">&times;</button>' +
+                '</div>' +
+                '<div class="contact-share-loading" role="status" aria-live="polite">' +
+                    '<div class="contact-share-loading-qr" aria-hidden="true">' +
+                        '<span class="loading-spinner"></span>' +
+                    '</div>' +
+                    '<div class="contact-share-loading-label">Preparing paper message&hellip;</div>' +
+                '</div>';
+            bindCloseButton();
+        }
+
+        function renderError(err, generation) {
+            if (closed || generation !== loadGeneration) return;
+            built.sheet.removeAttribute('aria-busy');
+            built.sheet.innerHTML =
+                '<div class="contact-card-topbar">' +
+                    '<button class="contact-card-close" type="button" aria-label="Close">&times;</button>' +
+                '</div>' +
+                '<div class="contact-share-error" role="alert">' +
+                    '<div class="contact-share-error-title">Paper message unavailable</div>' +
+                    '<div class="contact-share-error-message">' + escapeHtml(err && err.message ? err.message : 'Couldn\'t load the paper link.') + '</div>' +
+                    '<button class="nr-btn contact-share-retry" type="button">Try again</button>' +
+                '</div>';
+            bindCloseButton();
+            built.sheet.querySelector('.contact-share-retry').addEventListener('click', load);
+        }
+
+        function renderPaper(uri, generation) {
+            if (closed || generation !== loadGeneration) return;
+            var chars = uri.length.toLocaleString('en-US');
+            var canShareFiles = paperShareFilesSupported();
+            var fileName = 'ratspeak-paper-' + safeFileBase(name) + '-' + paperFileStamp(new Date()) + '.png';
+            var nameId = 'paper-share-name-' + generation + '-' + Date.now();
+            built.sheet.removeAttribute('aria-busy');
+            built.sheet.removeAttribute('aria-label');
+            built.sheet.setAttribute('aria-labelledby', nameId);
+            built.sheet.innerHTML =
+                '<div class="contact-card-topbar">' +
+                    '<button class="contact-card-close" type="button" aria-label="Close">&times;</button>' +
+                '</div>' +
+                '<div class="contact-share-identity">' +
+                    '<div class="contact-share-avatar">' + (typeof identityAvatar === 'function' && opts.recipientHash ? identityAvatar(opts.recipientHash, 56) : '') + '</div>' +
+                    '<div class="contact-share-name" id="' + nameId + '">' + escapeHtml(name) + '</div>' +
+                    '<div class="contact-share-subtitle">Ratspeak paper message</div>' +
+                '</div>' +
+                '<div class="contact-share-qr-shell">' +
+                    '<canvas class="contact-share-qr" aria-label="' + escapeHtml('Paper message QR for ' + name) + '"></canvas>' +
+                '</div>' +
+                '<div class="contact-share-subtitle paper-share-helper">' + escapeHtml('Only ' + name + ' can read this.') + '</div>' +
+                '<div class="contact-share-actions' + (canShareFiles ? '' : ' paper-share-actions-single') + '">' +
+                    '<button class="nr-btn contact-share-action" type="button" id="paper-share-save" disabled aria-busy="true">' +
+                        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>' +
+                        '<span>Save</span></button>' +
+                    (canShareFiles
+                        ? '<button class="nr-btn contact-share-action" type="button" id="paper-share-share" disabled aria-busy="true">' + iconSvg('qr') + '<span>Share</span></button>'
+                        : '') +
+                '</div>' +
+                '<div class="contact-share-address-block paper-share-link-block">' +
+                    '<div class="contact-share-address-label">Paper link · ' + chars + ' characters</div>' +
+                    '<div class="paper-share-link-row">' +
+                        '<div class="contact-share-address paper-share-link mono">' + escapeHtml(uri) + '</div>' +
+                        '<button class="nr-btn nr-btn-ghost paper-share-copy" type="button" aria-label="Copy paper link">' + iconSvg('copy') + '</button>' +
+                    '</div>' +
+                '</div>';
+
+            var canvas = built.sheet.querySelector('canvas');
+            var saveButton = built.sheet.querySelector('#paper-share-save');
+            var shareButton = built.sheet.querySelector('#paper-share-share');
+            bindCloseButton();
+            built.sheet.querySelector('.paper-share-copy').addEventListener('click', function() {
+                copyText(uri, 'Paper link');
+            });
+
+            function exportBlob() {
+                var exportCanvas = document.createElement('canvas');
+                renderPaperQrCanvas(exportCanvas, uri, { pixelsPerModule: PAPER_QR_EXPORT_PX_PER_MODULE });
+                return canvasBlob(exportCanvas);
+            }
+
+            saveButton.addEventListener('click', function() {
+                exportBlob().then(function(blob) {
+                    return blob.arrayBuffer();
+                }).then(function(buf) {
+                    if (typeof saveBytesToUserFile !== 'function') throw new Error('Saving isn\'t available in this build');
+                    return saveBytesToUserFile(new Uint8Array(buf), fileName, 'image/png');
+                }).then(function(result) {
+                    if (result && result.status === 'cancelled') return;
+                    if (result && result.status === 'failed') {
+                        showToast('Couldn\'t save the QR image', 'toast-error', 3000);
+                        return;
+                    }
+                    showToast('QR image saved', 'toast-success', 2500);
+                }).catch(function(err) {
+                    if (err && err.cancelled) return;
+                    showToast(err && err.message ? err.message : 'Couldn\'t save the QR image', 'toast-error', 3000);
+                });
+            });
+            if (shareButton) {
+                shareButton.addEventListener('click', function() {
+                    exportBlob().then(function(blob) {
+                        var file = new File([blob], fileName, { type: 'image/png' });
+                        return navigator.share({ files: [file], title: 'Ratspeak paper message' });
+                    }).then(function() {
+                        showToast('QR code shared', 'toast-success', 2500);
+                    }).catch(function(err) {
+                        if (err && err.name === 'AbortError') return;
+                        showToast(err && err.message ? err.message : 'Couldn\'t share the QR code', 'toast-error', 3000);
+                    });
+                });
+            }
+            // Focus the dialog itself: no ring on Close, and Tab still starts there.
+            try { built.sheet.focus({ preventScroll: true }); } catch (_) { built.sheet.focus(); }
+
+            // Let the ready sheet paint before the synchronous QR encoder runs.
+            var nextFrame = window.requestAnimationFrame || function(callback) {
+                return window.setTimeout(callback, 0);
+            };
+            nextFrame(function() {
+                nextFrame(function() {
+                    if (closed || generation !== loadGeneration || !canvas.isConnected) return;
+                    try {
+                        renderPaperQrCanvas(canvas, uri);
+                        [saveButton, shareButton].forEach(function(btn) {
+                            if (!btn) return;
+                            btn.disabled = false;
+                            btn.removeAttribute('aria-busy');
+                        });
+                    } catch (err) {
+                        [saveButton, shareButton].forEach(function(btn) {
+                            if (btn) btn.removeAttribute('aria-busy');
+                        });
+                        showToast(err && err.message ? err.message : 'Couldn\'t draw the QR code', 'toast-error', 3000);
+                    }
+                });
+            });
+        }
+
+        function load() {
+            if (closed) return;
+            var generation = ++loadGeneration;
+            if (opts.uri) {
+                renderPaper(opts.uri, generation);
+                return;
+            }
+            renderLoading();
+            Promise.resolve(typeof opts.loadUri === 'function' ? opts.loadUri() : null).then(function(uri) {
+                if (!uri) throw new Error('Couldn\'t load the paper link.');
+                opts.uri = uri;
+                renderPaper(uri, generation);
+            }).catch(function(err) {
+                renderError(err, generation);
+            });
+        }
+
+        built.overlay.addEventListener('click', function(e) {
+            if (e.target === built.overlay) closeShareScreen();
+        });
+        built.sheet.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                closeShareScreen();
+            }
+        });
+        built.sheet._ratspeakDismiss = closeShareScreen;
+        load();
+        return { close: closeShareScreen };
+    }
+
     function showScannedCardPreview(parent, payload, card, closeAll) {
         var name = card.display_name || 'Unnamed Contact';
         parent.innerHTML =
@@ -682,7 +1142,7 @@ z`,
                 '</div>' +
                 '<div class="contact-scan-actions">' +
                     '<button class="nr-btn nr-btn-ghost" id="contact-scan-cancel">Cancel</button>' +
-                    '<button class="nr-btn" id="contact-scan-add">Add</button>' +
+                    '<button class="nr-btn nr-btn-primary" id="contact-scan-add">Add</button>' +
                 '</div>' +
             '</div>';
         parent.querySelector('#contact-scan-cancel').addEventListener('click', closeAll);
@@ -703,13 +1163,12 @@ z`,
 
     function openContactQrScanner(options) {
         options = options || {};
-        var scannerTitle = options.title || 'Scan Contact QR';
-        var checkingText = options.checkingText || 'Checking contact card...';
-        var invalidText = options.invalidText || 'That QR is not a valid Ratspeak contact card.';
-        var invalidImageText = options.invalidImageText ||
-            'That image does not contain a valid Ratspeak contact QR.';
+        var scannerTitle = options.title || 'Scan Ratspeak QR';
+        var checkingText = options.checkingText || 'Checking QR\u2026';
+        var invalidText = options.invalidText || 'That QR isn\'t a Ratspeak contact or paper message.';
+        var invalidImageText = options.invalidImageText || invalidText;
         var emptyImageText = options.emptyImageText ||
-            'No Ratspeak contact QR found in that image.';
+            'No Ratspeak QR found in that image.';
         var previewCommand = options.previewCommand || 'api_preview_contact_card';
         var built = buildSheet('contact-scan-sheet');
         var stream = null;
@@ -818,6 +1277,21 @@ z`,
         function handleScannedPayload(payload, source, invalidMessage, retry) {
             status.textContent = checkingText;
             contactScanDiag('payload_detected', { source: source });
+            var paperUri = String(payload || '').trim();
+            if (/^lxm:\/\//i.test(paperUri) && window.RS.paper) {
+                return RS.paper.preview(paperUri).then(function(preview) {
+                    stopStream();
+                    RS.paper.renderResult(body, paperUri, preview, { close: closeAll });
+                }).catch(function(err) {
+                    contactScanDiag('paper_rejected', scanErrorDetail(err));
+                    if (RS.paper.errorCode(err) === 'locked') {
+                        closeAll();
+                        return;
+                    }
+                    status.textContent = RS.paper.errorText(err);
+                    if (typeof retry === 'function') retry();
+                });
+            }
             return RS.invoke(previewCommand, { payload: payload }).then(function(preview) {
                 stopStream();
                 if (typeof options.onPreview === 'function') {
@@ -892,12 +1366,32 @@ z`,
                     ctx.drawImage(img, 0, 0, width, height);
                     var image = ctx.getImageData(0, 0, width, height);
                     var code = window.jsQR(image.data, width, height, { inversionAttempts: 'attemptBoth' });
+                    var finish = function(found) {
+                        if (stopped) return;
+                        if (found && found.data) {
+                            contactScanDiag('file_decode_success', { width: width, height: height });
+                            handleScannedPayload(found.data, 'file', invalidImageText);
+                        } else {
+                            contactScanDiag('file_decode_empty', { width: width, height: height });
+                            status.textContent = emptyImageText;
+                        }
+                    };
                     if (code && code.data) {
-                        contactScanDiag('file_decode_success', { width: width, height: height });
-                        handleScannedPayload(code.data, 'file', invalidImageText);
+                        finish(code);
                     } else {
-                        contactScanDiag('file_decode_empty', { width: width, height: height });
-                        status.textContent = emptyImageText;
+                        // The gap-closing passes take about a second on slow phones; paint first.
+                        status.textContent = checkingText;
+                        var afterPaint = window.requestAnimationFrame || function(callback) { return setTimeout(callback, 16); };
+                        afterPaint(function() {
+                            setTimeout(function() {
+                                try {
+                                    finish(decodeRoundedQr(image.data, width, height));
+                                } catch (retryErr) {
+                                    contactScanDiag('file_decode_failed', scanErrorDetail(retryErr));
+                                    status.textContent = 'Could not read that QR image.';
+                                }
+                            }, 0);
+                        });
                     }
                 } catch (err) {
                     contactScanDiag('file_decode_failed', scanErrorDetail(err));
@@ -1279,7 +1773,16 @@ z`,
         openContactAddOptions: openContactAddOptions,
     };
     window.RS.qr = {
+        openPaperShare: showPaperShareScreen,
         renderCanvas: renderQrCanvas,
+        renderPaperCanvas: renderPaperQrCanvas,
+        paperPlan: paperQrPlan,
+        encode: QrEncode,
+        decodeImageData: function(rgba, width, height) {
+            var code = window.jsQR(rgba, width, height, { inversionAttempts: 'attemptBoth' });
+            return code && code.data ? code : decodeRoundedQr(rgba, width, height);
+        },
+        byteCapacity: qrByteCapacity,
         shareCanvas: shareQrCanvas,
         openScanner: openContactQrScanner,
     };

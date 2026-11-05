@@ -1297,6 +1297,46 @@ body.image-viewer-open {
 .msg-state-propagated svg { stroke: var(--text-muted); }
 .msg-state-failed svg { stroke: var(--status-error-fg); }
 .msg-state-cancelled svg { stroke: var(--text-muted); }
+.msg-state-paper svg { stroke: var(--text-muted); }
+/* Paper: a neutral label, never a clock or check; outbound taps reopen the QR. */
+.msg-paper-state {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 4px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: var(--text-muted);
+    font: inherit;
+    font-size: var(--type-msg-meta-size);
+    line-height: 1;
+}
+.msg-paper-state svg { width: 12px; height: 12px; flex: 0 0 12px; }
+button.msg-paper-state { cursor: pointer; }
+button.msg-paper-state::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 44px;
+    height: 44px;
+    transform: translate(-50%, -50%);
+}
+button.msg-paper-state:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+}
+.rs-message-link.rs-paper-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    vertical-align: bottom;
+    white-space: nowrap;
+}
+.rs-paper-link-icon { width: 1em; height: 1em; flex: 0 0 auto; }
 
 .msg-retry-btn {
     background: var(--status-warning-bg);

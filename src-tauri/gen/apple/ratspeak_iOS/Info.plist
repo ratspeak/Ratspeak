@@ -24,6 +24,7 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>ratspeak</string>
+				<string>lxm</string>
 			</array>
 		</dict>
 	</array>

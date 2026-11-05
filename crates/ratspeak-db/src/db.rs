@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-pub(crate) const SCHEMA_VERSION: i64 = 46;
+pub(crate) const SCHEMA_VERSION: i64 = 47;
 
 const VOICE_FORMAT_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS conversation_voice_formats (
@@ -32,6 +32,7 @@ pub const ATTACHMENT_UNAVAILABLE_STORED_NAME: &str = "!unavailable";
 const MESSAGE_AUDIO_MODE_COLUMN_INDEX: usize = 22;
 const MESSAGE_AUDIO_STORED_NAME_COLUMN_INDEX: usize = 23;
 const MESSAGE_RENDERER_COLUMN_INDEX: usize = 24;
+const MESSAGE_PAPER_URI_COLUMN_INDEX: usize = 25;
 
 const IDENTITY_SELECT_COLUMNS: &str = "hash,
     lxmf_hash,
@@ -292,6 +293,7 @@ CREATE TABLE IF NOT EXISTS messages (
     audio_mode INTEGER CHECK (audio_mode IS NULL OR audio_mode BETWEEN 0 AND 255),
     audio_stored_name TEXT NOT NULL DEFAULT '',
     renderer INTEGER CHECK (renderer IS NULL OR renderer BETWEEN 0 AND 255),
+    paper_uri TEXT,
     PRIMARY KEY (id, identity_id)
 );
 
@@ -1977,6 +1979,21 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 47 {
+        migration_step(conn, 47, |conn| {
+            if table_exists(conn, "messages")?
+                && !get_column_names(conn, "messages")?
+                    .iter()
+                    .any(|column| column == "paper_uri")
+            {
+                conn.execute_batch("ALTER TABLE messages ADD COLUMN paper_uri TEXT;")?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 47;")?;
+            tracing::info!("Migrated to schema version 47 (LXMF paper message URI)");
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -3221,7 +3238,62 @@ pub fn delete_message_for_identity(
     .map_err(|error| error.to_string())
 }
 
-/// One-way lattice: terminal states (delivered/propagated/failed/cancelled/rejected/timeout)
+/// Persist an outbound paper message with the exact `lxm://` URI it was
+/// encoded as. `paper` is terminal: no network path ever owns this row.
+#[allow(clippy::too_many_arguments)]
+pub fn try_save_paper_message(
+    pool: &DbPool,
+    msg_id: &str,
+    source: &str,
+    destination: &str,
+    content: &str,
+    title: &str,
+    timestamp: f64,
+    identity_id: &str,
+    paper_uri: &str,
+) -> Result<(), String> {
+    if identity_id.is_empty() {
+        return Err("no active identity".into());
+    }
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    conn.execute(
+        "INSERT INTO messages (id, source, destination, content, title, timestamp, state, direction, identity_id, delivery_method, paper_uri) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'paper', 'outbound', ?7, 'paper', ?8)",
+        params![msg_id, source, destination, content, title, timestamp, identity_id, paper_uri],
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+pub fn get_paper_uri(pool: &DbPool, msg_id: &str, identity_id: &str) -> Option<String> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        "SELECT paper_uri FROM messages WHERE id = ?1 AND identity_id = ?2 AND paper_uri IS NOT NULL",
+        params![msg_id, identity_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// One stored message in the conversation-history row shape.
+pub fn get_message_for_identity(
+    pool: &DbPool,
+    msg_id: &str,
+    identity_id: &str,
+) -> Option<serde_json::Value> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        "SELECT * FROM messages WHERE id = ?1 AND identity_id = ?2",
+        params![msg_id, identity_id],
+        row_to_message,
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// One-way lattice: terminal states (delivered/propagated/failed/cancelled/rejected/timeout/paper)
 /// cannot be regressed by later updates. `propagated` is terminal at the LXMF
 /// layer because the propagation path only confirms node-deposit, not end-to-end
 /// recipient delivery — there is no later signal that upgrades it to `delivered`.
@@ -3239,14 +3311,14 @@ pub fn update_message_state(
     let result = if let Some(rtt) = rtt_ms {
         conn.execute(
             "UPDATE messages SET state = ?1, rtt_ms = ?2 \
-             WHERE id = ?3 AND identity_id = ?4 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout')",
+             WHERE id = ?3 AND identity_id = ?4 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper')",
             params![state, rtt, msg_id, identity_id],
         )
         .map(|updated| updated > 0)
     } else {
         conn.execute(
             "UPDATE messages SET state = ?1 \
-             WHERE id = ?2 AND identity_id = ?3 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout')",
+             WHERE id = ?2 AND identity_id = ?3 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper')",
             params![state, msg_id, identity_id],
         )
         .map(|updated| updated > 0)
@@ -3261,7 +3333,7 @@ pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str, identity_id: &
     };
     conn.execute(
         "UPDATE messages SET state = 'cancelled' \
-         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout')",
+         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper')",
         params![msg_id, identity_id],
     )
     .map(|n| n > 0)
@@ -9520,6 +9592,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
     let renderer = row
         .get::<_, Option<i64>>(MESSAGE_RENDERER_COLUMN_INDEX)?
         .and_then(|renderer| u8::try_from(renderer).ok());
+    let paper_uri = row.get::<_, Option<String>>(MESSAGE_PAPER_URI_COLUMN_INDEX)?;
 
     // Reshape flat columns to nested `msg.image` / `msg.attachments`.
     let image_json = (!image_stored_name.is_empty()).then(|| {
@@ -9589,6 +9662,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
         "game_move_san": row.get::<_, String>(20).unwrap_or_default(),
         "delivery_method": row.get::<_, Option<String>>(21)?,
         "renderer": renderer,
+        "paper_uri": paper_uri,
     }))
 }
 
@@ -11270,7 +11344,13 @@ mod migration_tests {
                 .map(String::as_str),
             Some("renderer")
         );
-        assert_eq!(message_cols.len(), MESSAGE_RENDERER_COLUMN_INDEX + 1);
+        assert_eq!(
+            message_cols
+                .get(MESSAGE_PAPER_URI_COLUMN_INDEX)
+                .map(String::as_str),
+            Some("paper_uri")
+        );
+        assert_eq!(message_cols.len(), MESSAGE_PAPER_URI_COLUMN_INDEX + 1);
     }
 
     #[test]
@@ -11591,7 +11671,8 @@ mod migration_tests {
         {
             let conn = pool.get().unwrap();
             conn.execute_batch(
-                "ALTER TABLE messages DROP COLUMN renderer;
+                "ALTER TABLE messages DROP COLUMN paper_uri;
+                 ALTER TABLE messages DROP COLUMN renderer;
                  ALTER TABLE messages DROP COLUMN audio_stored_name;
                  ALTER TABLE messages DROP COLUMN audio_mode;
                  UPDATE schema_version SET version = 42;",
@@ -11615,7 +11696,7 @@ mod migration_tests {
                 .map(String::as_str),
             Some("audio_stored_name")
         );
-        assert_eq!(columns.len(), MESSAGE_RENDERER_COLUMN_INDEX + 1);
+        assert_eq!(columns.len(), MESSAGE_PAPER_URI_COLUMN_INDEX + 1);
         conn.execute(
             "INSERT INTO messages (
                 id, source, destination, timestamp, identity_id
@@ -11640,7 +11721,8 @@ mod migration_tests {
         {
             let conn = pool.get().unwrap();
             conn.execute_batch(
-                "ALTER TABLE messages DROP COLUMN renderer;
+                "ALTER TABLE messages DROP COLUMN paper_uri;
+                 ALTER TABLE messages DROP COLUMN renderer;
                  INSERT INTO messages (id, source, destination, content, timestamp, identity_id)
                  VALUES ('pre-renderer', 'source', 'destination', '**kept**', 1.0, 'identity');
                  UPDATE schema_version SET version = 45;",
@@ -11658,7 +11740,7 @@ mod migration_tests {
                 .map(String::as_str),
             Some("renderer")
         );
-        assert_eq!(columns.len(), MESSAGE_RENDERER_COLUMN_INDEX + 1);
+        assert_eq!(columns.len(), MESSAGE_PAPER_URI_COLUMN_INDEX + 1);
         let kept: (String, Option<i64>) = conn
             .query_row(
                 "SELECT content, renderer FROM messages WHERE id = 'pre-renderer'",
@@ -11677,6 +11759,98 @@ mod migration_tests {
         drop(conn);
         let messages = get_conversation(&pool, "source", "identity", 10);
         assert!(messages[0]["renderer"].is_null());
+    }
+
+    #[test]
+    fn migration_47_adds_nullable_paper_uri_and_keeps_rows() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "ALTER TABLE messages DROP COLUMN paper_uri;
+                 INSERT INTO messages (id, source, destination, content, timestamp, identity_id)
+                 VALUES ('pre-paper', 'source', 'destination', 'kept', 1.0, 'identity');
+                 UPDATE schema_version SET version = 46;",
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+        let conn = pool.get().unwrap();
+        let columns = get_column_names(&conn, "messages").unwrap();
+        assert_eq!(
+            columns
+                .get(MESSAGE_PAPER_URI_COLUMN_INDEX)
+                .map(String::as_str),
+            Some("paper_uri")
+        );
+        assert_eq!(columns.len(), MESSAGE_PAPER_URI_COLUMN_INDEX + 1);
+        drop(conn);
+        let messages = get_conversation(&pool, "source", "identity", 10);
+        assert_eq!(messages[0]["content"], "kept");
+        assert!(messages[0]["paper_uri"].is_null());
+    }
+
+    #[test]
+    fn paper_rows_keep_their_uri_and_never_leave_the_paper_state() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        try_save_paper_message(
+            &pool,
+            "paper-id",
+            "me",
+            "peer",
+            "hello",
+            "",
+            5.0,
+            "identity",
+            "lxm://abc",
+        )
+        .unwrap();
+        assert!(
+            try_save_paper_message(
+                &pool,
+                "paper-id",
+                "me",
+                "peer",
+                "hello",
+                "",
+                5.0,
+                "identity",
+                "lxm://def",
+            )
+            .is_err()
+        );
+        assert_eq!(
+            get_paper_uri(&pool, "paper-id", "identity").as_deref(),
+            Some("lxm://abc")
+        );
+        assert!(get_paper_uri(&pool, "paper-id", "other").is_none());
+        assert!(get_paper_uri(&pool, "missing", "identity").is_none());
+
+        assert!(!update_message_state(
+            &pool,
+            "paper-id",
+            "identity",
+            "delivered",
+            None
+        ));
+        assert!(!cancel_outbound_message_state(
+            &pool, "paper-id", "identity"
+        ));
+        cleanup_stale_outbound(&pool, "identity");
+
+        let row = get_message_for_identity(&pool, "paper-id", "identity").unwrap();
+        assert_eq!(row["state"], "paper");
+        assert_eq!(row["direction"], "outbound");
+        assert_eq!(row["delivery_method"], "paper");
+        assert_eq!(row["paper_uri"], "lxm://abc");
+        let history = get_conversation(&pool, "peer", "identity", 10);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0]["paper_uri"], "lxm://abc");
+        assert_eq!(history[0]["state"], "paper");
     }
 
     /// T1-8: blackhole requests queued for an identity do not survive its

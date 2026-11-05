@@ -179,4 +179,16 @@ assert.equal(press(f, '`')[0], 'x\n```\nfn a()\nfn b()\n```\ny', 'multi-line cod
 f = field('*hi*', 0, 4);
 assert.deepEqual(press(f, '*'), ['hi', 'hi', 0], 'a selection that includes its markers unwraps');
 
+// Paper links render as one atomic "Paper message" link; the full URI stays in data-url.
+const paperUri = 'lxm://AbC_d-9__';
+const paperHtml = render('**see** ' + paperUri + ' and https://x.com');
+assert(paperHtml.includes('<a class="rs-message-link rs-paper-link" href="#" data-url="' + paperUri + '"'),
+    'paper links keep the trailing underscore and full URI');
+assert(paperHtml.includes('<span>Paper message</span></a>'));
+assert(!paperHtml.includes('>' + paperUri + '<'), 'the base64 body is never shown as link text');
+assert(paperHtml.includes('<strong>see</strong>') && paperHtml.includes('data-url="https://x.com"'));
+assert.equal(md.strip('a ' + paperUri), 'a ' + paperUri, 'previews keep the source text');
+assert.deepEqual(links('xlxm://abc').length, 0, 'lxm:// must start a word');
+assert.deepEqual(prepare('_' + paperUri + '_').markdown, false, 'underscores inside a paper link are not emphasis');
+
 console.log('markdown ok');

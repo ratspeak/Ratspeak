@@ -38,4 +38,16 @@ assert(source.includes('var replyContent = _messagePlainContent(msgData, !!msgDa
 assert(source.includes('var messageText = _messageCopyText(msgData, content);'), 'Copy goes through spoiler-aware copy text');
 assert(/function _messageCopyText\(msg, content\) \{\n    var text = _messageDisplayContent\(msg, /.test(source), 'Copy Message includes titles');
 assert(source.includes('var notifBody = _messagePlainContent(msg, !!msg.audio)'), 'browser notifications include titles');
+// Plain-text paper links: one "Paper message" link, escaped neighbours, http links intact.
+const linkContext = { escapeHtml: s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;') };
+vm.createContext(linkContext);
+vm.runInContext(source.slice(source.indexOf('var RS_LINK_TLDS'), source.indexOf('function _messageIsMarkdown')), linkContext);
+const uri = 'lxm://' + 'Zz09_-'.repeat(400);
+const html = linkContext.linkifyMessageText('<b> ' + uri + '\nhttps://example.com/a');
+assert.equal(html.split("rs-message-link rs-paper-link").length - 1, 1);
+assert(html.startsWith('&lt;b&gt; <a class="rs-message-link rs-paper-link" href="#" data-url="' + uri + '"'));
+assert(html.includes('<span>Paper message</span></a><br><a class="rs-message-link" href="https://example.com/a"'));
+assert.equal(JSON.stringify(linkContext._messageLinkRanges('LXM://abc').map(r => r.paper)), '[true]', 'scheme match is case-insensitive');
+assert(source.includes("if (/^lxm:\\/\\//i.test(String(url || ''))) {\n        if (typeof openPaperDecoder === 'function') openPaperDecoder({ uri: url, autoReview: true });\n        return;"),
+    'paper links open the decoder instead of the leaving-app warning');
 console.log('message title/body presentation: PASS');

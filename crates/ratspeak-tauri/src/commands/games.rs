@@ -124,12 +124,12 @@ pub async fn send_game_action(
         .with_app(&app_id, |app| app.version())
         .unwrap_or(1);
     let delivery_pref = if args.delivery_method.is_some() {
-        crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref())
+        crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref())?
     } else {
         let manifest_preference = state_arc
             .lrgp_router
             .with_app(&app_id, |app| app.get_delivery_method(&command));
-        crate::commands::messaging::parse_delivery_preference(manifest_preference.as_deref())
+        crate::commands::messaging::parse_delivery_preference(manifest_preference.as_deref())?
     };
 
     if !validate_hex(&dest_hash, 32, 32) || app_id.is_empty() || command.is_empty() {
@@ -748,7 +748,7 @@ pub async fn resend_last_game_action(
     let activity_origin = state_arc.activity_request_fence();
     let session_id = sanitize_text(&args.session_id, 128);
     let delivery_pref =
-        crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref());
+        crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref())?;
     if session_id.is_empty() {
         return Err(AppError::bad_request("session_id required"));
     }

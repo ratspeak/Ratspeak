@@ -2880,6 +2880,10 @@ impl LxmfManager {
             reply_to_preview,
             renderer,
         } = request;
+        // Paper never goes over the network; see `crate::paper`.
+        if delivery_method == DeliveryMethod::Paper {
+            return None;
+        }
         let reply_to_id = reply_to_id.unwrap_or("");
         let reply_to_preview = reply_to_preview.unwrap_or("");
         let mut custom_fields = if reply_to_id.is_empty() {

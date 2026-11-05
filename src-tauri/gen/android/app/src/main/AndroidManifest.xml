@@ -108,6 +108,15 @@
                 <data android:scheme="ratspeak" />
                 <data android:host="channel" />
             </intent-filter>
+            <!-- LXMF paper links (lxm://<base64url>); the frontend previews
+                 before anything is filed. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <action android:name="org.chromium.arc.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="lxm" />
+            </intent-filter>
         </activity>
 
         <service

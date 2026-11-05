@@ -2,6 +2,7 @@
  * jsQR 1.4.0
  * Source: https://github.com/cozmo/jsQR
  * License: Apache-2.0; see jsQR.LICENSE.txt in this directory.
+ * Local fix: version 23 alignment centres are 6, 30, 54, 78, 102 (ISO/IEC 18004 Annex E).
  */
 (function webpackUniversalModuleDefinition(root, factory) {
 	if(typeof exports === 'object' && typeof module === 'object')
@@ -8966,7 +8967,7 @@ exports.VERSIONS = [
     {
         infoBits: 0x177EC,
         versionNumber: 23,
-        alignmentPatternCenters: [6, 30, 54, 74, 102],
+        alignmentPatternCenters: [6, 30, 54, 78, 102],
         errorCorrectionLevels: [
             {
                 ecCodewordsPerBlock: 30,

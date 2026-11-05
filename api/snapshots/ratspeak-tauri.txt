@@ -493,6 +493,7 @@ pub async fn ratspeak_tauri::commands::interfaces::set_hide_known_spam_peers(tau
 pub async fn ratspeak_tauri::commands::interfaces::set_lxmf_limit_1mb(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, bool) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub fn ratspeak_tauri::commands::interfaces::set_native_theme(tauri::webview::webview_window::WebviewWindow, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_notification_preview(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::interfaces::set_paper_messages_enabled(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, bool) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_peers_sort(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_text_scale(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, u16) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_transport_mode(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::interfaces::TransportModeArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
@@ -643,6 +644,12 @@ pub async fn ratspeak_tauri::commands::network_ownership::export_shared_access(t
 pub async fn ratspeak_tauri::commands::network_ownership::import_shared_access(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::network_ownership::set_network_ownership(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_runtime::network_ownership::NetworkRequest) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::network_ownership::test_shared_instance(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_runtime::network_ownership::NetworkRequest) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub mod ratspeak_tauri::commands::paper
+pub use ratspeak_tauri::commands::paper::normalize_paper_uri
+pub async fn ratspeak_tauri::commands::paper::add_paper_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::paper::create_paper_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, alloc::string::String, core::option::Option<alloc::string::String>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::paper::get_paper_uri(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::paper::preview_paper_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub mod ratspeak_tauri::commands::peers
 pub const ratspeak_tauri::commands::peers::PEER_RECENCY_SECS: f64
 pub async fn ratspeak_tauri::commands::peers::api_get_peers_snapshot(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
@@ -794,6 +801,7 @@ pub fn ratspeak_tauri::emitter::TauriEmitter::try_emit(&self, &str, serde_json::
 pub mod ratspeak_tauri::error
 pub struct ratspeak_tauri::error::AppError
 pub ratspeak_tauri::error::AppError::code: alloc::string::String
+pub ratspeak_tauri::error::AppError::details: core::option::Option<serde_json::value::Value>
 pub ratspeak_tauri::error::AppError::message: alloc::string::String
 impl ratspeak_tauri::error::AppError
 pub fn ratspeak_tauri::error::AppError::bad_request(impl core::convert::Into<alloc::string::String>) -> Self
@@ -806,6 +814,7 @@ pub fn ratspeak_tauri::error::AppError::new(impl core::convert::Into<alloc::stri
 pub fn ratspeak_tauri::error::AppError::not_found(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn ratspeak_tauri::error::AppError::service_unavailable(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn ratspeak_tauri::error::AppError::unauthorized(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn ratspeak_tauri::error::AppError::with_details(self, serde_json::value::Value) -> Self
 impl core::convert::From<r2d2::Error> for ratspeak_tauri::error::AppError
 pub fn ratspeak_tauri::error::AppError::from(r2d2::Error) -> Self
 impl core::convert::From<rusqlite::error::Error> for ratspeak_tauri::error::AppError

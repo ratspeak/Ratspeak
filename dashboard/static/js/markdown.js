@@ -302,11 +302,12 @@ function parseInline(text, ctx, depth, allowLinks, base) {
         while (ri < ranges.length && ranges[ri].end <= p) ri++;
         var range = ranges[ri];
         if (range && range.start === p) {
-            var label = text.slice(range.start, range.end).replace(URL_TAIL, '');
+            // Prerendered ranges (paper links) are atomic: base64url may end in `_`.
+            var label = range.html ? text.slice(range.start, range.end) : text.slice(range.start, range.end).replace(URL_TAIL, '');
             if (label) {
                 var trimmed = range.end - range.start - label.length;
                 flush();
-                nodes.push({ t: 'auto', href: range.href.slice(0, range.href.length - trimmed), label: label });
+                nodes.push({ t: 'auto', href: range.href.slice(0, range.href.length - trimmed), label: label, html: range.html || null });
                 p += label.length;
                 ri++;
                 continue;
@@ -484,6 +485,7 @@ function inlineHtml(nodes) {
                 '<span class="md-spoiler-content" aria-hidden="true" inert>' + inlineHtml(nd.kids) + '</span></span>';
             break;
         case 'auto':
+            if (nd.html) { out += nd.html; break; }
             out += '<a class="rs-message-link" href="' + esc(nd.href) + '" data-url="' + esc(nd.href) +
                 '" rel="noopener noreferrer">' + esc(nd.label) + '</a>';
             break;

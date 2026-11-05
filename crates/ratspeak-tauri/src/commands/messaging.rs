@@ -380,8 +380,16 @@ pub struct CancelLxmfMessageArgs {
     pub msg_id: String,
 }
 
-pub(crate) fn parse_delivery_preference(value: Option<&str>) -> DeliveryPreference {
-    DeliveryPreference::parse(value)
+/// Paper is not a network method: it is created by `create_paper_message`,
+/// never sent, so a live send must not fall back to Auto for it.
+pub(crate) fn parse_delivery_preference(value: Option<&str>) -> AppResult<DeliveryPreference> {
+    if value.is_some_and(|value| value.trim().eq_ignore_ascii_case("paper")) {
+        return Err(AppError::new(
+            "paper_not_sendable",
+            "Paper messages are created, not sent",
+        ));
+    }
+    Ok(DeliveryPreference::parse(value))
 }
 
 /// Markdown is the only renderer Ratspeak sends; plain (0) sends no field.
@@ -543,7 +551,7 @@ pub async fn send_lxmf_message(
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(&args.content)?;
     let title = sanitize_text(args.title.as_deref().unwrap_or(""), 256);
-    let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref());
+    let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref())?;
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
     let renderer = parse_message_renderer(args.renderer)?;
 
@@ -711,7 +719,7 @@ pub async fn send_reaction(
     let message_id = sanitize_text(&args.message_id, 128);
     let emoji = sanitize_text(&args.emoji, 16);
     let action = sanitize_text(&args.action, 16);
-    let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref());
+    let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref())?;
 
     if message_id.is_empty() || emoji.is_empty() {
         return Err(AppError::bad_request("Missing message_id or emoji"));
@@ -829,7 +837,7 @@ pub async fn send_lxmf_reply(
                 .map(|(msg_id, _)| msg_id.clone())
         })
         .unwrap_or_else(|| reply_to_id.clone());
-    let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref());
+    let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref())?;
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
     let renderer = parse_message_renderer(args.renderer)?;
 
@@ -1608,7 +1616,7 @@ pub async fn send_lxmf_with_attachment(
 ) -> AppResult<Value> {
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(args.content.as_deref().unwrap_or(""))?;
-    let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref());
+    let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref())?;
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
     let renderer = parse_message_renderer(args.renderer)?;
 
@@ -2106,7 +2114,7 @@ pub async fn send_lxmf_with_staged_attachment(
 ) -> AppResult<Value> {
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(args.content.as_deref().unwrap_or(""))?;
-    let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref());
+    let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref())?;
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
     let renderer = parse_message_renderer(args.renderer)?;
     if !validate_hex(&dest_hash, 16, 64) {

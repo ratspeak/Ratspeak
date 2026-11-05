@@ -4,6 +4,7 @@ function openSettings() {
     showSettingsMobileSectionIndex({ restoreFocus: false });
     initHapticsToggle();
     initHideKnownSpamPeersToggle();
+    initPaperMessagesToggle();
     initChannelHostingToggle();
     initActivityIdentityProtectionToggle();
     initDeveloperModeToggle();
@@ -285,6 +286,76 @@ function initHideKnownSpamPeersToggle() {
 
 window.ratspeakHideKnownSpamPeersEnabled = function() {
     return !!_settingsHideKnownSpamPeersEnabled;
+};
+
+var _settingsPaperMessagesBound = false;
+var _settingsPaperMessagesBusy = false;
+var _settingsPaperMessagesEnabled = false;
+
+// Gates only the manual decoder entry points; sending, scanning, and links always work.
+function syncPaperMessagesRadioState() {
+    var off = document.getElementById('settings-paper-messages-off');
+    var on = document.getElementById('settings-paper-messages-on');
+    var group = on && on.closest('.settings-radio-group');
+    if (document.documentElement) {
+        document.documentElement.dataset.paperMessages = _settingsPaperMessagesEnabled ? 'on' : 'off';
+    }
+    if (off) {
+        off.checked = !_settingsPaperMessagesEnabled;
+        off.disabled = _settingsPaperMessagesBusy;
+    }
+    if (on) {
+        on.checked = _settingsPaperMessagesEnabled;
+        on.disabled = _settingsPaperMessagesBusy;
+    }
+    if (group) group.setAttribute('aria-busy', _settingsPaperMessagesBusy ? 'true' : 'false');
+}
+
+function adoptPaperMessagesFromBackend(enabled) {
+    _settingsPaperMessagesEnabled = enabled === true;
+    syncPaperMessagesRadioState();
+}
+
+function setPaperMessagesEnabled(enabled) {
+    if (_settingsPaperMessagesBusy) return;
+    var previous = _settingsPaperMessagesEnabled;
+    _settingsPaperMessagesEnabled = !!enabled;
+    _settingsPaperMessagesBusy = true;
+    syncPaperMessagesRadioState();
+    RS.invoke('set_paper_messages_enabled', { enabled: _settingsPaperMessagesEnabled })
+        .then(function(result) {
+            var next = result && result.enabled !== undefined ? result.enabled
+                : (result && result.paper_messages_enabled !== undefined ? result.paper_messages_enabled : enabled);
+            adoptPaperMessagesFromBackend(!!next);
+        })
+        .catch(function(error) {
+            adoptPaperMessagesFromBackend(previous);
+            if (typeof showToast === 'function') {
+                showToast((error && error.message) || 'Could not update paper messages', 'toast-error', 4000);
+            }
+        })
+        .then(function() {
+            _settingsPaperMessagesBusy = false;
+            syncPaperMessagesRadioState();
+        });
+}
+
+function initPaperMessagesToggle() {
+    var off = document.getElementById('settings-paper-messages-off');
+    var on = document.getElementById('settings-paper-messages-on');
+    syncPaperMessagesRadioState();
+    if (!off || !on || _settingsPaperMessagesBound) return;
+    _settingsPaperMessagesBound = true;
+    off.addEventListener('change', function() {
+        if (off.checked) setPaperMessagesEnabled(false);
+    });
+    on.addEventListener('change', function() {
+        if (on.checked) setPaperMessagesEnabled(true);
+    });
+}
+
+window.ratspeakPaperMessagesEnabled = function() {
+    return !!_settingsPaperMessagesEnabled;
 };
 
 function readDeveloperModePreference() {
@@ -1839,6 +1910,9 @@ function applyAppSettingsPayload(data) {
     if (data.hide_known_spam_peers !== undefined) {
         adoptHideKnownSpamPeersFromBackend(data.hide_known_spam_peers);
     }
+    if (data.paper_messages_enabled !== undefined) {
+        adoptPaperMessagesFromBackend(data.paper_messages_enabled);
+    }
     var lxmfLimitToggle = document.getElementById('lxmf-limit-1mb-toggle');
     if (lxmfLimitToggle && data.lxmf_limit_1mb !== undefined) {
         lxmfLimitToggle.checked = !!data.lxmf_limit_1mb;
@@ -1938,6 +2012,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     initActivityIdentityProtectionToggle();
     initHideKnownSpamPeersToggle();
+    initPaperMessagesToggle();
     RS.invoke('api_app_settings').then(applyAppSettingsPayload).catch(function() {});
     if (lxmfLimitToggle) {
         lxmfLimitToggle.addEventListener('change', function() {

@@ -511,7 +511,7 @@ pub async fn send_lxmf_voice_message(
             ));
         }
         let delivery_pref =
-            crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref());
+            crate::commands::messaging::parse_delivery_preference(args.delivery_method.as_deref())?;
         crate::commands::messaging::validate_delivery_preference(&state, delivery_pref)?;
         let audio_bytes = read_bounded_voice_memo(clip.path.clone()).await?;
         if audio_bytes.len() != clip.declared_size {

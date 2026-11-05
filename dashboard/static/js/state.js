@@ -129,11 +129,12 @@ window.RS.invoke = function(name, args) {
     return _rsWaitForInvoke().then(function() {
         return window.__TAURI_INTERNALS__.invoke(name, args || {});
     }).catch(function(raw) {
-        // Preserve `.code` for downstream `err.code === 'not_found'` checks.
+        // Preserve `.code` (and `.details`) for downstream `err.code === 'not_found'` checks.
         var code = (raw && raw.code) || 'error';
         var message = (raw && raw.message) || (typeof raw === 'string' ? raw : 'Request failed');
         var err = new Error(message);
         err.code = code;
+        if (raw && raw.details && typeof raw.details === 'object') err.details = raw.details;
         throw err;
     });
 };

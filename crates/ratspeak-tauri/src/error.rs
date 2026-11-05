@@ -1,5 +1,6 @@
 //! Error type for Tauri commands. `code` is snake_case and stable; `message`
-//! is human-readable and may change.
+//! is human-readable and may change; optional `details` carries stable,
+//! code-specific data.
 
 use serde::Serialize;
 
@@ -7,6 +8,8 @@ use serde::Serialize;
 pub struct AppError {
     pub code: String,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
 }
 
 impl AppError {
@@ -14,7 +17,13 @@ impl AppError {
         Self {
             code: code.into(),
             message: message.into(),
+            details: None,
         }
+    }
+
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
     }
 
     pub fn bad_request(message: impl Into<String>) -> Self {

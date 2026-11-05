@@ -1,0 +1,20 @@
+{
+  "source": "LXMF LXMessage.as_uri(), desired_method PAPER",
+  "reticulum": {
+    "version": "1.5.5",
+    "commit": "7f2b3b9b524c9386316379af1313b43a5e4f7a5d"
+  },
+  "lxmf": {
+    "version": "1.2.0",
+    "commit": "c3ff2d6dc2f256daab896dadc044dd5a913ecbb7"
+  },
+  "timestamp": 1700000000.0,
+  "title": "Field note",
+  "content": "Meet at the north gate at dawn. Bring the spare radio.",
+  "recipient_private_key": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+  "destination_hash": "9065c6a70344cdd39e85699d34901fb8",
+  "source_hash": "a8ca03e60789eaab72d067062a6b5ed8",
+  "source_public_key": "c306fb0ef2bf8b7f93bad98155fa37daec74db0c4cbeda6c6f1dba9d36558252bc7cbcb5636375fa1d82434d466724d92377f53b980695dd49d26d0ce12205a5",
+  "message_id": "fd4f13c1ed369257fac65ffc82672d9d1acddc223ccdd4ae6d9e44911394476a",
+  "uri": "lxm://kGXGpwNEzdOehWmdNJAfuC8WT2iRYSeTRIrP3AmmgveH1x8dYkLYQ-ej1mCyutYOcj2pTAEsRCTKdMlxrka2wpyUrxWfJ4psR7AhhoV-6Uu3_iIa1jrt4pKMIGWmxtouTd3ZP6gDhqEsGreBnWXiVUFsFEhDNzUoXPB5XquzVAzw5-jldea_7kAyta93SvZlR6y7towHWacFDdteZpy1bCz9rVczX9wkWYKucGjr-zTBT7h2utwwWpyPvRJVB_buv50T7pJJj7Of5AnSwW6dw3vDSYOL6so8K8jz0zZS6-6o-ulM3xlwDMUVTuHkuKqrY_KOANQUoax4SzWcAu9fUQ"
+}

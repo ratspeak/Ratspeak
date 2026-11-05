@@ -2734,8 +2734,17 @@
         opacity: 1;
         transform: scale(1) translateY(0);
     }
-    .fab-dial-item:first-child .fab-dial-btn,
-    .fab-dial-item:first-child .fab-dial-label { transition-delay: 0.05s; }
+    /* Nearest the FAB first: Paper, New, Contacts. */
+    #fab-dial-new .fab-dial-btn,
+    #fab-dial-new .fab-dial-label,
+    :root:not([data-paper-messages="on"]) #fab-dial-contacts .fab-dial-btn,
+    :root:not([data-paper-messages="on"]) #fab-dial-contacts .fab-dial-label,
+    .contact-add-dial-actions .fab-dial-item:first-child .fab-dial-btn,
+    .contact-add-dial-actions .fab-dial-item:first-child .fab-dial-label { transition-delay: 0.05s; }
+    #fab-dial-contacts .fab-dial-btn,
+    #fab-dial-contacts .fab-dial-label { transition-delay: 0.1s; }
+    :root:not([data-paper-messages="on"]) #fab-dial-new .fab-dial-btn,
+    :root:not([data-paper-messages="on"]) #fab-dial-new .fab-dial-label { transition-delay: 0s; }
     .view-fab.dial-open {
         transform: rotate(45deg);
         background: var(--surface-control-active);

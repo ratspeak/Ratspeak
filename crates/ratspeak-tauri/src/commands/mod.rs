@@ -17,6 +17,7 @@ pub mod interfaces;
 pub mod messaging;
 pub mod network;
 pub mod network_ownership;
+pub mod paper;
 pub mod peers;
 #[cfg(any(
     test,

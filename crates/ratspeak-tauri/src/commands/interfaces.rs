@@ -1146,6 +1146,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         channel_hosting_enabled,
         activity_identity_protection,
         hide_known_spam_peers,
+        paper_messages_enabled,
         text_scale_percent,
         theme_family,
         theme_mode,
@@ -1164,6 +1165,8 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
             .is_none_or(|value| value != "false");
         let hide_known_spam_peers =
             db::get_setting(&p, "hide_known_spam_peers").is_none_or(|value| value != "false");
+        let paper_messages_enabled =
+            db::get_setting(&p, "paper_messages_enabled").is_some_and(|value| value == "true");
         let text_scale_percent = stored_text_scale(&p);
         let theme_family = db::get_setting(&p, "theme_family")
             .and_then(|value| normalize_theme_family(&value).map(str::to_string))
@@ -1185,6 +1188,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
             channel_hosting_enabled,
             activity_identity_protection,
             hide_known_spam_peers,
+            paper_messages_enabled,
             text_scale_percent,
             theme_family,
             theme_mode,
@@ -1200,6 +1204,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         false,
         true,
         true,
+        false,
         100,
         DEFAULT_THEME_FAMILY.to_string(),
         DEFAULT_THEME_MODE.to_string(),
@@ -1217,6 +1222,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         "channel_hosting_enabled": channel_hosting_enabled,
         "activity_identity_protection": activity_identity_protection,
         "hide_known_spam_peers": hide_known_spam_peers,
+        "paper_messages_enabled": paper_messages_enabled,
         "text_scale_percent": text_scale_percent,
         "theme_family": theme_family,
         "theme_mode": theme_mode,
@@ -1761,6 +1767,31 @@ pub async fn set_hide_known_spam_peers(
     state.emit_to_all(
         "app_settings_updated",
         json!({ "hide_known_spam_peers": enabled }),
+    );
+    Ok(json!({ "enabled": enabled }))
+}
+
+/// Gates only the manual paper decoder entry; paper commands always work.
+#[tauri::command]
+pub async fn set_paper_messages_enabled(
+    state: State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> AppResult<Value> {
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(
+            &p,
+            "paper_messages_enabled",
+            if enabled { "true" } else { "false" },
+        )
+    })
+    .await
+    .map_err(|_| AppError::internal("set_paper_messages_enabled db task panicked"))?
+    .map_err(|error| {
+        AppError::database_unavailable(format!("Failed to save paper messages setting: {error}"))
+    })?;
+    state.emit_to_all(
+        "app_settings_updated",
+        json!({ "paper_messages_enabled": enabled }),
     );
     Ok(json!({ "enabled": enabled }))
 }

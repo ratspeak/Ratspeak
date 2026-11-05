@@ -5,6 +5,11 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+### New
+
+- Paper messages: hold Send and choose Paper to turn a message into an encrypted QR code and `lxm://` link you can share any way you like, such as by SMS, print, or another screen. They work with Sideband.
+- Paper messages open from a scanned QR, a tapped `lxm://` link, or, with Settings › General › Paper messages on, the new Paper item in the new message menu.
+
 ### Fixed and improved
 
 - Pasting a screenshot into a message on Linux now attaches it.

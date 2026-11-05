@@ -23,7 +23,7 @@ pub(crate) fn configure_android_runtime(config: &mut tauri::Config) {
     config.plugins.0.insert(
         "deep-link".into(),
         serde_json::json!({
-            "mobile": [{ "scheme": ["ratspeak"], "host": "channel" }]
+            "mobile": [{ "scheme": ["ratspeak"], "host": "channel" }, { "scheme": ["lxm"] }]
         }),
     );
 }
@@ -169,15 +169,20 @@ pub(crate) fn notify_pending(app: &AppHandle) {
 }
 
 /// Register the running-app listener before sampling the cold-start value.
-/// The inbox coalesces the harmless overlap if both paths report the same URL.
+/// The inboxes coalesce the harmless overlap if both paths report the same URL.
 pub(crate) fn install(app: &mut tauri::App) {
     let listener_app = app.handle().clone();
     app.deep_link().on_open_url(move |event| {
-        enqueue_native_channel_shares(&listener_app, event.urls());
+        let urls = event.urls();
+        crate::paper_deep_link::enqueue(&listener_app, &urls);
+        enqueue_native_channel_shares(&listener_app, urls);
     });
 
     match app.deep_link().get_current() {
-        Ok(Some(urls)) => enqueue_native_channel_shares(app.handle(), urls),
+        Ok(Some(urls)) => {
+            crate::paper_deep_link::enqueue(app.handle(), &urls);
+            enqueue_native_channel_shares(app.handle(), urls);
+        }
         Ok(None) => {}
         Err(_) => tracing::debug!(
             reason = "native_channel_share_cold_start_unavailable",
@@ -248,7 +253,10 @@ mod tests {
         configure_android_runtime(&mut config);
         assert_eq!(
             config.plugins.0["deep-link"],
-            serde_json::json!({"mobile": [{"scheme": ["ratspeak"], "host": "channel"}]})
+            serde_json::json!({"mobile": [
+                {"scheme": ["ratspeak"], "host": "channel"},
+                {"scheme": ["lxm"]}
+            ]})
         );
         config.plugins.0.remove("deep-link");
         assert_eq!(

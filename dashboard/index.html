@@ -481,6 +481,12 @@
                                         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
                                     </button>
                                 </div>
+                                <div class="fab-dial-item" id="fab-dial-paper">
+                                    <span class="fab-dial-label">Paper</span>
+                                    <button class="fab-dial-btn" aria-label="Open a paper message">
+                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg>
+                                    </button>
+                                </div>
                             </div>
                             <button class="view-fab" id="lxmf-send-fab" title="New conversation" aria-expanded="false">
                                 <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -1396,6 +1402,22 @@
                                     </label>
                                 </div>
                             </div>
+                            <div class="settings-row">
+                                <div class="settings-row-info">
+                                    <span class="settings-row-label">Paper messages</span>
+                                    <span class="settings-row-desc" id="settings-paper-messages-desc">Open messages shared as a paper QR or link. Adds Paper to the new message menu.</span>
+                                </div>
+                                <div class="settings-radio-group" role="radiogroup" aria-label="Paper messages" aria-describedby="settings-paper-messages-desc">
+                                    <label class="settings-radio-option">
+                                        <input type="radio" name="settings-paper-messages" id="settings-paper-messages-off" value="off" checked>
+                                        <span>OFF</span>
+                                    </label>
+                                    <label class="settings-radio-option">
+                                        <input type="radio" name="settings-paper-messages" id="settings-paper-messages-on" value="on">
+                                        <span>ON</span>
+                                    </label>
+                                </div>
+                            </div>
                             <div class="settings-row" style="border-bottom:none;">
                                 <div class="settings-row-info">
                                     <span class="settings-row-label">Block List</span>
@@ -2140,6 +2162,7 @@
 <script src="/static/js/message_search.js?v=ui-20260924-4"></script>
 <script src="/static/js/voice_memos.js?v=ui-20260924-4"></script>
 <script src="/static/js/channels.js?v=ui-20260924-4"></script>
+<script src="/static/js/paper_messages.js?v=ui-20260924-4"></script>
 <script src="/static/js/channel_hub.js?v=ui-20260924-4"></script>
 <script src="/static/js/propagation.js?v=ui-20260924-4"></script>
 <script src="/static/js/settings.js?v=ui-20260924-4"></script>
@@ -2150,6 +2173,7 @@
 <script src="/static/js/four_in_a_row_view.js?v=ui-20260924-4"></script>
 <script src="/static/js/games_tab.js?v=ui-20260924-4"></script>
 <script src="/static/js/native_channel_share.js?v=ui-20260924-4"></script>
+<script src="/static/js/native_paper_link.js?v=ui-20260924-4"></script>
 <script src="/static/js/text_shares.js?v=ui-20260924-4"></script>
 <script src="/static/js/tauri_events.js?v=ui-20260924-4"></script>
 <script src="/static/js/init_dom_handlers.js?v=ui-20260924-4"></script>

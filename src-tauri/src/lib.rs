@@ -9,6 +9,7 @@ mod clipboard_image;
     allow(dead_code)
 )]
 mod mobile_native;
+mod paper_deep_link;
 mod paths;
 mod secret_clipboard;
 mod text_share;
@@ -1086,8 +1087,9 @@ pub fn run() {
 
     let linux_webkit_dmabuf_workaround = apply_linux_webkit_rendering_workarounds();
 
-    let builder =
-        tauri::Builder::default().manage(channel_deep_link::NativeChannelShareInbox::default());
+    let builder = tauri::Builder::default()
+        .manage(channel_deep_link::NativeChannelShareInbox::default())
+        .manage(paper_deep_link::NativePaperLinkInbox::default());
 
     // Tauri requires single-instance to be the first plugin when it forwards
     // secondary-process deep-link arguments into the primary process.
@@ -1146,6 +1148,8 @@ pub fn run() {
                 clipboard_image::read_clipboard_image,
                 channel_deep_link::peek_native_channel_share,
                 channel_deep_link::ack_native_channel_share,
+                paper_deep_link::peek_native_paper_link,
+                paper_deep_link::ack_native_paper_link,
                 text_share::list_text_shares,
                 text_share::edit_text_share,
                 ratspeak_tauri::commands::system::api_version,
@@ -1205,6 +1209,10 @@ pub fn run() {
                 ratspeak_tauri::commands::messaging::api_file_metadata,
                 ratspeak_tauri::commands::messaging::api_file_read_chunk,
                 ratspeak_tauri::commands::messaging::send_lxmf_message,
+                ratspeak_tauri::commands::paper::create_paper_message,
+                ratspeak_tauri::commands::paper::get_paper_uri,
+                ratspeak_tauri::commands::paper::preview_paper_message,
+                ratspeak_tauri::commands::paper::add_paper_message,
                 ratspeak_tauri::commands::messaging::send_reaction,
                 ratspeak_tauri::commands::messaging::send_lxmf_reply,
                 ratspeak_tauri::commands::messaging::send_lxmf_propagated,
@@ -1267,6 +1275,7 @@ pub fn run() {
                 ratspeak_tauri::commands::interfaces::set_android_ble_rnode_auto_resume,
                 ratspeak_tauri::commands::interfaces::set_activity_identity_protection,
                 ratspeak_tauri::commands::interfaces::set_hide_known_spam_peers,
+                ratspeak_tauri::commands::interfaces::set_paper_messages_enabled,
                 ratspeak_tauri::commands::interfaces::set_lxmf_limit_1mb,
                 ratspeak_tauri::commands::interfaces::accept_public_channel_consent,
                 ratspeak_tauri::commands::interfaces::set_appearance,

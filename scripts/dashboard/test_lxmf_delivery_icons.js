@@ -73,7 +73,37 @@ assert(source.includes('No live send remained. The local message was cancelled, 
 assert(source.includes('Cancelled before the message left this device.'));
 assert(source.includes("title: 'Cancel sending?'"));
 
+// Paper: a neutral chip in the state slot, terminal everywhere, never a clock or check.
+var paperIcon = icon('paper', 'paper');
+assert(paperIcon.includes('msg-state-paper') && paperIcon.includes('aria-label="Paper message"'));
+assert(!paperIcon.includes('msg-state-sending') && !paperIcon.includes('msg-state-sent'));
+context.escapeHtml = function(value) { return String(value); };
+vm.runInContext(source.slice(source.indexOf('var RS_QR_GLYPH_PATHS'), source.indexOf('var RS_PAPER_LINK_GLYPH')), context);
+['_isTerminalMessageState', '_messageDeliveryMethod', '_messageIsPaper', '_messagePaperChipHtml', '_messageCanCancelSend']
+    .forEach(function(name) { vm.runInContext(functionSource(name), context); });
+assert(context._isTerminalMessageState('paper'));
+assert.strictEqual(context._messageCanCancelSend({ direction: 'outbound', state: 'paper' }), false,
+    'paper messages have no cancel, retry, or progress');
+assert(context._messageIsPaper({ state: 'delivered', delivery_method: 'paper' }), 'inbound filed paper rows are paper');
+var outboundChip = context._messagePaperChipHtml({ id: 'm1' }, true);
+assert(outboundChip.includes('<button type="button" class="msg-paper-state" data-msg-id="m1"'));
+assert(outboundChip.includes('aria-label="Paper message, not sent over the network. Show QR"'));
+assert(outboundChip.includes('<span class="msg-state-label" aria-hidden="true">Paper</span>'));
+var inboundChip = context._messagePaperChipHtml({ id: 'm2' }, false);
+assert(!inboundChip.includes('<button') && inboundChip.includes('aria-label="Received as a paper message"'));
+assert(outboundChip.includes('<path d="M14 21h7v-2"/>'), 'the chip and the chat link share one QR glyph');
+assert.strictEqual((source.match(/var terminalStates = \['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper'\];/g) || []).length, 2,
+    'step and progress events must not overwrite a paper state');
+assert(source.includes("var stateIcon = _messageIsPaper(msg)\n            ? _messagePaperChipHtml(msg, isOut)"));
+assert(source.includes("'.md-spoiler:not(.is-revealed), .md-code-copy, .msg-paper-state'"),
+    'a hold on the chip opens message actions and swallows the trailing tap');
+assert(source.includes("setAttribute('data-message-action', 'paper-qr')") &&
+    source.includes("'<span>Show QR</span>'") && source.includes("'<span>Copy paper link</span>'"));
+assert(source.includes("showToast(ok ? 'Paper link copied' : 'Could not copy'"));
+
 var css = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '09-messaging.css'), 'utf8');
+assert(/button\.msg-paper-state::after\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px;/s.test(css),
+    'the paper chip keeps a 44px hit target');
 assert(/\.msg-state-sent svg\s*\{[^}]*var\(--text-muted\)/s.test(css),
     'sent checks must use the muted foreground');
 assert(/\.msg-state-delivered svg\s*\{[^}]*var\(--accent\)/s.test(css),

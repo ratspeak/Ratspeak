@@ -90,6 +90,35 @@ assert(dial.classList.contains('open'));
 context.window.innerWidth = 1024; handlers['window-resize']();
 assert(!dial.classList.contains('open'), 'widening must retire the now-hidden dial and its scrim');
 
+// Paper sits last in the dial (nearest the FAB), hidden unless the setting is on.
+const dialItems = html.slice(html.indexOf('id="fab-dial-actions"'), html.indexOf('id="lxmf-send-fab"'))
+    .match(/class="fab-dial-item" id="([^"]+)"/g).map(item => item.match(/id="([^"]+)"/)[1]);
+assert.deepEqual(dialItems, ['fab-dial-contacts', 'fab-dial-new', 'fab-dial-paper']);
+assert(html.includes('<button class="fab-dial-btn" aria-label="Open a paper message">'));
+assert(/:root:not\(\[data-paper-messages="on"\]\) #fab-dial-paper\s*\{\s*display:\s*none;/.test(read('static/css/10-views.css')));
+const fab2 = element(), dial2 = element(), paperItem = element(), opened = [], haptics = [];
+context.document = {
+    getElementById: id => ({ 'lxmf-send-fab': fab2, 'fab-dial-actions': dial2, 'fab-dial-paper': paperItem })[id],
+    createElement: () => element(), body: { appendChild() {} }
+};
+context.haptic = level => haptics.push(level);
+context.openPaperDecoder = (...args) => opened.push(args.length);
+vm.runInContext(fn(lxmf, 'initFabSpeedDial'), context);
+context.initFabSpeedDial();
+context.window.innerWidth = 390;
+fab2.handlers.click({ stopPropagation() {} });
+paperItem.handlers.click();
+assert.deepEqual([opened, haptics, dial2.classList.contains('open')], [[0], ['selection'], false],
+    'the Paper dial item closes the dial and opens the decoder with no arguments');
+
+// Send popover: Paper is last, below a separator, disabled with an empty composer.
+assert(lxmf.includes("{ label: 'Offline Inbox', icon: ICON_RELAY, disabled: !hasRelay, onSelect: function() { sendLxmfMessage('propagated'); } },\n" +
+    "            { separator: true },\n            { label: 'Paper', icon: ICON_PAPER, disabled: !hasText, onSelect: sendLxmfPaperMessage },"));
+assert(lxmf.includes("var hasText = !!(input && input.value.trim());"));
+// Desktop compose popover: Contacts / New / Paper, only while the setting is on.
+assert(lxmf.includes("if (document.documentElement.dataset.paperMessages === 'on' && typeof openPaperDecoder === 'function') {\n" +
+    "                composeItems.push({ label: 'Paper', icon: ICON_PAPER, onSelect: openPaperDecoder });"));
+
 // Shared keyboard activation must not hijack nested controls or composing text.
 const binding = shared.slice(shared.indexOf('    RS.ui.bindKeyboardActivation ='), shared.indexOf('    var transportLabels'));
 context.RS.ui = {};

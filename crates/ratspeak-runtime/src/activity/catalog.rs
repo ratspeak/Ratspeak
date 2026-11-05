@@ -2252,6 +2252,7 @@ pub fn lxmf_delivery_progress(
 pub enum InboundLxmfMethod {
     Direct,
     Opportunistic,
+    Paper,
     Propagated,
 }
 
@@ -2260,6 +2261,7 @@ impl InboundLxmfMethod {
         match self {
             Self::Direct => "direct",
             Self::Opportunistic => "opportunistic",
+            Self::Paper => "paper",
             Self::Propagated => "propagated",
         }
     }

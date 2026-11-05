@@ -1668,22 +1668,41 @@ function _splitTrailingUrlPunctuation(raw) {
     return { url: url, trailing: trailing };
 }
 
+var RS_PAPER_LINK_RE = /lxm:\/\/[A-Za-z0-9_-]+/ig;
+var RS_QR_GLYPH_PATHS = '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/>';
+var RS_PAPER_LINK_GLYPH = '<svg class="rs-paper-link-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + RS_QR_GLYPH_PATHS + '</svg>';
+
+// The href is regex-limited to base64url, so it needs no escaping.
+function _paperLinkHtml(href) {
+    return '<a class="rs-message-link rs-paper-link" href="#" data-url="' + href +
+        '" rel="noopener noreferrer">' + RS_PAPER_LINK_GLYPH + '<span>Paper message</span></a>';
+}
+
 function _messageLinkRanges(text) {
     var value = String(text || '');
     var ranges = [];
+    var paper = [];
+    value.replace(RS_PAPER_LINK_RE, function(match, offset) {
+        if (offset > 0 && /[A-Za-z0-9]/.test(value.charAt(offset - 1))) return match;
+        paper.push({ start: offset, end: offset + match.length, href: match, paper: true, html: _paperLinkHtml(match) });
+        return match;
+    });
     value.replace(RS_LINK_RE, function(match, schemeUrl, bareUrl, offset) {
         var prev = offset > 0 ? value.charAt(offset - 1) : '';
         if (prev === '@') return match;
         var label = _splitTrailingUrlPunctuation(match).url;
         if (!label) return match;
+        var end = offset + label.length;
+        if (paper.some(function(p) { return offset < p.end && end > p.start; })) return match;
         ranges.push({
             start: offset,
-            end: offset + label.length,
+            end: end,
             href: /^https?:\/\//i.test(label) ? label : 'https://' + label,
         });
         return match;
     });
-    return ranges;
+    if (!paper.length) return ranges;
+    return ranges.concat(paper).sort(function(a, b) { return a.start - b.start; });
 }
 
 function linkifyMessageText(text) {
@@ -1694,6 +1713,11 @@ function linkifyMessageText(text) {
     _messageLinkRanges(value).forEach(function(range) {
         var label = value.slice(range.start, range.end);
         out += escapeHtml(value.slice(last, range.start));
+        if (range.html) {
+            out += range.html;
+            last = range.end;
+            return;
+        }
         out += '<a class="rs-message-link" href="' + escapeHtml(range.href) +
             '" data-url="' + escapeHtml(range.href) + '" rel="noopener noreferrer">' +
             escapeHtml(label) + '</a>';
@@ -1735,12 +1759,14 @@ function _messageStateIconHtml(msg) {
         clock: '<circle cx="8" cy="8" r="6"/><polyline points="8 4 8 8 11 10"/>',
         x: '<line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/>',
         rejected: '<circle cx="8" cy="8" r="6"/><line x1="5" y1="5" x2="11" y2="11"/><line x1="11" y1="5" x2="5" y2="11"/>',
-        envelope: '<rect x="2" y="4" width="12" height="9" rx="1.5"/><polyline points="2.5 5 8 10 13.5 5"/>'
+        envelope: '<rect x="2" y="4" width="12" height="9" rx="1.5"/><polyline points="2.5 5 8 10 13.5 5"/>',
+        paper: '<rect x="2" y="2" width="5" height="5"/><rect x="9" y="2" width="5" height="5"/><rect x="2" y="9" width="5" height="5"/><path d="M9 9h2v2H9zM13 9v1M9 14h5v-2"/>'
     };
     function wrap(cls, label, body) {
         return ' <span class="msg-state-icon ' + cls + '" role="img" aria-label="' + label + '">' + SVG_OPEN + body + '</svg></span>';
     }
 
+    if (state === 'paper') return wrap('msg-state-paper', 'Paper message', ICON.paper);
     if (state === 'read') return wrap('msg-state-read', 'Read', ICON.read);
     if (state === 'failed' || state === 'timeout') return wrap('msg-state-failed', 'Failed', ICON.x);
     if (state === 'cancelled') return wrap('msg-state-cancelled', 'Sending cancelled', ICON.x);
@@ -1762,11 +1788,28 @@ function _isCanonicalLxmfMsgId(msgId) {
 }
 
 function _isTerminalMessageState(state) {
-    return ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout'].indexOf(state) !== -1;
+    return ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper'].indexOf(state) !== -1;
 }
 
 function _messageDeliveryMethod(msg) {
     return String((msg && msg.delivery_method) || 'opportunistic').toLowerCase();
+}
+
+function _messageIsPaper(msg) {
+    return !!msg && (msg.state === 'paper' || _messageDeliveryMethod(msg) === 'paper');
+}
+
+// Paper never touches the network, so it replaces the delivery icon.
+function _messagePaperChipHtml(msg, isOut) {
+    var glyph = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        RS_QR_GLYPH_PATHS + '</svg>';
+    if (isOut) {
+        return ' <button type="button" class="msg-paper-state" data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
+            'aria-label="Paper message, not sent over the network. Show QR">' + glyph +
+            '<span class="msg-state-label" aria-hidden="true">Paper</span></button>';
+    }
+    return ' <span class="msg-paper-state msg-paper-state-static" role="img" aria-label="Received as a paper message">' +
+        glyph + '<span class="msg-state-label" aria-hidden="true">Paper</span></span>';
 }
 
 function _messageCanCancelSend(msg) {
@@ -2420,7 +2463,7 @@ function _loadConversation(hash) {
     }
     renderConversation({ forceScrollBottom: true });
     // get_conversation fetches messages AND marks-read; broadcasts unread_total.
-    RS.invoke('get_conversation', { hash: hash }).then(function(result) {
+    return RS.invoke('get_conversation', { hash: hash }).then(function(result) {
         if (!_conversationOwnerIsCurrent(loadOwner) || loadClears !== _messagesClearedCount) return;
         var messages = _mergeConversationMessages(hash, (result && result.messages) || []);
         cacheSet(hash, messages);
@@ -3631,7 +3674,9 @@ function renderConversation(options) {
         var isOut = msg.direction === 'outbound';
         var bubbleClassBase = isOut ? 'lxmf-msg outbound' : 'lxmf-msg inbound';
         var time = formatTime(msg.timestamp);
-        var stateIcon = isOut ? _messageStateIconHtml(msg) : '';
+        var stateIcon = _messageIsPaper(msg)
+            ? _messagePaperChipHtml(msg, isOut)
+            : (isOut ? _messageStateIconHtml(msg) : '');
         var progressPercent = isOut ? _messageProgressPercent(msg) : null;
         var canCancelSend = isOut && _messageCanCancelSend(msg);
         var canCancelTransfer = isOut && _messageCanCancelTransfer(msg);
@@ -3885,6 +3930,15 @@ function renderConversation(options) {
                 focusExpected: _messageActivationExpectsFocus(e),
             });
         }.bind(pill));
+    });
+
+    container.querySelectorAll('button.msg-paper-state').forEach(function(chip) {
+        _bindMessageFocusPreservingActivation(chip, function(event) {
+            if (_consumePendingMessageHoldActivation(event, chip)) return;
+            var msgId = chip.getAttribute('data-msg-id');
+            var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
+            if (msgData) _openPaperMessageShare(msgData);
+        });
     });
 
     container.querySelectorAll('.msg-actions-trigger').forEach(function(trigger) {
@@ -4287,6 +4341,95 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
     _updateConversationPreview(targetHash, composed.preview, Date.now() / 1000);
     loadConversations();
     _finishLxmfComposerSend(input, shouldRestoreComposerFocus, targetHash);
+}
+
+function _paperUriForMessage(msg) {
+    if (msg && msg.paper_uri) return Promise.resolve(msg.paper_uri);
+    if (!msg || !msg.id) return Promise.reject(new Error('Paper link unavailable'));
+    return RS.invoke('get_paper_uri', { message_id: msg.id }).then(function(resp) {
+        var uri = resp && resp.paper_uri;
+        if (!uri) throw new Error('Paper link unavailable');
+        msg.paper_uri = uri;
+        return uri;
+    });
+}
+
+// Reopens the stored link; regenerating would re-encrypt and defeat dedupe.
+function _openPaperMessageShare(msg) {
+    if (!(window.RS && RS.qr && typeof RS.qr.openPaperShare === 'function')) return;
+    var hash = _canonicalConversationHash(lxmfActiveContact);
+    RS.qr.openPaperShare({
+        recipientHash: hash,
+        recipientName: _conversationNameInfo(hash, null, false).name,
+        uri: msg.paper_uri || null,
+        loadUri: function() { return _paperUriForMessage(msg); },
+    });
+}
+
+var _paperSendInFlight = false;
+
+function sendLxmfPaperMessage() {
+    if (!lxmfActiveContact || _paperSendInFlight) return;
+    var input = document.getElementById('lxmf-input');
+    if (!input) return;
+    var sendOwner = _conversationOwnerSnapshot();
+    var targetHash = sendOwner.hash;
+    var text = input.value.trim();
+    if (!text) return;
+    if (lxmfPendingFile) {
+        showToast('Paper messages can\'t include attachments.', 'toast-warning', 4000);
+        return;
+    }
+    _paperSendInFlight = true;
+    RS.invoke('create_paper_message', { dest_hash: targetHash, content: text, title: '' }).then(function(resp) {
+        if (!_conversationOwnerIdentityIsCurrent(sendOwner)) return;
+        var uri = resp && resp.paper_uri;
+        if (!uri) throw new Error('Paper link unavailable');
+        var message = Object.assign({
+            id: generateMsgId(),
+            direction: 'outbound',
+            content: text,
+            timestamp: Date.now() / 1000,
+        }, (resp && resp.message) || {});
+        message.state = 'paper';
+        message.delivery_method = 'paper';
+        message.paper_uri = message.paper_uri || uri;
+        var target = _conversationMessagesFor(targetHash);
+        var existing = target.messages.find(function(m) { return m.id === message.id; });
+        if (existing && !existing.paper_uri) existing.paper_uri = message.paper_uri;
+        var wasActive = existing ? target.active : _appendConversationMessage(targetHash, message);
+        if (wasActive) renderConversation({ forceScrollBottom: true });
+        _updateConversationPreview(targetHash, text, message.timestamp);
+        loadConversations();
+        if (_canonicalConversationHash(lxmfActiveContact) === targetHash && input.value.trim() === text) {
+            if (_replyTarget) clearReplyTarget();
+            _finishLxmfComposerSend(input, false, targetHash);
+        }
+        if (RS.qr && typeof RS.qr.openPaperShare === 'function') {
+            RS.qr.openPaperShare({
+                recipientHash: targetHash,
+                recipientName: _conversationNameInfo(targetHash, null, false).name,
+                uri: message.paper_uri,
+            });
+        }
+    }).catch(function(err) {
+        var code = typeof paperErrorCode === 'function' ? paperErrorCode(err) : (err && err.code);
+        if (code === 'locked') return;
+        if (code === 'paper_too_long') {
+            var overage = typeof paperErrorDetail === 'function' ? paperErrorDetail(err, 'overage_chars') : null;
+            showToast(overage
+                ? 'Too long for a paper message. Remove about ' + Number(overage).toLocaleString('en-US') + ' characters.'
+                : 'Too long for a paper message.', 'toast-warning', 4000);
+        } else if (code === 'paper_unknown_identity') {
+            showToast('Can\'t create a paper message until ' + _conversationNameInfo(targetHash, null, false).name + ' announces.',
+                'toast-warning', 4000);
+        } else {
+            var message = err && err.message && !/\bpaper_[a-z_]+\b/.test(err.message) ? err.message : '';
+            showToast(message || 'Couldn\'t create the paper message', 'toast-error', 4000);
+        }
+    }).then(function() {
+        _paperSendInFlight = false;
+    });
 }
 
 function sendLxmfVoiceMemo(voiceDraft, targetHash, options) {
@@ -4875,7 +5018,7 @@ var _messagePointerContextSelection = null;
 function _messageHoldActivationSurface(target, bubble) {
     if (!target || !target.closest || !bubble || !bubble.contains(target)) return null;
     return target.closest('.lxmf-clickable-img, .rs-message-link, .rs-file-download, .msg-reply-quote, ' +
-        '.md-spoiler:not(.is-revealed), .md-code-copy');
+        '.md-spoiler:not(.is-revealed), .md-code-copy, .msg-paper-state');
 }
 
 function _clearPendingMessageHoldActivation(expectedSequence) {
@@ -5332,6 +5475,9 @@ function _messageActionIcon(name) {
     if (name === 'select') {
         return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9.5"/></svg>';
     }
+    if (name === 'qr') {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg>';
+    }
     return '';
 }
 
@@ -5399,6 +5545,11 @@ RS.linkTrust = (function() {
 })();
 
 function _confirmExternalLink(url, link) {
+    // Paper links open in Ratspeak, so the leaving-app warning doesn't apply.
+    if (/^lxm:\/\//i.test(String(url || ''))) {
+        if (typeof openPaperDecoder === 'function') openPaperDecoder({ uri: url, autoReview: true });
+        return;
+    }
     var masked = link && link.hasAttribute('data-masked');
     var linkText = masked ? link.textContent : null;
     var target = rsLinkTarget(url, linkText);
@@ -6052,6 +6203,39 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         actions.appendChild(copyBtn);
     }
 
+    if (msgData.direction === 'outbound' && _messageIsPaper(msgData)) {
+        var showQrBtn = document.createElement('button');
+        showQrBtn.className = 'msg-ctx-btn msg-ctx-paper-qr';
+        showQrBtn.type = 'button';
+        showQrBtn.setAttribute('data-message-action', 'paper-qr');
+        showQrBtn.innerHTML = _messageActionIcon('qr') + '<span>Show QR</span>';
+        _bindMessageFocusPreservingActivation(showQrBtn, function() {
+            _dismissContextMenu({ restoreFocus: false });
+            _openPaperMessageShare(msgData);
+        });
+        actions.appendChild(showQrBtn);
+
+        var copyPaperBtn = document.createElement('button');
+        copyPaperBtn.className = 'msg-ctx-btn msg-ctx-paper-link';
+        copyPaperBtn.type = 'button';
+        copyPaperBtn.setAttribute('data-message-action', 'copy-paper-link');
+        copyPaperBtn.innerHTML = _messageActionIcon('copy') + '<span>Copy paper link</span>';
+        _bindMessageFocusPreservingActivation(copyPaperBtn, function() {
+            var shouldRestoreComposer = _messageActionShouldPreserveComposer();
+            _dismissContextMenu();
+            _paperUriForMessage(msgData).then(function(uri) {
+                return _copyToClipboard(uri);
+            }).then(function(ok) {
+                showToast(ok ? 'Paper link copied' : 'Could not copy', ok ? 'toast-success' : 'toast-error', 1600);
+                _restoreLxmfComposerKeyboard(shouldRestoreComposer);
+            }).catch(function() {
+                showToast('Could not copy', 'toast-error', 1800);
+                _restoreLxmfComposerKeyboard(shouldRestoreComposer);
+            });
+        });
+        actions.appendChild(copyPaperBtn);
+    }
+
     if (opts.linkUrl) {
         var linkUrl = opts.linkUrl;
         var copyLinkBtn = document.createElement('button');
@@ -6380,6 +6564,8 @@ RS.listen('lxmf_message', function(msg) {
             RS.invoke('mark_read', { hash: msg.source }).catch(function() {});
         }
     }
+    // Paper rows are filed by the user's own action, so they never alert.
+    if (_messageIsPaper(msg)) return;
     if (appForeground && !conversationVisible) {
         var fromLabel = _messageSourceName(msg);
         var hasAudio = !!msg.audio;
@@ -6431,7 +6617,7 @@ RS.listen('lxmf_step', function(data) {
         var resolvedState = (data.step === 'error') ? 'failed' : data.step;
         // `propagated` is terminal alongside `delivered`/`failed`/`cancelled`/
         // `rejected` — see db::update_message_state for the matching guard.
-        var terminalStates = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout'];
+        var terminalStates = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper'];
         var matched = false;
         var eventMsgId = data.msg_id || data.client_msg_id;
         lxmfConversation.forEach(function(msg) {
@@ -6516,7 +6702,7 @@ RS.listen('lxmf_delivery_progress', function(data) {
         'reusing_direct_link',
         'reusing_backchannel'
     ];
-    var terminalStates = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout'];
+    var terminalStates = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper'];
     var changed = false;
     lxmfConversation.forEach(function(msg) {
         if (data.msg_id && msg.id === data.msg_id) {
@@ -6745,7 +6931,7 @@ function openConversationWith(hash, options) {
     if (typeof switchView === 'function') switchView('message');
     hash = _activateConversation(hash, 'navigation').hash;
     if (input) { input.value = _lxmfDrafts[hash] || ''; input.style.height = ''; }
-    _loadConversation(hash);
+    var loaded = _loadConversation(hash);
     _ensureGhostRow(hash);
     var input = document.getElementById('lxmf-input');
     if (input && (!options || options.focusComposer !== false)) input.focus();
@@ -6753,7 +6939,30 @@ function openConversationWith(hash, options) {
         RS.viewStack.push('chat-detail', { meta: { contactHash: hash } });
         history.pushState({ view: 'message', detail: true }, '', '#message');
     }
+    return loaded;
 }
+
+// Opens a conversation and flashes one message once its history has loaded.
+function openConversationAtMessage(hash, messageId, timestamp) {
+    hash = _canonicalConversationHash(hash);
+    Promise.resolve(openConversationWith(hash, { focusComposer: false })).then(function() {
+        setTimeout(function() {
+            if (_canonicalConversationHash(lxmfActiveContact) !== hash) return;
+            var ts = Number(timestamp);
+            var msg = lxmfConversation.find(function(m) { return messageId && m.id === messageId; }) ||
+                lxmfConversation.slice().reverse().find(function(m) {
+                    return ts && Math.abs(Number(m.timestamp) - ts) < 1;
+                });
+            var container = document.getElementById('lxmf-messages');
+            var bubble = msg && _findRenderedMessageBubble(container, msg.id);
+            if (!bubble) return;
+            bubble.scrollIntoView({ behavior: 'smooth', block: isCompactLayout() ? 'nearest' : 'center' });
+            bubble.classList.add('msg-highlight');
+            setTimeout(function() { bubble.classList.remove('msg-highlight'); }, 1500);
+        }, 120);
+    });
+}
+window.openConversationAtMessage = openConversationAtMessage;
 
 function initFabSpeedDial() {
     var mainFab = document.getElementById('lxmf-send-fab');
@@ -6811,6 +7020,15 @@ function initFabSpeedDial() {
             if (typeof haptic === 'function') haptic('selection');
             closeDial();
             openFabContactPicker();
+        });
+    }
+
+    var dialPaper = document.getElementById('fab-dial-paper');
+    if (dialPaper) {
+        dialPaper.addEventListener('click', function() {
+            if (typeof haptic === 'function') haptic('selection');
+            closeDial();
+            if (typeof openPaperDecoder === 'function') openPaperDecoder();
         });
     }
 }
@@ -7131,6 +7349,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var ICON_SEND_OPPORTUNISTIC = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>';
     var ICON_SEND_DIRECT = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M8 19V5"/><path d="m4 9 4-4 4 4"/><path d="M16 5v14"/><path d="m12 15 4 4 4-4"/></svg>';
     var ICON_RELAY = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>';
+    var ICON_PAPER = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg>';
 
     function openSendMethodPopover() {
         if (!sendBtn || typeof actionPopover !== 'function' || !lxmfActiveContact) return;
@@ -7142,10 +7361,13 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         var input = document.getElementById('lxmf-input');
         var wasFocused = !!(input && document.activeElement === input);
+        var hasText = !!(input && input.value.trim());
         actionPopover(sendBtn, [
             { label: 'Opportunistic', icon: ICON_SEND_OPPORTUNISTIC, onSelect: function() { sendLxmfMessage('opportunistic'); } },
             { label: 'Direct', icon: ICON_SEND_DIRECT, onSelect: function() { sendLxmfMessage('direct'); } },
             { label: 'Offline Inbox', icon: ICON_RELAY, disabled: !hasRelay, onSelect: function() { sendLxmfMessage('propagated'); } },
+            { separator: true },
+            { label: 'Paper', icon: ICON_PAPER, disabled: !hasText, onSelect: sendLxmfPaperMessage },
         ], {
             onClose: function() {
                 if (wasFocused && input && document.activeElement !== input) {
@@ -7314,12 +7536,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 return;
             }
             e.stopPropagation();
-            actionPopover(sendMsgBtn, [
+            var composeItems = [
                 { label: 'Contacts', icon: ICON_CONTACTS, onSelect: function() {
                     if (typeof openFabContactPicker === 'function') openFabContactPicker();
                 } },
                 { label: 'New',      icon: ICON_NEW,      onSelect: promptNewConversationHash }
-            ]);
+            ];
+            if (document.documentElement.dataset.paperMessages === 'on' && typeof openPaperDecoder === 'function') {
+                composeItems.push({ label: 'Paper', icon: ICON_PAPER, onSelect: openPaperDecoder });
+            }
+            actionPopover(sendMsgBtn, composeItems);
         });
     }
 

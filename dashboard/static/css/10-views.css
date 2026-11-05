@@ -4632,6 +4632,159 @@ body.setup-active .main-content {
     padding: var(--space-4) 0 0;
 }
 
+/* Paper message popup: the contact card sheet, wider, with a larger symbol. */
+.contact-share-sheet.paper-share-sheet {
+    width: min(480px, calc(100vw - 16px - var(--sal) - var(--sar)));
+    max-height: min(calc(var(--app-height, 100vh) - 32px - var(--sat) - var(--sab)), 880px);
+}
+
+.contact-share-sheet.paper-share-sheet:focus {
+    outline: none;
+}
+
+.paper-share-sheet .contact-share-qr-shell {
+    display: grid;
+    place-items: center;
+    width: min(calc(100% - 2 * var(--space-5)), 400px);
+    padding: 6px;
+    flex-shrink: 0;
+}
+
+/* The script sizes the canvas to whole device pixels; no border may shrink it. */
+.paper-share-sheet .contact-share-qr {
+    border: 0;
+    background: #ffffff;
+}
+
+.paper-share-helper {
+    margin: var(--space-4) var(--space-7) 0;
+    text-align: center;
+}
+
+.paper-share-sheet .contact-share-actions {
+    padding-bottom: 0;
+}
+
+.paper-share-sheet .contact-share-actions.paper-share-actions-single {
+    grid-template-columns: minmax(0, 1fr);
+}
+
+.paper-share-sheet .paper-share-link-block {
+    margin-bottom: var(--space-7);
+}
+
+.paper-share-link-row {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+}
+
+.paper-share-link {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+    word-break: break-all;
+}
+
+/* Beats the mobile `.nr-btn` padding, which squeezed the glyph to ~12px. */
+.paper-share-sheet .paper-share-copy {
+    flex: 0 0 44px;
+    width: 44px;
+    min-width: 44px;
+    height: 44px;
+    min-height: 44px;
+    padding: 0;
+}
+
+.paper-share-sheet .paper-share-copy svg {
+    flex: 0 0 18px;
+    width: 18px;
+    height: 18px;
+}
+
+/* Shared paper decode result (scanner, decoder, chat links). */
+.paper-result-status {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: var(--text-sm);
+    font-weight: var(--type-weight-semibold);
+}
+
+.paper-result-status svg {
+    width: 14px;
+    height: 14px;
+}
+
+.paper-result-status-verified { color: var(--status-online-fg); }
+.paper-result-status-unknown { color: var(--status-warning-fg); }
+.paper-result-status-invalid { color: var(--status-error-fg); }
+
+.paper-result-helper {
+    max-width: 34ch;
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    line-height: var(--type-leading-copy);
+}
+
+.contact-card-detail-row code.paper-result-plain {
+    font-family: inherit;
+}
+
+.contact-share-address-block.paper-result-preview {
+    width: 100%;
+    margin: var(--space-2) 0 0;
+    max-height: calc(9 * 1.5em);
+    overflow-y: auto;
+    color: var(--text-primary);
+    font-size: var(--text-sm);
+    line-height: 1.5;
+    text-align: left;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.paper-result-note {
+    color: var(--text-secondary);
+    font-size: var(--text-sm);
+}
+
+.paper-decoder-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-5);
+}
+
+.paper-decoder-form[hidden],
+.paper-decoder-result[hidden],
+.paper-decoder-checking[hidden] {
+    display: none;
+}
+
+.paper-decoder-checking {
+    padding: var(--space-7) 0;
+    color: var(--text-muted);
+    font-size: var(--text-sm);
+    text-align: center;
+}
+
+.paper-decoder-sheet .channel-share-input {
+    resize: none;
+}
+
+/* The footer (and its safe-area inset) is hidden while the result shows. */
+.paper-decoder-result .contact-scan-actions {
+    padding-bottom: calc(var(--space-4) + var(--sab));
+}
+
+:root:not([data-paper-messages="on"]) #fab-dial-paper {
+    display: none;
+}
+
 @keyframes contactCardSuccessPop {
     0% { transform: scale(0.72); opacity: 0; }
     100% { transform: scale(1); opacity: 1; }
