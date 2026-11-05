@@ -25,6 +25,7 @@ import android.view.View
 import android.webkit.*
 import android.widget.EditText
 import androidx.core.content.FileProvider
+import androidx.core.graphics.createBitmap
 import java.io.File
 import java.io.IOException
 import java.text.SimpleDateFormat
@@ -124,7 +125,7 @@ class RustWebChromeClient(private val activity: WryActivity, private val webView
   override fun getDefaultVideoPoster(): Bitmap {
     // Return a transparent bitmap so Chromium doesn't paint its default gray play-button placeholder on <video> elements.
     // Matches react-native-webview's approach — see https://github.com/react-native-webview/react-native-webview/blob/58daac9e2e532ca1dcb49003b86568218b9b2b1d/android/src/main/java/com/reactnativecommunity/webview/RNCWebViewManager.kt
-    return Bitmap.createBitmap(50, 50, Bitmap.Config.ARGB_8888)
+    return createBitmap(50, 50)
   }
 
   /**
