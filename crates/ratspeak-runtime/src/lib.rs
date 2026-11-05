@@ -5938,7 +5938,7 @@ async fn publish_in_session(state: &AppState, generation: u64, publish: impl FnO
     }
 }
 
-// Always emits, including backgrounded — first paint on resume.
+// Polls in the background too; a resume wake refreshes the UI at once.
 async fn poll_stats_loop(
     state: Arc<AppState>,
     shutdown: rns_runtime::lifecycle::ShutdownSignal,
@@ -5964,6 +5964,12 @@ async fn poll_stats_loop(
     let mut prev_held_announces: std::collections::HashMap<u64, u64> =
         std::collections::HashMap::new();
     let mut last_interface_announce = std::time::Instant::now();
+    // Announces already applied to the LXMF caches, by received timestamp.
+    let mut processed_announces: std::collections::HashMap<[u8; 16], f64> =
+        std::collections::HashMap::new();
+    let mut processed_generation = None;
+    // A backgrounded mobile poll skips the UI emit; resume must not wait out the cooldown.
+    let mut stats_emit_skipped = false;
 
     #[cfg(feature = "mobile-throttle")]
     let mut was_foreground = true;
@@ -5977,7 +5983,9 @@ async fn poll_stats_loop(
             _ = shutdown.wait() => break,
             _ = interval.tick() => {}
             _ = state.poll_now.notified() => {
-                if last_poll_at.elapsed() < POLL_NOW_COOLDOWN {
+                if last_poll_at.elapsed() < POLL_NOW_COOLDOWN
+                    && !(stats_emit_skipped && state.is_foreground())
+                {
                     continue;
                 }
                 interval.reset();
@@ -6191,11 +6199,24 @@ async fn poll_stats_loop(
                 let mut router_changed = false;
                 let mut changed_ratchet_hashes = Vec::new();
                 // Aspect-agnostic: crypto cache, announce_history, contact-name refresh.
+                if processed_generation != Some(poll_generation) {
+                    processed_announces.clear();
+                    processed_generation = Some(poll_generation);
+                }
                 if let Ok(mut lxmf) = state.lxmf.lock()
                     && let Some(mgr) = lxmf.as_mut()
                 {
                     for a in &announces {
                         let dest_hex = hex::encode(a.dest_hash);
+                        let unchanged = processed_announces
+                            .get(&a.dest_hash)
+                            .is_some_and(|seen| a.timestamp <= seen + 0.001);
+                        if unchanged
+                            && (a.public_key.is_none()
+                                || mgr.known_identities.contains_key(&dest_hex))
+                        {
+                            continue;
+                        }
                         tracing::debug!(
                             dest = %short_id(&dest_hex),
                             has_pk = a.public_key.is_some(),
@@ -6225,6 +6246,10 @@ async fn poll_stats_loop(
                             a.app_data.as_deref(),
                         );
                     }
+                    processed_announces = announces
+                        .iter()
+                        .map(|a| (a.dest_hash, a.timestamp))
+                        .collect();
                 }
                 if identities_changed || !changed_ratchet_hashes.is_empty() || router_changed {
                     let persistence_state = state.clone();
@@ -6435,41 +6460,21 @@ async fn poll_stats_loop(
 
                 // Peers who messaged us before they announced have no real
                 // name in contacts yet; refresh names when announces arrive.
-                let announce_identity_id =
-                    db::spawn_db(state.db.clone(), |p| db::get_active_identity(&p))
-                        .await
-                        .expect("db task panicked")
-                        .ok()
-                        .flatten()
-                        .and_then(|id| id.get("hash").and_then(|h| h.as_str()).map(String::from))
-                        .unwrap_or_default();
-                if !announce_identity_id.is_empty() {
-                    let mut contacts_changed = false;
-                    for a in &announces {
-                        let display_name = a
-                            .app_data
-                            .as_ref()
-                            .map(|d| extract_display_name(d))
-                            .unwrap_or_default();
-                        if !display_name.is_empty() {
-                            let dest_hex = hex::encode(a.dest_hash);
-                            let display_name_for_db = display_name.clone();
-                            let announce_id_for_db = announce_identity_id.clone();
-                            let updated = db::spawn_db(state.db.clone(), move |p| {
-                                db::update_contact_name_from_announce(
-                                    &p,
-                                    &dest_hex,
-                                    &display_name_for_db,
-                                    &announce_id_for_db,
-                                )
-                            })
-                            .await
-                            .expect("db task panicked");
-                            if updated {
-                                contacts_changed = true;
-                            }
-                        }
-                    }
+                let announce_identity_id = crate::helpers::active_identity_id(&state);
+                let announced_names: Vec<(String, String)> = announces
+                    .iter()
+                    .filter_map(|a| {
+                        let name = extract_display_name(a.app_data.as_ref()?);
+                        (!name.is_empty()).then(|| (hex::encode(a.dest_hash), name))
+                    })
+                    .collect();
+                if !announce_identity_id.is_empty() && !announced_names.is_empty() {
+                    let announce_id_for_db = announce_identity_id.clone();
+                    let contacts_changed = db::spawn_db(state.db.clone(), move |p| {
+                        db::fill_unnamed_contact_names(&p, &announce_id_for_db, &announced_names)
+                    })
+                    .await
+                    .expect("db task panicked");
                     if contacts_changed {
                         let announce_id_for_contacts = announce_identity_id.clone();
                         let contacts = db::spawn_db(state.db.clone(), move |p| {
@@ -6546,8 +6551,15 @@ async fn poll_stats_loop(
         }
 
         state.set_last_stats(stats.clone());
-        // Emit even when suspended; freshest snapshot is queued for resume.
-        state.emit_to_all("stats_update", stats);
+        // A backgrounded mobile WebView has no reader; resume polls and emits at once.
+        #[cfg(feature = "mobile-throttle")]
+        let emit = state.is_foreground();
+        #[cfg(not(feature = "mobile-throttle"))]
+        let emit = true;
+        if emit {
+            state.emit_to_all("stats_update", stats);
+        }
+        stats_emit_skipped = !emit;
 
         last_poll_at = std::time::Instant::now();
     }

@@ -37,7 +37,7 @@ pub async fn spawn_lxmf_delivery_handler(
                 ev = subscription.recv() => match ev {
                     Some(event) => {
                         process_delivery_announce(&state, event).await;
-                        state.request_poll_now();
+                        state.request_announce_poll();
                     }
                     None => break,
                 },
@@ -65,7 +65,7 @@ pub async fn spawn_lxmf_propagation_handler(
                 ev = subscription.recv() => match ev {
                     Some(event) => {
                         process_propagation_announce(&state, event).await;
-                        state.request_poll_now();
+                        state.request_announce_poll();
                     }
                     None => break,
                 },
@@ -95,7 +95,7 @@ pub async fn spawn_lxst_telephony_handler(
                 ev = subscription.recv() => match ev {
                     Some(event) => {
                         process_lxst_telephony_announce(&state, event).await;
-                        state.request_poll_now();
+                        state.request_announce_poll();
                     }
                     None => break,
                 },

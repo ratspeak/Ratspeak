@@ -15,6 +15,7 @@ changes that materially affect how an artifact is reproduced.
 - On iPad and iPhone Duo, the sidebar no longer shows a Home item that opened Peers.
 - On iPad, the sidebar layout no longer sits under the status bar.
 - Message actions, menus, and tooltips stay clear of notches and side status bars.
+- Ratspeak uses much less battery while idle: its background wakeups dropped by about 95%.
 
 ### Build and compatibility
 

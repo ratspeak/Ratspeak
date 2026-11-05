@@ -403,6 +403,12 @@ impl WorkerCore {
                 }
             }
 
+            // Only a capturing session has tick work; an idle worker must not wake.
+            let tick_rx = if self.is_capturing() {
+                self.tick_rx.clone()
+            } else {
+                crossbeam_channel::never()
+            };
             crossbeam_channel::select_biased! {
                 recv(self.urgent_rx) -> command => match command {
                     Ok(command) => {
@@ -426,12 +432,18 @@ impl WorkerCore {
                     },
                     Err(_) => return WorkerExit::Disconnected,
                 },
-                recv(self.tick_rx) -> _ => {
+                recv(tick_rx) -> _ => {
                     self.on_tick();
                     ingress_burst = 0;
                 },
             }
         }
+    }
+
+    fn is_capturing(&self) -> bool {
+        self.session
+            .as_ref()
+            .is_some_and(|session| session.state == ActivityCaptureState::Capturing)
     }
 
     fn handle_urgent(&mut self, command: UrgentCommand) -> bool {

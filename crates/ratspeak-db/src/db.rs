@@ -2514,33 +2514,51 @@ pub fn get_all_contacts_conn(conn: &Connection, identity_id: &str) -> Vec<serde_
 }
 
 /// Updates display_name only when empty; preserves user-chosen names.
-pub fn update_contact_name_from_announce(
+/// Names still-unnamed contacts from announced `(dest_hash, display_name)`
+/// pairs in one transaction; returns whether any contact changed.
+pub fn fill_unnamed_contact_names(
     pool: &DbPool,
-    dest_hash: &str,
-    name: &str,
     identity_id: &str,
+    names: &[(String, String)],
 ) -> bool {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return false,
+    let Ok(mut conn) = pool.get() else {
+        return false;
     };
-    let rows = conn
-        .execute(
-            "UPDATE contacts SET display_name = ?1, last_seen = ?4
-         WHERE dest_hash = ?2 AND identity_id = ?3
-         AND (display_name IS NULL OR display_name = '')",
-            params![
-                name,
-                dest_hash,
-                identity_id,
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs_f64()
-            ],
-        )
-        .unwrap_or(0);
-    rows > 0
+    let unnamed: std::collections::HashSet<String> = {
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT dest_hash FROM contacts WHERE identity_id = ?1
+             AND (display_name IS NULL OR display_name = '')",
+        ) else {
+            return false;
+        };
+        let Ok(rows) = stmt.query_map(params![identity_id], |row| row.get::<_, String>(0)) else {
+            return false;
+        };
+        rows.filter_map(Result::ok).collect()
+    };
+    if unnamed.is_empty() {
+        return false;
+    }
+    let Ok(tx) = conn.transaction() else {
+        return false;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64();
+    let mut changed = false;
+    for (dest_hash, name) in names.iter().filter(|(dest, _)| unnamed.contains(dest)) {
+        changed |= tx
+            .execute(
+                "UPDATE contacts SET display_name = ?1, last_seen = ?4
+                 WHERE dest_hash = ?2 AND identity_id = ?3
+                 AND (display_name IS NULL OR display_name = '')",
+                params![name, dest_hash, identity_id, now],
+            )
+            .unwrap_or(0)
+            > 0;
+    }
+    tx.commit().is_ok() && changed
 }
 
 pub fn get_contact(pool: &DbPool, dest_hash: &str, identity_id: &str) -> Option<serde_json::Value> {
