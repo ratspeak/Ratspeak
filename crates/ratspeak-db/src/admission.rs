@@ -824,7 +824,21 @@ impl DurableInboundStore {
         peer: Option<&str>,
         now: u64,
     ) -> Result<MessageDeletionArtifacts, AdmissionDbError> {
-        self.delete_scoped(identity, peer, None, now)
+        self.delete_scoped(identity, peer, None, None, now)
+            .map(|(artifacts, _)| artifacts)
+    }
+
+    /// As `delete_messages_guarded`, limited to one conversation with `peer`
+    /// (`""` is Main). An extra conversation is forgotten with its messages.
+    pub fn delete_thread_messages_guarded(
+        &self,
+        _guard: &AdmissionGuard,
+        identity: &str,
+        peer: &str,
+        thread: &str,
+        now: u64,
+    ) -> Result<MessageDeletionArtifacts, AdmissionDbError> {
+        self.delete_scoped(identity, Some(peer), Some(thread), None, now)
             .map(|(artifacts, _)| artifacts)
     }
 
@@ -843,17 +857,18 @@ impl DurableInboundStore {
             return Err(AdmissionDbError::TooLarge);
         }
         let ids = serde_json::to_string(ids).map_err(|_| AdmissionDbError::TooLarge)?;
-        self.delete_scoped(identity, Some(peer), Some(&ids), now)
+        self.delete_scoped(identity, Some(peer), None, Some(&ids), now)
     }
 
     fn delete_scoped(
         &self,
         identity: &str,
         peer: Option<&str>,
+        thread: Option<&str>,
         ids: Option<&str>,
         now: u64,
     ) -> Result<(MessageDeletionArtifacts, Vec<String>), AdmissionDbError> {
-        const SCOPE: &str = "identity_id=?1 AND (?2 IS NULL OR source=?2 OR destination=?2) AND (?3 IS NULL OR id IN (SELECT value FROM json_each(?3)))";
+        const SCOPE: &str = "identity_id=?1 AND (?2 IS NULL OR source=?2 OR destination=?2) AND (?3 IS NULL OR id IN (SELECT value FROM json_each(?3))) AND (?4 IS NULL OR thread=?4)";
         fn text(row: &rusqlite::Row<'_>, column: usize, limit: usize) -> rusqlite::Result<String> {
             let value = row.get_ref(column)?.as_str()?;
             if value.len() > limit {
@@ -878,7 +893,7 @@ impl DurableInboundStore {
         if ids.is_some()
             && tx.query_row(
                 &format!("SELECT EXISTS(SELECT 1 FROM messages WHERE {SCOPE} AND direction='outbound' AND state NOT IN ('delivered','propagated','failed','cancelled','rejected','timeout','read') AND NOT (state='sent' AND lower(COALESCE(delivery_method,''))<>'direct'))"),
-                params![identity, peer, ids],
+                params![identity, peer, ids, thread],
                 |row| row.get::<_, bool>(0),
             )?
         {
@@ -888,7 +903,7 @@ impl DurableInboundStore {
         let mut deleted = Vec::new();
         {
             let mut stmt = tx.prepare(&format!("SELECT id,identity_id,attachment_stored_name,image_stored_name,audio_stored_name FROM messages WHERE {SCOPE}"))?;
-            let rows = stmt.query_map(params![identity, peer, ids], |row| {
+            let rows = stmt.query_map(params![identity, peer, ids, thread], |row| {
                 Ok((
                     text(row, 0, 128)?,
                     text(row, 1, 128)?,
@@ -940,19 +955,37 @@ impl DurableInboundStore {
         }
         tx.execute(
             &format!("DELETE FROM reactions WHERE identity_id=?1 AND message_id IN (SELECT id FROM messages WHERE {SCOPE})"),
-            params![identity, peer, ids],
+            params![identity, peer, ids, thread],
         )?;
         tx.execute(
             &format!("DELETE FROM messages WHERE {SCOPE}"),
-            params![identity, peer, ids],
+            params![identity, peer, ids, thread],
         )?;
-        if let Some(peer) = peer
-            && ids.is_none()
-        {
-            tx.execute(
-                "DELETE FROM hidden_conversations WHERE identity_id=?1 AND dest_hash=?2",
-                params![identity, peer],
-            )?;
+        if ids.is_none() {
+            match (peer, thread) {
+                (Some(peer), None) => {
+                    tx.execute(
+                        "DELETE FROM hidden_conversations WHERE identity_id=?1 AND dest_hash=?2",
+                        params![identity, peer],
+                    )?;
+                    tx.execute(
+                        "DELETE FROM conversation_threads WHERE identity_id=?1 AND peer_hash=?2",
+                        params![identity, peer],
+                    )?;
+                }
+                (Some(peer), Some(thread)) => {
+                    tx.execute(
+                        "DELETE FROM conversation_threads WHERE identity_id=?1 AND peer_hash=?2 AND thread=?3",
+                        params![identity, peer, thread],
+                    )?;
+                }
+                (None, _) => {
+                    tx.execute(
+                        "DELETE FROM conversation_threads WHERE identity_id=?1",
+                        params![identity],
+                    )?;
+                }
+            }
         }
         tx.commit()
             .map_err(|error| AdmissionDbError::CommitUncertain(error.to_string()))?;
@@ -1190,6 +1223,68 @@ mod tests {
             bounded_json(&"x".repeat(1024), 100),
             Err(AdmissionDbError::TooLarge)
         ));
+    }
+    #[test]
+    fn thread_deletion_keeps_other_conversations_and_forgets_only_its_own() {
+        let _serial = SERIAL.lock().unwrap();
+        let (path, pool, store) = fixture();
+        let identity = "11".repeat(16);
+        let side = hex::encode([9; 32]);
+        for (id, thread) in [([3; 32], ""), ([4; 32], side.as_str())] {
+            crate::db::try_save_message_with_audio(
+                &pool,
+                &hex::encode(id),
+                "peer",
+                "local",
+                "m",
+                "",
+                1.,
+                "received",
+                "inbound",
+                &identity,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                None,
+                None,
+                "",
+                None,
+                thread,
+            )
+            .unwrap();
+        }
+        let guard = try_reserve_admission().unwrap();
+        store
+            .delete_thread_messages_guarded(&guard, &identity, "peer", "", 1001)
+            .unwrap();
+        assert!(crate::db::get_conversation_in_thread(&pool, "peer", "", &identity, 10).is_empty());
+        assert_eq!(
+            crate::db::get_conversation(&pool, "peer", &identity, 10).len(),
+            1
+        );
+        assert_eq!(
+            crate::db::conversation_threads(&pool, &identity, "peer")
+                .unwrap()
+                .len(),
+            2
+        );
+        store
+            .delete_thread_messages_guarded(&guard, &identity, "peer", &side, 1001)
+            .unwrap();
+        assert!(crate::db::get_conversation(&pool, "peer", &identity, 10).is_empty());
+        assert_eq!(
+            crate::db::conversation_threads(&pool, &identity, "peer")
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(guard);
+        drop(store);
+        drop(pool);
+        let _ = std::fs::remove_dir_all(path);
     }
     #[test]
     fn guarded_deletion_returns_exact_archive_and_keeps_admission_excluded() {

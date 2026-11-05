@@ -34,7 +34,8 @@ function fixture(disposition='still',prompt=true,choice='medium') {
     let focusCount=0;
     const input={value:'',style:{},focus(){focusCount++;}};
     const navigation={_canonicalConversationHash:x=>x,_ghostConversationHash:null,lxmfActiveContact:null,_lxmfDrafts:{},
-        document:{getElementById:()=>input},_activateConversation:hash=>({hash}),_loadConversation(){},_ensureGhostRow(){},isCompactLayout:()=>false};
+        document:{getElementById:()=>input},_activateConversation:hash=>({hash}),_loadConversation(){},_ensureGhostRow(){},isCompactLayout:()=>false,
+        _saveActiveDraft(){},_restoreActiveDraft(){},_latestConversationThread:()=>''};
     vm.createContext(navigation);vm.runInContext(extract('openConversationWith'),navigation);
     navigation.openConversationWith('one'); assert.equal(focusCount,1,'ordinary navigation keeps composer focus');
     navigation.openConversationWith('two',{focusComposer:false}); assert.equal(focusCount,1,'shared photo navigation does not open the keyboard');

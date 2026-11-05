@@ -87,9 +87,9 @@ var conversationUpdateSource = lxmf.slice(
 assert(conversationUpdateSource.includes('var hash = _canonicalConversationHash(data.hash)'));
 assert(conversationUpdateSource.includes('msg.source = _canonicalConversationHash(msg.source)'));
 assert(conversationUpdateSource.includes('msg.destination = _canonicalConversationHash(msg.destination)'));
-assert(conversationUpdateSource.includes('var conversationVisible = _isConversationActivelyVisible(msg.source)'));
+assert(conversationUpdateSource.includes('var conversationVisible = _isConversationActivelyVisible(msg.source, msg.thread)'));
 assert(conversationUpdateSource.includes('if (conversationVisible) {') &&
-    conversationUpdateSource.includes("RS.invoke('mark_read', { hash: msg.source })"),
+    conversationUpdateSource.includes("RS.invoke('mark_read', { hash: msg.source, thread: msg.thread || null })"),
     'only a conversation the user can currently see may be marked read on arrival');
 assert(conversationUpdateSource.includes('if (appForeground && !conversationVisible) {'),
     'foreground attention belongs to an in-app toast only outside the visible conversation');

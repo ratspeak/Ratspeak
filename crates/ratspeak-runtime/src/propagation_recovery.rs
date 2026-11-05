@@ -105,6 +105,16 @@ pub fn delete_messages(
     crate::inbound_admission::delete_messages(state, identity, peer)
 }
 
+/// `delete_messages` for one conversation with `peer`; `""` is Main.
+pub fn delete_thread_messages(
+    state: &AppState,
+    identity: &str,
+    peer: &str,
+    thread: &str,
+) -> Result<DeletedMessages, crate::db::admission::AdmissionDbError> {
+    crate::inbound_admission::delete_thread_messages(state, identity, peer, thread)
+}
+
 /// `delete_messages` for chosen `ids` with `peer`; also returns the ids deleted.
 pub fn delete_selected_messages(
     state: &AppState,

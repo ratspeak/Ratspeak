@@ -35,6 +35,7 @@ function harness(messages) {
     const context = {
         lxmfConversation: messages.slice(),
         lxmfActiveContact: 'peer',
+        lxmfActiveThread: '',
         _msgReactions: {},
         _canonicalConversationHash: (h) => h,
         _messageCanCancelSend: (m) => m.direction === 'outbound' && m.state === 'sending',
@@ -60,6 +61,10 @@ function harness(messages) {
         },
     };
     vm.createContext(context);
+    ['_canonicalConversationThread', '_conversationKey', '_activeConversationKey', '_resolveConversationThread'].forEach((name) => {
+        const at = source.indexOf('function ' + name + '(');
+        vm.runInContext(source.slice(at, source.indexOf('\n}\n', at) + 3), context);
+    });
     vm.runInContext(source.slice(start, end), context);
     return { context, bar, deleteBtn, status, container, calls, confirms, toasts };
 }

@@ -5316,22 +5316,37 @@ impl InboundFence {
 /// under the lock (`inbound_message_stored`).
 pub(crate) struct InboundLists {
     pub(crate) label: String,
+    /// The message's conversation once the sender has several; else `None`.
+    pub(crate) conversation: Option<String>,
     pub(crate) contacts: Vec<Value>,
     pub(crate) unread: i64,
     pub(crate) stored: bool,
 }
 
+impl InboundLists {
+    /// Alert sender: "Name · Conversation" when the sender has several.
+    pub(crate) fn alert_label(&self) -> String {
+        match &self.conversation {
+            Some(conversation) => format!("{} · {conversation}", self.label),
+            None => self.label.clone(),
+        }
+    }
+}
+
 pub(crate) async fn read_inbound_lists(
     state: &AppState,
     source_hash: &str,
+    thread: &str,
     identity_id: &str,
     msg_id: &str,
 ) -> Option<InboundLists> {
     let source = source_hash.to_string();
+    let thread = thread.to_string();
     let identity = identity_id.to_string();
     let msg_id = msg_id.to_string();
     db::spawn_db(state.db.clone(), move |p| InboundLists {
         label: contact_label_from_db(&p, &source, &identity),
+        conversation: db::conversation_thread_display_label(&p, &identity, &source, &thread),
         contacts: contact_list_payload(db::get_all_contacts(&p, &identity)),
         unread: db::get_all_unread_counts(&p, &identity).values().sum(),
         stored: db::message_exists_for_identity(&p, &msg_id, &identity),
@@ -5572,11 +5587,13 @@ async fn process_inbound_lxmf(
     let received_at = next_chat_observed_timestamp(state, &source_hash, &identity_id).await;
     let (reply_to_id, reply_to_preview) = inbound_reply_fields(chat_extension.as_ref());
     let renderer = lxmf::message_renderer(&msg);
+    let thread = lxmf::message_thread(&msg);
     let delivery_method = source.stored_delivery_method();
     // The receiver's media is written to its own files with the row that
     // names it, in one blocking task off the manager lock.
     let saved = {
         let config = state.config.clone();
+        let thread = thread.clone();
         let msg_id = msg_id.clone();
         let source_hash = source_hash.clone();
         let dest_hash = dest_hash.clone();
@@ -5626,6 +5643,7 @@ async fn process_inbound_lxmf(
                     .map(|audio| audio.stored_name.as_str())
                     .unwrap_or(""),
                 renderer,
+                &thread,
             );
             if saved.is_err() {
                 remove_inbound_media_after_persistence_failure(
@@ -5662,12 +5680,15 @@ async fn process_inbound_lxmf(
     });
 
     let revision = state.conversation_list_revision();
-    let lists = read_inbound_lists(state, &source_hash, &identity_id, &msg_id).await;
+    let lists = read_inbound_lists(state, &source_hash, &thread, &identity_id, &msg_id).await;
 
     let source_display_name = lists.as_ref().map_or_else(
         || compact_hash_label(&source_hash),
         |lists| lists.label.clone(),
     );
+    let notification_label = lists
+        .as_ref()
+        .map_or_else(|| source_display_name.clone(), InboundLists::alert_label);
 
     // Frontend expects nested `image` / `attachments` matching history rows.
     let mut event_data = json!({
@@ -5684,6 +5705,7 @@ async fn process_inbound_lxmf(
         "reply_to_preview": reply_to_preview,
         "renderer": renderer,
         "delivery_method": delivery_method,
+        "thread": thread,
     });
     if let Some(ref att) = attachment_file {
         let obj = event_data.as_object_mut().unwrap();
@@ -5721,7 +5743,7 @@ async fn process_inbound_lxmf(
     notify_inbound_message_if_background(
         state,
         &source_hash,
-        &source_display_name,
+        &notification_label,
         &messaging::message_display_text(&msg.title_text(), &msg.content_text()),
         renderer,
         attachment_file.is_some() || audio_file.is_some(),

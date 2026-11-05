@@ -538,6 +538,7 @@ pub ratspeak_tauri::commands::messaging::SendLxmfArgs::content: alloc::string::S
 pub ratspeak_tauri::commands::messaging::SendLxmfArgs::delivery_method: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendLxmfArgs::dest_hash: alloc::string::String
 pub ratspeak_tauri::commands::messaging::SendLxmfArgs::renderer: core::option::Option<u8>
+pub ratspeak_tauri::commands::messaging::SendLxmfArgs::thread: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendLxmfArgs::title: core::option::Option<alloc::string::String>
 pub struct ratspeak_tauri::commands::messaging::SendPropagatedArgs
 pub ratspeak_tauri::commands::messaging::SendPropagatedArgs::client_msg_id: core::option::Option<alloc::string::String>
@@ -558,6 +559,7 @@ pub ratspeak_tauri::commands::messaging::SendReplyArgs::dest_hash: alloc::string
 pub ratspeak_tauri::commands::messaging::SendReplyArgs::renderer: core::option::Option<u8>
 pub ratspeak_tauri::commands::messaging::SendReplyArgs::reply_to_id: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendReplyArgs::reply_to_preview: core::option::Option<alloc::string::String>
+pub ratspeak_tauri::commands::messaging::SendReplyArgs::thread: core::option::Option<alloc::string::String>
 pub struct ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs
 pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::client_msg_id: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::content: core::option::Option<alloc::string::String>
@@ -565,6 +567,7 @@ pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::delivery_meth
 pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::dest_hash: alloc::string::String
 pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::renderer: core::option::Option<u8>
 pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::staging_token: alloc::string::String
+pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::thread: core::option::Option<alloc::string::String>
 pub struct ratspeak_tauri::commands::messaging::SendWithAttachmentArgs
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::client_msg_id: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::content: core::option::Option<alloc::string::String>
@@ -575,6 +578,7 @@ pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::file_name: core
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::image_data: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::image_mime: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::renderer: core::option::Option<u8>
+pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::thread: core::option::Option<alloc::string::String>
 pub async fn ratspeak_tauri::commands::messaging::api_conversation(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::api_file_metadata(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<ratspeak_tauri::commands::messaging::FileMetadata>
 pub async fn ratspeak_tauri::commands::messaging::api_file_read_chunk(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, u64, usize) -> ratspeak_tauri::error::AppResult<tauri::ipc::Response>
@@ -586,15 +590,18 @@ pub async fn ratspeak_tauri::commands::messaging::append_attachment_stage(tauri:
 pub async fn ratspeak_tauri::commands::messaging::begin_attachment_stage(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::BeginAttachmentStageArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::cancel_attachment_stage(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::cancel_lxmf_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::CancelLxmfMessageArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
-pub async fn ratspeak_tauri::commands::messaging::delete_conversation(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::messaging::create_conversation_thread(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, core::option::Option<alloc::string::String>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::messaging::delete_conversation(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, core::option::Option<alloc::string::String>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::delete_messages(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, alloc::vec::Vec<alloc::string::String>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
-pub async fn ratspeak_tauri::commands::messaging::get_conversation(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::messaging::get_conversation(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, core::option::Option<alloc::string::String>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::messaging::get_conversation_threads(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::hide_conversation(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::inspect_image_attachment_stage(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::ImageAttachmentStageArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::mark_image_attachment_stage_as_file(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::ImageAttachmentStageArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
-pub async fn ratspeak_tauri::commands::messaging::mark_read(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::messaging::mark_read(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, core::option::Option<alloc::string::String>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::prepare_image_attachment_stage(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::PrepareImageAttachmentStageArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub fn ratspeak_tauri::commands::messaging::received_file_export(&ratspeak_runtime::state::AppState, &str) -> ratspeak_tauri::error::AppResult<(std::path::PathBuf, alloc::string::String, alloc::string::String)>
+pub async fn ratspeak_tauri::commands::messaging::rename_conversation_thread(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, alloc::string::String, core::option::Option<alloc::string::String>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::send_lxmf_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::SendLxmfArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::send_lxmf_propagated(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::SendPropagatedArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::send_lxmf_reply(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::SendReplyArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
@@ -647,7 +654,7 @@ pub async fn ratspeak_tauri::commands::network_ownership::test_shared_instance(t
 pub mod ratspeak_tauri::commands::paper
 pub use ratspeak_tauri::commands::paper::normalize_paper_uri
 pub async fn ratspeak_tauri::commands::paper::add_paper_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
-pub async fn ratspeak_tauri::commands::paper::create_paper_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, alloc::string::String, core::option::Option<alloc::string::String>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::paper::create_paper_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, alloc::string::String, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::paper::get_paper_uri(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::paper::preview_paper_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub mod ratspeak_tauri::commands::peers
@@ -686,6 +693,7 @@ pub ratspeak_tauri::commands::voice::SendLxmfVoiceMessageArgs::client_msg_id: co
 pub ratspeak_tauri::commands::voice::SendLxmfVoiceMessageArgs::delivery_method: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::voice::SendLxmfVoiceMessageArgs::dest_hash: alloc::string::String
 pub ratspeak_tauri::commands::voice::SendLxmfVoiceMessageArgs::staging_token: alloc::string::String
+pub ratspeak_tauri::commands::voice::SendLxmfVoiceMessageArgs::thread: core::option::Option<alloc::string::String>
 pub struct ratspeak_tauri::commands::voice::VoiceAnswerArgs
 pub ratspeak_tauri::commands::voice::VoiceAnswerArgs::link_id: alloc::string::String
 pub struct ratspeak_tauri::commands::voice::VoiceCallArgs

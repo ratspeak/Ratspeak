@@ -76,6 +76,9 @@ function fire() { const batch = [...timers.values()]; timers.clear(); batch.forE
     let cacheWrites = 0;
     Object.assign(context, {
         _canonicalConversationHash: hash => hash,
+        _resolveConversationThread: () => '',
+        _conversationKey: hash => hash,
+        _activeConversationKey: () => context.lxmfActiveContact,
         _msgReactions: {}, _messagesClearedCount: 0, cacheGet: () => null,
         renderConversation() {},
         _clearMessageSelection() { return false; },

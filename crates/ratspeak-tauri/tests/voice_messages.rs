@@ -219,6 +219,7 @@ fn stage_compact(f: &Fixture) -> String {
 }
 fn send_args(token: String, client: bool) -> SendLxmfVoiceMessageArgs {
     SendLxmfVoiceMessageArgs {
+        thread: None,
         dest_hash: "ab".repeat(16),
         staging_token: token,
         delivery_method: Some("direct".into()),

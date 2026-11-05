@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-pub(crate) const SCHEMA_VERSION: i64 = 47;
+pub(crate) const SCHEMA_VERSION: i64 = 48;
 
 const VOICE_FORMAT_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS conversation_voice_formats (
@@ -17,6 +17,29 @@ CREATE TABLE IF NOT EXISTS conversation_voice_formats (
     audio_mode INTEGER NOT NULL CHECK (audio_mode IN (3, 16)),
     PRIMARY KEY(identity_id, dest_hash)
 );";
+
+// Extra conversations with one peer (LXMF FIELD_THREAD). Main is the empty
+// thread and has no row; `number` labels unnamed ones and is never reused.
+const CONVERSATION_THREADS_SCHEMA_SQL: &str = "
+CREATE TABLE IF NOT EXISTS conversation_threads (
+    identity_id TEXT NOT NULL,
+    peer_hash TEXT NOT NULL,
+    thread TEXT NOT NULL CHECK (length(thread) BETWEEN 2 AND 128),
+    number INTEGER NOT NULL,
+    name TEXT,
+    started_by TEXT NOT NULL CHECK (started_by IN ('self', 'contact')),
+    opened INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    PRIMARY KEY (identity_id, peer_hash, thread)
+);
+CREATE TABLE IF NOT EXISTS conversation_thread_counters (
+    identity_id TEXT NOT NULL,
+    peer_hash TEXT NOT NULL,
+    last_number INTEGER NOT NULL,
+    PRIMARY KEY (identity_id, peer_hash)
+);";
+// Applied after `messages` exists; migrations only add the column.
+const CONVERSATION_THREADS_INDEX_SQL: &str = "CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(identity_id, thread) WHERE thread != '';";
 
 pub const PEER_SERVICE_LXMF_DELIVERY: &str = ratspeak_core::LXMF_DELIVERY_APP_NAME;
 pub const PEER_SERVICE_LXST_TELEPHONY: &str = "lxst.telephony";
@@ -33,6 +56,7 @@ const MESSAGE_AUDIO_MODE_COLUMN_INDEX: usize = 22;
 const MESSAGE_AUDIO_STORED_NAME_COLUMN_INDEX: usize = 23;
 const MESSAGE_RENDERER_COLUMN_INDEX: usize = 24;
 const MESSAGE_PAPER_URI_COLUMN_INDEX: usize = 25;
+const MESSAGE_THREAD_COLUMN_INDEX: usize = 26;
 
 const IDENTITY_SELECT_COLUMNS: &str = "hash,
     lxmf_hash,
@@ -217,6 +241,8 @@ pub fn init_schema(pool: &DbPool) -> Result<(), Box<dyn std::error::Error + Send
     tx.execute_batch(SCHEMA_SQL)?;
     tx.execute_batch(crate::admission::SCHEMA_SQL)?;
     tx.execute_batch(VOICE_FORMAT_SCHEMA_SQL)?;
+    tx.execute_batch(CONVERSATION_THREADS_SCHEMA_SQL)?;
+    tx.execute_batch(CONVERSATION_THREADS_INDEX_SQL)?;
     tx.execute_batch(CHANNEL_HISTORY_SCHEMA_SQL)?;
     tx.execute_batch(CHANNEL_ROOM_STATE_SCHEMA_SQL)?;
     tx.execute_batch(CHANNEL_PARTICIPANT_OBSERVATION_SCHEMA_SQL)?;
@@ -294,6 +320,7 @@ CREATE TABLE IF NOT EXISTS messages (
     audio_stored_name TEXT NOT NULL DEFAULT '',
     renderer INTEGER CHECK (renderer IS NULL OR renderer BETWEEN 0 AND 255),
     paper_uri TEXT,
+    thread TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (id, identity_id)
 );
 
@@ -1994,6 +2021,24 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 48 {
+        migration_step(conn, 48, |conn| {
+            if table_exists(conn, "messages")?
+                && !get_column_names(conn, "messages")?
+                    .iter()
+                    .any(|column| column == "thread")
+            {
+                conn.execute_batch(
+                    "ALTER TABLE messages ADD COLUMN thread TEXT NOT NULL DEFAULT '';",
+                )?;
+            }
+            conn.execute_batch(CONVERSATION_THREADS_SCHEMA_SQL)?;
+            conn.execute_batch("UPDATE schema_version SET version = 48;")?;
+            tracing::info!("Migrated to schema version 48 (LXMF conversation threads)");
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -2249,6 +2294,8 @@ pub const RESET_TABLES: &[&str] = &[
     "lxmf_admission_epochs",
     "lxmf_admission_barrier",
     "conversation_voice_formats",
+    "conversation_threads",
+    "conversation_thread_counters",
     "messages",
     "contacts",
     "identities",
@@ -2367,6 +2414,14 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
     (
         "conversation_voice_formats",
         "DELETE FROM conversation_voice_formats WHERE identity_id = ?1",
+    ),
+    (
+        "conversation_threads",
+        "DELETE FROM conversation_threads WHERE identity_id = ?1",
+    ),
+    (
+        "conversation_thread_counters",
+        "DELETE FROM conversation_thread_counters WHERE identity_id = ?1",
     ),
     ("contacts", "DELETE FROM contacts WHERE identity_id = ?1"),
     ("messages", "DELETE FROM messages WHERE identity_id = ?1"),
@@ -3016,6 +3071,7 @@ pub fn save_message(
         None,
         "",
         None,
+        "",
     );
 }
 
@@ -3047,6 +3103,7 @@ pub fn save_message_with_audio(
     audio_mode: Option<u8>,
     audio_stored_name: &str,
     renderer: Option<u8>,
+    thread: &str,
 ) {
     if let Err(error) = try_save_message_with_audio(
         pool,
@@ -3069,6 +3126,7 @@ pub fn save_message_with_audio(
         audio_mode,
         audio_stored_name,
         renderer,
+        thread,
     ) {
         tracing::warn!(error, "failed to persist message");
     }
@@ -3117,6 +3175,7 @@ pub fn try_save_message(
         None,
         "",
         None,
+        "",
     )
 }
 
@@ -3143,6 +3202,7 @@ pub fn try_save_message_with_audio(
     audio_mode: Option<u8>,
     audio_stored_name: &str,
     renderer: Option<u8>,
+    thread: &str,
 ) -> Result<(), String> {
     let conn = pool.get().map_err(|error| error.to_string())?;
     try_save_message_with_audio_conn(
@@ -3166,6 +3226,7 @@ pub fn try_save_message_with_audio(
         audio_mode,
         audio_stored_name,
         renderer,
+        thread,
     )
 }
 
@@ -3192,6 +3253,7 @@ pub fn try_save_message_with_audio_conn(
     audio_mode: Option<u8>,
     audio_stored_name: &str,
     renderer: Option<u8>,
+    thread: &str,
 ) -> Result<(), String> {
     if identity_id.is_empty() {
         return Err("no active identity".into());
@@ -3214,9 +3276,18 @@ pub fn try_save_message_with_audio_conn(
     } else {
         let audio_mode = audio_mode.map(i64::from);
         let renderer = renderer.map(i64::from);
+        if !thread.is_empty() {
+            let (peer, started_by) = if direction == "inbound" {
+                (source, ThreadStarter::Contact)
+            } else {
+                (destination, ThreadStarter::Me)
+            };
+            ensure_conversation_thread_conn(conn, identity_id, peer, thread, started_by)
+                .map_err(|error| error.to_string())?;
+        }
         conn.execute(
-            "INSERT INTO messages (id, source, destination, content, title, timestamp, state, direction, identity_id, attachment_name, attachment_stored_name, image_name, image_stored_name, reply_to_id, reply_to_preview, delivery_method, audio_mode, audio_stored_name, renderer) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
-            params![msg_id, source, destination, content, title, timestamp, state, direction, identity_id, attachment_name, attachment_stored_name, image_name, image_stored_name, reply_to_id, reply_to_preview, delivery_method, audio_mode, audio_stored_name, renderer],
+            "INSERT INTO messages (id, source, destination, content, title, timestamp, state, direction, identity_id, attachment_name, attachment_stored_name, image_name, image_stored_name, reply_to_id, reply_to_preview, delivery_method, audio_mode, audio_stored_name, renderer, thread) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            params![msg_id, source, destination, content, title, timestamp, state, direction, identity_id, attachment_name, attachment_stored_name, image_name, image_stored_name, reply_to_id, reply_to_preview, delivery_method, audio_mode, audio_stored_name, renderer, thread],
         ).map_err(|error| error.to_string())?;
     }
     Ok(())
@@ -3251,17 +3322,38 @@ pub fn try_save_paper_message(
     timestamp: f64,
     identity_id: &str,
     paper_uri: &str,
+    thread: &str,
 ) -> Result<(), String> {
     if identity_id.is_empty() {
         return Err("no active identity".into());
     }
     let conn = pool.get().map_err(|error| error.to_string())?;
+    if !thread.is_empty() {
+        ensure_conversation_thread_conn(&conn, identity_id, destination, thread, ThreadStarter::Me)
+            .map_err(|error| error.to_string())?;
+    }
     conn.execute(
-        "INSERT INTO messages (id, source, destination, content, title, timestamp, state, direction, identity_id, delivery_method, paper_uri) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'paper', 'outbound', ?7, 'paper', ?8)",
-        params![msg_id, source, destination, content, title, timestamp, identity_id, paper_uri],
+        "INSERT INTO messages (id, source, destination, content, title, timestamp, state, direction, identity_id, delivery_method, paper_uri, thread) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'paper', 'outbound', ?7, 'paper', ?8, ?9)",
+        params![msg_id, source, destination, content, title, timestamp, identity_id, paper_uri, thread],
     )
     .map(|_| ())
     .map_err(|error| error.to_string())
+}
+
+/// The conversation a stored message belongs to; Main when unknown.
+pub fn message_thread(pool: &DbPool, msg_id: &str, identity_id: &str) -> String {
+    let Ok(conn) = pool.get() else {
+        return String::new();
+    };
+    conn.query_row(
+        "SELECT thread FROM messages WHERE id = ?1 AND identity_id = ?2",
+        params![msg_id, identity_id],
+        |row| row.get::<_, String>(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or_default()
 }
 
 pub fn get_paper_uri(pool: &DbPool, msg_id: &str, identity_id: &str) -> Option<String> {
@@ -3274,6 +3366,352 @@ pub fn get_paper_uri(pool: &DbPool, msg_id: &str, identity_id: &str) -> Option<S
     .optional()
     .ok()
     .flatten()
+}
+
+/// Who opened an extra conversation; a contact-started one is unopened until viewed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ThreadStarter {
+    Me,
+    Contact,
+}
+
+impl ThreadStarter {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Me => "self",
+            Self::Contact => "contact",
+        }
+    }
+}
+
+const MAX_THREAD_NAME_CHARS: usize = 40;
+
+/// Lowercase hex of a 1..=64 byte FIELD_THREAD value.
+pub fn is_valid_thread(thread: &str) -> bool {
+    (2..=128).contains(&thread.len())
+        && thread.len().is_multiple_of(2)
+        && thread
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Display label of a conversation; Main is the thread-less one.
+fn conversation_thread_label(number: i64, name: Option<&str>) -> String {
+    match name.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => name.to_string(),
+        None => format!("Conversation {number}"),
+    }
+}
+
+fn normalized_thread_name(name: Option<&str>) -> Result<Option<String>, String> {
+    let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) else {
+        return Ok(None);
+    };
+    if name.chars().count() > MAX_THREAD_NAME_CHARS {
+        return Err("conversation name too long".into());
+    }
+    Ok(Some(name.to_string()))
+}
+
+fn ensure_conversation_thread_conn(
+    conn: &Connection,
+    identity_id: &str,
+    peer: &str,
+    thread: &str,
+    started_by: ThreadStarter,
+) -> rusqlite::Result<()> {
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM conversation_threads WHERE identity_id = ?1 AND peer_hash = ?2 AND thread = ?3)",
+        params![identity_id, peer, thread],
+        |row| row.get(0),
+    )?;
+    if exists {
+        return Ok(());
+    }
+    insert_conversation_thread_conn(conn, identity_id, peer, thread, None, started_by)
+}
+
+fn insert_conversation_thread_conn(
+    conn: &Connection,
+    identity_id: &str,
+    peer: &str,
+    thread: &str,
+    name: Option<&str>,
+    started_by: ThreadStarter,
+) -> rusqlite::Result<()> {
+    // Main is number 1, so the first extra conversation is 2.
+    let number: i64 = conn.query_row(
+        "INSERT INTO conversation_thread_counters (identity_id, peer_hash, last_number) VALUES (?1, ?2, 2)
+         ON CONFLICT(identity_id, peer_hash) DO UPDATE SET last_number = last_number + 1
+         RETURNING last_number",
+        params![identity_id, peer],
+        |row| row.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO conversation_threads (identity_id, peer_hash, thread, number, name, started_by, opened, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            identity_id,
+            peer,
+            thread,
+            number,
+            name,
+            started_by.as_str(),
+            started_by == ThreadStarter::Me,
+            now_ts()
+        ],
+    )?;
+    Ok(())
+}
+
+/// Number the next conversation with `peer` would get, for the naming prompt.
+pub fn next_conversation_thread_number(pool: &DbPool, identity_id: &str, peer: &str) -> i64 {
+    let Ok(conn) = pool.get() else { return 2 };
+    conn.query_row(
+        "SELECT last_number + 1 FROM conversation_thread_counters WHERE identity_id = ?1 AND peer_hash = ?2",
+        params![identity_id, peer],
+        |row| row.get(0),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or(2)
+}
+
+pub fn create_conversation_thread(
+    pool: &DbPool,
+    identity_id: &str,
+    peer: &str,
+    thread: &str,
+    name: Option<&str>,
+) -> Result<(), String> {
+    if identity_id.is_empty() {
+        return Err("no active identity".into());
+    }
+    if !is_valid_thread(thread) {
+        return Err("invalid conversation thread".into());
+    }
+    let name = normalized_thread_name(name)?;
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    insert_conversation_thread_conn(
+        &tx,
+        identity_id,
+        peer,
+        thread,
+        name.as_deref(),
+        ThreadStarter::Me,
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
+pub fn rename_conversation_thread(
+    pool: &DbPool,
+    identity_id: &str,
+    peer: &str,
+    thread: &str,
+    name: Option<&str>,
+) -> Result<bool, String> {
+    let name = normalized_thread_name(name)?;
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    conn.execute(
+        "UPDATE conversation_threads SET name = ?4 WHERE identity_id = ?1 AND peer_hash = ?2 AND thread = ?3",
+        params![identity_id, peer, thread, name],
+    )
+    .map(|changed| changed > 0)
+    .map_err(|error| error.to_string())
+}
+
+pub fn mark_conversation_thread_opened(pool: &DbPool, identity_id: &str, peer: &str, thread: &str) {
+    let Ok(conn) = pool.get() else { return };
+    conn.execute(
+        "UPDATE conversation_threads SET opened = 1 WHERE identity_id = ?1 AND peer_hash = ?2 AND thread = ?3 AND opened = 0",
+        params![identity_id, peer, thread],
+    )
+    .ok();
+}
+
+/// Label for `thread` when `peer` has extra conversations; `None` for a
+/// one-conversation peer, whose UI stays unlabelled.
+pub fn conversation_thread_display_label(
+    pool: &DbPool,
+    identity_id: &str,
+    peer: &str,
+    thread: &str,
+) -> Option<String> {
+    let conn = pool.get().ok()?;
+    conversation_thread_labels_conn(&conn, identity_id)
+        .ok()?
+        .label(peer, thread)
+}
+
+/// Every extra conversation's label for one local identity.
+#[derive(Debug, Default)]
+pub struct ConversationThreadLabels {
+    labels: std::collections::HashMap<(String, String), String>,
+}
+
+impl ConversationThreadLabels {
+    pub fn label(&self, peer: &str, thread: &str) -> Option<String> {
+        if thread.is_empty() {
+            let has_threads = self.labels.keys().any(|(owner, _)| owner == peer);
+            return has_threads.then(|| "Main".to_string());
+        }
+        self.labels
+            .get(&(peer.to_string(), thread.to_string()))
+            .cloned()
+    }
+}
+
+pub fn conversation_thread_labels_conn(
+    conn: &Connection,
+    identity_id: &str,
+) -> rusqlite::Result<ConversationThreadLabels> {
+    let mut stmt = conn.prepare(
+        "SELECT peer_hash, thread, number, name FROM conversation_threads WHERE identity_id = ?1",
+    )?;
+    let labels = stmt
+        .query_map(params![identity_id], |row| {
+            let number: i64 = row.get(2)?;
+            let name: Option<String> = row.get(3)?;
+            Ok((
+                (row.get::<_, String>(0)?, row.get::<_, String>(1)?),
+                conversation_thread_label(number, name.as_deref()),
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(ConversationThreadLabels { labels })
+}
+
+/// Main plus each extra conversation with `peer`: label, newest message, and
+/// unread count. Main comes first; the rest in creation order.
+pub fn conversation_threads(
+    pool: &DbPool,
+    identity_id: &str,
+    peer: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let map_err = |error: rusqlite::Error| error.to_string();
+    let mut latest: std::collections::HashMap<String, serde_json::Value> = conn
+        .prepare(
+            "SELECT thread, substr(content, 1, 80), substr(title, 1, 60), timestamp, direction, renderer FROM (
+                 SELECT thread, content, title, timestamp, direction, renderer,
+                        ROW_NUMBER() OVER (PARTITION BY thread ORDER BY timestamp DESC, rowid DESC) AS rn
+                 FROM messages
+                 WHERE identity_id = ?1 AND (source = ?2 OR destination = ?2)
+             ) WHERE rn = 1",
+        )
+        .map_err(map_err)?
+        .query_map(params![identity_id, peer], |row| {
+            let content: String = row.get::<_, String>(1).unwrap_or_default();
+            let title: String = row.get::<_, String>(2).unwrap_or_default();
+            let preview = if title.trim().is_empty() {
+                content
+            } else {
+                title.trim().to_string()
+            };
+            Ok((
+                row.get::<_, String>(0)?,
+                serde_json::json!({
+                    "last_message": preview,
+                    "timestamp": row.get::<_, f64>(3)?,
+                    "last_direction": row.get::<_, String>(4).unwrap_or_default(),
+                    "preview_renderer": row.get::<_, Option<i64>>(5)?,
+                }),
+            ))
+        })
+        .map_err(map_err)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(map_err)?;
+    let unread: std::collections::HashMap<String, i64> = conn
+        .prepare(
+            "SELECT thread, COUNT(*) FROM messages
+             WHERE identity_id = ?1 AND source = ?2 AND direction = 'inbound' AND state != 'read'
+             GROUP BY thread",
+        )
+        .map_err(map_err)?
+        .query_map(params![identity_id, peer], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })
+        .map_err(map_err)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(map_err)?;
+    let summary = |thread: &str,
+                   label: String,
+                   number: i64,
+                   name: Option<String>,
+                   started_by: &str,
+                   opened: bool,
+                   created_at: Option<f64>,
+                   latest: Option<serde_json::Value>| {
+        let mut value = serde_json::json!({
+            "thread": thread,
+            "label": label,
+            "number": number,
+            "name": name,
+            "started_by": started_by,
+            "opened": opened,
+            "created_at": created_at,
+            "unread": unread.get(thread).copied().unwrap_or(0),
+            "last_message": null,
+            "timestamp": null,
+            "last_direction": null,
+            "preview_renderer": null,
+        });
+        if let (Some(object), Some(serde_json::Value::Object(latest))) =
+            (value.as_object_mut(), latest)
+        {
+            object.extend(latest);
+        }
+        value
+    };
+    let mut threads = vec![summary(
+        "",
+        "Main".into(),
+        1,
+        None,
+        "self",
+        true,
+        None,
+        latest.remove(""),
+    )];
+    let mut stmt = conn
+        .prepare(
+            "SELECT thread, number, name, started_by, opened, created_at FROM conversation_threads
+             WHERE identity_id = ?1 AND peer_hash = ?2 ORDER BY number ASC",
+        )
+        .map_err(map_err)?;
+    let rows = stmt
+        .query_map(params![identity_id, peer], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, bool>(4)?,
+                row.get::<_, f64>(5)?,
+            ))
+        })
+        .map_err(map_err)?;
+    for row in rows {
+        let (thread, number, name, started_by, opened, created_at) = row.map_err(map_err)?;
+        let label = conversation_thread_label(number, name.as_deref());
+        let latest = latest.remove(&thread);
+        threads.push(summary(
+            &thread,
+            label,
+            number,
+            name,
+            &started_by,
+            opened,
+            Some(created_at),
+            latest,
+        ));
+    }
+    Ok(threads)
 }
 
 /// One stored message in the conversation-history row shape.
@@ -3340,9 +3778,31 @@ pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str, identity_id: &
     .unwrap_or(false)
 }
 
+/// Every message with `dest_hash`, across all of its conversations.
 pub fn get_conversation(
     pool: &DbPool,
     dest_hash: &str,
+    identity_id: &str,
+    limit: i64,
+) -> Vec<serde_json::Value> {
+    get_conversation_scoped(pool, dest_hash, None, identity_id, limit)
+}
+
+/// Messages of one conversation with `dest_hash`; `""` is Main.
+pub fn get_conversation_in_thread(
+    pool: &DbPool,
+    dest_hash: &str,
+    thread: &str,
+    identity_id: &str,
+    limit: i64,
+) -> Vec<serde_json::Value> {
+    get_conversation_scoped(pool, dest_hash, Some(thread), identity_id, limit)
+}
+
+fn get_conversation_scoped(
+    pool: &DbPool,
+    dest_hash: &str,
+    thread: Option<&str>,
     identity_id: &str,
     limit: i64,
 ) -> Vec<serde_json::Value> {
@@ -3355,15 +3815,18 @@ pub fn get_conversation(
     let mut stmt = match conn.prepare(
         "SELECT * FROM (
             SELECT * FROM (
-                SELECT *, rowid AS _rw FROM messages WHERE source = ?1 AND identity_id = ?2
+                SELECT *, rowid AS _rw FROM messages WHERE source = ?1 AND identity_id = ?2 AND (?4 IS NULL OR thread = ?4)
                 UNION ALL
-                SELECT *, rowid AS _rw FROM messages WHERE destination = ?1 AND identity_id = ?2 AND source != ?1
+                SELECT *, rowid AS _rw FROM messages WHERE destination = ?1 AND identity_id = ?2 AND source != ?1 AND (?4 IS NULL OR thread = ?4)
             ) ORDER BY timestamp DESC, _rw DESC LIMIT ?3
         ) ORDER BY timestamp ASC, _rw ASC"
     ) { Ok(s) => s, Err(_) => return vec![] };
 
     let rows: Vec<serde_json::Value> = stmt
-        .query_map(params![dest_hash, identity_id, limit], row_to_message)
+        .query_map(
+            params![dest_hash, identity_id, limit, thread],
+            row_to_message,
+        )
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
         .unwrap_or_default();
 
@@ -3469,14 +3932,16 @@ pub fn search_messages(
     }
 }
 
-pub fn mark_read(pool: &DbPool, dest_hash: &str, identity_id: &str) {
+/// Marks inbound messages from `dest_hash` read: one conversation, or all
+/// of them when `thread` is `None`.
+pub fn mark_read(pool: &DbPool, dest_hash: &str, thread: Option<&str>, identity_id: &str) {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return,
     };
     conn.execute(
-        "UPDATE messages SET state = 'read' WHERE source = ?1 AND direction = 'inbound' AND state != 'read' AND identity_id = ?2",
-        params![dest_hash, identity_id],
+        "UPDATE messages SET state = 'read' WHERE source = ?1 AND direction = 'inbound' AND state != 'read' AND identity_id = ?2 AND (?3 IS NULL OR thread = ?3)",
+        params![dest_hash, identity_id, thread],
     ).ok();
 }
 
@@ -3699,6 +4164,11 @@ pub fn delete_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) ->
     .ok();
     conn.execute(
         "DELETE FROM hidden_conversations WHERE dest_hash = ?1 AND identity_id = ?2",
+        params![dest_hash, identity_id],
+    )
+    .ok();
+    conn.execute(
+        "DELETE FROM conversation_threads WHERE peer_hash = ?1 AND identity_id = ?2",
         params![dest_hash, identity_id],
     )
     .ok();
@@ -9593,6 +10063,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
         .get::<_, Option<i64>>(MESSAGE_RENDERER_COLUMN_INDEX)?
         .and_then(|renderer| u8::try_from(renderer).ok());
     let paper_uri = row.get::<_, Option<String>>(MESSAGE_PAPER_URI_COLUMN_INDEX)?;
+    let thread = row.get::<_, String>(MESSAGE_THREAD_COLUMN_INDEX)?;
 
     // Reshape flat columns to nested `msg.image` / `msg.attachments`.
     let image_json = (!image_stored_name.is_empty()).then(|| {
@@ -9663,6 +10134,7 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
         "delivery_method": row.get::<_, Option<String>>(21)?,
         "renderer": renderer,
         "paper_uri": paper_uri,
+        "thread": thread,
     }))
 }
 
@@ -9767,6 +10239,118 @@ mod attachment_unavailable_tests {
 }
 
 #[cfg(test)]
+mod conversation_thread_tests {
+    use super::*;
+
+    const ME: &str = "identity";
+    const PEER: &str = "11111111111111111111111111111111";
+    const LOCAL: &str = "22222222222222222222222222222222";
+
+    fn test_pool() -> DbPool {
+        let manager = SqliteConnectionManager::memory();
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        init_schema(&pool).unwrap();
+        pool
+    }
+
+    fn thread(byte: u8) -> String {
+        hex::encode([byte; 32])
+    }
+
+    fn inbound(pool: &DbPool, id: &str, ts: f64, thread: &str) {
+        try_save_message_with_audio(
+            pool, id, PEER, LOCAL, id, "", ts, "received", "inbound", ME, "", "", "", "", "", "",
+            None, None, "", None, thread,
+        )
+        .unwrap();
+    }
+
+    fn labels(pool: &DbPool) -> Vec<String> {
+        conversation_threads(pool, ME, PEER)
+            .unwrap()
+            .iter()
+            .map(|t| t["label"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn numbers_count_up_per_peer_and_are_never_reused() {
+        let pool = test_pool();
+        assert_eq!(next_conversation_thread_number(&pool, ME, PEER), 2);
+        create_conversation_thread(&pool, ME, PEER, &thread(1), None).unwrap();
+        create_conversation_thread(&pool, ME, PEER, &thread(2), Some("Trip plan")).unwrap();
+        assert_eq!(labels(&pool), ["Main", "Conversation 2", "Trip plan"]);
+        pool.get()
+            .unwrap()
+            .execute(
+                "DELETE FROM conversation_threads WHERE thread = ?1",
+                params![thread(2)],
+            )
+            .unwrap();
+        assert_eq!(labels(&pool), ["Main", "Conversation 2"]);
+        create_conversation_thread(&pool, ME, PEER, &thread(3), None).unwrap();
+        assert_eq!(labels(&pool), ["Main", "Conversation 2", "Conversation 4"]);
+        assert_eq!(next_conversation_thread_number(&pool, ME, "other"), 2);
+    }
+
+    #[test]
+    fn a_contact_started_conversation_is_registered_unopened() {
+        let pool = test_pool();
+        inbound(&pool, "m1", 1.0, &thread(7));
+        let threads = conversation_threads(&pool, ME, PEER).unwrap();
+        assert_eq!(threads.len(), 2);
+        assert_eq!(threads[1]["started_by"], "contact");
+        assert_eq!(threads[1]["opened"], false);
+        assert_eq!(threads[1]["unread"], 1);
+        assert_eq!(threads[1]["last_message"], "m1");
+        mark_conversation_thread_opened(&pool, ME, PEER, &thread(7));
+        assert_eq!(
+            conversation_threads(&pool, ME, PEER).unwrap()[1]["opened"],
+            true
+        );
+    }
+
+    #[test]
+    fn reads_and_marks_stay_in_their_conversation() {
+        let pool = test_pool();
+        inbound(&pool, "main", 1.0, "");
+        inbound(&pool, "side", 2.0, &thread(9));
+        let main = get_conversation_in_thread(&pool, PEER, "", ME, 10);
+        assert_eq!(main.len(), 1);
+        assert_eq!(main[0]["id"], "main");
+        assert_eq!(get_conversation(&pool, PEER, ME, 10).len(), 2);
+
+        mark_read(&pool, PEER, Some(""), ME);
+        let unread: Vec<i64> = conversation_threads(&pool, ME, PEER)
+            .unwrap()
+            .iter()
+            .map(|t| t["unread"].as_i64().unwrap())
+            .collect();
+        assert_eq!(unread, [0, 1]);
+    }
+
+    #[test]
+    fn labels_appear_only_once_a_peer_has_extra_conversations() {
+        let pool = test_pool();
+        inbound(&pool, "main", 1.0, "");
+        assert_eq!(conversation_thread_display_label(&pool, ME, PEER, ""), None);
+        create_conversation_thread(&pool, ME, PEER, &thread(4), Some("  Radio  ")).unwrap();
+        assert_eq!(
+            conversation_thread_display_label(&pool, ME, PEER, "").as_deref(),
+            Some("Main")
+        );
+        assert_eq!(
+            conversation_thread_display_label(&pool, ME, PEER, &thread(4)).as_deref(),
+            Some("Radio")
+        );
+        assert!(
+            create_conversation_thread(&pool, ME, PEER, &thread(5), Some(&"x".repeat(41))).is_err()
+        );
+        assert!(create_conversation_thread(&pool, ME, PEER, "XYZ", None).is_err());
+    }
+}
+
+#[cfg(test)]
 mod audio_message_tests {
     use super::*;
 
@@ -9801,6 +10385,7 @@ mod audio_message_tests {
             Some(0x10),
             "stored-audio.opus",
             Some(2),
+            "",
         );
 
         let messages = get_conversation(&pool, "source", "identity", 10);
@@ -9845,6 +10430,7 @@ mod audio_message_tests {
                 Some(mode),
                 stored_name,
                 None,
+                "",
             );
         }
 
@@ -9897,6 +10483,7 @@ mod audio_message_tests {
                 Some(0x10),
                 stored_name,
                 None,
+                "",
             );
         }
 
@@ -11350,7 +11937,13 @@ mod migration_tests {
                 .map(String::as_str),
             Some("paper_uri")
         );
-        assert_eq!(message_cols.len(), MESSAGE_PAPER_URI_COLUMN_INDEX + 1);
+        assert_eq!(
+            message_cols
+                .get(MESSAGE_THREAD_COLUMN_INDEX)
+                .map(String::as_str),
+            Some("thread")
+        );
+        assert_eq!(message_cols.len(), MESSAGE_THREAD_COLUMN_INDEX + 1);
     }
 
     #[test]
@@ -11671,7 +12264,9 @@ mod migration_tests {
         {
             let conn = pool.get().unwrap();
             conn.execute_batch(
-                "ALTER TABLE messages DROP COLUMN paper_uri;
+                "DROP INDEX idx_messages_thread;
+                 ALTER TABLE messages DROP COLUMN thread;
+                 ALTER TABLE messages DROP COLUMN paper_uri;
                  ALTER TABLE messages DROP COLUMN renderer;
                  ALTER TABLE messages DROP COLUMN audio_stored_name;
                  ALTER TABLE messages DROP COLUMN audio_mode;
@@ -11696,7 +12291,7 @@ mod migration_tests {
                 .map(String::as_str),
             Some("audio_stored_name")
         );
-        assert_eq!(columns.len(), MESSAGE_PAPER_URI_COLUMN_INDEX + 1);
+        assert_eq!(columns.len(), MESSAGE_THREAD_COLUMN_INDEX + 1);
         conn.execute(
             "INSERT INTO messages (
                 id, source, destination, timestamp, identity_id
@@ -11721,7 +12316,9 @@ mod migration_tests {
         {
             let conn = pool.get().unwrap();
             conn.execute_batch(
-                "ALTER TABLE messages DROP COLUMN paper_uri;
+                "DROP INDEX idx_messages_thread;
+                 ALTER TABLE messages DROP COLUMN thread;
+                 ALTER TABLE messages DROP COLUMN paper_uri;
                  ALTER TABLE messages DROP COLUMN renderer;
                  INSERT INTO messages (id, source, destination, content, timestamp, identity_id)
                  VALUES ('pre-renderer', 'source', 'destination', '**kept**', 1.0, 'identity');
@@ -11740,7 +12337,7 @@ mod migration_tests {
                 .map(String::as_str),
             Some("renderer")
         );
-        assert_eq!(columns.len(), MESSAGE_PAPER_URI_COLUMN_INDEX + 1);
+        assert_eq!(columns.len(), MESSAGE_THREAD_COLUMN_INDEX + 1);
         let kept: (String, Option<i64>) = conn
             .query_row(
                 "SELECT content, renderer FROM messages WHERE id = 'pre-renderer'",
@@ -11762,13 +12359,49 @@ mod migration_tests {
     }
 
     #[test]
+    fn migration_48_files_existing_rows_in_main_and_adds_thread_tables() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "DROP INDEX idx_messages_thread;
+                 ALTER TABLE messages DROP COLUMN thread;
+                 DROP TABLE conversation_threads;
+                 DROP TABLE conversation_thread_counters;
+                 INSERT INTO messages (id, source, destination, content, timestamp, identity_id)
+                 VALUES ('pre-thread', 'source', 'destination', 'kept', 1.0, 'identity');
+                 UPDATE schema_version SET version = 47;",
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+        let conn = pool.get().unwrap();
+        let columns = get_column_names(&conn, "messages").unwrap();
+        assert_eq!(
+            columns.get(MESSAGE_THREAD_COLUMN_INDEX).map(String::as_str),
+            Some("thread")
+        );
+        assert!(table_exists(&conn, "conversation_threads").unwrap());
+        assert!(table_exists(&conn, "conversation_thread_counters").unwrap());
+        drop(conn);
+        let main = get_conversation_in_thread(&pool, "source", "", "identity", 10);
+        assert_eq!(main.len(), 1);
+        assert_eq!(main[0]["thread"], "");
+    }
+
+    #[test]
     fn migration_47_adds_nullable_paper_uri_and_keeps_rows() {
         let pool = empty_pool();
         init_schema(&pool).unwrap();
         {
             let conn = pool.get().unwrap();
             conn.execute_batch(
-                "ALTER TABLE messages DROP COLUMN paper_uri;
+                "DROP INDEX idx_messages_thread;
+                 ALTER TABLE messages DROP COLUMN thread;
+                 ALTER TABLE messages DROP COLUMN paper_uri;
                  INSERT INTO messages (id, source, destination, content, timestamp, identity_id)
                  VALUES ('pre-paper', 'source', 'destination', 'kept', 1.0, 'identity');
                  UPDATE schema_version SET version = 46;",
@@ -11786,7 +12419,7 @@ mod migration_tests {
                 .map(String::as_str),
             Some("paper_uri")
         );
-        assert_eq!(columns.len(), MESSAGE_PAPER_URI_COLUMN_INDEX + 1);
+        assert_eq!(columns.len(), MESSAGE_THREAD_COLUMN_INDEX + 1);
         drop(conn);
         let messages = get_conversation(&pool, "source", "identity", 10);
         assert_eq!(messages[0]["content"], "kept");
@@ -11807,6 +12440,7 @@ mod migration_tests {
             5.0,
             "identity",
             "lxm://abc",
+            "",
         )
         .unwrap();
         assert!(
@@ -11820,6 +12454,7 @@ mod migration_tests {
                 5.0,
                 "identity",
                 "lxm://def",
+                "",
             )
             .is_err()
         );

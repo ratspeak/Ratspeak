@@ -504,6 +504,7 @@
                             <div class="lxmf-chat-header-info">
                                 <span class="lxmf-chat-header-name" id="lxmf-chat-header-name"></span>
                                 <span class="lxmf-chat-header-status" id="lxmf-chat-header-status"></span>
+                                <button type="button" class="conv-thread-chip" id="lxmf-thread-chip" hidden></button>
                             </div>
                             <div class="lxmf-chat-header-actions">
                                 <button class="game-challenge-btn" id="game-challenge-btn" title="Challenge to a game" style="display:none;">
@@ -517,6 +518,8 @@
                                 </button>
                             </div>
                         </div>
+                        <div class="conv-thread-tabs" id="lxmf-thread-tabs" role="tablist" aria-label="Conversations" hidden></div>
+                        <div class="conv-thread-note" id="lxmf-thread-note" hidden></div>
                         <div class="lxmf-select-bar" id="lxmf-select-bar" role="toolbar" aria-label="Selected messages" hidden>
                             <button class="lxmf-select-bar-btn" id="lxmf-select-cancel-btn" type="button">Cancel</button>
                             <span class="sr-only" id="lxmf-select-status" aria-live="polite"></span>
@@ -2159,6 +2162,7 @@
 <script src="/static/js/contact_card.js?v=ui-20260924-4"></script>
 <script src="/static/js/markdown.js?v=ui-20260924-4"></script>
 <script src="/static/js/lxmf.js?v=ui-20260924-4"></script>
+<script src="/static/js/conversation_threads.js?v=ui-20260924-4"></script>
 <script src="/static/js/message_search.js?v=ui-20260924-4"></script>
 <script src="/static/js/voice_memos.js?v=ui-20260924-4"></script>
 <script src="/static/js/channels.js?v=ui-20260924-4"></script>

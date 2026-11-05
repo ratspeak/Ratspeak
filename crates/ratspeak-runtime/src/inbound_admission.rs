@@ -707,6 +707,20 @@ pub(crate) fn delete_messages(
     .map(|(deleted, ())| deleted)
 }
 
+pub(crate) fn delete_thread_messages(
+    state: &AppState,
+    identity: &str,
+    peer: &str,
+    thread: &str,
+) -> Result<DeletedMessages, AdmissionDbError> {
+    delete_with(state, |store, guard| {
+        store
+            .delete_thread_messages_guarded(guard, identity, peer, thread, now())
+            .map(|artifacts| (artifacts, ()))
+    })
+    .map(|(deleted, ())| deleted)
+}
+
 pub(crate) fn delete_selected_messages(
     state: &AppState,
     identity: &str,
@@ -959,6 +973,7 @@ enum Projection {
         reply: String,
         preview: String,
         renderer: Option<u8>,
+        thread: String,
     },
     Reaction {
         target: String,
@@ -1009,6 +1024,7 @@ impl Projection {
             reply,
             preview,
             renderer: lxmf::message_renderer(msg),
+            thread: lxmf::message_thread(msg),
         })
     }
     fn bindings(&self) -> Vec<usize> {
@@ -1181,7 +1197,7 @@ fn commit_message(
                     }
                     Ok(EffectCommit::Applied("reaction"))
                 }
-                Projection::Chat { title, content, reply, preview, renderer } => {
+                Projection::Chat { title, content, reply, preview, renderer, thread } => {
                     let attachment = media.iter().find(|item| !item.image && item.audio.is_none());
                     let image = media.iter().find(|item| item.image);
                     let audio = media.iter().find(|item| item.audio.is_some());
@@ -1189,7 +1205,7 @@ fn commit_message(
                         content, title, timestamp, "received", "inbound", &identity,
                         attachment.map_or("", |v| v.name.as_str()), attachment.map_or("", |v| v.stored.as_str()),
                         image.map_or("", |v| v.name.as_str()), image.map_or("", |v| v.stored.as_str()), reply, preview,
-                        Some("propagated"), audio.and_then(|v| v.audio), audio.map_or("", |v| v.stored.as_str()), *renderer).map_err(storage)?;
+                        Some("propagated"), audio.and_then(|v| v.audio), audio.map_or("", |v| v.stored.as_str()), *renderer, thread).map_err(storage)?;
                     connection.execute("DELETE FROM hidden_conversations WHERE identity_id=?1 AND dest_hash=?2",params![identity,source])?;
                     Ok(EffectCommit::Applied("message"))
                 }
@@ -1379,6 +1395,7 @@ pub(crate) async fn admit_download(
             reply,
             preview,
             renderer,
+            thread,
         } => {
             let notification: String = if content.trim().is_empty() {
                 &title
@@ -1399,6 +1416,7 @@ pub(crate) async fn admit_download(
             event["reply_to_id"] = serde_json::Value::String(reply);
             event["reply_to_preview"] = serde_json::Value::String(preview);
             event["renderer"] = json!(renderer);
+            event["thread"] = json!(thread);
             if let Some(fields) = event.as_object_mut() {
                 fields.extend(output.display_media);
             }
@@ -1415,6 +1433,7 @@ pub(crate) async fn admit_download(
                 preview: notification,
                 renderer,
                 attachment: has_attachment,
+                thread,
             });
             crate::record_activity_if_current(state, activity, || {
                 Ok(crate::producer::lxmf_inbound_accepted(
@@ -1469,6 +1488,7 @@ struct ChatRefresh {
     preview: String,
     renderer: Option<u8>,
     attachment: bool,
+    thread: String,
 }
 
 async fn refresh_chat(state: Arc<AppState>, refresh: ChatRefresh) {
@@ -1482,8 +1502,9 @@ async fn refresh_chat(state: Arc<AppState>, refresh: ChatRefresh) {
         preview,
         renderer,
         attachment,
+        thread,
     } = refresh;
-    let lists = crate::read_inbound_lists(&state, &source, &identity, &message_id).await;
+    let lists = crate::read_inbound_lists(&state, &source, &thread, &identity, &message_id).await;
     let _lifecycle = state.identity_switch_lock.lock_routine().await;
     if state.current_identity_session_generation() != generation || shutdown.is_triggered() {
         return;
@@ -1492,6 +1513,7 @@ async fn refresh_chat(state: Arc<AppState>, refresh: ChatRefresh) {
         // Only a bulk delete since the admission moves the revision; its own
         // lists replace these, and the row is checked again before an alert.
         let current = state.conversation_list_revision() == revision;
+        let label = lists.alert_label();
         if current {
             state.emit_to_all("contacts_update", lists.contacts.into());
             state.emit_to_all("unread_total", json!({"count":lists.unread}));
@@ -1503,12 +1525,7 @@ async fn refresh_chat(state: Arc<AppState>, refresh: ChatRefresh) {
         };
         if stored {
             crate::notify_inbound_message_if_background(
-                &state,
-                &source,
-                &lists.label,
-                &preview,
-                renderer,
-                attachment,
+                &state, &source, &label, &preview, renderer, attachment,
             );
         }
     }
@@ -2076,6 +2093,7 @@ mod tests {
             preview: "downloaded".into(),
             renderer: None,
             attachment: false,
+            thread: String::new(),
         }
     }
 

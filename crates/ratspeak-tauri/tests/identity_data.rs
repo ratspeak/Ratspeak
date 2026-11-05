@@ -847,6 +847,7 @@ fn a_bulk_delete_that_waited_out_a_switch_deletes_nothing() {
                 _ => Box::pin(ratspeak_tauri::commands::messaging::delete_conversation(
                     managed,
                     PEER.to_string(),
+                    None,
                 )),
             };
             // The user asked while A was active; the delete now waits for the lock.

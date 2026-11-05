@@ -1508,6 +1508,7 @@ pub ratspeak_runtime::lxmf::AttachmentMessageRequest::is_image: bool
 pub ratspeak_runtime::lxmf::AttachmentMessageRequest::preference: ratspeak_runtime::lxmf::DeliveryPreference
 pub ratspeak_runtime::lxmf::AttachmentMessageRequest::renderer: core::option::Option<u8>
 pub ratspeak_runtime::lxmf::AttachmentMessageRequest::staged_path: core::option::Option<&'a std::path::Path>
+pub ratspeak_runtime::lxmf::AttachmentMessageRequest::thread: &'a str
 pub ratspeak_runtime::lxmf::AttachmentMessageRequest::title: &'a str
 pub struct ratspeak_runtime::lxmf::AudioMessageRequest<'a>
 pub ratspeak_runtime::lxmf::AudioMessageRequest::audio_bytes: &'a [u8]
@@ -1518,6 +1519,7 @@ pub ratspeak_runtime::lxmf::AudioMessageRequest::dest_hash_hex: &'a str
 pub ratspeak_runtime::lxmf::AudioMessageRequest::identity_id: &'a str
 pub ratspeak_runtime::lxmf::AudioMessageRequest::preference: ratspeak_runtime::lxmf::DeliveryPreference
 pub ratspeak_runtime::lxmf::AudioMessageRequest::staged_path: core::option::Option<&'a std::path::Path>
+pub ratspeak_runtime::lxmf::AudioMessageRequest::thread: &'a str
 pub ratspeak_runtime::lxmf::AudioMessageRequest::title: &'a str
 pub struct ratspeak_runtime::lxmf::DownloadSuppressionSnapshot
 pub ratspeak_runtime::lxmf::DownloadSuppressionSnapshot::epochs: lxmf_core::admission::AdmissionEpochs
@@ -1698,6 +1700,7 @@ pub ratspeak_runtime::lxmf::MessageSendRequest::identity_id: &'a str
 pub ratspeak_runtime::lxmf::MessageSendRequest::preference: ratspeak_runtime::lxmf::DeliveryPreference
 pub ratspeak_runtime::lxmf::MessageSendRequest::profile: ratspeak_runtime::lxmf::DeliveryProfile
 pub ratspeak_runtime::lxmf::MessageSendRequest::renderer: core::option::Option<u8>
+pub ratspeak_runtime::lxmf::MessageSendRequest::thread: &'a str
 pub ratspeak_runtime::lxmf::MessageSendRequest::title: &'a str
 pub struct ratspeak_runtime::lxmf::PropagationDecryptContext
 impl ratspeak_runtime::lxmf::PropagationDecryptContext
@@ -1720,6 +1723,7 @@ pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::profile: ratspeak_runtime::
 pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::renderer: core::option::Option<u8>
 pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::reply_to_id: &'a str
 pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::reply_to_preview: &'a str
+pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::thread: &'a str
 pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::title: &'a str
 pub const ratspeak_runtime::lxmf::AUDIO_MESSAGE_FILE_NAME: &str
 pub const ratspeak_runtime::lxmf::COMPACT_AUDIO_FILE_NAME: &str
@@ -1885,8 +1889,8 @@ pub ratspeak_runtime::paper::PaperPreview::timestamp: f64
 pub ratspeak_runtime::paper::PaperPreview::title: alloc::string::String
 pub const ratspeak_runtime::paper::PAPER_URI_INPUT_LIMIT: usize
 pub async fn ratspeak_runtime::paper::add_paper_message(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, &str) -> core::result::Result<ratspeak_runtime::paper::PaperAdded, ratspeak_runtime::paper::PaperError>
-pub fn ratspeak_runtime::paper::build_paper_message(&ratspeak_runtime::lxmf::LxmfManager, &str, &str, &str) -> core::result::Result<ratspeak_runtime::paper::BuiltPaperMessage, ratspeak_runtime::paper::PaperError>
-pub async fn ratspeak_runtime::paper::create_paper_message(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, &str, &str, &str) -> core::result::Result<ratspeak_runtime::paper::CreatedPaperMessage, ratspeak_runtime::paper::PaperError>
+pub fn ratspeak_runtime::paper::build_paper_message(&ratspeak_runtime::lxmf::LxmfManager, &str, &str, &str, &str) -> core::result::Result<ratspeak_runtime::paper::BuiltPaperMessage, ratspeak_runtime::paper::PaperError>
+pub async fn ratspeak_runtime::paper::create_paper_message(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, &str, &str, &str, &str) -> core::result::Result<ratspeak_runtime::paper::CreatedPaperMessage, ratspeak_runtime::paper::PaperError>
 pub fn ratspeak_runtime::paper::decode_paper_message(&ratspeak_runtime::lxmf::LxmfManager, &str) -> core::result::Result<ratspeak_runtime::paper::DecodedPaperMessage, ratspeak_runtime::paper::PaperError>
 pub fn ratspeak_runtime::paper::normalize_paper_uri(&str) -> core::option::Option<alloc::string::String>
 pub fn ratspeak_runtime::paper::paper_source_hash(&ratspeak_runtime::state::AppState, &str) -> core::result::Result<alloc::string::String, ratspeak_runtime::paper::PaperError>
@@ -1940,6 +1944,7 @@ pub fn ratspeak_runtime::propagation_recovery::DownloadDeletionGuard::drop(&mut 
 pub async fn ratspeak_runtime::propagation_recovery::begin_download_deletion(alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> ratspeak_runtime::propagation_recovery::DownloadDeletionGuard
 pub fn ratspeak_runtime::propagation_recovery::delete_messages(&ratspeak_runtime::state::AppState, &str, core::option::Option<&str>) -> core::result::Result<ratspeak_runtime::propagation_recovery::DeletedMessages, ratspeak_db::admission::AdmissionDbError>
 pub fn ratspeak_runtime::propagation_recovery::delete_selected_messages(&ratspeak_runtime::state::AppState, &str, &str, &[alloc::string::String]) -> core::result::Result<(ratspeak_runtime::propagation_recovery::DeletedMessages, alloc::vec::Vec<alloc::string::String>), ratspeak_db::admission::AdmissionDbError>
+pub fn ratspeak_runtime::propagation_recovery::delete_thread_messages(&ratspeak_runtime::state::AppState, &str, &str, &str) -> core::result::Result<ratspeak_runtime::propagation_recovery::DeletedMessages, ratspeak_db::admission::AdmissionDbError>
 pub fn ratspeak_runtime::propagation_recovery::invalidate_downloads(&ratspeak_runtime::state::AppState)
 pub async fn ratspeak_runtime::propagation_recovery::recover_host(alloc::sync::Arc<ratspeak_runtime::state::AppState>, alloc::string::String, bool, core::option::Option<(std::path::PathBuf, [u8; 32])>) -> core::result::Result<serde_json::value::Value, alloc::string::String>
 pub async fn ratspeak_runtime::propagation_recovery::retry_deferred_downloads(alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> core::result::Result<(), alloc::string::String>

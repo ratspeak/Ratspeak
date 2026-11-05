@@ -124,6 +124,25 @@ fn renderer_custom_field(renderer: u8) -> (u8, Vec<u8>) {
     )
 }
 
+/// Inbound FIELD_THREAD as lowercase hex; Main (`""`) unless it is 1..=64 bytes.
+pub(crate) fn message_thread(msg: &LxMessage) -> String {
+    msg.get_field(lxmf_core::constants::FIELD_THREAD)
+        .and_then(|field| field.as_binary())
+        .filter(|bytes| (1..=64).contains(&bytes.len()))
+        .map(hex::encode)
+        .unwrap_or_default()
+}
+
+/// Outbound FIELD_THREAD (bin); none for Main. Callers pass validated hex.
+fn thread_custom_field(thread: &str) -> Option<(u8, Vec<u8>)> {
+    if thread.is_empty() {
+        return None;
+    }
+    hex::decode(thread)
+        .ok()
+        .map(|bytes| (lxmf_core::constants::FIELD_THREAD, bytes))
+}
+
 /// Inbound FIELD_RENDERER; only an unsigned MessagePack integer in 0..=255 counts.
 pub(crate) fn message_renderer(msg: &LxMessage) -> Option<u8> {
     renderer_from_encoded(
@@ -942,6 +961,7 @@ pub struct AttachmentMessageRequest<'a> {
     pub identity_id: &'a str,
     pub preference: DeliveryPreference,
     pub renderer: Option<u8>,
+    pub thread: &'a str,
 }
 
 /// Fully-specified first-class LXMF audio send request with an explicit wire mode.
@@ -959,6 +979,7 @@ pub struct AudioMessageRequest<'a> {
     pub db_pool: &'a DbPool,
     pub identity_id: &'a str,
     pub preference: DeliveryPreference,
+    pub thread: &'a str,
 }
 
 impl DeliveryPreference {
@@ -1088,6 +1109,7 @@ pub struct MessageSendRequest<'a> {
     pub preference: DeliveryPreference,
     pub profile: DeliveryProfile,
     pub renderer: Option<u8>,
+    pub thread: &'a str,
 }
 
 pub struct ReplyMessageSendRequest<'a> {
@@ -1101,6 +1123,7 @@ pub struct ReplyMessageSendRequest<'a> {
     pub preference: DeliveryPreference,
     pub profile: DeliveryProfile,
     pub renderer: Option<u8>,
+    pub thread: &'a str,
 }
 
 struct MessageWithMethodRequest<'a> {
@@ -1115,6 +1138,7 @@ struct MessageWithMethodRequest<'a> {
     reply_to_id: Option<&'a str>,
     reply_to_preview: Option<&'a str>,
     renderer: Option<u8>,
+    thread: &'a str,
 }
 
 pub struct ReactionSendRequest<'a> {
@@ -2766,6 +2790,7 @@ impl LxmfManager {
             preference: DeliveryPreference::Auto,
             profile: DeliveryProfile::Message,
             renderer: None,
+            thread: "",
         })
     }
 
@@ -2801,6 +2826,7 @@ impl LxmfManager {
             reply_to_id: None,
             reply_to_preview: None,
             renderer: request.renderer,
+            thread: request.thread,
         })
         .ok_or(LxmfSubmissionFailure::PreparationFailed)
     }
@@ -2828,6 +2854,7 @@ impl LxmfManager {
             reply_to_id: Some(request.reply_to_id),
             reply_to_preview: Some(request.reply_to_preview),
             renderer: request.renderer,
+            thread: request.thread,
         })
         .map(|queued| queued.message_id)
     }
@@ -2859,6 +2886,7 @@ impl LxmfManager {
             reply_to_id: None,
             reply_to_preview: None,
             renderer: None,
+            thread: "",
         })
         .map(|queued| queued.message_id)
     }
@@ -2879,6 +2907,7 @@ impl LxmfManager {
             reply_to_id,
             reply_to_preview,
             renderer,
+            thread,
         } = request;
         // Paper never goes over the network; see `crate::paper`.
         if delivery_method == DeliveryMethod::Paper {
@@ -2897,6 +2926,7 @@ impl LxmfManager {
             .unwrap_or_default()
         };
         custom_fields.extend(renderer.map(renderer_custom_field));
+        custom_fields.extend(thread_custom_field(thread));
         let mut msg = self.create_message_with_custom_fields(
             dest_hash_hex,
             content,
@@ -2950,6 +2980,7 @@ impl LxmfManager {
             None,
             "",
             renderer,
+            thread,
         );
 
         Some(LxmfQueuedMessage {
@@ -3023,6 +3054,7 @@ impl LxmfManager {
             identity_id,
             preference,
             renderer,
+            thread,
         } = request;
 
         let dest_bytes =
@@ -3057,6 +3089,10 @@ impl LxmfManager {
         }
         if let Some((field_id, bytes)) = renderer.map(renderer_custom_field) {
             msg.set_msgpack_field(field_id, bytes)
+                .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
+        }
+        if let Some((field_id, bytes)) = thread_custom_field(thread) {
+            msg.set_field(field_id, bytes)
                 .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
         }
 
@@ -3131,6 +3167,7 @@ impl LxmfManager {
             None,
             "",
             renderer,
+            thread,
         )
         .is_err()
         {
@@ -3174,6 +3211,7 @@ impl LxmfManager {
             db_pool,
             identity_id,
             preference,
+            thread,
         } = request;
 
         validate_outbound_audio(audio_bytes, audio_mode)?;
@@ -3203,6 +3241,10 @@ impl LxmfManager {
         self.apply_peer_lxmf_compression_support(&mut msg, Some(db_pool), dest_hash_hex);
         msg.set_audio_field(audio_mode, audio_bytes)
             .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
+        if let Some((field_id, bytes)) = thread_custom_field(thread) {
+            msg.set_field(field_id, bytes)
+                .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
+        }
         debug_assert!(
             msg.get_field(lxmf_core::constants::FIELD_FILE_ATTACHMENTS)
                 .is_none()
@@ -3274,6 +3316,7 @@ impl LxmfManager {
             Some(audio_mode),
             &stored_name,
             None,
+            thread,
         )
         .is_err()
         {
@@ -3989,14 +4032,18 @@ impl LxmfManager {
             "add"
         };
 
-        let custom_fields = match ratspeak_chat_custom_fields(&RatspeakChatExtension::Reaction {
-            target: request.message_id.to_string(),
-            emoji: request.emoji.to_string(),
-            action: action.to_string(),
-        }) {
-            Some(fields) => fields,
-            None => return false,
-        };
+        let mut custom_fields =
+            match ratspeak_chat_custom_fields(&RatspeakChatExtension::Reaction {
+                target: request.message_id.to_string(),
+                emoji: request.emoji.to_string(),
+                action: action.to_string(),
+            }) {
+                Some(fields) => fields,
+                None => return false,
+            };
+        // A reaction travels in its target's conversation.
+        let thread = db::message_thread(request.db_pool, request.message_id, request.identity_id);
+        custom_fields.extend(thread_custom_field(&thread));
 
         let mut msg = match self.create_message_with_custom_fields(
             request.dest_hash_hex,
@@ -8350,6 +8397,7 @@ mod tests {
         let dest_hex = hex::encode([0x33; 16]);
         let msg_id = mgr
             .send_reply_with_preference(ReplyMessageSendRequest {
+                thread: "",
                 dest_hash_hex: &dest_hex,
                 content: "reply text",
                 title: "",
@@ -11500,6 +11548,7 @@ mod tests {
 
         let queued = mgr
             .send_message_with_preference_report(MessageSendRequest {
+                thread: "",
                 dest_hash_hex: &dest,
                 content: &content,
                 title: "",
@@ -11660,6 +11709,7 @@ mod tests {
 
             let queued = mgr
                 .send_message_with_preference_report(MessageSendRequest {
+                    thread: "",
                     dest_hash_hex: &dest_hex,
                     content: &content,
                     title: &title,
@@ -11727,6 +11777,7 @@ mod tests {
 
         let normal = mgr
             .send_message_with_preference_report(MessageSendRequest {
+                thread: "",
                 dest_hash_hex: &dest,
                 content: "normal",
                 title: "",
@@ -11742,6 +11793,7 @@ mod tests {
 
         let reply = mgr
             .send_reply_with_preference(ReplyMessageSendRequest {
+                thread: "",
                 dest_hash_hex: &dest,
                 content: "reply",
                 title: "",
@@ -11760,6 +11812,7 @@ mod tests {
 
         let attachment = mgr
             .send_message_with_attachment_fields_preference_report(AttachmentMessageRequest {
+                thread: "",
                 dest_hash_hex: &dest,
                 content: "attachment",
                 title: "",
@@ -11808,6 +11861,7 @@ mod tests {
 
         assert!(
             mgr.send_message_with_preference_report(MessageSendRequest {
+                thread: "",
                 dest_hash_hex: &dest,
                 content: "manual direct",
                 title: "",
@@ -11830,6 +11884,7 @@ mod tests {
             .insert(dest_hash, CompressionSupport::Unsupported);
         let no_compression = mgr
             .send_message_with_preference_report(MessageSendRequest {
+                thread: "",
                 dest_hash_hex: &dest,
                 content: "short no-compression peer message",
                 title: "",
@@ -11851,6 +11906,7 @@ mod tests {
         let identity_id = mgr.identity_hash.clone();
 
         let result = mgr.send_message_with_preference_report(MessageSendRequest {
+            thread: "",
             dest_hash_hex: "not-a-destination",
             content: "hello",
             title: "",
@@ -12537,6 +12593,71 @@ mod tests {
         assert_eq!(draft.pack_payload().unwrap(), packed[96..]);
     }
 
+    /// Python LXMF `pack()` of a message in a thread
+    /// (`tools/generate-lxmf-thread-golden.py`).
+    #[test]
+    fn thread_field_matches_python_lxmf_both_ways() {
+        let golden: Value =
+            serde_json::from_str(include_str!("../testdata/lxmf-thread-golden.json")).unwrap();
+        let packed = hex::decode(golden["packed"].as_str().unwrap()).unwrap();
+        let thread = golden["thread"].as_str().unwrap();
+        let message = LxMessage::unpack_owned(
+            Bytes::from(packed.clone()),
+            lxmf_core::message_api::MessageDecodeLimits::default(),
+        )
+        .unwrap();
+        assert_eq!(message_thread(&message), thread);
+
+        let mut draft = LxMessageDraft::new(
+            packed[..16].try_into().unwrap(),
+            packed[16..32].try_into().unwrap(),
+            "",
+            golden["content"].as_str().unwrap(),
+            DeliveryMethod::Direct,
+        )
+        .unwrap();
+        draft
+            .set_timestamp(golden["timestamp"].as_f64().unwrap())
+            .unwrap();
+        let (field_id, bytes) = thread_custom_field(thread).unwrap();
+        draft.set_field(field_id, bytes).unwrap();
+        assert_eq!(draft.pack_payload().unwrap(), packed[96..]);
+        assert_eq!(thread_custom_field(""), None);
+    }
+
+    #[test]
+    fn thread_sends_carry_the_field_and_file_the_row_in_its_conversation() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        let thread = "5a".repeat(32);
+        db::create_conversation_thread(&pool, "me", dest, &thread, Some("Trip plan")).unwrap();
+        let queued = mgr
+            .send_message_with_preference_report(MessageSendRequest {
+                dest_hash_hex: dest,
+                content: "in a thread",
+                title: "",
+                db_pool: &pool,
+                identity_id: "me",
+                preference: DeliveryPreference::Direct,
+                profile: DeliveryProfile::Message,
+                renderer: None,
+                thread: &thread,
+            })
+            .expect("thread message queued");
+        let sent = mgr
+            .router
+            .pending_outbound
+            .iter()
+            .find(|msg| hex::encode(msg.message_id()) == queued.message_id)
+            .expect("queued message");
+        assert_eq!(message_thread(sent), thread);
+        let rows = db::get_conversation_in_thread(&pool, dest, &thread, "me", 10);
+        assert_eq!(rows.len(), 1);
+        assert!(db::get_conversation_in_thread(&pool, dest, "", "me", 10).is_empty());
+        assert_eq!(db::message_thread(&pool, &queued.message_id, "me"), thread);
+    }
+
     #[test]
     fn markdown_sends_pack_renderer_as_native_int_and_persist_it() {
         let pool = test_pool();
@@ -12546,6 +12667,7 @@ mod tests {
 
         let text = mgr
             .send_message_with_preference_report(MessageSendRequest {
+                thread: "",
                 dest_hash_hex: dest,
                 content: "**bold**",
                 title: "",
@@ -12559,6 +12681,7 @@ mod tests {
             .message_id;
         let reply = mgr
             .send_reply_with_preference(ReplyMessageSendRequest {
+                thread: "",
                 dest_hash_hex: dest,
                 content: "_re_",
                 title: "",
@@ -12573,6 +12696,7 @@ mod tests {
             .expect("reply queued");
         let attachment = mgr
             .send_message_with_attachment_fields_preference_report(AttachmentMessageRequest {
+                thread: "",
                 dest_hash_hex: dest,
                 content: "`file`\n[File: note.txt]",
                 title: "",
@@ -12590,6 +12714,7 @@ mod tests {
             .message_id;
         let plain = mgr
             .send_message_with_preference_report(MessageSendRequest {
+                thread: "",
                 dest_hash_hex: dest,
                 content: "plain",
                 title: "",
@@ -12654,6 +12779,7 @@ mod tests {
 
         let queued = mgr
             .send_message_with_attachment_fields_preference_report(AttachmentMessageRequest {
+                thread: "",
                 dest_hash_hex: dest,
                 content: "file attached",
                 title: "",
@@ -12695,6 +12821,7 @@ mod tests {
 
         let queued = mgr
             .send_audio_message_with_preference_report(AudioMessageRequest {
+                thread: "",
                 dest_hash_hex: &dest,
                 content: "",
                 title: "",
@@ -12787,6 +12914,7 @@ mod tests {
         let audio = vec![0x42; crate::voice_memo::compact::RECORD_BYTES];
         let submit = |mgr: &mut LxmfManager, peer: &str, body: &str, bytes: &[u8]| {
             mgr.send_audio_message_with_preference_report(AudioMessageRequest {
+                thread: "",
                 dest_hash_hex: peer,
                 content: body,
                 title: "",
@@ -12844,6 +12972,7 @@ mod tests {
         let dest = "db".repeat(16);
 
         let result = mgr.send_audio_message_with_preference_report(AudioMessageRequest {
+            thread: "",
             dest_hash_hex: &dest,
             content: "Voice message",
             title: "",
@@ -12872,6 +13001,7 @@ mod tests {
         std::fs::write(&staging, &audio_bytes).unwrap();
 
         let result = mgr.send_audio_message_with_preference_report(AudioMessageRequest {
+            thread: "",
             dest_hash_hex: &dest,
             content: "Voice message",
             title: "",
@@ -12902,6 +13032,7 @@ mod tests {
 
         let queued = mgr
             .send_message_with_attachment_fields_preference_report(AttachmentMessageRequest {
+                thread: "",
                 dest_hash_hex: &dest,
                 content: "staged file",
                 title: "",
@@ -12942,6 +13073,7 @@ mod tests {
 
         let result =
             mgr.send_message_with_attachment_fields_preference_report(AttachmentMessageRequest {
+                thread: "",
                 dest_hash_hex: &dest,
                 content: "must roll back",
                 title: "",

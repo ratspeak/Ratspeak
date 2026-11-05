@@ -2958,9 +2958,9 @@ fn notification_attention_uses_visibility_not_transport_settlement_or_selected_s
     assert!(shell.contains("state.set_notification_foreground(foreground);"));
 
     assert!(state_js.contains("window.RS.isAttentionForeground = function()"));
-    assert!(
-        lxmf_js.contains("var conversationVisible = _isConversationActivelyVisible(msg.source)")
-    );
+    assert!(lxmf_js.contains(
+        "var conversationVisible = _isConversationActivelyVisible(msg.source, msg.thread)"
+    ));
     assert!(lxmf_js.contains("if (appForeground && !conversationVisible)"));
     assert!(lxmf_js.contains("!window.__TAURI_INTERNALS__ && !appForeground"));
     assert!(games_js.contains("!RS.isAttentionForeground()"));

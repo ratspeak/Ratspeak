@@ -49,7 +49,7 @@ var caches = { RS: { text: { utf8Length: function(value) { return Buffer.byteLen
 vm.createContext(caches);
 vm.runInContext(
     lxmf.slice(0, lxmf.indexOf('var _imageBlobUrlCache')) +
-        ['_canonicalConversationHash', '_utf8ByteLength', 'cacheGet', 'cacheSet', 'cacheDel',
+        ['_canonicalConversationHash', '_canonicalConversationThread', '_conversationKey', '_activeConversationKey', '_resolveConversationThread', '_utf8ByteLength', 'cacheGet', 'cacheSet', 'cacheDel',
             '_mergeConversationMessages'].map(function(name) {
             return functionSource(lxmf, name);
         }).join('\n') + '\n' + functionSource(identity, 'resetConversationCaches'),
@@ -223,7 +223,7 @@ vm.runInContext(
     vm.createContext(loading);
     vm.runInContext(
         lxmf.slice(0, lxmf.indexOf('var _imageBlobUrlCache')) +
-            ['_canonicalConversationHash', '_conversationOwnerSnapshot',
+            ['_canonicalConversationHash', '_canonicalConversationThread', '_conversationKey', '_activeConversationKey', '_resolveConversationThread', '_conversationOwnerSnapshot',
                 '_conversationOwnerIsCurrent', '_utf8ByteLength', 'cacheGet', 'cacheSet',
                 'cacheDel', '_mergeConversationMessages', '_loadConversation'].map(function(name) {
                 return functionSource(lxmf, name);

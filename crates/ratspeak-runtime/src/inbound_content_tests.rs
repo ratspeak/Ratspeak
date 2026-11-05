@@ -196,6 +196,51 @@ async fn telemetry_never_hides_text_titles_or_declared_media() {
 }
 
 #[tokio::test]
+async fn a_thread_field_files_the_message_in_its_conversation_for_every_source() {
+    use lxmf_core::constants::FIELD_THREAD;
+    let thread = [0x3c; 32];
+    for method in 0..3 {
+        let (state, emitter, notifier) = content_pipeline_state();
+        let identity = local_identity(&state);
+        let signing = rns_crypto::ed25519::Ed25519PrivateKey::generate();
+        let src = register_source_identity(&state, &signing);
+        let peer = hex::encode(src);
+        let mut msg = lxmf_core::message::LxMessageDraft::new(
+            local_dest(&state),
+            src,
+            "",
+            "Session opened",
+            lxmf_core::message_api::DeliveryMethod::Direct,
+        )
+        .unwrap();
+        msg.set_field(FIELD_THREAD, thread.to_vec()).unwrap();
+        let wire = msg.sign(&signing).unwrap().finalize(None).unwrap().pack().unwrap();
+        handle_decrypted_lxmf(&state, wire, content_source(method)).await;
+
+        let side = db::get_conversation_in_thread(&state.db, &peer, &hex::encode(thread), &identity, 10);
+        assert_eq!(side.len(), 1, "{method}");
+        assert!(db::get_conversation_in_thread(&state.db, &peer, "", &identity, 10).is_empty());
+        let threads = db::conversation_threads(&state.db, &identity, &peer).unwrap();
+        assert_eq!(threads[1]["started_by"], "contact", "{method}");
+        assert_eq!(threads[1]["label"], "Conversation 2");
+        let event = emitter
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(name, _)| name == "lxmf_message")
+            .unwrap()
+            .1
+            .clone();
+        assert_eq!(event["thread"], hex::encode(thread), "{method}");
+        let title = notifier.0.lock().unwrap()[0].title.clone();
+        assert!(title.ends_with(" · Conversation 2"), "{method}: {title}");
+        let conversations = messaging::build_conversations_payload(&state).await.unwrap();
+        assert_eq!(conversations[0]["thread_label"], "Conversation 2");
+    }
+}
+
+#[tokio::test]
 async fn service_only_signed_ticket_still_learns_and_opportunistic_retries_get_proofs() {
     use rns_transport::messages::{TransportMessage, TransportQueryResponse};
     let (state, emitter, notifier) = content_pipeline_state();

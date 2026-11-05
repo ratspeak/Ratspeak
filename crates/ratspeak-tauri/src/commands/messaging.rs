@@ -373,6 +373,9 @@ pub struct SendLxmfArgs {
     /// LXMF FIELD_RENDERER; see [`parse_message_renderer`].
     #[serde(default)]
     pub renderer: Option<u8>,
+    /// LXMF FIELD_THREAD hex of an extra conversation; absent for Main.
+    #[serde(default)]
+    pub thread: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -393,6 +396,16 @@ pub(crate) fn parse_delivery_preference(value: Option<&str>) -> AppResult<Delive
 }
 
 /// Markdown is the only renderer Ratspeak sends; plain (0) sends no field.
+/// Validated FIELD_THREAD hex of an outbound conversation; `""` is Main.
+pub(crate) fn parse_conversation_thread(value: Option<&str>) -> AppResult<String> {
+    let thread = value.unwrap_or("").trim().to_ascii_lowercase();
+    if thread.is_empty() || db::is_valid_thread(&thread) {
+        Ok(thread)
+    } else {
+        Err(AppError::bad_request("Invalid conversation"))
+    }
+}
+
 pub(crate) fn parse_message_renderer(value: Option<u8>) -> AppResult<Option<u8>> {
     match value {
         None | Some(lxmf_core::constants::RENDERER_PLAIN) => Ok(None),
@@ -554,6 +567,7 @@ pub async fn send_lxmf_message(
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref())?;
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
     let renderer = parse_message_renderer(args.renderer)?;
+    let thread = parse_conversation_thread(args.thread.as_deref())?;
 
     if !validate_hex(&dest_hash, 16, 64) {
         emit_lxmf_send_error(
@@ -619,6 +633,7 @@ pub async fn send_lxmf_message(
                     preference: delivery_pref,
                     profile: DeliveryProfile::Message,
                     renderer,
+                    thread: &thread,
                 })
                 .ok()
         })
@@ -816,6 +831,9 @@ pub struct SendReplyArgs {
     pub client_msg_id: Option<String>,
     #[serde(default)]
     pub renderer: Option<u8>,
+    /// LXMF FIELD_THREAD hex of an extra conversation; absent for Main.
+    #[serde(default)]
+    pub thread: Option<String>,
 }
 
 #[tauri::command]
@@ -840,6 +858,7 @@ pub async fn send_lxmf_reply(
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref())?;
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
     let renderer = parse_message_renderer(args.renderer)?;
+    let thread = parse_conversation_thread(args.thread.as_deref())?;
 
     if !validate_hex(&dest_hash, 16, 64) || content.is_empty() {
         state.emit_to_all(
@@ -894,6 +913,7 @@ pub async fn send_lxmf_reply(
                 preference: delivery_pref,
                 profile: DeliveryProfile::Message,
                 renderer,
+                thread: &thread,
             })
         })
     })
@@ -1095,6 +1115,9 @@ pub struct SendWithAttachmentArgs {
     pub client_msg_id: Option<String>,
     #[serde(default)]
     pub renderer: Option<u8>,
+    /// LXMF FIELD_THREAD hex of an extra conversation; absent for Main.
+    #[serde(default)]
+    pub thread: Option<String>,
 }
 
 enum AttachmentLeaseOwner {
@@ -1125,6 +1148,7 @@ async fn queue_prepared_attachment(
     content: String,
     delivery_pref: DeliveryPreference,
     renderer: Option<u8>,
+    thread: String,
     client_msg_id: Option<String>,
     file_name: String,
     file_bytes: Vec<u8>,
@@ -1187,6 +1211,7 @@ async fn queue_prepared_attachment(
                         identity_id: &identity_id,
                         preference: delivery_pref,
                         renderer,
+                        thread: &thread,
                     },
                 ),
             )
@@ -1349,6 +1374,7 @@ pub(crate) struct VoiceSendOrigin {
     pub fence: crate::state::ActivityRequestFence,
     pub identity_id: String,
     pub client_send: Option<LxmfClientSendGuard>,
+    pub thread: String,
 }
 
 #[cfg(feature = "lxst-voice")]
@@ -1366,6 +1392,7 @@ pub(crate) async fn queue_prepared_audio(
         fence: activity_fence,
         identity_id,
         client_send,
+        thread,
     } = origin;
     if state.current_identity_session_generation() != activity_fence.identity_session_generation() {
         return Err(AppError::conflict("Identity changed"));
@@ -1435,6 +1462,7 @@ pub(crate) async fn queue_prepared_audio(
                     db_pool: &state.db,
                     identity_id: &identity_id,
                     preference: delivery_pref,
+                    thread: &thread,
                 }),
             )
         });
@@ -1736,6 +1764,7 @@ pub async fn send_lxmf_with_attachment(
         content,
         delivery_pref,
         renderer,
+        parse_conversation_thread(args.thread.as_deref())?,
         client_msg_id,
         file_name,
         file_bytes,
@@ -2105,6 +2134,9 @@ pub struct SendStagedAttachmentArgs {
     pub client_msg_id: Option<String>,
     #[serde(default)]
     pub renderer: Option<u8>,
+    /// LXMF FIELD_THREAD hex of an extra conversation; absent for Main.
+    #[serde(default)]
+    pub thread: Option<String>,
 }
 
 #[tauri::command]
@@ -2168,6 +2200,7 @@ pub async fn send_lxmf_with_staged_attachment(
         content,
         delivery_pref,
         renderer,
+        parse_conversation_thread(args.thread.as_deref())?,
         client_msg_id,
         file_name,
         file_bytes,
@@ -2384,53 +2417,163 @@ pub async fn cancel_lxmf_message(
     }))
 }
 
-/// Marks inbound read; returns latest 100 + aggregate unread count.
+/// Opens one conversation with `hash` (`thread` absent or empty is Main):
+/// marks it read and returns its latest 100 messages, the peer's
+/// conversations, and the aggregate unread count.
 #[tauri::command]
-pub async fn get_conversation(state: State<'_, Arc<AppState>>, hash: String) -> AppResult<Value> {
+pub async fn get_conversation(
+    state: State<'_, Arc<AppState>>,
+    hash: String,
+    thread: Option<String>,
+) -> AppResult<Value> {
     let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
         return Err(AppError::bad_request("Invalid identity hash"));
     }
+    let thread = parse_conversation_thread(thread.as_deref())?;
     let identity_id = active_identity_id(&state);
     let dh = dest_hash.clone();
     let id_c = identity_id.clone();
-    let (messages, unread_total) = db::spawn_db(state.db.clone(), move |p| {
-        db::mark_read(&p, &dh, &id_c);
-        let messages = db::get_conversation(&p, &dh, &id_c, 100);
+    let th = thread.clone();
+    let (messages, threads, unread_total) = db::spawn_db(state.db.clone(), move |p| {
+        db::mark_read(&p, &dh, Some(&th), &id_c);
+        db::mark_conversation_thread_opened(&p, &id_c, &dh, &th);
+        let messages = db::get_conversation_in_thread(&p, &dh, &th, &id_c, 100);
+        let threads = conversation_threads_payload(&p, &id_c, &dh);
         let total = if let Ok(conn) = p.get() {
             let counts = db::get_all_unread_counts_conn(&conn, &id_c);
             counts.values().sum::<i64>()
         } else {
             0
         };
-        (messages, total)
+        (messages, threads, total)
     })
     .await
     .map_err(|_| AppError::internal("get_conversation db task panicked"))?;
 
     state.emit_to_all("unread_total", json!({ "count": unread_total }));
     broadcast_conversations(Arc::clone(&state));
-    Ok(json!({ "hash": dest_hash, "messages": messages, "unread_total": unread_total }))
+    Ok(json!({
+        "hash": dest_hash,
+        "thread": thread,
+        "messages": messages,
+        "threads": threads,
+        "unread_total": unread_total,
+    }))
+}
+
+fn conversation_threads_payload(pool: &db::DbPool, identity_id: &str, peer: &str) -> Value {
+    json!({
+        "items": db::conversation_threads(pool, identity_id, peer).unwrap_or_default(),
+        "next_number": db::next_conversation_thread_number(pool, identity_id, peer),
+    })
+}
+
+fn conversation_peer(hash: &str) -> AppResult<String> {
+    let peer = sanitize_text(hash, 128).to_ascii_lowercase();
+    if validate_hex(&peer, 32, 32) {
+        Ok(peer)
+    } else {
+        Err(AppError::bad_request("Invalid identity hash"))
+    }
+}
+
+/// The conversations with `hash`: Main plus each extra one.
+#[tauri::command]
+pub async fn get_conversation_threads(
+    state: State<'_, Arc<AppState>>,
+    hash: String,
+) -> AppResult<Value> {
+    let peer = conversation_peer(&hash)?;
+    let identity_id = active_identity_id(&state);
+    if identity_id.is_empty() {
+        return Err(AppError::conflict("no active identity"));
+    }
+    db::spawn_db(state.db.clone(), move |p| {
+        conversation_threads_payload(&p, &identity_id, &peer)
+    })
+    .await
+    .map_err(|_| AppError::internal("conversation threads db task panicked"))
+}
+
+/// Starts an extra conversation with `hash` under a fresh 32-byte thread ID.
+/// `name` absent or blank keeps the numbered default.
+#[tauri::command]
+pub async fn create_conversation_thread(
+    state: State<'_, Arc<AppState>>,
+    hash: String,
+    name: Option<String>,
+) -> AppResult<Value> {
+    let peer = conversation_peer(&hash)?;
+    let name = name.map(|name| sanitize_text(&name, 256));
+    let identity_id = active_identity_id(&state);
+    if identity_id.is_empty() {
+        return Err(AppError::conflict("no active identity"));
+    }
+    let thread = hex::encode(rns_crypto::random::random_32());
+    let th = thread.clone();
+    let threads = db::spawn_db(state.db.clone(), move |p| {
+        db::create_conversation_thread(&p, &identity_id, &peer, &th, name.as_deref())?;
+        Ok::<_, String>(conversation_threads_payload(&p, &identity_id, &peer))
+    })
+    .await
+    .map_err(|_| AppError::internal("conversation threads db task panicked"))?
+    .map_err(AppError::bad_request)?;
+    broadcast_conversations(Arc::clone(&state));
+    Ok(json!({ "thread": thread, "threads": threads }))
+}
+
+/// Renames an extra conversation; Main keeps its fixed name.
+#[tauri::command]
+pub async fn rename_conversation_thread(
+    state: State<'_, Arc<AppState>>,
+    hash: String,
+    thread: String,
+    name: Option<String>,
+) -> AppResult<Value> {
+    let peer = conversation_peer(&hash)?;
+    let thread = parse_conversation_thread(Some(&thread))?;
+    if thread.is_empty() {
+        return Err(AppError::bad_request("Main can't be renamed"));
+    }
+    let name = name.map(|name| sanitize_text(&name, 256));
+    let identity_id = active_identity_id(&state);
+    if identity_id.is_empty() {
+        return Err(AppError::conflict("no active identity"));
+    }
+    let threads = db::spawn_db(state.db.clone(), move |p| {
+        if !db::rename_conversation_thread(&p, &identity_id, &peer, &thread, name.as_deref())? {
+            return Err("Conversation not found".to_string());
+        }
+        Ok(conversation_threads_payload(&p, &identity_id, &peer))
+    })
+    .await
+    .map_err(|_| AppError::internal("conversation threads db task panicked"))?
+    .map_err(AppError::bad_request)?;
+    broadcast_conversations(Arc::clone(&state));
+    Ok(json!({ "threads": threads }))
 }
 
 #[tauri::command]
-pub async fn mark_read(state: State<'_, Arc<AppState>>, hash: String) -> AppResult<Value> {
+pub async fn mark_read(
+    state: State<'_, Arc<AppState>>,
+    hash: String,
+    thread: Option<String>,
+) -> AppResult<Value> {
     let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
         return Err(AppError::bad_request("Invalid identity hash"));
     }
+    let thread = parse_conversation_thread(thread.as_deref())?;
     let identity_id = active_identity_id(&state);
     let dh = dest_hash.clone();
     let id_c = identity_id.clone();
     let total = db::spawn_db(state.db.clone(), move |p| {
+        db::mark_read(&p, &dh, Some(&thread), &id_c);
         let conn = match p.get() {
             Ok(c) => c,
             Err(_) => return 0i64,
         };
-        conn.execute(
-            "UPDATE messages SET state = 'read' WHERE source = ?1 AND direction = 'inbound' AND state != 'read' AND identity_id = ?2",
-            rusqlite::params![dh, id_c],
-        ).ok();
         let counts = db::get_all_unread_counts_conn(&conn, &id_c);
         counts.values().sum::<i64>()
     })
@@ -2480,15 +2623,22 @@ pub async fn hide_conversation(state: State<'_, Arc<AppState>>, hash: String) ->
     Ok(json!({ "hash": dest_hash, "unread_total": total }))
 }
 
+/// Deletes every conversation with `hash`, or just `thread` (`""` is Main,
+/// which stays as an empty conversation).
 #[tauri::command]
 pub async fn delete_conversation(
     state: State<'_, Arc<AppState>>,
     hash: String,
+    thread: Option<String>,
 ) -> AppResult<Value> {
     let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
         return Err(AppError::bad_request("Invalid identity hash"));
     }
+    let thread = thread
+        .map(|thread| parse_conversation_thread(Some(&thread)))
+        .transpose()?;
+    let deleted_thread = thread.clone();
     // Bound to the identity the user saw, not to one that took over meanwhile.
     let generation = state.current_identity_session_generation();
     let deletion =
@@ -2507,8 +2657,12 @@ pub async fn delete_conversation(
     let id_c = identity_id.clone();
     let (total, files) = tokio::task::spawn_blocking(move || {
         let _deletion = deletion;
-        let deleted =
-            ratspeak_runtime::propagation_recovery::delete_messages(&st, &id_c, Some(&dh))?;
+        let deleted = match thread.as_deref() {
+            Some(thread) => ratspeak_runtime::propagation_recovery::delete_thread_messages(
+                &st, &id_c, &dh, thread,
+            )?,
+            None => ratspeak_runtime::propagation_recovery::delete_messages(&st, &id_c, Some(&dh))?,
+        };
         let files = deleted.remove_files();
         let total: i64 = db::get_all_unread_counts(&st.db, &id_c).values().sum();
         Ok::<_, db::admission::AdmissionDbError>((total, files))
@@ -2523,12 +2677,12 @@ pub async fn delete_conversation(
     }
     state.emit_to_all(
         "conversation_deleted",
-        json!({ "ok": true, "hash": dest_hash }),
+        json!({ "ok": true, "hash": dest_hash, "thread": deleted_thread }),
     );
     state.emit_to_all("unread_total", json!({ "count": total }));
     broadcast_conversations(Arc::clone(&state));
     files.map_err(super::shared::files_not_removed)?;
-    Ok(json!({ "hash": dest_hash, "unread_total": total }))
+    Ok(json!({ "hash": dest_hash, "thread": deleted_thread, "unread_total": total }))
 }
 
 /// Deletes the given messages of one conversation on this device only.

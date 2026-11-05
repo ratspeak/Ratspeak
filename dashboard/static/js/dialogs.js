@@ -113,7 +113,9 @@ function rsPrompt(opts) {
             danger: false,
             hasInput: true,
             placeholder: opts.placeholder || '',
-            defaultValue: opts.defaultValue || ''
+            defaultValue: opts.defaultValue || '',
+            maxLength: opts.maxLength || 0,
+            inputClass: opts.inputClass || ''
         }, function(value) {
             resolve(value);
         });
@@ -257,9 +259,10 @@ function _rsShowDialog(cfg, callback) {
     if (cfg.hasInput) {
         input = document.createElement('input');
         input.type = 'text';
-        input.className = 'rs-dialog-input';
+        input.className = 'rs-dialog-input' + (cfg.inputClass ? ' ' + cfg.inputClass : '');
         input.placeholder = cfg.placeholder;
         input.value = cfg.defaultValue;
+        if (cfg.maxLength) input.maxLength = cfg.maxLength;
         disableAutoCorrect(input);
         built.body.appendChild(input);
     }

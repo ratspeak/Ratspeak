@@ -192,6 +192,7 @@ pub fn build_paper_message(
     dest_hash_hex: &str,
     content: &str,
     title: &str,
+    thread: &str,
 ) -> Result<BuiltPaperMessage, PaperError> {
     if content.trim().is_empty() {
         return Err(PaperError::Empty);
@@ -207,7 +208,7 @@ pub fn build_paper_message(
     if content.len() + title.len() > PAPER_CONTENT_LIMIT {
         return Err(too_long(estimate));
     }
-    let draft = LxMessageDraft::new(
+    let mut draft = LxMessageDraft::new(
         destination,
         manager.lxmf_dest_hash,
         title,
@@ -215,6 +216,12 @@ pub fn build_paper_message(
         DeliveryMethod::Paper,
     )
     .map_err(|_| too_long(estimate))?;
+    if !thread.is_empty() {
+        let thread = hex::decode(thread).map_err(|_| PaperError::Invalid)?;
+        draft
+            .set_field(lxmf_core::constants::FIELD_THREAD, thread)
+            .map_err(|_| too_long(estimate))?;
+    }
     let plaintext = draft
         .checked_wire_len()
         .map_err(|_| PaperError::Invalid)?
@@ -274,12 +281,13 @@ pub async fn create_paper_message(
     dest_hash_hex: &str,
     content: &str,
     title: &str,
+    thread: &str,
 ) -> Result<CreatedPaperMessage, PaperError> {
     let (built, identity_id, source) = {
         let lxmf = state.lxmf.lock().map_err(|_| PaperError::Unavailable)?;
         let manager = lxmf.as_ref().ok_or(PaperError::Unavailable)?;
         (
-            build_paper_message(manager, dest_hash_hex, content, title)?,
+            build_paper_message(manager, dest_hash_hex, content, title, thread)?,
             manager.identity_hash.clone(),
             manager.lxmf_hash.clone(),
         )
@@ -296,6 +304,7 @@ pub async fn create_paper_message(
         let content = content.to_string();
         let title = title.to_string();
         let paper_uri = paper_uri.clone();
+        let thread = thread.to_string();
         db::spawn_db(state.db.clone(), move |p| {
             let display_timestamp =
                 db::next_conversation_observed_timestamp(&p, &destination, &identity_id, timestamp);
@@ -309,6 +318,7 @@ pub async fn create_paper_message(
                 display_timestamp,
                 &identity_id,
                 &paper_uri,
+                &thread,
             )
             .ok()?;
             db::unhide_conversation(&p, &destination, &identity_id);

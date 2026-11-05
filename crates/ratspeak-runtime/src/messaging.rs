@@ -79,7 +79,8 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
                         m.timestamp,
                         m.direction,
                         substr(m.title, 1, 60),
-                        m.renderer
+                        m.renderer,
+                        m.thread
                  FROM messages m
                  WHERE m.identity_id = ?1
                    AND m.rowid IN (
@@ -87,7 +88,7 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
                            SELECT rowid,
                                   ROW_NUMBER() OVER (
                                       PARTITION BY CASE WHEN direction = 'inbound' THEN source ELSE destination END
-                                      ORDER BY timestamp DESC
+                                      ORDER BY timestamp DESC, rowid DESC
                                   ) AS rn
                            FROM messages
                            WHERE identity_id = ?1
@@ -132,6 +133,8 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
             })
             .unwrap_or_default();
 
+        let thread_labels = db::conversation_thread_labels_conn(&conn, &id_for_db)
+            .map_err(|e| format!("thread labels failed: {e}"))?;
         let mut conversations: std::collections::HashMap<String, Value> =
             std::collections::HashMap::new();
         let mut activity_name_stmt = conn
@@ -155,10 +158,12 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
                     .ok()
                     .flatten()
                     .and_then(|renderer| u8::try_from(renderer).ok()),
+                row.get::<_, String>(7).unwrap_or_default(),
             ))
         }) {
             for r in rows.flatten() {
-                let (source, destination, content, timestamp, direction, title, renderer) = r;
+                let (source, destination, content, timestamp, direction, title, renderer, thread) =
+                    r;
                 let preview: String = message_display_text(&title, &content)
                     .chars()
                     .take(60)
@@ -207,6 +212,8 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
                             "timestamp": timestamp,
                             "unread": unread_counts.get(&other).copied().unwrap_or(0),
                             "is_contact": is_contact,
+                            "thread": thread,
+                            "thread_label": thread_labels.label(&other, &thread),
                         }),
                     );
                 }

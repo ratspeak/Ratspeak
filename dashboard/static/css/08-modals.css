@@ -1042,6 +1042,7 @@
     font-family: var(--font-sans);
 }
 
+.rs-dialog-input--text { font-family: var(--font-sans); }
 .rs-dialog-input {
     display: block;
     width: 100%;

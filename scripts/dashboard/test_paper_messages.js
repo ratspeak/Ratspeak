@@ -378,7 +378,9 @@ const PREVIEW = {
             showToast: (message, kind, ms) => toastsSent.push([message, kind, ms]),
             _conversationOwnerSnapshot: () => ({ hash: 'cd'.repeat(16) }),
             _conversationOwnerIdentityIsCurrent: () => true,
+            _conversationOwnerIsCurrent: () => true,
             _canonicalConversationHash: hash => hash,
+            _canonicalConversationThread: thread => String(thread || ''),
             _conversationNameInfo: () => ({ name: 'Field Rat' }),
             _conversationMessagesFor: () => ({ messages: [], active: true }),
             _appendConversationMessage: (hash, message) => { appended.push(message); return true; },
@@ -418,7 +420,7 @@ const PREVIEW = {
             return Promise.resolve({ message: { id: 'm-2', timestamp: 7 }, paper_uri: URI, uri_chars: URI.length });
         };
     });
-    assert.deepEqual(JSON.parse(JSON.stringify(created)), ['create_paper_message', { dest_hash: 'cd'.repeat(16), content: 'Meet at noon', title: '' }]);
+    assert.deepEqual(JSON.parse(JSON.stringify(created)), ['create_paper_message', { dest_hash: 'cd'.repeat(16), content: 'Meet at noon', title: '', thread: null }]);
     assert.equal(sent.input.value, '', 'success clears the composer');
     assert.deepEqual([sent.appended[0].id, sent.appended[0].state, sent.appended[0].delivery_method, sent.appended[0].paper_uri],
         ['m-2', 'paper', 'paper', URI]);

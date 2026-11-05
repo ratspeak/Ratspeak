@@ -2,6 +2,10 @@ var lxmfIdentity = null;
 var lxmfContacts = [];
 var lxmfConversations = [];
 var lxmfActiveContact = null;
+// FIELD_THREAD hex of the open conversation with lxmfActiveContact; '' is Main.
+var lxmfActiveThread = '';
+// get_conversation's `threads` payload for lxmfActiveContact: { items, next_number }.
+var lxmfActiveThreads = null;
 var _conversationEpoch = 0;
 var _conversationIdentityGeneration = 0;
 // Advanced by a bulk messages delete; a read from before it is dropped.
@@ -51,6 +55,28 @@ function _canonicalConversationHash(value) {
     return String(value == null ? '' : value).trim().toLowerCase();
 }
 
+function _canonicalConversationThread(value) {
+    return String(value == null ? '' : value).trim().toLowerCase();
+}
+
+// Cache/draft key of one conversation; Main keeps the bare contact hash.
+function _conversationKey(hash, thread) {
+    hash = _canonicalConversationHash(hash);
+    thread = _canonicalConversationThread(thread);
+    return thread ? hash + '~' + thread : hash;
+}
+
+function _activeConversationKey() {
+    return lxmfActiveContact ? _conversationKey(lxmfActiveContact, lxmfActiveThread) : '';
+}
+
+// `thread` undefined means the open conversation for the open contact, else Main.
+function _resolveConversationThread(hash, thread) {
+    if (thread !== undefined && thread !== null) return _canonicalConversationThread(thread);
+    return _canonicalConversationHash(hash) === _canonicalConversationHash(lxmfActiveContact)
+        ? lxmfActiveThread : '';
+}
+
 function _lxmfAttentionForeground() {
     if (window.RS && typeof RS.isAttentionForeground === 'function') {
         return !!RS.isAttentionForeground();
@@ -61,11 +87,12 @@ function _lxmfAttentionForeground() {
     return typeof document === 'undefined' || !document.hidden;
 }
 
-function _isConversationActivelyVisible(hash) {
+function _isConversationActivelyVisible(hash, thread) {
     if (!_lxmfAttentionForeground()) return false;
     if (typeof currentView !== 'undefined' && currentView !== 'message') return false;
     return !!hash &&
-        _canonicalConversationHash(hash) === _canonicalConversationHash(lxmfActiveContact);
+        _canonicalConversationHash(hash) === _canonicalConversationHash(lxmfActiveContact) &&
+        _resolveConversationThread(hash, thread) === lxmfActiveThread;
 }
 
 function _notifyConversationOwnerChanged(hash, reason) {
@@ -77,6 +104,7 @@ function _notifyConversationOwnerChanged(hash, reason) {
 function _conversationOwnerSnapshot() {
     return {
         hash: _canonicalConversationHash(lxmfActiveContact),
+        thread: lxmfActiveContact ? lxmfActiveThread : '',
         epoch: _conversationEpoch,
         identityGeneration: _conversationIdentityGeneration,
     };
@@ -85,6 +113,7 @@ function _conversationOwnerSnapshot() {
 function _conversationOwnerIsCurrent(owner) {
     return !!owner &&
         _canonicalConversationHash(owner.hash) === _canonicalConversationHash(lxmfActiveContact) &&
+        _canonicalConversationThread(owner.thread) === lxmfActiveThread &&
         owner.epoch === _conversationEpoch &&
         owner.identityGeneration === _conversationIdentityGeneration;
 }
@@ -93,15 +122,20 @@ function _conversationOwnerIdentityIsCurrent(owner) {
     return !!owner && owner.identityGeneration === _conversationIdentityGeneration;
 }
 
-function _activateConversation(hash, reason) {
+// `thread` undefined keeps the open conversation when the contact is unchanged,
+// else opens Main.
+function _activateConversation(hash, reason, thread) {
     var next = _canonicalConversationHash(hash);
     var current = _canonicalConversationHash(lxmfActiveContact);
-    if (next === current) {
+    var nextThread = next ? _resolveConversationThread(next, thread) : '';
+    if (next === current && nextThread === lxmfActiveThread) {
         lxmfActiveContact = next || null;
         return _conversationOwnerSnapshot();
     }
     _conversationEpoch += 1;
+    if (next !== current) lxmfActiveThreads = null;
     lxmfActiveContact = next || null;
+    lxmfActiveThread = nextThread;
     _notifyConversationOwnerChanged(next, reason || 'navigation');
     return _conversationOwnerSnapshot();
 }
@@ -110,6 +144,8 @@ function _resetConversationSession(reason) {
     _conversationIdentityGeneration += 1;
     _conversationEpoch += 1;
     lxmfActiveContact = null;
+    lxmfActiveThread = '';
+    lxmfActiveThreads = null;
     if (RS.messageSearch) RS.messageSearch.reset();
     _notifyConversationOwnerChanged(null, reason || 'identity_replaced');
 }
@@ -117,6 +153,7 @@ function _resetConversationSession(reason) {
 window.RS = window.RS || {};
 RS.conversationOwner = {
     canonicalHash: _canonicalConversationHash,
+    key: _conversationKey,
     snapshot: _conversationOwnerSnapshot,
     isCurrent: _conversationOwnerIsCurrent,
     isIdentityCurrent: _conversationOwnerIdentityIsCurrent,
@@ -1976,26 +2013,28 @@ function _cancelLxmfSend(msgId) {
     });
 }
 
-function _conversationMessagesFor(hash) {
+function _conversationMessagesFor(hash, thread) {
     hash = _canonicalConversationHash(hash);
-    if (hash && hash === _canonicalConversationHash(lxmfActiveContact)) {
-        return { messages: lxmfConversation, active: true };
+    thread = _resolveConversationThread(hash, thread);
+    var key = _conversationKey(hash, thread);
+    if (hash && hash === _canonicalConversationHash(lxmfActiveContact) && thread === lxmfActiveThread) {
+        return { messages: lxmfConversation, active: true, key: key };
     }
-    return { messages: (cacheGet(hash) || []).slice(), active: false };
+    return { messages: (cacheGet(key) || []).slice(), active: false, key: key };
 }
 
 function _commitConversationMessages(hash, target) {
-    hash = _canonicalConversationHash(hash);
-    if (target.active && hash === _canonicalConversationHash(lxmfActiveContact)) {
+    var key = target.key || _canonicalConversationHash(hash);
+    if (target.active && key === _activeConversationKey()) {
         lxmfConversation = target.messages;
         _cacheActiveConversation();
         return;
     }
-    if (hash) cacheSet(hash, target.messages);
+    if (key) cacheSet(key, target.messages);
 }
 
 function _appendConversationMessage(hash, message) {
-    var target = _conversationMessagesFor(hash);
+    var target = _conversationMessagesFor(hash, message && message.thread);
     target.messages.push(message);
     _commitConversationMessages(hash, target);
     return target.active;
@@ -2010,7 +2049,7 @@ function _handleLxmfSendAccepted(resp, clientMsgId, targetHash) {
         if (resp && resp.cancelled) delete _pendingLxmfCancelByClientId[clientMsgId];
         return;
     }
-    var target = _conversationMessagesFor(targetHash || lxmfActiveContact);
+    var target = _conversationMessagesFor(targetHash || lxmfActiveContact, owner ? owner.thread : undefined);
     for (var i = 0; i < target.messages.length; i++) {
         if (target.messages[i].id === clientMsgId) {
             target.messages[i].id = serverMsgId;
@@ -2065,7 +2104,15 @@ function cacheDel(hash) {
 }
 
 function _cacheActiveConversation() {
-    if (lxmfActiveContact) cacheSet(lxmfActiveContact, lxmfConversation.slice());
+    if (lxmfActiveContact) cacheSet(_activeConversationKey(), lxmfConversation.slice());
+}
+
+// Forget every cached conversation with `hash`.
+function _cacheDelContact(hash) {
+    hash = _canonicalConversationHash(hash);
+    _cacheLru.slice().forEach(function(key) {
+        if (key === hash || key.indexOf(hash + '~') === 0) cacheDel(key);
+    });
 }
 
 function _mergeConversationMessages(hash, serverMessages) {
@@ -2417,10 +2464,7 @@ function _onChatDetailExit() {
     var exitingHash = lxmfActiveContact;
     _clearImageBlobUrlCache();
     var input = document.getElementById('lxmf-input');
-    if (input && exitingHash) {
-        if (input.value.trim()) { _lxmfDrafts[exitingHash] = input.value; }
-        else { delete _lxmfDrafts[exitingHash]; }
-    }
+    if (exitingHash) _saveActiveDraft(input);
 
     if (!_ghostConversationHash || _ghostConversationHash !== exitingHash) {
         _activateConversation(null, 'left_conversation');
@@ -2446,16 +2490,59 @@ function _onChatDetailExit() {
     _renderConversationsFromCache(lxmfConversations || []);
 }
 
-// Cache-first render to avoid an empty-spinner flash; reconciles via fetch.
+function _refreshActiveConversationThreads() {
+    if (RS.threads) RS.threads.refresh();
+}
+
+function _saveActiveDraft(input) {
+    var key = _activeConversationKey();
+    if (!input || !key) return;
+    if (input.value.trim()) { _lxmfDrafts[key] = input.value; }
+    else { delete _lxmfDrafts[key]; }
+}
+
+function _restoreActiveDraft(input) {
+    if (!input) return;
+    input.value = _lxmfDrafts[_activeConversationKey()] || '';
+    input.style.height = '';
+}
+
+// The conversation a list row opens: the one holding the contact's newest message.
+function _latestConversationThread(hash) {
+    hash = _canonicalConversationHash(hash);
+    var row = (lxmfConversations || []).find(function(c) {
+        return c && _canonicalConversationHash(c.hash) === hash;
+    });
+    return row && row.thread ? _canonicalConversationThread(row.thread) : '';
+}
+
+// Switch the open chat to another conversation with the same contact.
+function switchConversationThread(thread) {
+    if (!lxmfActiveContact) return;
+    thread = _canonicalConversationThread(thread);
+    if (thread === lxmfActiveThread) return;
+    var input = document.getElementById('lxmf-input');
+    _saveActiveDraft(input);
+    if (_replyTarget) clearReplyTarget();
+    var hash = _activateConversation(lxmfActiveContact, 'navigation', thread).hash;
+    _restoreActiveDraft(input);
+    return _loadConversation(hash);
+}
+window.switchConversationThread = switchConversationThread;
+
+// Cache-first render of the open conversation with `hash` (activate it first)
+// to avoid an empty-spinner flash; reconciles via fetch.
 function _loadConversation(hash) {
     hash = _canonicalConversationHash(hash);
+    var thread = _resolveConversationThread(hash);
+    var key = _conversationKey(hash, thread);
     var loadOwner = _conversationOwnerSnapshot();
     var loadClears = _messagesClearedCount;
     // Reactions are keyed per message; drop the previous conversation's
     // entries so the map doesn't accumulate across switches.
     _msgReactions = {};
     _clearMessageSelection();
-    var cached = cacheGet(hash);
+    var cached = cacheGet(key);
     if (cached && cached.length > 0) {
         lxmfConversation = cached;
     } else {
@@ -2463,16 +2550,18 @@ function _loadConversation(hash) {
     }
     renderConversation({ forceScrollBottom: true });
     // get_conversation fetches messages AND marks-read; broadcasts unread_total.
-    return RS.invoke('get_conversation', { hash: hash }).then(function(result) {
+    return RS.invoke('get_conversation', { hash: hash, thread: thread || null }).then(function(result) {
         if (!_conversationOwnerIsCurrent(loadOwner) || loadClears !== _messagesClearedCount) return;
-        var messages = _mergeConversationMessages(hash, (result && result.messages) || []);
-        cacheSet(hash, messages);
-        if (hash === lxmfActiveContact) {
+        var messages = _mergeConversationMessages(key, (result && result.messages) || []);
+        cacheSet(key, messages);
+        if (key === _activeConversationKey()) {
+            lxmfActiveThreads = (result && result.threads) || null;
             lxmfConversation = messages;
             renderConversation({ forceScrollBottom: true });
         }
     }).catch(function() {});
 }
+
 
 // Placeholder row shown until the backend confirms the conversation exists.
 function _ensureGhostRow(hash) {
@@ -2545,7 +2634,7 @@ function _updateConversationPreview(hash, previewText, timestamp) {
 
     var row = container.querySelector('.conv-row[data-hash="' + hash + '"]');
     if (row) {
-        var previewEl = row.querySelector('.conv-preview');
+        var previewEl = row.querySelector('.conv-preview-text') || row.querySelector('.conv-preview');
         if (previewEl) previewEl.textContent = (previewText || '').substring(0, 50);
         var timeEl = row.querySelector('.conv-time');
         if (timeEl) timeEl.textContent = timestamp ? formatConvTime(timestamp) : '';
@@ -2688,7 +2777,9 @@ function renderDashboardRecentMessages() {
                     '<span class="conv-time">' + time + '</span>' +
                 '</div>' +
                 '<div class="conv-row-bottom">' +
-                    '<span class="conv-preview">' + escapeHtml(preview) + '</span>' +
+                    '<span class="conv-preview">' +
+                        (c.thread_label ? '<span class="conv-thread-pill">' + escapeHtml(c.thread_label) + '</span>' : '') +
+                        '<span class="conv-preview-text">' + escapeHtml(preview) + '</span></span>' +
                     unreadBadge +
                 '</div>' +
             '</div>' +
@@ -2699,7 +2790,7 @@ function renderDashboardRecentMessages() {
         if (RS.ui) RS.ui.bindKeyboardActivation(el);
         el.addEventListener('click', function() {
             var hash = this.dataset.hash;
-            hash = _activateConversation(hash, 'navigation').hash;
+            hash = _activateConversation(hash, 'navigation', _latestConversationThread(hash)).hash;
             switchView('message');
             _loadConversation(hash);
             loadConversations();
@@ -2879,7 +2970,9 @@ function _renderConversationsFromCache(convos) {
                         '<span class="conv-time">' + time + '</span>' +
                     '</div>' +
                     '<div class="conv-row-bottom">' +
-                        '<span class="conv-preview">' + previewStateHtml + escapeHtml(preview) + '</span>' +
+                        '<span class="conv-preview">' +
+                            (c.thread_label ? '<span class="conv-thread-pill">' + escapeHtml(c.thread_label) + '</span>' : '') +
+                            previewStateHtml + '<span class="conv-preview-text">' + escapeHtml(preview) + '</span></span>' +
                         unreadBadge +
                     '</div>' +
                 '</div>' +
@@ -2896,14 +2989,11 @@ function _renderConversationsFromCache(convos) {
                 if (_ghostConversationHash && _ghostConversationHash !== hash) {
                     _removeGhostRow();
                 }
-                // Per-thread draft persistence on switch.
+                // Per-conversation draft persistence on switch.
                 var input = document.getElementById('lxmf-input');
-                if (input && lxmfActiveContact) {
-                    if (input.value.trim()) { _lxmfDrafts[lxmfActiveContact] = input.value; }
-                    else { delete _lxmfDrafts[lxmfActiveContact]; }
-                }
-                hash = _activateConversation(hash, 'navigation').hash;
-                if (input) { input.value = _lxmfDrafts[hash] || ''; input.style.height = ''; }
+                _saveActiveDraft(input);
+                hash = _activateConversation(hash, 'navigation', _latestConversationThread(hash)).hash;
+                _restoreActiveDraft(input);
                 container.querySelectorAll('.conv-row.active').forEach(function(r) { r.classList.remove('active'); });
                 this.classList.add('active');
                 _loadConversation(hash);
@@ -3620,6 +3710,7 @@ function renderConversation(options) {
             header.style.display = 'none';
         }
     }
+    if (RS.threads) RS.threads.render();
     renderVoiceUi();
 
     if (!lxmfActiveContact) {
@@ -4106,7 +4197,7 @@ function _finishLxmfComposerSend(input, shouldRestoreFocus, targetHash) {
     input.value = '';
     input.style.height = '';
     input.scrollTop = 0;
-    delete _lxmfDrafts[targetHash];
+    delete _lxmfDrafts[_activeConversationKey()];
     if (shouldRestoreFocus) {
         _focusLxmfComposerInput(input);
     } else if (document.activeElement === input) {
@@ -4117,9 +4208,9 @@ function _finishLxmfComposerSend(input, shouldRestoreFocus, targetHash) {
     if (window.RS && RS.voiceMemos) RS.voiceMemos.syncComposer();
 }
 
-function _markOptimisticMessageFailed(clientMsgId, error, targetHash) {
+function _markOptimisticMessageFailed(clientMsgId, error, targetHash, thread) {
     targetHash = _canonicalConversationHash(targetHash || lxmfActiveContact);
-    var target = _conversationMessagesFor(targetHash);
+    var target = _conversationMessagesFor(targetHash, thread);
     for (var i = 0; i < target.messages.length; i++) {
         if (target.messages[i] && target.messages[i].id === clientMsgId) {
             target.messages[i].state = 'failed';
@@ -4221,6 +4312,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
                     client_msg_id: attachMsgId,
                     staging_token: stageToken,
                     renderer: renderer,
+                    thread: sendOwner.thread || null,
                 }
             });
         }).then(function(resp) {
@@ -4232,7 +4324,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
         }).catch(function(error) {
             if (shareContext && RS.textShares) RS.textShares.failed(shareContext);
             if (_conversationOwnerIdentityIsCurrent(sendOwner)) {
-                _markOptimisticMessageFailed(attachMsgId, error, targetHash);
+                _markOptimisticMessageFailed(attachMsgId, error, targetHash, sendOwner.thread);
             }
         }).finally(function() {
             if (optimisticImageUrl) {
@@ -4244,6 +4336,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
 
         var attachmentWasActive = _appendConversationMessage(targetHash, {
             id: attachMsgId,
+            thread: sendOwner.thread,
             direction: 'outbound',
             content: text,
             renderer: renderer,
@@ -4286,12 +4379,14 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
                 reply_to_preview: _replyTarget.content,
                 client_msg_id: msgId,
                 renderer: renderer,
+                thread: sendOwner.thread || null,
             }
         }).then(function(resp) {
             _handleLxmfSendAccepted(resp, msgId, targetHash, sendOwner);
         }).catch(function() {});
         var replyWasActive = _appendConversationMessage(targetHash, {
             id: msgId,
+            thread: sendOwner.thread,
             direction: 'outbound',
             content: text,
             renderer: renderer,
@@ -4316,6 +4411,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
             delivery_method: chosenDelivery,
             client_msg_id: msgId,
             renderer: renderer,
+            thread: sendOwner.thread || null,
         }
     }).then(function(resp) {
         _handleLxmfSendAccepted(resp, msgId, targetHash, sendOwner);
@@ -4330,6 +4426,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
 
     var messageWasActive = _appendConversationMessage(targetHash, {
         id: msgId,
+        thread: sendOwner.thread,
         direction: 'outbound',
         content: text,
         renderer: renderer,
@@ -4381,7 +4478,12 @@ function sendLxmfPaperMessage() {
         return;
     }
     _paperSendInFlight = true;
-    RS.invoke('create_paper_message', { dest_hash: targetHash, content: text, title: '' }).then(function(resp) {
+    RS.invoke('create_paper_message', {
+        dest_hash: targetHash,
+        content: text,
+        title: '',
+        thread: sendOwner.thread || null,
+    }).then(function(resp) {
         if (!_conversationOwnerIdentityIsCurrent(sendOwner)) return;
         var uri = resp && resp.paper_uri;
         if (!uri) throw new Error('Paper link unavailable');
@@ -4394,14 +4496,15 @@ function sendLxmfPaperMessage() {
         message.state = 'paper';
         message.delivery_method = 'paper';
         message.paper_uri = message.paper_uri || uri;
-        var target = _conversationMessagesFor(targetHash);
+        message.thread = _canonicalConversationThread(message.thread || sendOwner.thread);
+        var target = _conversationMessagesFor(targetHash, message.thread);
         var existing = target.messages.find(function(m) { return m.id === message.id; });
         if (existing && !existing.paper_uri) existing.paper_uri = message.paper_uri;
         var wasActive = existing ? target.active : _appendConversationMessage(targetHash, message);
         if (wasActive) renderConversation({ forceScrollBottom: true });
         _updateConversationPreview(targetHash, text, message.timestamp);
         loadConversations();
-        if (_canonicalConversationHash(lxmfActiveContact) === targetHash && input.value.trim() === text) {
+        if (_conversationOwnerIsCurrent(sendOwner) && input.value.trim() === text) {
             if (_replyTarget) clearReplyTarget();
             _finishLxmfComposerSend(input, false, targetHash);
         }
@@ -4467,6 +4570,7 @@ function sendLxmfVoiceMemo(voiceDraft, targetHash, options) {
             delivery_method: chosenDelivery,
             client_msg_id: msgId,
             staging_token: stageToken,
+            thread: sendOwner.thread || null,
         }
     }).catch(function(error) {
         // Only native confirmation of no admission and successful restoration
@@ -4480,6 +4584,7 @@ function sendLxmfVoiceMemo(voiceDraft, targetHash, options) {
         if (window.RS && RS.voiceMemos) RS.voiceMemos.registerDraft(acceptedId, voiceDraft);
         var isActive = _appendConversationMessage(targetHash, {
             id: acceptedId,
+            thread: sendOwner.thread,
             direction: 'outbound',
             content: 'Voice message',
             timestamp: Date.now() / 1000,
@@ -5366,13 +5471,14 @@ function _handleMessageSelectionClick(e) {
 
 function _removeConversationMessages(hash, ids) {
     var owner = _canonicalConversationHash(hash);
+    var key = _conversationKey(owner, _resolveConversationThread(owner));
     var drop = function(list) {
         return (list || []).filter(function(m) { return ids.indexOf(m.id) === -1; });
     };
-    var cached = cacheGet(owner);
-    if (cached) cacheSet(owner, drop(cached));
+    var cached = cacheGet(key);
+    if (cached) cacheSet(key, drop(cached));
     ids.forEach(function(id) { delete _msgReactions[id]; });
-    if (owner === _canonicalConversationHash(lxmfActiveContact)) {
+    if (key === _activeConversationKey()) {
         lxmfConversation = drop(lxmfConversation);
         if (_msgSelection) {
             _msgSelection.ids = _msgSelection.ids.filter(function(id) { return ids.indexOf(id) === -1; });
@@ -6550,19 +6656,23 @@ RS.listen('lxmf_message', function(msg) {
     if (!msg) return;
     msg.source = _canonicalConversationHash(msg.source);
     msg.destination = _canonicalConversationHash(msg.destination);
+    msg.thread = _canonicalConversationThread(msg.thread);
     var activeHash = _canonicalConversationHash(lxmfActiveContact);
     var appForeground = _lxmfAttentionForeground();
-    var conversationVisible = _isConversationActivelyVisible(msg.source);
-    if (msg.source === activeHash || msg.destination === activeHash) {
+    var conversationVisible = _isConversationActivelyVisible(msg.source, msg.thread);
+    var forActiveContact = msg.source === activeHash || msg.destination === activeHash;
+    if (forActiveContact && msg.thread === lxmfActiveThread) {
         // Dedupe reconnect replays.
         var isDupe = msg.id && lxmfConversation.some(function(m) { return m.id === msg.id; });
         if (isDupe) return;
         lxmfConversation.push(msg);
-        cacheSet(activeHash, lxmfConversation.slice());
+        _cacheActiveConversation();
         renderConversation({ stickToBottom: true });
         if (conversationVisible) {
-            RS.invoke('mark_read', { hash: msg.source }).catch(function() {});
+            RS.invoke('mark_read', { hash: msg.source, thread: msg.thread || null }).catch(function() {});
         }
+    } else if (forActiveContact) {
+        _refreshActiveConversationThreads();
     }
     // Paper rows are filed by the user's own action, so they never alert.
     if (_messageIsPaper(msg)) return;
@@ -6576,7 +6686,10 @@ RS.listen('lxmf_message', function(msg) {
                 ? 'New message with attachment from ' + fromLabel
                 : 'New message from ' + fromLabel);
         var sourceHash = msg.source;
-        showToast(toastMsg, 'toast-action', 4000, function() { openConversationWith(sourceHash); });
+        var sourceThread = msg.thread;
+        showToast(toastMsg, 'toast-action', 4000, function() {
+            openConversationWith(sourceHash, { thread: sourceThread });
+        });
     }
     // Tauri notifications are emitted by the runtime. This fallback is only
     // for a background browser, where the last selected chat is not visible.
@@ -6587,14 +6700,17 @@ RS.listen('lxmf_message', function(msg) {
             title: 'Message from ' + notifFrom,
             body: notifBody,
             tag: 'lxmf-' + msg.source,
-            onClick: function() { openConversationWith(msg.source); }
+            onClick: function() { openConversationWith(msg.source, { thread: msg.thread }); }
         });
     }
 });
 
 document.addEventListener('rs-lifecycle-foreground-handled', function() {
     if (_isConversationActivelyVisible(lxmfActiveContact)) {
-        RS.invoke('mark_read', { hash: _canonicalConversationHash(lxmfActiveContact) }).catch(function() {});
+        RS.invoke('mark_read', {
+            hash: _canonicalConversationHash(lxmfActiveContact),
+            thread: lxmfActiveThread || null,
+        }).catch(function() {});
     }
 });
 
@@ -6924,13 +7040,13 @@ function openConversationWith(hash, options) {
         _removeGhostRow();
     }
     var input = document.getElementById('lxmf-input');
-    if (input && lxmfActiveContact) {
-        if (input.value.trim()) { _lxmfDrafts[lxmfActiveContact] = input.value; }
-        else { delete _lxmfDrafts[lxmfActiveContact]; }
-    }
+    _saveActiveDraft(input);
     if (typeof switchView === 'function') switchView('message');
-    hash = _activateConversation(hash, 'navigation').hash;
-    if (input) { input.value = _lxmfDrafts[hash] || ''; input.style.height = ''; }
+    var thread = options && options.thread !== undefined
+        ? options.thread
+        : (hash === _canonicalConversationHash(lxmfActiveContact) ? undefined : _latestConversationThread(hash));
+    hash = _activateConversation(hash, 'navigation', thread).hash;
+    _restoreActiveDraft(input);
     var loaded = _loadConversation(hash);
     _ensureGhostRow(hash);
     var input = document.getElementById('lxmf-input');
@@ -6943,9 +7059,11 @@ function openConversationWith(hash, options) {
 }
 
 // Opens a conversation and flashes one message once its history has loaded.
-function openConversationAtMessage(hash, messageId, timestamp) {
+function openConversationAtMessage(hash, messageId, timestamp, thread) {
     hash = _canonicalConversationHash(hash);
-    Promise.resolve(openConversationWith(hash, { focusComposer: false })).then(function() {
+    var options = { focusComposer: false };
+    if (thread !== undefined) options.thread = thread || '';
+    Promise.resolve(openConversationWith(hash, options)).then(function() {
         setTimeout(function() {
             if (_canonicalConversationHash(lxmfActiveContact) !== hash) return;
             var ts = Number(timestamp);
@@ -7186,12 +7304,26 @@ function openChatHeaderDropdown(triggerEl) {
         });
     }
 
+    var thread = RS.threads ? RS.threads.current() : null;
+    items.push({
+        label: 'New conversation',
+        icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v6"/><path d="M9 10h6"/></svg>',
+        onSelect: function() { if (RS.threads) RS.threads.startNew(); }
+    });
+    if (thread && thread.thread) {
+        items.push({
+            label: 'Rename conversation',
+            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r="1"/></svg>',
+            onSelect: function() { RS.threads.rename(thread); }
+        });
+    }
+
     items.push(
         {
-            label: contact ? 'Rename Contact' : 'Add Contact',
+            label: contact ? 'Rename contact' : 'Add contact',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
             onSelect: function() {
-                rsPrompt({ message: contact ? 'New name:' : 'Contact name:', defaultValue: currentName || '', placeholder: 'Display name' }).then(function(newName) {
+                rsPrompt({ message: contact ? 'New name:' : 'Contact name:', defaultValue: currentName || '', placeholder: 'Display name', inputClass: 'rs-dialog-input--text' }).then(function(newName) {
                     if (newName !== null) {
                         RS.invokeOrToast('add_contact', { args: { hash: lxmfActiveContact, display_name: newName.trim() || null } }, 'Could not rename contact');
                     }
@@ -7204,7 +7336,7 @@ function openChatHeaderDropdown(triggerEl) {
             onSelect: function() { showContactAbout(lxmfActiveContact); }
         },
         {
-            label: 'Copy LXMF Hash',
+            label: 'Copy LXMF hash',
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
             onSelect: function() {
                 if (!lxmfActiveContact) return;
@@ -7215,10 +7347,15 @@ function openChatHeaderDropdown(triggerEl) {
             }
         },
         {
-            label: 'Delete Conversation',
+            label: 'Delete conversation',
             danger: true,
             icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>',
             onSelect: function() {
+                // With several conversations this deletes only the open one.
+                if (thread && RS.threads.hasExtra()) {
+                    RS.threads.remove(thread);
+                    return;
+                }
                 var name = _conversationNameInfo(lxmfActiveContact, null, false).name;
                 showConversationDeleteDialog(lxmfActiveContact, name);
             }
@@ -7693,7 +7830,7 @@ function showConversationDeleteDialog(hash, name) {
 RS.listen('conversation_hidden', function(data) {
     if (!data.ok) return;
     var hash = _canonicalConversationHash(data.hash);
-    cacheDel(hash);
+    _cacheDelContact(hash);
     if (_canonicalConversationHash(lxmfActiveContact) === hash) {
         _activateConversation(null, 'conversation_hidden');
         lxmfConversation = [];
@@ -7706,7 +7843,24 @@ RS.listen('conversation_hidden', function(data) {
 RS.listen('conversation_deleted', function(data) {
     if (!data.ok) return;
     var hash = _canonicalConversationHash(data.hash);
-    cacheDel(hash);
+    if (typeof data.thread === 'string') {
+        // One conversation went; the contact and its others stay.
+        var thread = _canonicalConversationThread(data.thread);
+        cacheDel(_conversationKey(hash, thread));
+        if (_canonicalConversationHash(lxmfActiveContact) === hash) {
+            if (thread && thread === lxmfActiveThread) {
+                switchConversationThread('');
+            } else if (thread === lxmfActiveThread) {
+                lxmfConversation = [];
+                _loadConversation(hash);
+            } else {
+                _refreshActiveConversationThreads();
+            }
+        }
+        loadConversations();
+        return;
+    }
+    _cacheDelContact(hash);
     if (_canonicalConversationHash(lxmfActiveContact) === hash) {
         _activateConversation(null, 'conversation_deleted');
         lxmfConversation = [];

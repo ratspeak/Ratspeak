@@ -60,7 +60,8 @@
                 results.innerHTML = messages.map(function(message) {
                     var hash = message.direction === 'inbound' ? message.source : message.destination;
                     var name = _conversationNameInfo(hash, null, false);
-                    return '<div class="conv-row" role="button" tabindex="0" data-hash="' + escapeHtml(hash) + '">' +
+                    return '<div class="conv-row" role="button" tabindex="0" data-hash="' + escapeHtml(hash) +
+                        '" data-thread="' + escapeHtml(message.thread || '') + '" data-id="' + escapeHtml(message.id || '') + '">' +
                         '<div class="conv-row-content"><div class="conv-row-top">' +
                             '<span class="conv-name' + (name.isHash ? ' is-hash' : '') + '">' +
                                 ratspeakDisplayNameHtml(name.name, hash) + '</span>' +
@@ -74,8 +75,9 @@
                     row.addEventListener('click', function() {
                         if (!current()) return;
                         var hash = row.getAttribute('data-hash');
+                        var thread = row.getAttribute('data-thread') || '';
                         reset();
-                        if (hash) openConversationWith(hash);
+                        if (hash) openConversationWith(hash, { thread: thread });
                     });
                 });
             }).catch(function(error) {

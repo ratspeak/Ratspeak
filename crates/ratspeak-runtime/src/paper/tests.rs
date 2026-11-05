@@ -171,7 +171,7 @@ async fn create_stores_a_terminal_paper_row_and_never_queues() {
     let (a_identity, a_lxmf, _) = manager_hashes(&a);
     let (_, b_lxmf, _) = manager_hashes(&b);
 
-    let created = create_paper_message(&a, &b_lxmf, "hello on paper", "")
+    let created = create_paper_message(&a, &b_lxmf, "hello on paper", "", "")
         .await
         .unwrap();
     assert!(created.paper_uri.starts_with("lxm://"));
@@ -211,22 +211,22 @@ async fn create_reports_empty_unknown_and_too_long() {
     let (_, b_lxmf, b_key) = manager_hashes(&b);
 
     assert_eq!(
-        create_paper_message(&a, &b_lxmf, "   ", "").await.err(),
+        create_paper_message(&a, &b_lxmf, "   ", "", "").await.err(),
         Some(PaperError::Empty)
     );
     assert_eq!(
-        create_paper_message(&a, &b_lxmf, "hi", "").await.err(),
+        create_paper_message(&a, &b_lxmf, "hi", "", "").await.err(),
         Some(PaperError::UnknownIdentity)
     );
     assert_eq!(
-        create_paper_message(&a, "zz", "hi", "").await.err(),
+        create_paper_message(&a, "zz", "hi", "", "").await.err(),
         Some(PaperError::InvalidDestination)
     );
     learn(&a, &b_lxmf, &b_key);
 
     let build = |len: usize| {
         let lxmf = a.lxmf.lock().unwrap();
-        build_paper_message(lxmf.as_ref().unwrap(), &b_lxmf, &"x".repeat(len), "").map(|_| ())
+        build_paper_message(lxmf.as_ref().unwrap(), &b_lxmf, &"x".repeat(len), "", "").map(|_| ())
     };
     let (mut fits, mut over) = (1, PAPER_MDU);
     while over - fits > 1 {
@@ -261,7 +261,7 @@ async fn preview_reports_status_signature_and_never_writes() {
     let (_, b_lxmf, _) = manager_hashes(&b);
     let (b_identity, _, _) = manager_hashes(&b);
     let (_, a_lxmf, _) = manager_hashes(&a);
-    let created = create_paper_message(&a, &b_lxmf, "preview me", "Subject")
+    let created = create_paper_message(&a, &b_lxmf, "preview me", "Subject", "")
         .await
         .unwrap();
 
@@ -309,7 +309,7 @@ async fn preview_reports_status_signature_and_never_writes() {
     let (c, _) = pipeline_state();
     let (_, c_lxmf, c_key) = manager_hashes(&c);
     learn(&a, &c_lxmf, &c_key);
-    let unknown_sender = create_paper_message(&a, &c_lxmf, "who is this", "")
+    let unknown_sender = create_paper_message(&a, &c_lxmf, "who is this", "", "")
         .await
         .unwrap();
     let preview = preview_paper_message(&c, &unknown_sender.paper_uri)
@@ -324,7 +324,7 @@ async fn add_files_through_the_inbound_pipeline_once() {
     let ((a, _), (b, b_events)) = pair();
     let (_, a_lxmf, _) = manager_hashes(&a);
     let (b_identity, b_lxmf, _) = manager_hashes(&b);
-    let created = create_paper_message(&a, &b_lxmf, "filed by hand", "")
+    let created = create_paper_message(&a, &b_lxmf, "filed by hand", "", "")
         .await
         .unwrap();
 
@@ -381,7 +381,7 @@ async fn add_refuses_invalid_signatures_and_blocked_senders() {
     let ((a, _), (b, b_events)) = pair();
     let (_, a_lxmf, _) = manager_hashes(&a);
     let (b_identity, b_lxmf, _) = manager_hashes(&b);
-    let created = create_paper_message(&a, &b_lxmf, "signed", "")
+    let created = create_paper_message(&a, &b_lxmf, "signed", "", "")
         .await
         .unwrap();
 
@@ -416,7 +416,7 @@ async fn unknown_senders_can_still_be_filed() {
     let (_, a_lxmf, _) = manager_hashes(&a);
     let (b_identity, b_lxmf, b_key) = manager_hashes(&b);
     learn(&a, &b_lxmf, &b_key);
-    let created = create_paper_message(&a, &b_lxmf, "first contact", "")
+    let created = create_paper_message(&a, &b_lxmf, "first contact", "", "")
         .await
         .unwrap();
     let added = add_paper_message(&b, &created.paper_uri).await.unwrap();

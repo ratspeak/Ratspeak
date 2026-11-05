@@ -40,8 +40,10 @@ pub async fn create_paper_message(
     dest_hash: String,
     content: String,
     title: Option<String>,
+    thread: Option<String>,
 ) -> AppResult<Value> {
     let dest_hash = sanitize_text(&dest_hash, 128).to_ascii_lowercase();
+    let thread = crate::commands::messaging::parse_conversation_thread(thread.as_deref())?;
     if !validate_hex(&dest_hash, 32, 32) {
         return Err(paper_error(PaperError::InvalidDestination));
     }
@@ -51,7 +53,7 @@ pub async fn create_paper_message(
     }
     let title = sanitize_text(title.as_deref().unwrap_or(""), 256);
     crate::commands::shared::hydrate_contact_identity_for_send(&state, &dest_hash).await;
-    let created = paper::create_paper_message(&state, &dest_hash, content, &title)
+    let created = paper::create_paper_message(&state, &dest_hash, content, &title, &thread)
         .await
         .map_err(paper_error)?;
     let uri_chars = created.paper_uri.chars().count();

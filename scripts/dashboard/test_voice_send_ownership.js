@@ -83,8 +83,13 @@ var context = {
 };
 context.window = context;
 vm.createContext(context);
+vm.runInContext("var lxmfActiveThread = ''; var lxmfActiveThreads = null;", context);
 [
     '_canonicalConversationHash',
+    '_canonicalConversationThread',
+    '_conversationKey',
+    '_activeConversationKey',
+    '_resolveConversationThread',
     '_conversationOwnerSnapshot',
     '_conversationOwnerIsCurrent',
     '_conversationOwnerIdentityIsCurrent',

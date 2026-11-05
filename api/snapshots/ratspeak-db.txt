@@ -44,6 +44,7 @@ pub fn ratspeak_db::admission::DurableInboundStore::delete_game_session(&self, &
 pub fn ratspeak_db::admission::DurableInboundStore::delete_messages(&self, &str, core::option::Option<&str>, u64) -> core::result::Result<(), ratspeak_db::admission::AdmissionDbError>
 pub fn ratspeak_db::admission::DurableInboundStore::delete_messages_guarded(&self, &ratspeak_db::admission::AdmissionGuard, &str, core::option::Option<&str>, u64) -> core::result::Result<ratspeak_db::admission::MessageDeletionArtifacts, ratspeak_db::admission::AdmissionDbError>
 pub fn ratspeak_db::admission::DurableInboundStore::delete_selected_messages_guarded(&self, &ratspeak_db::admission::AdmissionGuard, &str, &str, &[alloc::string::String], u64) -> core::result::Result<(ratspeak_db::admission::MessageDeletionArtifacts, alloc::vec::Vec<alloc::string::String>), ratspeak_db::admission::AdmissionDbError>
+pub fn ratspeak_db::admission::DurableInboundStore::delete_thread_messages_guarded(&self, &ratspeak_db::admission::AdmissionGuard, &str, &str, &str, u64) -> core::result::Result<ratspeak_db::admission::MessageDeletionArtifacts, ratspeak_db::admission::AdmissionDbError>
 pub fn ratspeak_db::admission::DurableInboundStore::from_pool(&ratspeak_db::DbPool) -> core::result::Result<Self, ratspeak_db::admission::AdmissionDbError>
 pub fn ratspeak_db::admission::DurableInboundStore::pending_deleted_artifacts(&self, &ratspeak_db::admission::AdmissionGuard, core::option::Option<&str>, i64, usize) -> core::result::Result<alloc::vec::Vec<ratspeak_db::admission::PendingDeletedArtifact>, ratspeak_db::admission::AdmissionDbError>
 pub fn ratspeak_db::admission::DurableInboundStore::policy_state(&self, &str) -> core::result::Result<(alloc::vec::Vec<alloc::string::String>, u64), ratspeak_db::admission::AdmissionDbError>
@@ -179,6 +180,9 @@ pub ratspeak_db::db::ChannelUnreadSummary::attention_total: u64
 pub ratspeak_db::db::ChannelUnreadSummary::mention_total: u64
 pub ratspeak_db::db::ChannelUnreadSummary::rooms: alloc::vec::Vec<ratspeak_db::ChannelRoomUnread>
 pub ratspeak_db::db::ChannelUnreadSummary::unread_total: u64
+pub struct ratspeak_db::db::ConversationThreadLabels
+impl ratspeak_db::ConversationThreadLabels
+pub fn ratspeak_db::ConversationThreadLabels::label(&self, &str, &str) -> core::option::Option<alloc::string::String>
 pub struct ratspeak_db::db::HubRoomRow
 pub ratspeak_db::db::HubRoomRow::grants: alloc::vec::Vec<(alloc::string::String, alloc::string::String, f64)>
 pub ratspeak_db::db::HubRoomRow::invite_only: bool
@@ -302,6 +306,10 @@ pub fn ratspeak_db::db::clear_channel_room_history(&ratspeak_db::DbPool, &str, &
 pub fn ratspeak_db::db::clear_discovered_identity_activity(&ratspeak_db::DbPool) -> usize
 pub fn ratspeak_db::db::clear_pending_blackhole(&ratspeak_db::DbPool, &str, &str) -> bool
 pub fn ratspeak_db::db::clear_pending_network_lift(&ratspeak_db::DbPool, &str, &str) -> bool
+pub fn ratspeak_db::db::conversation_thread_display_label(&ratspeak_db::DbPool, &str, &str, &str) -> core::option::Option<alloc::string::String>
+pub fn ratspeak_db::db::conversation_thread_labels_conn(&rusqlite::Connection, &str) -> rusqlite::Result<ratspeak_db::ConversationThreadLabels>
+pub fn ratspeak_db::db::conversation_threads(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<alloc::vec::Vec<serde_json::value::Value>, alloc::string::String>
+pub fn ratspeak_db::db::create_conversation_thread(&ratspeak_db::DbPool, &str, &str, &str, core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::deactivate_identity(&ratspeak_db::DbPool, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::delete_connection_history(&ratspeak_db::DbPool, i64)
 pub fn ratspeak_db::db::delete_contact(&ratspeak_db::DbPool, &str, &str)
@@ -329,6 +337,7 @@ pub fn ratspeak_db::db::get_channel_unread_summary(&ratspeak_db::DbPool, &str) -
 pub fn ratspeak_db::db::get_connection_history(&ratspeak_db::DbPool, i64) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn ratspeak_db::db::get_contact(&ratspeak_db::DbPool, &str, &str) -> core::option::Option<serde_json::value::Value>
 pub fn ratspeak_db::db::get_conversation(&ratspeak_db::DbPool, &str, &str, i64) -> alloc::vec::Vec<serde_json::value::Value>
+pub fn ratspeak_db::db::get_conversation_in_thread(&ratspeak_db::DbPool, &str, &str, &str, i64) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn ratspeak_db::db::get_database_stats(&ratspeak_db::DbPool) -> serde_json::value::Value
 pub fn ratspeak_db::db::get_failed_messages_for_contact(&ratspeak_db::DbPool, &str, &str) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn ratspeak_db::db::get_game_action_count(&ratspeak_db::DbPool, &str, &str) -> i64
@@ -360,6 +369,7 @@ pub fn ratspeak_db::db::identity_hashes_for_dests(&ratspeak_db::DbPool, &[alloc:
 pub fn ratspeak_db::db::init_pool(&std::path::Path) -> core::result::Result<ratspeak_db::DbPool, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn ratspeak_db::db::init_schema(&ratspeak_db::DbPool) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn ratspeak_db::db::is_blocked(&ratspeak_db::DbPool, &str, &str) -> bool
+pub fn ratspeak_db::db::is_valid_thread(&str) -> bool
 pub fn ratspeak_db::db::list_channel_history(&ratspeak_db::DbPool, &str, &str, &str, core::option::Option<&str>, usize) -> core::result::Result<ratspeak_db::ChannelHistoryPage, alloc::string::String>
 pub fn ratspeak_db::db::list_channel_history_after(&ratspeak_db::DbPool, &str, &str, &str, &str, usize) -> core::result::Result<ratspeak_db::ChannelHistoryPage, alloc::string::String>
 pub fn ratspeak_db::db::list_channel_participants(&ratspeak_db::DbPool, &str, &str, &str) -> core::result::Result<ratspeak_db::ChannelParticipantPage, alloc::string::String>
@@ -376,13 +386,16 @@ pub fn ratspeak_db::db::list_saved_channel_rooms_for_identity(&ratspeak_db::DbPo
 pub fn ratspeak_db::db::load_game_sessions(&ratspeak_db::DbPool) -> alloc::vec::Vec<lrgp::session::Session>
 pub fn ratspeak_db::db::mark_channel_room_key_required(&ratspeak_db::DbPool, &str, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::mark_channel_room_read(&ratspeak_db::DbPool, &str, &str, &str, &str) -> core::result::Result<ratspeak_db::ChannelRoomReadState, alloc::string::String>
+pub fn ratspeak_db::db::mark_conversation_thread_opened(&ratspeak_db::DbPool, &str, &str, &str)
 pub fn ratspeak_db::db::mark_game_read(&ratspeak_db::DbPool, &str, &str)
 pub fn ratspeak_db::db::mark_identity_used(&ratspeak_db::DbPool, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::mark_message_resent(&ratspeak_db::DbPool, &str, &str)
-pub fn ratspeak_db::db::mark_read(&ratspeak_db::DbPool, &str, &str)
+pub fn ratspeak_db::db::mark_read(&ratspeak_db::DbPool, &str, core::option::Option<&str>, &str)
 pub fn ratspeak_db::db::message_exists(&ratspeak_db::DbPool, &str) -> bool
 pub fn ratspeak_db::db::message_exists_for_identity(&ratspeak_db::DbPool, &str, &str) -> bool
+pub fn ratspeak_db::db::message_thread(&ratspeak_db::DbPool, &str, &str) -> alloc::string::String
 pub fn ratspeak_db::db::next_conversation_observed_timestamp(&ratspeak_db::DbPool, &str, &str, f64) -> f64
+pub fn ratspeak_db::db::next_conversation_thread_number(&ratspeak_db::DbPool, &str, &str) -> i64
 pub fn ratspeak_db::db::note_identity_tables_changed()
 pub fn ratspeak_db::db::pending_network_lifts(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::db::persist_inbound_game_action(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &[u8], core::option::Option<&lrgp::session::Session>) -> core::option::Option<bool>
@@ -397,6 +410,7 @@ pub fn ratspeak_db::db::remove_channel_hub(&ratspeak_db::DbPool, &str, &str) -> 
 pub fn ratspeak_db::db::remove_channel_room(&ratspeak_db::DbPool, &str, &str, &str) -> core::result::Result<bool, alloc::string::String>
 pub fn ratspeak_db::db::remove_channel_room_secret(&ratspeak_db::DbPool, &str, &str, &str, bool) -> core::result::Result<bool, alloc::string::String>
 pub fn ratspeak_db::db::remove_reaction(&ratspeak_db::DbPool, &str, &str, &str, &str)
+pub fn ratspeak_db::db::rename_conversation_thread(&ratspeak_db::DbPool, &str, &str, &str, core::option::Option<&str>) -> core::result::Result<bool, alloc::string::String>
 pub fn ratspeak_db::db::rename_identity_and_retire_alias(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<ratspeak_db::IdentityRenameOutcome, alloc::string::String>
 pub fn ratspeak_db::db::rollback_outbound_game_action(&ratspeak_db::DbPool, &str, &str, i64, core::option::Option<&lrgp::session::Session>) -> bool
 pub fn ratspeak_db::db::save_channel_hub(&ratspeak_db::DbPool, &str, &str, &str, &str, bool) -> core::result::Result<(), alloc::string::String>
@@ -409,7 +423,7 @@ pub fn ratspeak_db::db::save_game_action(&ratspeak_db::DbPool, &lrgp::store::Act
 pub fn ratspeak_db::db::save_game_session(&ratspeak_db::DbPool, &lrgp::session::Session) -> bool
 pub fn ratspeak_db::db::save_identity(&ratspeak_db::DbPool, &str, &str, &str, &str)
 pub fn ratspeak_db::db::save_message(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>)
-pub fn ratspeak_db::db::save_message_with_audio(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>)
+pub fn ratspeak_db::db::save_message_with_audio(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>, &str)
 pub fn ratspeak_db::db::save_reaction(&ratspeak_db::DbPool, &str, &str, &str, &str)
 pub fn ratspeak_db::db::search_messages(&ratspeak_db::DbPool, &str, &str, i64) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn ratspeak_db::db::seed_identity_activity_now(&ratspeak_db::DbPool, &[alloc::string::String])
@@ -431,9 +445,9 @@ pub fn ratspeak_db::db::touch_identity_activity_updates(&ratspeak_db::DbPool, &[
 pub fn ratspeak_db::db::touch_identity_last_heard(&ratspeak_db::DbPool, &str, f64) -> bool
 pub fn ratspeak_db::db::try_save_identity(&ratspeak_db::DbPool, &str, &str, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::try_save_message(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
-pub fn ratspeak_db::db::try_save_message_with_audio(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>) -> core::result::Result<(), alloc::string::String>
-pub fn ratspeak_db::db::try_save_message_with_audio_conn(&rusqlite::Connection, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>) -> core::result::Result<(), alloc::string::String>
-pub fn ratspeak_db::db::try_save_paper_message(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::db::try_save_message_with_audio(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>, &str) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::db::try_save_message_with_audio_conn(&rusqlite::Connection, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>, &str) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::db::try_save_paper_message(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::try_set_setting(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::try_set_settings(&ratspeak_db::DbPool, &[(alloc::string::String, alloc::string::String)]) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::unblock_contact(&ratspeak_db::DbPool, &str, &str)
@@ -544,6 +558,9 @@ pub ratspeak_db::ChannelUnreadSummary::attention_total: u64
 pub ratspeak_db::ChannelUnreadSummary::mention_total: u64
 pub ratspeak_db::ChannelUnreadSummary::rooms: alloc::vec::Vec<ratspeak_db::ChannelRoomUnread>
 pub ratspeak_db::ChannelUnreadSummary::unread_total: u64
+pub struct ratspeak_db::ConversationThreadLabels
+impl ratspeak_db::ConversationThreadLabels
+pub fn ratspeak_db::ConversationThreadLabels::label(&self, &str, &str) -> core::option::Option<alloc::string::String>
 pub struct ratspeak_db::HubRoomRow
 pub ratspeak_db::HubRoomRow::grants: alloc::vec::Vec<(alloc::string::String, alloc::string::String, f64)>
 pub ratspeak_db::HubRoomRow::invite_only: bool
@@ -667,6 +684,10 @@ pub fn ratspeak_db::clear_channel_room_history(&ratspeak_db::DbPool, &str, &str,
 pub fn ratspeak_db::clear_discovered_identity_activity(&ratspeak_db::DbPool) -> usize
 pub fn ratspeak_db::clear_pending_blackhole(&ratspeak_db::DbPool, &str, &str) -> bool
 pub fn ratspeak_db::clear_pending_network_lift(&ratspeak_db::DbPool, &str, &str) -> bool
+pub fn ratspeak_db::conversation_thread_display_label(&ratspeak_db::DbPool, &str, &str, &str) -> core::option::Option<alloc::string::String>
+pub fn ratspeak_db::conversation_thread_labels_conn(&rusqlite::Connection, &str) -> rusqlite::Result<ratspeak_db::ConversationThreadLabels>
+pub fn ratspeak_db::conversation_threads(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<alloc::vec::Vec<serde_json::value::Value>, alloc::string::String>
+pub fn ratspeak_db::create_conversation_thread(&ratspeak_db::DbPool, &str, &str, &str, core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::deactivate_identity(&ratspeak_db::DbPool, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::delete_connection_history(&ratspeak_db::DbPool, i64)
 pub fn ratspeak_db::delete_contact(&ratspeak_db::DbPool, &str, &str)
@@ -694,6 +715,7 @@ pub fn ratspeak_db::get_channel_unread_summary(&ratspeak_db::DbPool, &str) -> co
 pub fn ratspeak_db::get_connection_history(&ratspeak_db::DbPool, i64) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn ratspeak_db::get_contact(&ratspeak_db::DbPool, &str, &str) -> core::option::Option<serde_json::value::Value>
 pub fn ratspeak_db::get_conversation(&ratspeak_db::DbPool, &str, &str, i64) -> alloc::vec::Vec<serde_json::value::Value>
+pub fn ratspeak_db::get_conversation_in_thread(&ratspeak_db::DbPool, &str, &str, &str, i64) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn ratspeak_db::get_database_stats(&ratspeak_db::DbPool) -> serde_json::value::Value
 pub fn ratspeak_db::get_failed_messages_for_contact(&ratspeak_db::DbPool, &str, &str) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn ratspeak_db::get_game_action_count(&ratspeak_db::DbPool, &str, &str) -> i64
@@ -725,6 +747,7 @@ pub fn ratspeak_db::identity_hashes_for_dests(&ratspeak_db::DbPool, &[alloc::str
 pub fn ratspeak_db::init_pool(&std::path::Path) -> core::result::Result<ratspeak_db::DbPool, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn ratspeak_db::init_schema(&ratspeak_db::DbPool) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn ratspeak_db::is_blocked(&ratspeak_db::DbPool, &str, &str) -> bool
+pub fn ratspeak_db::is_valid_thread(&str) -> bool
 pub fn ratspeak_db::list_channel_history(&ratspeak_db::DbPool, &str, &str, &str, core::option::Option<&str>, usize) -> core::result::Result<ratspeak_db::ChannelHistoryPage, alloc::string::String>
 pub fn ratspeak_db::list_channel_history_after(&ratspeak_db::DbPool, &str, &str, &str, &str, usize) -> core::result::Result<ratspeak_db::ChannelHistoryPage, alloc::string::String>
 pub fn ratspeak_db::list_channel_participants(&ratspeak_db::DbPool, &str, &str, &str) -> core::result::Result<ratspeak_db::ChannelParticipantPage, alloc::string::String>
@@ -741,13 +764,16 @@ pub fn ratspeak_db::list_saved_channel_rooms_for_identity(&ratspeak_db::DbPool, 
 pub fn ratspeak_db::load_game_sessions(&ratspeak_db::DbPool) -> alloc::vec::Vec<lrgp::session::Session>
 pub fn ratspeak_db::mark_channel_room_key_required(&ratspeak_db::DbPool, &str, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::mark_channel_room_read(&ratspeak_db::DbPool, &str, &str, &str, &str) -> core::result::Result<ratspeak_db::ChannelRoomReadState, alloc::string::String>
+pub fn ratspeak_db::mark_conversation_thread_opened(&ratspeak_db::DbPool, &str, &str, &str)
 pub fn ratspeak_db::mark_game_read(&ratspeak_db::DbPool, &str, &str)
 pub fn ratspeak_db::mark_identity_used(&ratspeak_db::DbPool, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::mark_message_resent(&ratspeak_db::DbPool, &str, &str)
-pub fn ratspeak_db::mark_read(&ratspeak_db::DbPool, &str, &str)
+pub fn ratspeak_db::mark_read(&ratspeak_db::DbPool, &str, core::option::Option<&str>, &str)
 pub fn ratspeak_db::message_exists(&ratspeak_db::DbPool, &str) -> bool
 pub fn ratspeak_db::message_exists_for_identity(&ratspeak_db::DbPool, &str, &str) -> bool
+pub fn ratspeak_db::message_thread(&ratspeak_db::DbPool, &str, &str) -> alloc::string::String
 pub fn ratspeak_db::next_conversation_observed_timestamp(&ratspeak_db::DbPool, &str, &str, f64) -> f64
+pub fn ratspeak_db::next_conversation_thread_number(&ratspeak_db::DbPool, &str, &str) -> i64
 pub fn ratspeak_db::note_identity_tables_changed()
 pub fn ratspeak_db::pending_network_lifts(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::persist_inbound_game_action(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &[u8], core::option::Option<&lrgp::session::Session>) -> core::option::Option<bool>
@@ -762,6 +788,7 @@ pub fn ratspeak_db::remove_channel_hub(&ratspeak_db::DbPool, &str, &str) -> core
 pub fn ratspeak_db::remove_channel_room(&ratspeak_db::DbPool, &str, &str, &str) -> core::result::Result<bool, alloc::string::String>
 pub fn ratspeak_db::remove_channel_room_secret(&ratspeak_db::DbPool, &str, &str, &str, bool) -> core::result::Result<bool, alloc::string::String>
 pub fn ratspeak_db::remove_reaction(&ratspeak_db::DbPool, &str, &str, &str, &str)
+pub fn ratspeak_db::rename_conversation_thread(&ratspeak_db::DbPool, &str, &str, &str, core::option::Option<&str>) -> core::result::Result<bool, alloc::string::String>
 pub fn ratspeak_db::rename_identity_and_retire_alias(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<ratspeak_db::IdentityRenameOutcome, alloc::string::String>
 pub fn ratspeak_db::rollback_outbound_game_action(&ratspeak_db::DbPool, &str, &str, i64, core::option::Option<&lrgp::session::Session>) -> bool
 pub fn ratspeak_db::save_channel_hub(&ratspeak_db::DbPool, &str, &str, &str, &str, bool) -> core::result::Result<(), alloc::string::String>
@@ -774,7 +801,7 @@ pub fn ratspeak_db::save_game_action(&ratspeak_db::DbPool, &lrgp::store::Action,
 pub fn ratspeak_db::save_game_session(&ratspeak_db::DbPool, &lrgp::session::Session) -> bool
 pub fn ratspeak_db::save_identity(&ratspeak_db::DbPool, &str, &str, &str, &str)
 pub fn ratspeak_db::save_message(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>)
-pub fn ratspeak_db::save_message_with_audio(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>)
+pub fn ratspeak_db::save_message_with_audio(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>, &str)
 pub fn ratspeak_db::save_reaction(&ratspeak_db::DbPool, &str, &str, &str, &str)
 pub fn ratspeak_db::search_messages(&ratspeak_db::DbPool, &str, &str, i64) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn ratspeak_db::seed_identity_activity_now(&ratspeak_db::DbPool, &[alloc::string::String])
@@ -796,9 +823,9 @@ pub fn ratspeak_db::touch_identity_activity_updates(&ratspeak_db::DbPool, &[rats
 pub fn ratspeak_db::touch_identity_last_heard(&ratspeak_db::DbPool, &str, f64) -> bool
 pub fn ratspeak_db::try_save_identity(&ratspeak_db::DbPool, &str, &str, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::try_save_message(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
-pub fn ratspeak_db::try_save_message_with_audio(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>) -> core::result::Result<(), alloc::string::String>
-pub fn ratspeak_db::try_save_message_with_audio_conn(&rusqlite::Connection, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>) -> core::result::Result<(), alloc::string::String>
-pub fn ratspeak_db::try_save_paper_message(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::try_save_message_with_audio(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>, &str) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::try_save_message_with_audio_conn(&rusqlite::Connection, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>, &str) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::try_save_paper_message(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::try_set_setting(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::try_set_settings(&ratspeak_db::DbPool, &[(alloc::string::String, alloc::string::String)]) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::unblock_contact(&ratspeak_db::DbPool, &str, &str)

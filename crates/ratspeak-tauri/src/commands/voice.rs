@@ -155,6 +155,8 @@ pub struct SendLxmfVoiceMessageArgs {
     pub delivery_method: Option<String>,
     #[serde(default)]
     pub client_msg_id: Option<String>,
+    #[serde(default)]
+    pub thread: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -539,6 +541,9 @@ pub async fn send_lxmf_voice_message(
                 fence,
                 identity_id: identity_id.clone(),
                 client_send,
+                thread: crate::commands::messaging::parse_conversation_thread(
+                    args.thread.as_deref(),
+                )?,
             },
         )
         .await
