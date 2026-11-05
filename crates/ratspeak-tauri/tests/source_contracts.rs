@@ -1623,6 +1623,9 @@ fn appearance_families_are_durable_validated_and_native_aware() {
         assert!(theme.contains(&format!("id: '{family}'")));
         assert!(interfaces.contains(&format!("\"{family}\" => Some(\"{family}\")")));
     }
+    // The settings payload is committed over the page default, so both must agree.
+    assert!(theme.contains("var DEFAULT_FAMILY = 'nord';"));
+    assert!(interfaces.contains(r#"const DEFAULT_THEME_FAMILY: &str = "nord";"#));
     assert!(theme.contains("data-theme-family"));
     assert!(theme.contains("data-theme-preference"));
     assert!(theme.contains("ratspeak-theme-changed"));

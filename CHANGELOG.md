@@ -8,6 +8,7 @@ changes that materially affect how an artifact is reproduced.
 ### Fixed and improved
 
 - Pasting a screenshot into a message on Linux now attaches it.
+- New installs now start with the Nord theme, as intended in 1.0.39.
 - The contact QR scanner can now use the camera on Linux.
 - On Wayland, changing Window Decorations now says it applies after a restart.
 

@@ -55,7 +55,7 @@ use crate::state::{
 };
 
 const DEFAULT_PEERS_SORT: &str = "last_seen";
-const DEFAULT_THEME_FAMILY: &str = "ratspeak";
+const DEFAULT_THEME_FAMILY: &str = "nord";
 const DEFAULT_THEME_MODE: &str = "auto";
 
 fn normalize_theme_family(family: &str) -> Option<&'static str> {
