@@ -5792,12 +5792,6 @@ function _messageActionScrollDelta(top, bottom, reactH, actionsH, band) {
     return null;
 }
 
-function _messageActionInsets() {
-    var style = window.getComputedStyle ? window.getComputedStyle(document.documentElement) : null;
-    var read = function(name) { return style ? parseFloat(style.getPropertyValue(name)) || 0 : 0; };
-    return { left: read('--sal'), right: read('--sar') };
-}
-
 // Arrow-key target within the tray. Groups are in on-screen order; the
 // reactions row moves with Left/Right (wrapping), the action rows with
 // Up/Down, and Up/Down at an edge crosses to the neighbouring group.
@@ -5885,7 +5879,7 @@ function _layoutMessageActionPanels(state, allowScroll) {
         }
     }
 
-    var insets = _messageActionInsets();
+    var insets = safeAreaInsets();
     var place = function(panel, panelTop, below) {
         var w = panel.offsetWidth;
         var left = state.outbound ? b.right - w : b.left;

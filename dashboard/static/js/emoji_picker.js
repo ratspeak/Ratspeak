@@ -155,25 +155,30 @@
         var anchor = this.anchor || this.trigger || this.container;
         if (!anchor) return;
         var rect = anchor.getBoundingClientRect();
+        var safe = safeAreaInsets();
+        var minTop = safe.top + 8;
+        var minLeft = safe.left + 8;
+        var maxRight = window.innerWidth - safe.right - 8;
+        var maxBottom = window.innerHeight - safe.bottom - 8;
         var pickerHeight = 320;
-        var pickerWidth = Math.min(360, window.innerWidth - 16);
+        var pickerWidth = Math.min(360, maxRight - minLeft);
 
         var top = rect.top - pickerHeight - 4;
         var left = rect.left;
 
-        if (top < 8) {
+        if (top < minTop) {
             top = rect.bottom + 4;
         }
 
-        if (left + pickerWidth > window.innerWidth - 8) {
-            left = window.innerWidth - pickerWidth - 8;
+        if (left + pickerWidth > maxRight) {
+            left = maxRight - pickerWidth;
         }
-        if (left < 8) left = 8;
+        if (left < minLeft) left = minLeft;
 
-        if (top + pickerHeight > window.innerHeight - 8) {
-            top = window.innerHeight - pickerHeight - 8;
+        if (top + pickerHeight > maxBottom) {
+            top = maxBottom - pickerHeight;
         }
-        if (top < 8) top = 8;
+        if (top < minTop) top = minTop;
 
         this.el.style.left = left + 'px';
         this.el.style.top = top + 'px';

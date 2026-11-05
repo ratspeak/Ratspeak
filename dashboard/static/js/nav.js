@@ -1107,6 +1107,13 @@ function initBottomSheet() {
         if (e.key === 'Escape' && sheet.classList.contains('open')) closeSheet();
     });
 
+    // The sheet extends the bottom bar; unfolding or resizing into the sidebar layout retires both.
+    if (window.matchMedia) {
+        window.matchMedia('(max-width: ' + RS.config.MOBILE_BREAKPOINT + 'px)').addEventListener('change', function(e) {
+            if (!e.matches && sheet.classList.contains('open')) closeSheet();
+        });
+    }
+
     sheet.querySelectorAll('.bottom-sheet-item[data-view]').forEach(function(item) {
         item.addEventListener('click', function(e) {
             e.preventDefault();
@@ -1804,6 +1811,8 @@ function bindFirstRunAnnounceListener() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
+    // Native mobile routes Home to Peers at every width, so wide sidebars (iPad, iPhone Duo) omit it.
+    if (isTauriMobile()) document.documentElement.dataset.nativeMobile = 'true';
     var initialView = _resolveInitialView();
     document.querySelectorAll('.nav-item').forEach(function(item) {
         item.addEventListener('click', function(e) {

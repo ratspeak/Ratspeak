@@ -11,6 +11,10 @@ changes that materially affect how an artifact is reproduced.
 - New installs now start with the Nord theme, as intended in 1.0.39.
 - The contact QR scanner can now use the camera on Linux.
 - On Wayland, changing Window Decorations now says it applies after a restart.
+- iPhone Duo: Ratspeak fills both displays edge to edge, with controls kept clear of the side status bar.
+- On iPad and iPhone Duo, the sidebar no longer shows a Home item that opened Peers.
+- On iPad, the sidebar layout no longer sits under the status bar.
+- Message actions, menus, and tooltips stay clear of notches and side status bars.
 
 ### Build and compatibility
 

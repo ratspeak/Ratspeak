@@ -645,8 +645,8 @@
 
 #toast-container {
     position: fixed;
-    top: 54px;
-    right: 16px;
+    top: calc(54px + var(--sat));
+    right: calc(16px + var(--sar));
     z-index: var(--z-toast);
     display: flex;
     flex-direction: column;
@@ -1217,8 +1217,8 @@
 
 #alert-container {
     position: fixed;
-    top: 50px;
-    left: 50%;
+    top: calc(50px + var(--sat));
+    left: calc(50% + (var(--sal) - var(--sar)) / 2);
     transform: translateX(-50%);
     z-index: 1500;
     display: flex;

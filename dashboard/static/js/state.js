@@ -3,6 +3,25 @@ function isCompactLayout() {
     return window.innerWidth <= breakpoint;
 }
 
+// Custom properties keep env() unresolved, so read the insets back as padding.
+var _safeAreaProbe = null;
+function safeAreaInsets() {
+    if (!_safeAreaProbe) {
+        _safeAreaProbe = document.createElement('div');
+        _safeAreaProbe.setAttribute('aria-hidden', 'true');
+        _safeAreaProbe.style.cssText = 'position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;' +
+            'padding:var(--sat) var(--sar) var(--sab) var(--sal)';
+        document.documentElement.appendChild(_safeAreaProbe);
+    }
+    var s = window.getComputedStyle(_safeAreaProbe);
+    return {
+        top: parseFloat(s.paddingTop) || 0,
+        right: parseFloat(s.paddingRight) || 0,
+        bottom: parseFloat(s.paddingBottom) || 0,
+        left: parseFloat(s.paddingLeft) || 0,
+    };
+}
+
 function isTouchDevice() {
     return window.__RATSPEAK_MOBILE__ === true || navigator.maxTouchPoints > 0;
 }

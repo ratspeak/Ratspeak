@@ -207,7 +207,8 @@
 
 /* Mobile webview is edge-to-edge so 100vh includes safe areas; subtract
    header (61px) + top inset, reserve bottom safe-area for the bottom-bar.
-   Desktop overrides to plain 100vh below. */
+   The wide layout has no header, so it reserves the top inset (iPad status
+   bar); side and bottom insets belong to the edge surfaces (13-responsive.css). */
 .app-layout {
     display: flex;
     height: calc(100vh - 61px - var(--sat));
@@ -217,6 +218,7 @@
 @media (min-width: 769px) {
     .app-layout {
         height: 100vh;
+        padding: var(--sat) 0 0 var(--sal);
     }
 }
 
@@ -253,6 +255,9 @@
     position: relative;
     cursor: pointer;
     white-space: nowrap;
+}
+html[data-native-mobile] .sidebar .nav-item[data-view="dashboard"] {
+    display: none;
 }
 
 .sidebar.collapsed .nav-item {

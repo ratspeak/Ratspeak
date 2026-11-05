@@ -33,7 +33,7 @@
            caused a bottom-right snap during the 0.25s animation since the
            keyframe overrode the centering transform. */
         position: fixed;
-        inset: 0;
+        inset: var(--sat) var(--sar) var(--sab) var(--sal);
         margin: auto;
         transform: none;
         transform-origin: center;
@@ -41,9 +41,9 @@
         display: flex;
         flex-direction: column;
         width: 380px;
-        max-width: 90vw;
+        max-width: calc(90vw - var(--sal) - var(--sar));
         height: fit-content;
-        max-height: 90vh;
+        max-height: calc(90vh - var(--sat) - var(--sab));
         background: var(--surface-dialog);
         border: 1px solid var(--border-surface);
         border-radius: var(--radius-2xl);
@@ -1880,6 +1880,7 @@
 .block-list-overlay {
     position: fixed;
     inset: 0;
+    padding: var(--sat) var(--sar) var(--sab) var(--sal);
     background: var(--surface-overlay);
     display: flex;
     align-items: center;

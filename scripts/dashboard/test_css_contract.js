@@ -169,6 +169,34 @@ assert(/body\.view-game-detail \.bottom-bar,\s*body\.view-game-detail \.header\s
     .test(sourceByName['13-responsive.css']),
     'an open game must take the whole phone screen, as a conversation does');
 
+var layoutCss = sourceByName['04-layout.css'];
+var responsiveCss = sourceByName['13-responsive.css'];
+assert(/@media \(min-width: 769px\)\s*\{\s*\.app-layout\s*\{[^}]*padding:\s*var\(--sat\) 0 0 var\(--sal\);/.test(layoutCss) &&
+    !/\.app-layout\s*\{[^}]*var\(--sar\)/.test(layoutCss),
+    'the shell must not pad the side insets, or a side status bar leaves an empty band (iPhone Duo)');
+var safeEdges = responsiveCss.slice(responsiveCss.lastIndexOf('/* Safe-area edges.'));
+var wideEdges = safeEdges.slice(safeEdges.indexOf('@media (min-width: 769px)'));
+var rightEdges = wideEdges.split('border-right: var(--sar) solid transparent;')[0];
+var bottomEdges = wideEdges.split('border-right: var(--sar) solid transparent;')[1].split('border-bottom: var(--sab) solid transparent;')[0];
+['.lxmf-chat,', '.peers-detail-panel,', '.games-detail,', '.channel-members-pane,', '.channel-compose,', '.settings-page {'].forEach(function(selector) {
+    assert(rightEdges.includes(selector), selector + ' must paint under the right inset where it meets the screen edge');
+});
+['.lxmf-sidebar,', '.lxmf-chat,', '.peers-list-panel,', '.peers-detail-panel,', '.settings-page {'].forEach(function(selector) {
+    assert(bottomEdges.includes(selector), selector + ' must paint under the bottom inset');
+});
+assert(/\.sidebar\s*\{\s*padding-bottom:\s*max\(var\(--space-8\), var\(--sab\)\);/.test(safeEdges),
+    'the sidebar footer must clear the home indicator without stacking the inset on its padding');
+assert(/body\.view-chat-detail \.lxst-call-strip\s*\{[^}]*margin-right:\s*var\(--sar\);/.test(safeEdges) &&
+    /\.header\s*\{[^}]*margin-right:\s*var\(--sar\);/.test(responsiveCss) &&
+    /body\.view-chat-detail \.lxmf-compose\s*\{[^}]*var\(--sar\)/.test(safeEdges),
+    'phone top bars must stop at a side status column so the camera never sits on their divider');
+assert(/@media \(max-width: 768px\)\s*\{\s*\.main-content\s*\{\s*border-left:\s*var\(--sal\) solid transparent;\s*border-right:\s*var\(--sar\) solid transparent;/
+    .test(safeEdges),
+    'phone views must keep content inside the side insets');
+assert(/\.bottom-bar\s*\{[^}]*padding:\s*0 calc\(4px \+ var\(--sar\)\) var\(--sab\) calc\(4px \+ var\(--sal\)\);/
+    .test(responsiveCss),
+    'the fixed bottom bar must keep its tabs inside the side insets');
+
 var paletteCss = sourceByName['00-palettes.css'];
 var themeSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'theme.js'), 'utf8');
 var themeFamilies = ['ratspeak', 'nord', 'everforest', 'gruvbox', 'catppuccin', 'rose-pine'];

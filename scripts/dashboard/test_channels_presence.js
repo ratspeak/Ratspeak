@@ -160,7 +160,7 @@ assert(uiSharedSource.includes("trigger.addEventListener('click'") &&
         uiSharedSource.includes("trigger.addEventListener('pointerenter'"),
     'the shared help primitive must support pinned touch/click and pointer hover');
 assert(componentsCss.includes('max-width: min(300px, calc(100vw - 24px))') &&
-        uiSharedSource.includes('window.innerWidth - popoverRect.width - margin'),
+        uiSharedSource.includes('window.innerWidth - safe.right - popoverRect.width - margin'),
     'shared help popovers must clamp to the viewport instead of clipping');
 
 assert(channelsCss.includes('.channel-event.message-group-start') &&

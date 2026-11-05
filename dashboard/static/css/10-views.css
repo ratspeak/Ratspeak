@@ -4231,10 +4231,10 @@ body.setup-active .main-content {
 .contact-scan-sheet {
     position: fixed;
     top: 50%;
-    left: 50%;
+    left: calc(50% + (var(--sal) - var(--sar)) / 2);
     height: auto;
     margin: 0;
-    width: min(416px, calc(100vw - 28px));
+    width: min(416px, calc(100vw - 28px - var(--sal) - var(--sar)));
     max-height: min(calc(var(--app-height, 100vh) - 32px - var(--sat) - var(--sab)), 760px);
     display: flex;
     flex-direction: column;

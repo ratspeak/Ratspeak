@@ -27,22 +27,27 @@
         var vw = window.innerWidth;
         var vh = window.innerHeight;
         var margin = 8;
+        var safe = safeAreaInsets();
+        var minTop = safe.top + margin;
+        var minLeft = safe.left + margin;
+        var maxRight = vw - safe.right - margin;
+        var maxBottom = vh - safe.bottom - margin;
 
         var top = r.top - ph - margin;
         var origin = 'bottom left';
 
-        if (top < margin) {
+        if (top < minTop) {
             top = r.bottom + margin;
             origin = 'top left';
         }
 
         var left = r.left + (r.width / 2) - 24;
-        if (left + pw > vw - margin) {
-            left = vw - pw - margin;
+        if (left + pw > maxRight) {
+            left = maxRight - pw;
             origin = origin.replace('left', 'right');
         }
-        if (left < margin) left = margin;
-        if (top + ph > vh - margin) top = vh - ph - margin;
+        if (left < minLeft) left = minLeft;
+        if (top + ph > maxBottom) top = maxBottom - ph;
 
         popover.style.top = top + 'px';
         popover.style.left = left + 'px';

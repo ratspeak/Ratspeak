@@ -532,11 +532,6 @@
     }
 }
 
-:root {
-    --sal: env(safe-area-inset-left, 0px);
-    --sar: env(safe-area-inset-right, 0px);
-}
-
 .bottom-bar { display: none; }
 .mobile-back-btn { display: none; }
 .sidebar-close-btn { display: none; }
@@ -724,9 +719,12 @@
     .modal-close { min-width: 44px; min-height: 44px; font-size: var(--text-2xl);
         display: flex; align-items: center; justify-content: center; }
 
+    /* Top bars stop at a side status column (iPhone Duo), so it never sits on their divider. */
     .header {
-        padding-left: calc(14px + var(--sal));
-        padding-right: calc(14px + var(--sar));
+        padding-left: 14px;
+        padding-right: 14px;
+        margin-left: var(--sal);
+        margin-right: var(--sar);
     }
 
     /* Extend into --sab so the backdrop-blur glass fills the home-indicator zone;
@@ -738,8 +736,7 @@
         left: 0;
         right: 0;
         height: calc(62px + var(--sab));
-        padding: 0 4px;
-        padding-bottom: var(--sab);
+        padding: 0 calc(4px + var(--sar)) var(--sab) calc(4px + var(--sal));
         background: var(--glass-bg);
         backdrop-filter: blur(28px) saturate(1.4);
         -webkit-backdrop-filter: blur(28px) saturate(1.4);
@@ -1310,8 +1307,8 @@
 
     #toast-container {
         top: calc(8px + var(--sat));
-        right: 8px;
-        left: 8px;
+        right: calc(8px + var(--sar));
+        left: calc(8px + var(--sal));
         max-width: none;
     }
     .toast {
@@ -1485,7 +1482,7 @@
         overflow-y: auto;
         transform: translateY(100%);
         transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-        padding-bottom: var(--sab);
+        padding: 0 var(--sar) var(--sab) var(--sal);
         display: flex;
         flex-direction: column;
         visibility: hidden;
@@ -2516,6 +2513,7 @@
         top: auto !important;
         width: 100% !important;
         max-height: 50vh;
+        padding: 0 var(--sar) var(--sab) var(--sal);
         border-radius: var(--radius-3xl) var(--radius-3xl) 0 0;
         animation: mobileSheetSlideUp 0.25s cubic-bezier(0.16, 1, 0.3, 1);
     }
@@ -2605,7 +2603,7 @@
         justify-content: center;
         position: fixed;
         bottom: calc(76px + var(--sab));
-        right: 20px;
+        right: calc(20px + var(--sar));
         width: 56px;
         height: 56px;
         border-radius: var(--radius-full);
@@ -2678,7 +2676,7 @@
     .fab-dial-actions {
         position: fixed;
         bottom: calc(90px + var(--sab) + 68px);
-        right: 20px;
+        right: calc(20px + var(--sar));
         z-index: var(--z-fab);
         flex-direction: column;
         align-items: flex-end;
@@ -3654,8 +3652,8 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
     }
 
     .channel-member-profile-sheet .bottom-sheet-body {
-        padding-right: calc(var(--space-7) + var(--sar));
-        padding-left: calc(var(--space-7) + var(--sal));
+        padding-right: var(--space-7);
+        padding-left: var(--space-7);
     }
 
     .channels-layout.room-live.members-open .channel-members-pane {
@@ -3853,9 +3851,8 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
 
     .channel-room-header {
         min-height: calc(64px + var(--sat));
-        padding: calc(var(--space-5) + var(--sat))
-            calc(var(--space-5) + var(--sar)) var(--space-5)
-            calc(var(--space-4) + var(--sal));
+        padding: calc(var(--space-5) + var(--sat)) var(--space-5) var(--space-5) var(--space-4);
+        margin: 0 var(--sar) 0 var(--sal);
         background: var(--surface-page);
     }
 
@@ -4289,5 +4286,98 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
 @media (max-width: 360px) {
     [data-text-scale-tier="xlarge"] .theme-family-grid {
         grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+}
+
+/* Safe-area edges. A surface that meets a screen edge paints its background
+   under the inset (a transparent border, with the background clipped and
+   originated at the border box) while its content, scrollbars, and controls
+   stay clear: no empty bands beside a side status bar (iPhone Duo) or under
+   the home indicator. */
+@media (max-width: 768px) {
+    .main-content {
+        border-left: var(--sal) solid transparent;
+        border-right: var(--sar) solid transparent;
+    }
+    /* Full-screen details inset per bar, so their headers and composers reach the edge. */
+    body.view-chat-detail .main-content,
+    body.view-channel-detail .main-content,
+    body.view-game-detail .main-content {
+        border-left-width: 0;
+        border-right-width: 0;
+    }
+    body.view-chat-detail .lxmf-messages {
+        border-left: var(--sal) solid transparent;
+        border-right: var(--sar) solid transparent;
+        background-origin: border-box;
+    }
+    body.view-chat-detail .lxmf-chat-header,
+    body.view-chat-detail .lxmf-select-bar,
+    body.view-chat-detail .lxst-call-strip {
+        margin-left: var(--sal);
+        margin-right: var(--sar);
+    }
+    body.view-chat-detail .lxmf-compose {
+        padding-left: calc(var(--space-6) + var(--sal));
+        padding-right: calc(var(--space-6) + var(--sar));
+    }
+    body.view-game-detail .games-detail-board,
+    body.view-game-detail .games-detail-controls {
+        margin-left: var(--sal);
+        margin-right: var(--sar);
+    }
+}
+
+@media (min-width: 769px) {
+    .lxmf-chat,
+    .channel-room-header,
+    .channel-transcript,
+    .channel-compose,
+    .channel-members-pane,
+    .games-detail,
+    .peers-detail-panel,
+    .setup-container,
+    .dashboard-page,
+    .contacts-standalone,
+    .network-layout,
+    .identity-page,
+    .settings-page {
+        border-right: var(--sar) solid transparent;
+        background-origin: border-box;
+    }
+    .lxmf-sidebar,
+    .lxmf-chat,
+    .channels-sidebar,
+    .channel-transcript:has(+ .channel-compose[hidden]),
+    .channel-compose,
+    .channel-members-pane,
+    .games-sidebar,
+    .games-detail,
+    .peers-list-panel,
+    .peers-detail-panel,
+    .setup-container,
+    .dashboard-page,
+    .contacts-standalone,
+    .network-layout,
+    .identity-page,
+    .settings-page {
+        border-bottom: var(--sab) solid transparent;
+        background-origin: border-box;
+    }
+}
+
+/* The sidebar footer sits in a bottom corner, so its own padding absorbs the inset. */
+@media (min-width: 769px) {
+    .sidebar {
+        padding-bottom: max(var(--space-8), var(--sab));
+    }
+}
+
+/* A live room's member column takes the right edge only where it is a grid column. */
+@media (min-width: 1121px) {
+    html:not([data-text-scale-tier="xlarge"]) .channels-layout.room-live .channel-room-header,
+    html:not([data-text-scale-tier="xlarge"]) .channels-layout.room-live .channel-transcript,
+    html:not([data-text-scale-tier="xlarge"]) .channels-layout.room-live .channel-compose {
+        border-right-width: 0;
     }
 }

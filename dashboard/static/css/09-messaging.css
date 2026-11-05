@@ -881,7 +881,7 @@ body.image-viewer-open {
     align-items: stretch;
     min-height: var(--touch-target);
     margin-top: calc(-1 * var(--space-3));
-    padding: 0 var(--sar) 0 var(--sal);
+    padding: 0;
     background: var(--surface-panel);
     border-bottom: 1px solid var(--divider);
     animation: msgSelectBarIn 150ms ease-out both;

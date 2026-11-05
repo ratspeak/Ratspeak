@@ -283,16 +283,20 @@
         var gap = 8;
         var triggerRect = helpTrigger.getBoundingClientRect();
         var popoverRect = helpPopover.getBoundingClientRect();
+        var safe = safeAreaInsets();
+        var minTop = safe.top + margin;
+        var maxBottom = window.innerHeight - safe.bottom - margin;
         var left = triggerRect.left + (triggerRect.width - popoverRect.width) / 2;
-        left = Math.max(margin, Math.min(left, window.innerWidth - popoverRect.width - margin));
+        left = Math.max(safe.left + margin,
+            Math.min(left, window.innerWidth - safe.right - popoverRect.width - margin));
         var top = triggerRect.bottom + gap;
         var placement = 'below';
-        if (top + popoverRect.height > window.innerHeight - margin &&
-            triggerRect.top - gap - popoverRect.height >= margin) {
+        if (top + popoverRect.height > maxBottom &&
+            triggerRect.top - gap - popoverRect.height >= minTop) {
             top = triggerRect.top - gap - popoverRect.height;
             placement = 'above';
         }
-        top = Math.max(margin, Math.min(top, window.innerHeight - popoverRect.height - margin));
+        top = Math.max(minTop, Math.min(top, maxBottom - popoverRect.height));
         helpPopover.style.left = Math.round(left) + 'px';
         helpPopover.style.top = Math.round(top) + 'px';
         helpPopover.dataset.placement = placement;

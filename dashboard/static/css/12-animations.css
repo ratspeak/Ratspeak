@@ -313,11 +313,11 @@
 .first-run-hint {
     position: fixed;
     z-index: var(--z-bottom-sheet);
-    left: 50%;
+    left: calc(50% + (var(--sal) - var(--sar)) / 2);
     bottom: calc(62px + var(--sab) + 20px);
     transform: translateX(-50%) translateY(8px) scale(0.96);
     transform-origin: center bottom;
-    max-width: calc(100vw - 32px);
+    max-width: calc(100vw - 32px - var(--sal) - var(--sar));
     min-height: 48px;
     background: var(--surface-sheet);
     backdrop-filter: blur(22px) saturate(1.25);

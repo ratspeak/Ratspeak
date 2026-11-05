@@ -7826,7 +7826,9 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     );
     assert!(views_css.contains(".contact-share-sheet"));
     assert!(views_css.contains(".contact-scan-sheet"));
-    assert!(views_css.contains("top: 50%;\n    left: 50%;\n    height: auto;"));
+    assert!(views_css.contains(
+        "top: 50%;\n    left: calc(50% + (var(--sal) - var(--sar)) / 2);\n    height: auto;"
+    ));
     assert!(views_css.contains("transform: translate(-50%, calc(-50% + 12px)) scale(0.98);"));
     assert!(views_css.contains("transform: translate(-50%, -50%) scale(1);"));
     assert!(views_css.contains(".contact-share-qr-shell"));

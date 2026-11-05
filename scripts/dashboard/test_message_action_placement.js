@@ -56,9 +56,11 @@ function scenario(bubbleTop, bubbleHeight, opts) {
         actionsPanel: panel(ACTIONS_H, 240),
         menu: { setAttribute: (k, v) => { menuAttrs[k] = v; } },
     };
+    const insets = opts.insets || { top: 0, right: 0, bottom: 0, left: 0 };
     const context = {
         window: { innerWidth: VIEW_W, innerHeight: VIEW_H, visualViewport: null },
         document: { getElementById: (id) => elements[id] || null },
+        safeAreaInsets: () => insets,
         Math: Math,
     };
     vm.createContext(context);
@@ -132,9 +134,16 @@ r = scenario(300, 60, { outbound: true });
 assert.strictEqual(r.actions.left + r.actions.w, r.bubble.right);
 assert(r.react.left >= 12 && r.react.left + r.react.w <= VIEW_W - 12, 'panels stay on screen');
 
+// Side insets (a side status bar, a landscape notch) shrink the usable width.
+r = scenario(300, 60, { outbound: true, insets: { top: 0, right: 30, bottom: 0, left: 0 } });
+assert(r.react.left + r.react.w <= VIEW_W - 12 - 30 && r.actions.left + r.actions.w <= VIEW_W - 12 - 30,
+    'panels stay clear of a right safe-area inset');
+r = scenario(300, 60, { insets: { top: 0, right: 0, bottom: 0, left: 40 } });
+assert(r.react.left >= 12 + 40 && r.actions.left >= 12 + 40, 'panels stay clear of a left safe-area inset');
+
 // Arrow keys follow on-screen order: reactions wrap Left/Right, rows move
 // Up/Down, and Up/Down at an edge crosses into the neighbouring group.
-const keys = { window: {}, document: {}, Math: Math };
+const keys = { window: {}, document: {}, safeAreaInsets: () => ({ top: 0, right: 0, bottom: 0, left: 0 }), Math: Math };
 vm.createContext(keys);
 vm.runInContext(source.slice(start, end), keys);
 const move = keys._messageActionKeyTarget;
