@@ -72,7 +72,7 @@ jobs:
   build:
     name: macOS
     if: ${{ inputs.recovery_run_id == '' }}
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 100
     steps:
       - name: Checkout Ratspeak
@@ -162,7 +162,7 @@ jobs:
         run: bash scripts/release/install-tauri-cli.sh "${{ steps.source.outputs.tauri_cli }}"
 
       - name: Select reviewed Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+        run: sudo xcode-select -s /Applications/Xcode_27.2.app
 
       - name: Validate Apple toolchain
         shell: bash
@@ -366,7 +366,7 @@ jobs:
   resume:
     name: macOS notarization resume
     if: ${{ inputs.recovery_run_id != '' }}
-    runs-on: macos-latest
+    runs-on: xcode-27
     timeout-minutes: 45
     steps:
       - name: Checkout Ratspeak
@@ -384,7 +384,7 @@ jobs:
           exit 1
 
       - name: Select reviewed Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+        run: sudo xcode-select -s /Applications/Xcode_27.2.app
 
       - name: Download notarization recovery state
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131

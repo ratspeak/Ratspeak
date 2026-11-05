@@ -27,8 +27,8 @@
     "tauriCli": "2.12.4",
     "java": "17",
     "androidNdk": "27.0.12077973",
-    "xcode": "26.3",
-    "iosSdk": "26.2"
+    "xcode": "27.2",
+    "iosSdk": "27.2"
   },
   "components": [
     {

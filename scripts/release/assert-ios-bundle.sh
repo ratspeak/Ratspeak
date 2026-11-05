@@ -86,7 +86,7 @@ expect_raw CFBundleIdentifier "$expected_bundle_id"
 expect_raw CFBundleName Ratspeak
 expect_raw CFBundleShortVersionString "$expected_version"
 expect_raw LSRequiresIPhoneOS true
-expect_raw MinimumOSVersion 14.0
+expect_raw MinimumOSVersion 15.0
 expect_raw UILaunchStoryboardName LaunchScreen
 expect_json UIDeviceFamily '[1,2]'
 expect_json CFBundleURLTypes '[{"CFBundleURLName":"ratspeak","CFBundleURLSchemes":["ratspeak"]}]'

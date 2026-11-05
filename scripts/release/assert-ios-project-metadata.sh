@@ -83,7 +83,7 @@ for declaration in \
   'bundleIdPrefix: org.ratspeak.apple' \
   'PRODUCT_BUNDLE_IDENTIFIER: org.ratspeak.apple' \
   "DEVELOPMENT_TEAM: $expected_team_id" \
-  'iOS: 14.0' \
+  'iOS: 15.0' \
   'TARGETED_DEVICE_FAMILY: "1,2"' \
   'path: ratspeak_iOS/PrivacyInfo.xcprivacy' \
   'buildPhase: resources' \

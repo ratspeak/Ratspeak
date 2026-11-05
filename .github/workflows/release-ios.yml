@@ -41,7 +41,7 @@ env:
 jobs:
   build:
     name: iOS
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 150
     steps:
       - name: Checkout Ratspeak
@@ -191,7 +191,7 @@ jobs:
         run: bash dashboard/build-css.sh
 
       - name: Select reviewed Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.3.app
+        run: sudo xcode-select -s /Applications/Xcode_27.2.app
 
       - name: Validate Apple toolchain
         shell: bash

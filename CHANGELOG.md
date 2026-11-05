@@ -15,6 +15,7 @@ changes that materially affect how an artifact is reproduced.
 ### Build and compatibility
 
 - Updated the Tauri runtime to 2.12. Source builds require Rust 1.90 or later.
+- The iOS app builds with Xcode 27.2 and requires iOS 15 or later.
 
 
 ## [1.0.40] - 2026-11-03

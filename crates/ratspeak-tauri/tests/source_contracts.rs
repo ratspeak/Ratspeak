@@ -6521,7 +6521,7 @@ fn settings_version_display_uses_package_version_api() {
         dependency_set["product"]["platformBuilds"]["iosBundleVersion"]
     );
     assert_eq!(
-        tauri_conf_json["bundle"]["iOS"]["minimumSystemVersion"], "14.0",
+        tauri_conf_json["bundle"]["iOS"]["minimumSystemVersion"], "15.0",
         "Tauri CLI 2.12 defaults iOS to 15.0; keep it equal to project.yml"
     );
     assert_eq!(
@@ -6813,7 +6813,8 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     assert!(!windows.contains("$hash  $path"));
     let macos =
         read_source(root.join(".github/workflows/release-macos.yml")).expect("macOS release");
-    assert!(macos.contains("sudo xcode-select -s /Applications/Xcode_26.3.app"));
+    assert!(macos.contains("sudo xcode-select -s /Applications/Xcode_27.2.app"));
+    assert!(macos.contains("runs-on: xcode-27"));
     assert!(macos.contains("scripts/release/notarize-macos-dmgs.sh"));
     assert!(macos.contains("scripts/release/finalize-macos-dmgs.sh"));
     assert!(macos.contains("NOTARY_WAIT_TIMEOUT: 30m"));
@@ -6898,7 +6899,7 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
 
     let ios =
         read_source(root.join(".github/workflows/release-ios.yml")).expect("iOS release workflow");
-    assert!(ios.contains("sudo xcode-select -s /Applications/Xcode_26.3.app"));
+    assert!(ios.contains("sudo xcode-select -s /Applications/Xcode_27.2.app"));
     assert!(ios.contains("source-integrity.mjs github-outputs"));
     assert!(ios.contains("source-integrity.mjs verify-release-source"));
     assert!(ios.contains("source-integrity.mjs bom"));
@@ -6934,14 +6935,14 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
             "missing iOS gate: {release_gate}"
         );
     }
-    assert!(ios.contains("runs-on: macos-26"));
+    assert!(ios.contains("runs-on: xcode-27"));
     assert!(ios.contains("security set-key-partition-list"));
     assert!(ios.contains("$PROFILE_UUID.mobileprovision"));
     assert!(ios.contains("Remove temporary signing keychain"));
 
     let ios_project = read_source(root.join("src-tauri/gen/apple/project.yml"))
         .expect("iOS project specification");
-    assert!(ios_project.contains("deploymentTarget:\n    iOS: 14.0"));
+    assert!(ios_project.contains("deploymentTarget:\n    iOS: 15.0"));
     assert!(ios_project.contains("path: ratspeak_iOS/PrivacyInfo.xcprivacy"));
     assert!(ios_project.contains("buildPhase: resources"));
     assert!(ios_project.contains("entitlements:"));
