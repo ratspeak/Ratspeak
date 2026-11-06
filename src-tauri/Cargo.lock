@@ -4429,6 +4429,7 @@ dependencies = [
  "rns-runtime",
  "rns-transport",
  "rns-wire",
+ "rsnode-update",
  "rusqlite",
  "serde",
  "serde_json",
@@ -4843,6 +4844,10 @@ dependencies = [
  "subtle",
  "zeroize",
 ]
+
+[[package]]
+name = "rsnode-update"
+version = "0.1.0"
 
 [[package]]
 name = "rusqlite"

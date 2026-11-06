@@ -44,6 +44,7 @@ ratspeak-core = { path = "crates/ratspeak-core", version = "1.0.41" }
 ratspeak-db = { path = "crates/ratspeak-db", version = "1.0.41" }
 ratspeak-runtime = { path = "crates/ratspeak-runtime", version = "1.0.41" }
 ratspeak-tauri = { path = "crates/ratspeak-tauri", version = "1.0.41" }
+rsnode-update = { path = "crates/rsnode-update", version = "0.1.0" }
 
 # --- External dependencies ---
 

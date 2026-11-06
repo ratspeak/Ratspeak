@@ -657,6 +657,8 @@ pub struct AppState {
     /// Identity-scoped optimistic client IDs that have entered native send
     /// preparation but may not have a canonical LXMF message hash yet.
     lxmf_client_sends: Mutex<HashMap<String, LxmfClientSendOperation>>,
+    /// rsNode firmware transfers running in this process.
+    pub rsnode_updates: crate::rsnode::update::Registry,
     attachment_transfer_budget: Mutex<AttachmentTransferBudgetState>,
     attachment_pressure_until_ms: AtomicU64,
     attachment_staging: Mutex<HashMap<String, StagedAttachment>>,
@@ -977,6 +979,7 @@ impl AppState {
             announce_activity_baselined: AtomicBool::new(false),
             msg_id_map: Mutex::new(HashMap::new()),
             lxmf_client_sends: Mutex::new(HashMap::new()),
+            rsnode_updates: Default::default(),
             attachment_transfer_budget: Mutex::new(AttachmentTransferBudgetState::default()),
             attachment_pressure_until_ms: AtomicU64::new(0),
             attachment_staging: Mutex::new(HashMap::new()),
@@ -2774,6 +2777,7 @@ impl AppState {
     }
 
     pub fn clear_identity_scoped_runtime_state(&self) {
+        self.rsnode_updates.stop_all();
         if let Ok(mut channels) = self.channels.write() {
             *channels = None;
         }

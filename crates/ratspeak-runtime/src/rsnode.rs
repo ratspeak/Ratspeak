@@ -1,7 +1,10 @@
-//! rsNode Repeaters managed by message: their `FIELD_RESULTS` replies.
+//! rsNode Repeaters managed by message: their `FIELD_RESULTS` replies, and firmware updates over
+//! the node's `rsnode.manage` Link ([`update`]).
 
 use rmpv::Value as Msgpack;
 use serde_json::{Map, Value, json};
+
+pub mod update;
 
 /// `FIELD_RESULTS` key 0x00: a schema version marks an rsNode reply.
 const RESULT_SCHEMA: u64 = 0x00;

@@ -4223,6 +4223,7 @@ dependencies = [
  "rns-runtime",
  "rns-transport",
  "rns-wire",
+ "rsnode-update",
  "rusqlite",
  "serde",
  "serde_json",

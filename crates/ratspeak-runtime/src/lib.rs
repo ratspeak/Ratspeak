@@ -1828,6 +1828,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
             }
 
             state.set_lxmf(mgr);
+            rsnode::update::resume_pending(&state);
 
             // Pre-warm conversations cache so first paint doesn't await DB.
             if let Some(payload) = messaging::build_conversations_payload(&state).await {

@@ -27,6 +27,7 @@ pub mod peers;
     target_os = "android"
 ))]
 pub(crate) mod rnode_readiness;
+pub mod rsnode;
 pub mod shared;
 pub mod system;
 #[cfg(feature = "lxst-voice")]
