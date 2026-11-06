@@ -12,9 +12,11 @@ const index = fs.readFileSync(path.join(root, 'dashboard/index.html'), 'utf8');
 
 const NODE = 'aa'.repeat(16);
 const PERSON = 'bb'.repeat(16);
+const SENSOR = 'cc'.repeat(16);
 const contacts = {
-    [NODE]: { hash: NODE, kind: 'device', caps: ['rsnode', 'rsnode.update'], is_rsnode: true },
-    [PERSON]: { hash: PERSON, kind: 'person', caps: [], is_rsnode: false },
+    [NODE]: { hash: NODE, kind: 'device', caps: ['rsnode', 'rsnode.update'], is_rsnode: true, can_update: true },
+    [PERSON]: { hash: PERSON, kind: 'person', caps: [], is_rsnode: false, can_update: false },
+    [SENSOR]: { hash: SENSOR, kind: 'device', caps: ['future'], is_rsnode: false, can_update: false },
 };
 const started = [];
 const context = {
@@ -88,6 +90,7 @@ assert.strictEqual(unset.Announces, 'Off');
 assert(rs._isRsota('heltec-v4-1.0.1.RSOTA'));
 assert(!rs._isRsota('notes.rsota.txt'));
 assert.strictEqual(rs.interceptFile({ name: 'fw.rsota', size: 10 }, PERSON), false);
+assert.strictEqual(rs.interceptFile({ name: 'fw.rsota', size: 10 }, SENSOR), false, 'devices that are not rsNodes attach');
 assert.strictEqual(rs.interceptFile({ name: 'photo.png', size: 10 }, NODE), false);
 assert.strictEqual(rs.interceptFile({ name: 'fw.rsota', size: 10 }, NODE), true);
 assert.deepStrictEqual(started, ['confirm'], 'the update asks first');
@@ -107,6 +110,7 @@ assert(lxmf.includes("fileInput.addEventListener('change', function() { handleFi
 assert(lxmf.includes('if (RS.rsnode) RS.rsnode.render();'));
 assert(lxmf.includes("if (_messageIsPaper(msg) || _messageIsNote(msg)) return;"), 'notes never alert');
 assert(lxmf.includes("is_rsnode: c.kind === 'device' && caps.indexOf('rsnode') !== -1"));
+assert(lxmf.includes("can_update: c.kind === 'device' && (caps.indexOf('rsnode.update') !== -1 || caps.indexOf('rsnode') !== -1)"));
 assert(index.indexOf('rsnode_device.js') > index.indexOf('lxmf.js'), 'loads after lxmf.js');
 for (const id of ['lxmf-rsnode-badge', 'rsnode-panel', 'rsnode-commands', 'rsnode-suggest']) {
     assert(index.includes('id="' + id + '"'), id);

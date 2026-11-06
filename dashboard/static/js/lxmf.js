@@ -1242,7 +1242,9 @@ function normalizeContactRecord(c) {
         // Unknown kinds read as person; the raw value is kept.
         kind: c.kind || 'person',
         caps: caps,
-        is_rsnode: c.kind === 'device' && caps.indexOf('rsnode') !== -1
+        is_rsnode: c.kind === 'device' && caps.indexOf('rsnode') !== -1,
+        // Its card says it takes updates; an rsNode without that cap proves it with a fresh status.
+        can_update: c.kind === 'device' && (caps.indexOf('rsnode.update') !== -1 || caps.indexOf('rsnode') !== -1)
     };
 }
 

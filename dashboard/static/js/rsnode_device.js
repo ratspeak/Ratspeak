@@ -67,6 +67,11 @@
         return !!(contact && contact.is_rsnode);
     }
 
+    function canUpdate(hash) {
+        var contact = _lookupContactRecord(hashOf(hash));
+        return !!(contact && contact.can_update);
+    }
+
     function isRsota(name) {
         return /\.rsota$/i.test(String(name || ''));
     }
@@ -290,7 +295,7 @@
     }
 
     function interceptFile(file, hash) {
-        if (!file || !isRsota(file.name) || !isDevice(hash)) return false;
+        if (!file || !isRsota(file.name) || !canUpdate(hash)) return false;
         startUpdate(file, hashOf(hash));
         return true;
     }
