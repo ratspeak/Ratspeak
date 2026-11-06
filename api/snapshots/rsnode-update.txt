@@ -1,0 +1,228 @@
+pub mod rsnode_update
+pub mod rsnode_update::delta
+pub enum rsnode_update::delta::DeltaError<E>
+pub rsnode_update::delta::DeltaError::Base(E)
+pub rsnode_update::delta::DeltaError::BaseRange
+pub rsnode_update::delta::DeltaError::Malformed
+pub rsnode_update::delta::DeltaError::Sink(E)
+pub struct rsnode_update::delta::Checkpoint
+pub rsnode_update::delta::Checkpoint::output: u32
+pub rsnode_update::delta::Checkpoint::patch_offset: u32
+pub struct rsnode_update::delta::DeltaApplier
+impl rsnode_update::delta::DeltaApplier
+pub fn rsnode_update::delta::DeltaApplier::complete(&self) -> bool
+pub const fn rsnode_update::delta::DeltaApplier::new(u32, u32) -> Self
+pub fn rsnode_update::delta::DeltaApplier::output(&self) -> u32
+pub fn rsnode_update::delta::DeltaApplier::patch_offset(&self) -> u32
+pub fn rsnode_update::delta::DeltaApplier::push<I: rsnode_update::delta::DeltaIo>(&mut self, &[u8], &mut I) -> core::result::Result<core::option::Option<rsnode_update::delta::Checkpoint>, rsnode_update::delta::DeltaError<<I as rsnode_update::delta::DeltaIo>::Error>>
+pub fn rsnode_update::delta::DeltaApplier::resume(u32, u32, rsnode_update::delta::Checkpoint) -> Self
+pub const rsnode_update::delta::DELTA_BLOCK_HEADER_LEN: usize
+pub const rsnode_update::delta::DELTA_BLOCK_OUT: u32
+pub const rsnode_update::delta::DELTA_HEADER_LEN: usize
+pub const rsnode_update::delta::DELTA_MAGIC: [u8; 4]
+pub const rsnode_update::delta::DELTA_VERSION: u8
+pub const rsnode_update::delta::LZSS_INDEX_BITS: u32
+pub const rsnode_update::delta::LZSS_LENGTH_BITS: u32
+pub const rsnode_update::delta::LZSS_MAX_MATCH: usize
+pub const rsnode_update::delta::LZSS_MIN_MATCH: usize
+pub const rsnode_update::delta::LZSS_WINDOW: usize
+pub const rsnode_update::delta::OP_ADD: u8
+pub const rsnode_update::delta::OP_INSERT: u8
+pub trait rsnode_update::delta::DeltaIo
+pub type rsnode_update::delta::DeltaIo::Error
+pub fn rsnode_update::delta::DeltaIo::read_base(&mut self, u32, &mut [u8]) -> core::result::Result<(), Self::Error>
+pub fn rsnode_update::delta::DeltaIo::write(&mut self, &[u8]) -> core::result::Result<(), Self::Error>
+pub fn rsnode_update::delta::create(&[u8], &[u8]) -> alloc::vec::Vec<u8>
+pub mod rsnode_update::frame
+pub enum rsnode_update::frame::Command<'a>
+pub rsnode_update::frame::Command::OtaAbort
+pub rsnode_update::frame::Command::OtaBegin
+pub rsnode_update::frame::Command::OtaBegin::delta: core::option::Option<rsnode_update::frame::DeltaBase>
+pub rsnode_update::frame::Command::OtaBegin::manifest: &'a [u8; 128]
+pub rsnode_update::frame::Command::OtaChunk
+pub rsnode_update::frame::Command::OtaChunk::ack: bool
+pub rsnode_update::frame::Command::OtaChunk::data: &'a [u8]
+pub rsnode_update::frame::Command::OtaChunk::offset: u32
+pub rsnode_update::frame::Command::OtaFinish
+pub rsnode_update::frame::Command::Status
+impl<'a> rsnode_update::frame::Command<'a>
+pub fn rsnode_update::frame::Command<'a>::body_len(&self) -> core::result::Result<usize, rsnode_update::frame::EncodeError>
+pub const fn rsnode_update::frame::Command<'a>::code(&self) -> u8
+pub fn rsnode_update::frame::Command<'a>::decode(u8, &'a [u8]) -> core::option::Option<core::result::Result<Self, rsnode_update::frame::RequestError>>
+pub fn rsnode_update::frame::Command<'a>::encode_body(&self, &mut [u8])
+#[repr(u8)] pub enum rsnode_update::frame::CommandResult
+pub rsnode_update::frame::CommandResult::Busy = 5
+pub rsnode_update::frame::CommandResult::Denied = 1
+pub rsnode_update::frame::CommandResult::Full = 3
+pub rsnode_update::frame::CommandResult::Gap = 11
+pub rsnode_update::frame::CommandResult::Invalid = 2
+pub rsnode_update::frame::CommandResult::NotFound = 4
+pub rsnode_update::frame::CommandResult::Ok = 0
+pub rsnode_update::frame::CommandResult::Refused = 9
+pub rsnode_update::frame::CommandResult::Rejected = 8
+pub rsnode_update::frame::CommandResult::Storage = 7
+pub rsnode_update::frame::CommandResult::Unavailable = 10
+pub rsnode_update::frame::CommandResult::Unsupported = 6
+impl rsnode_update::frame::CommandResult
+pub const fn rsnode_update::frame::CommandResult::from_byte(u8) -> core::option::Option<Self>
+pub enum rsnode_update::frame::EncodeError
+pub rsnode_update::frame::EncodeError::BufferTooSmall
+pub enum rsnode_update::frame::RequestError
+pub rsnode_update::frame::RequestError::Malformed
+pub rsnode_update::frame::RequestError::Unsupported
+pub rsnode_update::frame::RequestError::Unsupported::id: u32
+pub struct rsnode_update::frame::DeltaBase
+pub rsnode_update::frame::DeltaBase::base_len: u32
+pub rsnode_update::frame::DeltaBase::base_sha256: [u8; 32]
+pub rsnode_update::frame::DeltaBase::patch_len: u32
+pub struct rsnode_update::frame::Request<'a>
+pub rsnode_update::frame::Request::command: rsnode_update::frame::Command<'a>
+pub rsnode_update::frame::Request::id: u32
+pub const rsnode_update::frame::CHUNK_FLAG_ACK: u8
+pub const rsnode_update::frame::CMD_OTA_ABORT: u8
+pub const rsnode_update::frame::CMD_OTA_BEGIN: u8
+pub const rsnode_update::frame::CMD_OTA_CHUNK: u8
+pub const rsnode_update::frame::CMD_OTA_FINISH: u8
+pub const rsnode_update::frame::CMD_STATUS: u8
+pub const rsnode_update::frame::COMMAND_HEADER_LEN: usize
+pub const rsnode_update::frame::COMMAND_MAX_LEN: usize
+pub const rsnode_update::frame::LINK_COMMAND_VERSION: u8
+pub const rsnode_update::frame::OTA_BEGIN_DELTA_LEN: usize
+pub const rsnode_update::frame::OTA_CHUNK_DATA_MAX: usize
+pub fn rsnode_update::frame::decode_header(&[u8]) -> core::result::Result<(u32, u8, &[u8]), rsnode_update::frame::RequestError>
+pub fn rsnode_update::frame::decode_offset(&[u8]) -> core::option::Option<(u32, core::option::Option<u16>)>
+pub fn rsnode_update::frame::decode_request(&[u8]) -> core::result::Result<rsnode_update::frame::Request<'_>, rsnode_update::frame::RequestError>
+pub fn rsnode_update::frame::decode_response(&[u8]) -> core::option::Option<(u32, rsnode_update::frame::CommandResult, &[u8])>
+pub fn rsnode_update::frame::encode_header(u32, u8, &mut [u8]) -> core::result::Result<usize, rsnode_update::frame::EncodeError>
+pub fn rsnode_update::frame::encode_offset(u32, core::option::Option<u16>, &mut [u8]) -> core::result::Result<usize, rsnode_update::frame::EncodeError>
+pub fn rsnode_update::frame::encode_request(&rsnode_update::frame::Request<'_>, &mut [u8]) -> core::result::Result<usize, rsnode_update::frame::EncodeError>
+pub fn rsnode_update::frame::encode_response_header(u32, rsnode_update::frame::CommandResult, &mut [u8]) -> core::result::Result<usize, rsnode_update::frame::EncodeError>
+pub mod rsnode_update::manifest
+pub enum rsnode_update::manifest::ManifestError
+pub rsnode_update::manifest::ManifestError::Invalid
+pub rsnode_update::manifest::ManifestError::InvalidLength
+pub struct rsnode_update::manifest::BoardTarget
+pub rsnode_update::manifest::BoardTarget::board: u8
+pub rsnode_update::manifest::BoardTarget::mcu: u8
+pub rsnode_update::manifest::BoardTarget::platform: u8
+pub struct rsnode_update::manifest::FirmwareVersion
+pub rsnode_update::manifest::FirmwareVersion::major: u16
+pub rsnode_update::manifest::FirmwareVersion::minor: u16
+pub rsnode_update::manifest::FirmwareVersion::patch: u16
+pub struct rsnode_update::manifest::OtaManifest
+pub rsnode_update::manifest::OtaManifest::firmware_version: rsnode_update::manifest::FirmwareVersion
+pub rsnode_update::manifest::OtaManifest::image_len: u32
+pub rsnode_update::manifest::OtaManifest::image_sha256: [u8; 32]
+pub rsnode_update::manifest::OtaManifest::sequence: u32
+pub rsnode_update::manifest::OtaManifest::signature: [u8; 64]
+pub rsnode_update::manifest::OtaManifest::target: rsnode_update::manifest::BoardTarget
+impl rsnode_update::manifest::OtaManifest
+pub fn rsnode_update::manifest::OtaManifest::decode(&[u8]) -> core::result::Result<Self, rsnode_update::manifest::ManifestError>
+pub fn rsnode_update::manifest::OtaManifest::encode(&self) -> [u8; 128]
+pub fn rsnode_update::manifest::OtaManifest::signed_header(&self) -> [u8; 64]
+pub const rsnode_update::manifest::OTA_MANIFEST_LEN: usize
+pub const rsnode_update::manifest::OTA_SIGNATURE_LEN: usize
+pub const rsnode_update::manifest::OTA_SIGNED_HEADER_LEN: usize
+pub mod rsnode_update::status
+pub enum rsnode_update::status::OwnerRole
+pub rsnode_update::status::OwnerRole::Helper
+pub rsnode_update::status::OwnerRole::Primary
+impl rsnode_update::status::OwnerRole
+pub const fn rsnode_update::status::OwnerRole::from_byte(u8) -> core::option::Option<Self>
+pub const fn rsnode_update::status::OwnerRole::to_byte(self) -> u8
+pub enum rsnode_update::status::UpdateSource
+pub rsnode_update::status::UpdateSource::Link
+pub rsnode_update::status::UpdateSource::Root
+pub rsnode_update::status::UpdateSource::Usb
+impl rsnode_update::status::UpdateSource
+pub const fn rsnode_update::status::UpdateSource::from_byte(u8) -> core::option::Option<Self>
+pub const fn rsnode_update::status::UpdateSource::to_byte(self) -> u8
+pub struct rsnode_update::status::LastUpdateStatus
+pub rsnode_update::status::LastUpdateStatus::owner: [u8; 16]
+pub rsnode_update::status::LastUpdateStatus::running: bool
+pub rsnode_update::status::LastUpdateStatus::sequence: u32
+pub rsnode_update::status::LastUpdateStatus::source: rsnode_update::status::UpdateSource
+pub struct rsnode_update::status::ManageStatus
+pub rsnode_update::status::ManageStatus::board: core::option::Option<rsnode_update::manifest::BoardTarget>
+pub rsnode_update::status::ManageStatus::firmware: core::option::Option<rsnode_update::manifest::FirmwareVersion>
+pub rsnode_update::status::ManageStatus::image: core::option::Option<rsnode_update::status::RunningImage>
+pub rsnode_update::status::ManageStatus::interfaces_up: u8
+pub rsnode_update::status::ManageStatus::last_update: core::option::Option<rsnode_update::status::LastUpdateStatus>
+pub rsnode_update::status::ManageStatus::nearby_only: bool
+pub rsnode_update::status::ManageStatus::ota_accepted_sequence: u32
+pub rsnode_update::status::ManageStatus::ota_pending_sequence: core::option::Option<u32>
+pub rsnode_update::status::ManageStatus::ota_slot_len: u32
+pub rsnode_update::status::ManageStatus::ota_trial_pending: bool
+pub rsnode_update::status::ManageStatus::owner_count: u8
+pub rsnode_update::status::ManageStatus::path: core::option::Option<rsnode_update::status::SessionPath>
+pub rsnode_update::status::ManageStatus::radio: core::option::Option<rsnode_update::status::StatusRadio>
+pub rsnode_update::status::ManageStatus::release: core::option::Option<rsnode_update::status::ReleaseVersion>
+pub rsnode_update::status::ManageStatus::release_key_id: core::option::Option<[u8; 8]>
+pub rsnode_update::status::ManageStatus::role: core::option::Option<rsnode_update::status::OwnerRole>
+pub rsnode_update::status::ManageStatus::transfer: core::option::Option<rsnode_update::status::TransferStatus>
+pub rsnode_update::status::ManageStatus::uptime_s: u32
+pub rsnode_update::status::ManageStatus::wifi: core::option::Option<rsnode_update::status::WifiStatus>
+impl rsnode_update::status::ManageStatus
+pub fn rsnode_update::status::ManageStatus::decode(&[u8]) -> core::option::Option<Self>
+pub fn rsnode_update::status::ManageStatus::encode(&self, &mut [u8]) -> core::result::Result<usize, rsnode_update::frame::EncodeError>
+pub struct rsnode_update::status::ReleaseVersion
+impl rsnode_update::status::ReleaseVersion
+pub fn rsnode_update::status::ReleaseVersion::as_str(&self) -> &str
+pub fn rsnode_update::status::ReleaseVersion::new(&str) -> core::option::Option<Self>
+pub struct rsnode_update::status::RunningImage
+pub rsnode_update::status::RunningImage::len: u32
+pub rsnode_update::status::RunningImage::sha256: [u8; 32]
+pub struct rsnode_update::status::SessionPath
+pub rsnode_update::status::SessionPath::hops: u8
+pub rsnode_update::status::SessionPath::interface_id: u8
+pub struct rsnode_update::status::StatusRadio
+pub rsnode_update::status::StatusRadio::bandwidth_hz: u32
+pub rsnode_update::status::StatusRadio::coding_rate: u8
+pub rsnode_update::status::StatusRadio::duty_tenths_percent: u16
+pub rsnode_update::status::StatusRadio::frequency_hz: u32
+pub rsnode_update::status::StatusRadio::hour_budget_ms: u32
+pub rsnode_update::status::StatusRadio::hour_used_ms: u32
+pub rsnode_update::status::StatusRadio::max_transmission_ms: u32
+pub rsnode_update::status::StatusRadio::spreading_factor: u8
+pub rsnode_update::status::StatusRadio::tx_power_dbm: i8
+pub struct rsnode_update::status::TransferStatus
+pub rsnode_update::status::TransferStatus::delta: bool
+pub rsnode_update::status::TransferStatus::next_offset: u32
+pub rsnode_update::status::TransferStatus::total: u32
+pub struct rsnode_update::status::WifiStatus
+pub rsnode_update::status::WifiStatus::ip: [u8; 4]
+pub rsnode_update::status::WifiStatus::mode: u8
+pub rsnode_update::status::WifiStatus::service_ready: bool
+pub const rsnode_update::status::OWNER_HASH_LEN: usize
+pub const rsnode_update::status::RELEASE_VERSION_MAX: usize
+pub mod rsnode_update::upload
+pub enum rsnode_update::upload::UploadState
+pub rsnode_update::upload::UploadState::Complete
+pub rsnode_update::upload::UploadState::Sending
+pub rsnode_update::upload::UploadState::Stalled
+pub struct rsnode_update::upload::Chunk
+pub rsnode_update::upload::Chunk::ack: bool
+pub rsnode_update::upload::Chunk::len: u16
+pub rsnode_update::upload::Chunk::offset: u32
+pub struct rsnode_update::upload::Pacer
+impl rsnode_update::upload::Pacer
+pub fn rsnode_update::upload::Pacer::delay_ms(&mut self, u32, u64) -> core::option::Option<u64>
+pub fn rsnode_update::upload::Pacer::new(u16, u64) -> Self
+pub fn rsnode_update::upload::Pacer::spend(&mut self, u32, u64)
+pub fn rsnode_update::upload::Pacer::unlimited(&self) -> bool
+pub struct rsnode_update::upload::UploadConfig
+pub rsnode_update::upload::UploadConfig::ack_timeout_ms: u64
+pub rsnode_update::upload::UploadConfig::chunk_max: u16
+pub rsnode_update::upload::UploadConfig::total: u32
+pub rsnode_update::upload::UploadConfig::window: u16
+pub struct rsnode_update::upload::Uploader
+impl rsnode_update::upload::Uploader
+pub fn rsnode_update::upload::Uploader::acked(&self) -> u32
+pub fn rsnode_update::upload::Uploader::new(rsnode_update::upload::UploadConfig, u32) -> Self
+pub fn rsnode_update::upload::Uploader::next(&mut self, u64) -> core::option::Option<rsnode_update::upload::Chunk>
+pub fn rsnode_update::upload::Uploader::next_with_ack(&mut self, u64, bool) -> core::option::Option<rsnode_update::upload::Chunk>
+pub fn rsnode_update::upload::Uploader::on_ack(&mut self, u32, u64)
+pub fn rsnode_update::upload::Uploader::on_gap(&mut self, u32, u64)
+pub fn rsnode_update::upload::Uploader::state(&self) -> rsnode_update::upload::UploadState
+pub fn rsnode_update::upload::Uploader::wake_at(&self) -> core::option::Option<u64>
+pub const rsnode_update::upload::UPLOAD_RETRIES_MAX: u32

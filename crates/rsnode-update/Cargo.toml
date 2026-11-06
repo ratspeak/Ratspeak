@@ -1,0 +1,16 @@
+[package]
+name = "rsnode-update"
+description = "rsNode firmware-transfer wire formats: Link command framing, status, .rsota manifests and RSDP deltas"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-or-later"
+# Self-contained: firmware outside this workspace depends on it by path.
+rust-version = "1.85"
+publish = false
+
+[features]
+# Patch creation (`delta::create`) for hosts; the rest never allocates.
+alloc = []
+
+[lints.rust]
+unsafe_code = "forbid"

@@ -62,6 +62,15 @@
       "snapshot": "api/snapshots/ratspeak.txt",
       "itemCount": 2,
       "sha256": "034278ac95cbe749a710332e76ec105d2188a36da147738f9f852517872f38d6"
+    },
+    {
+      "name": "rsnode-update",
+      "manifestPath": "Cargo.toml",
+      "tier": "provisional",
+      "compatibility": "reviewed-snapshot",
+      "snapshot": "api/snapshots/rsnode-update.txt",
+      "itemCount": 228,
+      "sha256": "398e7f3bc8ca2614120fd1916788092a90838dc3efc18d8a8902c3072c473bee"
     }
   ]
 }

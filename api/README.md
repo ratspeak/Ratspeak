@@ -1,7 +1,7 @@
 # Rust API
 
-Ratspeak is an application, not a reusable Rust SDK. Its five Rust library
-packages remain application-internal and `publish = false`. Their public items
+Ratspeak is an application, not a reusable Rust SDK. Its five application
+library packages remain application-internal and `publish = false`. Their public items
 coordinate workspace crates, Tauri integration, tests, and platform shells;
 they are not a third-party SemVer promise.
 
@@ -51,6 +51,11 @@ before deliberately restored identities are accepted.
 - `ratspeak-tauri` binds runtime behavior to Tauri commands and events; and
 - the standalone `ratspeak` shell exposes the application entry point.
 
+`rsnode-update` is the exception: the rsNode firmware-transfer wire formats,
+shared with the rsNode firmware and `rsnode-client`. It is `no_std`, keeps its
+own MSRV (Rust 1.85) and manifest fields so firmware can depend on it by path,
+and is tiered `provisional`: its API grows by addition.
+
 ## Compatibility checks
 
 The `api/` directory contains the evidence used by CI:
@@ -82,4 +87,5 @@ checks retain the historical baseline.
 
 Removals are accepted only for packages explicitly classified as application-internal
 and governed by a reviewed snapshot; reusable/public packages remain closed to
-removals.
+removals. A package added after the compatibility floor is compared against an
+empty API.

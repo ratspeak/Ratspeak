@@ -1628,6 +1628,28 @@
           "sourceKind": "registry"
         }
       ]
+    },
+    {
+      "name": "rsnode-update",
+      "version": "0.1.0",
+      "rustVersion": "1.85",
+      "edition": "2024",
+      "features": {
+        "alloc": []
+      },
+      "targets": [
+        {
+          "name": "rsnode_update",
+          "kind": [
+            "lib"
+          ],
+          "crateTypes": [
+            "lib"
+          ],
+          "requiredFeatures": []
+        }
+      ],
+      "dependencies": []
     }
   ]
 }

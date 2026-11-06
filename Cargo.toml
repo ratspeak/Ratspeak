@@ -6,6 +6,7 @@ members = [
     "crates/ratspeak-db",
     "crates/ratspeak-runtime",
     "crates/ratspeak-tauri",
+    "crates/rsnode-update",
 ]
 
 [workspace.package]

@@ -68,9 +68,8 @@ def main() -> None:
     for package in ledger["packages"]:
         path = package["snapshot"]
         floor_path = floor_snapshots.get(package["name"])
-        if not isinstance(floor_path, str):
-            fail(f"{package['name']} is absent from the compatibility floor")
-        before = set(git_show(floor, floor_path).splitlines())
+        # A package added after the floor has no prior API to remove.
+        before = set(git_show(floor, floor_path).splitlines()) if isinstance(floor_path, str) else set()
         after = set((ROOT / path).read_text(encoding="utf-8").splitlines())
         added = sorted(after - before)
         removed = sorted(before - after)
