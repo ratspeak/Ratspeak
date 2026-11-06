@@ -7,7 +7,6 @@
 //! restarts; the node itself resumes a transfer from its `ota.begin` offset.
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -44,41 +43,22 @@ const WINDOW_LINK: u16 = 8;
 /// `status` path interface id for LoRa.
 const INTERFACE_LORA: u8 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum LinkError {
-    #[error("{0}")]
-    Lost(String),
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LinkError {
+    Lost,
     /// The identity that owns this transfer is no longer active.
-    #[error("the identity is no longer active")]
     Suspended,
 }
 
-/// An identified Link to `rsnode.manage` that carries command plaintexts.
-pub trait ManageLink: Send {
-    fn send(&mut self, plaintext: Vec<u8>) -> impl Future<Output = Result<(), LinkError>> + Send;
-    /// The next plaintext from the node, or `None` once `timeout` passes.
-    fn recv(
-        &mut self,
-        timeout: Duration,
-    ) -> impl Future<Output = Result<Option<Vec<u8>>, LinkError>> + Send;
-    fn close(&mut self) -> impl Future<Output = ()> + Send;
-}
-
-/// Opens Links to one node. Each call is a fresh Link, identified as the manager.
-pub trait ManageConnector: Send + Sync {
-    type Link: ManageLink;
-    fn connect(&self) -> impl Future<Output = Result<Self::Link, LinkError>> + Send;
-}
-
 /// A parsed `.rsota`: the 128-byte manifest, then its image. The node checks the signature.
-pub struct Bundle {
-    pub manifest_bytes: [u8; OTA_MANIFEST_LEN],
-    pub manifest: OtaManifest,
-    pub image: Vec<u8>,
+struct Bundle {
+    manifest_bytes: [u8; OTA_MANIFEST_LEN],
+    manifest: OtaManifest,
+    image: Vec<u8>,
 }
 
 impl Bundle {
-    pub fn parse(mut bytes: Vec<u8>) -> Result<Self, String> {
+    fn parse(mut bytes: Vec<u8>) -> Result<Self, String> {
         if bytes.len() <= OTA_MANIFEST_LEN {
             return Err("This is not an rsNode update file.".into());
         }
@@ -100,18 +80,18 @@ impl Bundle {
         })
     }
 
-    pub fn image_sha256_hex(&self) -> String {
+    fn image_sha256_hex(&self) -> String {
         hex::encode(self.manifest.image_sha256)
     }
 
-    pub fn release(&self) -> String {
+    fn release(&self) -> String {
         let v = self.manifest.firmware_version;
         format!("{}.{}.{}", v.major, v.minor, v.patch)
     }
 
     /// Preflight against fresh status: board, sequence, a trial in progress, slot size, and a
     /// previous rollback of this very image.
-    pub fn check(&self, status: &ManageStatus) -> Result<(), String> {
+    fn check(&self, status: &ManageStatus) -> Result<(), String> {
         let manifest = &self.manifest;
         if status.board.is_some_and(|board| board != manifest.target) {
             return Err("This update is for a different board.".into());
@@ -136,7 +116,7 @@ impl Bundle {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Phase {
+enum Phase {
     /// Sending the image; resumable from the node's offset.
     Transfer,
     /// Finished; waiting for the node to confirm or roll back.
@@ -161,7 +141,7 @@ impl Phase {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Stage {
+enum Stage {
     Connecting,
     Sending,
     Finishing,
@@ -172,7 +152,7 @@ pub enum Stage {
 }
 
 impl Stage {
-    pub fn as_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Self::Connecting => "connecting",
             Self::Sending => "sending",
@@ -185,17 +165,17 @@ impl Stage {
 }
 
 #[derive(Clone, Debug)]
-pub struct Progress {
-    pub stage: Stage,
-    pub phase: Phase,
-    pub sent: u32,
-    pub total: u32,
+struct Progress {
+    stage: Stage,
+    phase: Phase,
+    sent: u32,
+    total: u32,
     /// Status before the transfer; set once it is read.
-    pub baseline: Option<ManageStatus>,
+    baseline: Option<ManageStatus>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Outcome {
+enum Outcome {
     Installed(String),
     RolledBack(String),
     Failed(String),
@@ -208,21 +188,14 @@ pub enum Outcome {
 
 /// Where a run starts: fresh, or from a persisted phase and baseline.
 #[derive(Clone, Copy, Debug)]
-pub struct Resume {
-    pub phase: Phase,
-    pub baseline: Option<ManageStatus>,
-}
-
-impl Resume {
-    pub const FRESH: Self = Self {
-        phase: Phase::Transfer,
-        baseline: None,
-    };
+struct Resume {
+    phase: Phase,
+    baseline: Option<ManageStatus>,
 }
 
 /// What a run's owner asks of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Control {
+enum Control {
     Run,
     Cancel,
     /// Stop without a verdict; the persisted phase resumes it later.
@@ -244,14 +217,14 @@ impl From<LinkError> for StepError {
 }
 
 /// Sequential commands over one Link, correlated by request ID.
-struct Client<L> {
-    link: L,
+struct Client {
+    link: NodeLink,
     next_id: u32,
     rtt_ms: u64,
 }
 
-impl<L: ManageLink> Client<L> {
-    fn new(link: L) -> Self {
+impl Client {
+    fn new(link: NodeLink) -> Self {
         Self {
             link,
             next_id: 1,
@@ -271,8 +244,8 @@ impl<L: ManageLink> Client<L> {
 
     async fn send(&mut self, id: u32, command: Command<'_>) -> Result<(), LinkError> {
         let mut out = [0u8; COMMAND_MAX_LEN];
-        let len = encode_request(&Request { id, command }, &mut out)
-            .map_err(|_| LinkError::Lost("command does not fit".into()))?;
+        let len =
+            encode_request(&Request { id, command }, &mut out).map_err(|_| LinkError::Lost)?;
         self.link.send(out[..len].to_vec()).await
     }
 
@@ -288,10 +261,10 @@ impl<L: ManageLink> Client<L> {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(LinkError::Lost("the node did not answer".into()));
+                return Err(LinkError::Lost);
             }
             let Some(reply) = self.link.recv(remaining).await? else {
-                return Err(LinkError::Lost("the node did not answer".into()));
+                return Err(LinkError::Lost);
             };
             if let Some((reply_id, result, body)) = decode_response(&reply)
                 && reply_id == id
@@ -409,14 +382,16 @@ fn chunk_wire_len(data_len: usize) -> usize {
     19 + 48 + (plaintext / 16 + 1) * 16
 }
 
-/// One update run. Generic over the Link so it is transport-agnostic, like `rsnode-client`.
-pub struct Run<'a, C: ManageConnector> {
-    pub connector: &'a C,
-    pub bundle: &'a Bundle,
-    pub control: watch::Receiver<Control>,
+/// One update run over fresh Links to the node.
+struct Run<'a> {
+    connector: &'a NodeConnector,
+    bundle: &'a Bundle,
+    control: watch::Receiver<Control>,
+    /// The node is known to take the transfer: its card says so, or it answered `status`.
+    proven: bool,
 }
 
-impl<C: ManageConnector> Run<'_, C> {
+impl Run<'_> {
     fn stopped(&self) -> Option<Outcome> {
         match *self.control.borrow() {
             Control::Run => None,
@@ -438,7 +413,7 @@ impl<C: ManageConnector> Run<'_, C> {
         self.stopped().map_or(Ok(()), Err)
     }
 
-    pub async fn execute(
+    async fn execute(
         mut self,
         resume: Resume,
         report: &mut (dyn FnMut(Progress) + Send),
@@ -501,10 +476,16 @@ impl<C: ManageConnector> Run<'_, C> {
             };
             match attempt {
                 Ok(()) => return Ok(()),
+                // A node never shown to take the transfer gets no retries.
+                Err(StepError::Link(LinkError::Lost)) if !self.proven => {
+                    return Err(Outcome::Failed(
+                        "The node did not answer. It may not take updates over the network.".into(),
+                    ));
+                }
                 Err(StepError::Stopped(outcome)) => return Err(outcome),
                 Err(StepError::Refused(reason)) => return Err(Outcome::Failed(reason)),
                 Err(StepError::Node(CommandResult::Busy))
-                | Err(StepError::Link(LinkError::Lost(_))) => {}
+                | Err(StepError::Link(LinkError::Lost)) => {}
                 Err(StepError::Node(result)) => return Err(Outcome::Failed(node_refusal(result))),
                 Err(StepError::Link(LinkError::Suspended)) => return Err(Outcome::Suspended),
             }
@@ -522,7 +503,7 @@ impl<C: ManageConnector> Run<'_, C> {
 
     async fn attempt(
         &mut self,
-        client: &mut Client<C::Link>,
+        client: &mut Client,
         baseline: &mut Option<ManageStatus>,
         best: &mut u32,
         report: &mut (dyn FnMut(Progress) + Send),
@@ -531,6 +512,10 @@ impl<C: ManageConnector> Run<'_, C> {
         let manifest = &bundle.manifest;
         let total = bundle.image.len() as u32;
         let status = client.status().await?;
+        if !self.proven {
+            self.proven = true;
+            self.connector.record_update_capable().await;
+        }
         match baseline {
             None => {
                 bundle.check(&status).map_err(StepError::Refused)?;
@@ -631,9 +616,7 @@ impl<C: ManageConnector> Run<'_, C> {
             match uploader.state() {
                 UploadState::Complete => break,
                 UploadState::Stalled => {
-                    return Err(StepError::Link(LinkError::Lost(
-                        "chunks went unanswered".into(),
-                    )));
+                    return Err(StepError::Link(LinkError::Lost));
                 }
                 UploadState::Sending => {}
             }
@@ -718,7 +701,7 @@ impl<C: ManageConnector> Run<'_, C> {
         // failure: status after the reboot decides.
         let finish_timeout = client.timeout().max(Duration::from_secs(60));
         match client.call(Command::OtaFinish, finish_timeout).await {
-            Ok((CommandResult::Ok, _)) | Err(LinkError::Lost(_)) => Ok(()),
+            Ok((CommandResult::Ok, _)) | Err(LinkError::Lost) => Ok(()),
             Ok((result, _)) => Err(StepError::Node(result)),
             Err(LinkError::Suspended) => Err(StepError::Link(LinkError::Suspended)),
         }
@@ -804,7 +787,8 @@ fn decode_baseline(text: &str) -> Option<ManageStatus> {
 // --- Service: registry, persistence, Reticulum Links, events ---
 
 struct Active {
-    image_sha256: String,
+    /// Tells this run apart from a later one for the same node.
+    run: u64,
     control: watch::Sender<Control>,
     last: Value,
 }
@@ -813,6 +797,7 @@ struct Active {
 #[derive(Default)]
 pub struct Registry {
     active: Mutex<HashMap<(String, String), Active>>,
+    runs: std::sync::atomic::AtomicU64,
 }
 
 impl Registry {
@@ -820,6 +805,14 @@ impl Registry {
         self.active
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Remove the entry only while it is still `run`'s.
+    fn finish(&self, key: &(String, String), run: u64) {
+        let mut active = self.lock();
+        if active.get(key).is_some_and(|entry| entry.run == run) {
+            active.remove(key);
+        }
     }
 
     /// Stop every run without a verdict; each resumes from its persisted phase.
@@ -841,7 +834,7 @@ pub enum StartError {
 }
 
 /// The node's management destination for its identity public key.
-pub fn manage_destination(public_key: &[u8; 64]) -> Option<[u8; 16]> {
+fn manage_destination(public_key: &[u8; 64]) -> Option<[u8; 16]> {
     let identity = rns_identity::identity::Identity::from_public_key(public_key).ok()?;
     Some(
         rns_identity::destination::Destination::hash_from_name_and_identity(
@@ -849,6 +842,17 @@ pub fn manage_destination(public_key: &[u8; 64]) -> Option<[u8; 16]> {
             Some(&identity.hash),
         ),
     )
+}
+
+/// Accepts the firmware transfer on `rsnode.manage`; from the node's card, or learned on first
+/// `status`.
+const CAP_UPDATE: &str = "rsnode.update";
+
+fn contact_caps(state: &AppState, identity_id: &str, contact: &str) -> Vec<String> {
+    db::get_contact(&state.db, contact, identity_id)
+        .filter(|row| row["kind"] == db::CONTACT_KIND_DEVICE)
+        .and_then(|row| serde_json::from_value(row["caps"].clone()).ok())
+        .unwrap_or_default()
 }
 
 fn contact_public_key(state: &AppState, identity_id: &str, contact: &str) -> Option<[u8; 64]> {
@@ -932,6 +936,16 @@ pub async fn start(
         return Err(StartError::Conflict("no active identity".into()));
     }
     let contact = contact.to_ascii_lowercase();
+    // Offered to rsNode devices; one without the update cap proves it with a fresh `status`.
+    let caps = contact_caps(state, &identity_id, &contact);
+    if !caps
+        .iter()
+        .any(|cap| cap == CAP_UPDATE || cap == db::CONTACT_CAP_RSNODE)
+    {
+        return Err(StartError::Invalid(
+            "Firmware updates are for rsNode devices.".into(),
+        ));
+    }
     let bundle = Bundle::parse(bytes.clone()).map_err(StartError::Invalid)?;
     let public_key = contact_public_key(state, &identity_id, &contact).ok_or_else(|| {
         StartError::Unavailable("This node's key is not known yet. Add its contact card.".into())
@@ -1080,6 +1094,10 @@ fn spawn(
         return;
     };
     let (control_tx, control_rx) = watch::channel(Control::Run);
+    let run = state
+        .rsnode_updates
+        .runs
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let first = progress_payload(
         &row.contact,
         "connecting",
@@ -1091,7 +1109,7 @@ fn spawn(
     state.rsnode_updates.lock().insert(
         (identity_id.clone(), row.contact.clone()),
         Active {
-            image_sha256: row.image_sha256.clone(),
+            run,
             control: control_tx,
             last: first.clone(),
         },
@@ -1102,37 +1120,32 @@ fn spawn(
         let connector = NodeConnector {
             state: Arc::clone(&state),
             identity_id: identity_id.clone(),
+            contact: row.contact.clone(),
             destination,
             public_key,
+            run,
         };
         let resume = Resume {
             phase: Phase::parse(&row.stage).unwrap_or(Phase::Transfer),
             baseline: row.baseline.as_deref().and_then(decode_baseline),
         };
-        drive(
-            &state,
-            &identity_id,
-            row,
-            &bundle,
-            &connector,
-            resume,
-            control_rx,
-        )
-        .await;
+        drive(&connector, row, &bundle, resume, control_rx).await;
     });
 }
 
 /// Run one update to its outcome and record it: progress events, the persisted row, the bundle
 /// file, and a note in the node's conversation.
-pub async fn drive<C: ManageConnector>(
-    state: &Arc<AppState>,
-    identity_id: &str,
+async fn drive(
+    connector: &NodeConnector,
     mut row: db::RsnodeUpdateRow,
     bundle: &Bundle,
-    connector: &C,
     resume: Resume,
     control: watch::Receiver<Control>,
 ) -> Outcome {
+    let (state, identity_id) = (&connector.state, connector.identity_id.as_str());
+    let proven = contact_caps(state, identity_id, &row.contact)
+        .iter()
+        .any(|cap| cap == CAP_UPDATE);
     let key = (identity_id.to_owned(), row.contact.clone());
     let (persist_tx, mut persist_rx) =
         tokio::sync::mpsc::unbounded_channel::<db::RsnodeUpdateRow>();
@@ -1155,7 +1168,12 @@ pub async fn drive<C: ManageConnector>(
             &row.release,
             None,
         );
-        if let Some(active) = state.rsnode_updates.lock().get_mut(&key) {
+        if let Some(active) = state
+            .rsnode_updates
+            .lock()
+            .get_mut(&key)
+            .filter(|active| active.run == connector.run)
+        {
             active.last = payload.clone();
         }
         state.emit_to_all(PROGRESS_EVENT, payload);
@@ -1177,6 +1195,7 @@ pub async fn drive<C: ManageConnector>(
         connector,
         bundle,
         control,
+        proven,
     }
     .execute(resume, &mut report)
     .await;
@@ -1198,7 +1217,7 @@ pub async fn drive<C: ManageConnector>(
         Outcome::Cancelled => ("cancelled", None, None),
         Outcome::Suspended => {
             // The run resumes from its persisted phase when this identity is live again.
-            state.rsnode_updates.lock().remove(&key);
+            state.rsnode_updates.finish(&key, connector.run);
             return outcome;
         }
         Outcome::Unconfirmed => (
@@ -1218,15 +1237,7 @@ pub async fn drive<C: ManageConnector>(
         let path = bundle_path(state, identity_id, &row.image_sha256);
         let _ = tokio::task::spawn_blocking(move || std::fs::remove_file(path)).await;
     }
-    {
-        let mut active = state.rsnode_updates.lock();
-        if active
-            .get(&key)
-            .is_some_and(|run| run.image_sha256 == row.image_sha256)
-        {
-            active.remove(&key);
-        }
-    }
+    state.rsnode_updates.finish(&key, connector.run);
     state.emit_to_all(
         PROGRESS_EVENT,
         progress_payload(
@@ -1304,20 +1315,38 @@ async fn post_note(state: &Arc<AppState>, identity_id: &str, contact: &str, text
     crate::messaging::broadcast_conversations(Arc::clone(state));
 }
 
-/// Links over the app's Reticulum runtime, identified as the identity that owns the update.
-pub struct NodeConnector {
+/// Links to the node's `rsnode.manage` over the app's Reticulum runtime, identified as the
+/// identity that owns the update.
+struct NodeConnector {
     state: Arc<AppState>,
     identity_id: String,
+    contact: String,
     destination: [u8; 16],
     public_key: [u8; 64],
+    run: u64,
 }
 
-pub struct NodeLink {
+struct NodeLink {
     session: rns_runtime::link_session::LinkSession,
 }
 
-impl ManageConnector for NodeConnector {
-    type Link = NodeLink;
+impl NodeConnector {
+    /// The node answered `status` on its management Link: it takes the transfer.
+    async fn record_update_capable(&self) {
+        let (identity_id, contact) = (self.identity_id.clone(), self.contact.clone());
+        let contacts = db::spawn_db(self.state.db.clone(), move |p| {
+            db::add_contact_cap(&p, &contact, &identity_id, CAP_UPDATE)
+                .then(|| crate::contact_list_payload(db::get_all_contacts(&p, &identity_id)))
+        })
+        .await
+        .ok()
+        .flatten();
+        if let Some(contacts) = contacts
+            && crate::helpers::active_identity_id(&self.state) == self.identity_id
+        {
+            self.state.emit_to_all("contacts_update", json!(contacts));
+        }
+    }
 
     async fn connect(&self) -> Result<NodeLink, LinkError> {
         use rns_runtime::destination_resolver::{
@@ -1330,7 +1359,7 @@ impl ManageConnector for NodeConnector {
             .read()
             .ok()
             .and_then(|rns| rns.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
-            .ok_or_else(|| LinkError::Lost("the network is not running".into()))?;
+            .ok_or(LinkError::Lost)?;
         let identity = self
             .state
             .lxmf
@@ -1346,7 +1375,7 @@ impl ManageConnector for NodeConnector {
         options.refresh_cached_path = true;
         let recalled = resolve_destination_on_transport(&transport_tx, self.destination, options)
             .await
-            .map_err(|error| LinkError::Lost(format!("no path to the node: {error}")))?;
+            .map_err(|_| LinkError::Lost)?;
         let session = LinkSession::connect(
             transport_tx,
             identity,
@@ -1361,19 +1390,19 @@ impl ManageConnector for NodeConnector {
             },
         )
         .await
-        .map_err(|error| LinkError::Lost(error.to_string()))?;
+        .map_err(|_| LinkError::Lost)?;
         Ok(NodeLink { session })
     }
 }
 
-impl ManageLink for NodeLink {
+impl NodeLink {
     async fn send(&mut self, plaintext: Vec<u8>) -> Result<(), LinkError> {
         self.session
             .handle
             .send_packet(plaintext)
             .await
             .map(drop)
-            .map_err(|error| LinkError::Lost(error.to_string()))
+            .map_err(|_| LinkError::Lost)
     }
 
     async fn recv(&mut self, timeout: Duration) -> Result<Option<Vec<u8>>, LinkError> {
@@ -1383,7 +1412,7 @@ impl ManageLink for NodeLink {
             match tokio::time::timeout_at(deadline, self.session.events.recv()).await {
                 Err(_) => return Ok(None),
                 Ok(None) | Ok(Some(LinkSessionEvent::Closed { .. })) => {
-                    return Err(LinkError::Lost("the Link closed".into()));
+                    return Err(LinkError::Lost);
                 }
                 Ok(Some(LinkSessionEvent::Packet { data, .. })) => return Ok(Some(data)),
                 Ok(Some(_)) => {}
@@ -1413,5 +1442,44 @@ mod tests {
         assert_eq!(lora_airtime_ms(&radio, 19), 67);
         assert!(lora_airtime_ms(&radio, 400) > lora_airtime_ms(&radio, 254));
         assert_eq!(chunk_wire_len(420), 19 + 48 + 432);
+    }
+
+    fn bundle_bytes(image: &[u8]) -> Vec<u8> {
+        let manifest = OtaManifest {
+            target: rsnode_update::manifest::BoardTarget {
+                platform: 0x80,
+                mcu: 0x81,
+                board: 0x3A,
+            },
+            sequence: 8,
+            image_len: image.len() as u32,
+            firmware_version: rsnode_update::manifest::FirmwareVersion {
+                major: 1,
+                minor: 0,
+                patch: 1,
+            },
+            image_sha256: rns_crypto::sha::sha256(image),
+            signature: [0x55; 64],
+        };
+        let mut bytes = manifest.encode().to_vec();
+        bytes.extend_from_slice(image);
+        bytes
+    }
+
+    #[test]
+    fn damaged_and_foreign_files_are_not_bundles() {
+        let good = bundle_bytes(&[7; 1_000]);
+        let bundle = Bundle::parse(good.clone()).unwrap();
+        assert_eq!(bundle.release(), "1.0.1");
+        let mut damaged = good.clone();
+        *damaged.last_mut().unwrap() ^= 1;
+        assert_eq!(
+            Bundle::parse(damaged).err().as_deref(),
+            Some("This update file is damaged.")
+        );
+        assert!(Bundle::parse(b"hello".to_vec()).is_err());
+        let mut foreign = good;
+        foreign[0] = b'X';
+        assert!(Bundle::parse(foreign).is_err());
     }
 }

@@ -2765,6 +2765,33 @@ pub fn mark_contact_rsnode_device(pool: &DbPool, dest_hash: &str, identity_id: &
     .is_ok_and(|changed| changed > 0)
 }
 
+/// Add one capability to an existing device contact; true when that changed it.
+pub fn add_contact_cap(pool: &DbPool, dest_hash: &str, identity_id: &str, cap: &str) -> bool {
+    let Ok(conn) = pool.get() else {
+        return false;
+    };
+    let Ok(Some(caps)) = conn
+        .query_row(
+            "SELECT caps FROM contacts WHERE dest_hash = ?1 AND identity_id = ?2 AND kind = ?3",
+            params![dest_hash, identity_id, CONTACT_KIND_DEVICE],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+    else {
+        return false;
+    };
+    let mut caps = parse_contact_caps(&caps);
+    if caps.iter().any(|known| known == cap) {
+        return false;
+    }
+    caps.push(cap.to_owned());
+    conn.execute(
+        "UPDATE contacts SET caps = ?1 WHERE dest_hash = ?2 AND identity_id = ?3",
+        params![caps.join(","), dest_hash, identity_id],
+    )
+    .is_ok_and(|changed| changed > 0)
+}
+
 /// Store a message's decoded FIELD_RESULTS (a JSON object).
 pub fn save_message_results(
     pool: &DbPool,
@@ -12716,6 +12743,13 @@ mod migration_tests {
         assert_eq!(
             all[0]["caps"],
             serde_json::json!(["rsnode.update", "future", "rsnode"])
+        );
+        assert!(add_contact_cap(&pool, "node", "identity", "x.y"));
+        assert!(!add_contact_cap(&pool, "node", "identity", "x.y"));
+        save_contact(&pool, "person", Some("P"), "trusted", "identity");
+        assert!(
+            !add_contact_cap(&pool, "person", "identity", "x.y"),
+            "devices only"
         );
         // A later card is authoritative for kind and caps.
         assert!(set_contact_kind(&pool, "node", "identity", "person", &[]));

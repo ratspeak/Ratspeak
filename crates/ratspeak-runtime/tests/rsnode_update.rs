@@ -1,18 +1,31 @@
-//! The rsNode update service against an in-process node built from `rsnode-update`'s wire types:
-//! it answers status, begin, chunks and finish, loses a chunk, drops the Link, restarts into
-//! the new image or rolls back. Clocks are paused, so waits cost nothing.
+//! rsNode firmware updates through the real stack: the app's Reticulum runtime and a second
+//! Reticulum instance joined over loopback TCP. The node side is a test responder on
+//! `rsnode.manage` that answers with `rsnode-update`'s wire types: status, begin with a resume
+//! offset, chunks (losing one to force a Gap), finish, then a restart into the new image or a
+//! rollback. The app side runs the production service end to end, from `start` to the note.
 
-use std::collections::VecDeque;
+use std::collections::HashSet;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ratspeak_runtime::config::DashboardConfig;
 use ratspeak_runtime::db;
-use ratspeak_runtime::rsnode::update::{
-    self, Bundle, Control, LinkError, ManageConnector, ManageLink, Outcome, Phase, Progress,
-    Resume, Run,
-};
+use ratspeak_runtime::lxmf::LxmfManager;
+use ratspeak_runtime::rns::RnsManager;
+use ratspeak_runtime::rsnode::update;
 use ratspeak_runtime::state::AppState;
+use rns_identity::destination::Destination;
+use rns_identity::identity::Identity;
+use rns_link::link::CloseReason;
+use rns_runtime::destination_resolver::{
+    DestinationResolveOptions, resolve_destination_on_transport,
+};
+use rns_runtime::destination_runtime::{
+    DestinationHandle, DestinationRuntimeOptions, RegisteredDestination,
+};
+use rns_runtime::lifecycle::ShutdownSignal;
+use rns_runtime::reticulum::ReticulumHandle;
 use rsnode_update::frame::{
     COMMAND_MAX_LEN, Command, CommandResult, OTA_CHUNK_DATA_MAX, decode_request, encode_offset,
     encode_response_header,
@@ -22,24 +35,23 @@ use rsnode_update::status::{
     LastUpdateStatus, ManageStatus, ReleaseVersion, RunningImage, SessionPath, StatusRadio,
     UpdateSource,
 };
-use tokio::sync::watch;
+use serde_json::Value;
 
 const BOARD: BoardTarget = BoardTarget {
     platform: 0x80,
     mcu: 0x81,
     board: 0x3A,
 };
-const OLD_SEQUENCE: u32 = 7;
-const NEW_SEQUENCE: u32 = 8;
+const WAIT: Duration = Duration::from_secs(120);
 
 fn image(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i * 31 % 251) as u8).collect()
 }
 
-fn bundle_bytes(target: BoardTarget, image: &[u8]) -> Vec<u8> {
+fn bundle(target: BoardTarget, image: &[u8]) -> Vec<u8> {
     let manifest = OtaManifest {
         target,
-        sequence: NEW_SEQUENCE,
+        sequence: 8,
         image_len: image.len() as u32,
         firmware_version: FirmwareVersion {
             major: 1,
@@ -60,31 +72,36 @@ enum Boot {
     RollBack,
 }
 
-/// What the node holds, shared by every Link to it.
+/// What the node holds across its Links.
 struct Node {
     status: ManageStatus,
     boot: Boot,
     transfer: Option<(OtaManifest, Vec<u8>)>,
     /// Lose the chunk at this offset once.
     lose_at: Option<u32>,
-    /// Drop the Link once this many bytes are in.
+    /// Close the Link once this many bytes are in.
     drop_after: Option<u32>,
     /// Ignore chunks once this many bytes are in.
     mute_after: Option<u32>,
-    /// Links refused while the node restarts.
-    restarting: u32,
+    /// Answer `status` with Unsupported, as a node without the transfer would.
+    unsupported: bool,
+    restarting: bool,
+    links: HashSet<[u8; 16]>,
     gaps_sent: u32,
-    links: u32,
-    aborted: bool,
-    /// Offsets of every chunk received, in order.
-    chunks: Vec<u32>,
     begins: Vec<u32>,
+    aborted: bool,
+}
+
+enum After {
+    Nothing,
+    DropLink,
+    Restart,
 }
 
 impl Node {
-    fn new(boot: Boot) -> Arc<Mutex<Self>> {
+    fn new(boot: Boot) -> Self {
         let old = image(3_000);
-        Arc::new(Mutex::new(Self {
+        Self {
             status: ManageStatus {
                 board: Some(BOARD),
                 firmware: Some(FirmwareVersion {
@@ -92,7 +109,7 @@ impl Node {
                     minor: 0,
                     patch: 0,
                 }),
-                ota_accepted_sequence: OLD_SEQUENCE,
+                ota_accepted_sequence: 7,
                 ota_slot_len: 1 << 20,
                 uptime_s: 5_000,
                 path: Some(SessionPath {
@@ -111,37 +128,51 @@ impl Node {
             lose_at: None,
             drop_after: None,
             mute_after: None,
-            restarting: 0,
+            unsupported: false,
+            restarting: false,
+            links: HashSet::new(),
             gaps_sent: 0,
-            links: 0,
-            aborted: false,
-            chunks: Vec::new(),
             begins: Vec::new(),
-        }))
+            aborted: false,
+        }
     }
 
-    /// Answer one request; `None` when it gets no reply.
-    fn handle(&mut self, request: &[u8]) -> Option<Vec<u8>> {
-        let request = decode_request(request).ok()?;
-        let mut out = vec![0u8; COMMAND_MAX_LEN];
-        let reply = |result: CommandResult, body: &[u8], out: &mut Vec<u8>| {
-            let len = encode_response_header(request.id, result, out).unwrap();
+    fn held(&self) -> u32 {
+        self.transfer
+            .as_ref()
+            .map_or(0, |(_, bytes)| bytes.len() as u32)
+    }
+
+    fn handle(&mut self, request: &[u8]) -> (Option<Vec<u8>>, After) {
+        let Ok(request) = decode_request(request) else {
+            return (None, After::Nothing);
+        };
+        let reply = |result: CommandResult, body: &[u8]| {
+            let mut out = vec![0u8; COMMAND_MAX_LEN];
+            let len = encode_response_header(request.id, result, &mut out).unwrap();
             out.truncate(len);
             out.extend_from_slice(body);
-            Some(out.clone())
+            Some(out)
         };
-        let mut body = [0u8; 8];
+        let offset = |next: u32, chunk_max: Option<u16>| {
+            let mut body = [0u8; 6];
+            let len = encode_offset(next, chunk_max, &mut body).unwrap();
+            body[..len].to_vec()
+        };
         match request.command {
+            Command::Status if self.unsupported => {
+                (reply(CommandResult::Unsupported, &[]), After::Nothing)
+            }
             Command::Status => {
                 let mut tlv = [0u8; 400];
                 let len = self.status.encode(&mut tlv).unwrap();
-                reply(CommandResult::Ok, &tlv[..len], &mut out)
+                (reply(CommandResult::Ok, &tlv[..len]), After::Nothing)
             }
             Command::OtaBegin { manifest, delta } => {
                 assert!(delta.is_none(), "full images only");
                 let manifest = OtaManifest::decode(manifest).unwrap();
                 if manifest.target != BOARD {
-                    return reply(CommandResult::Rejected, &[], &mut out);
+                    return (reply(CommandResult::Rejected, &[]), After::Nothing);
                 }
                 let resumed = self
                     .transfer
@@ -153,55 +184,67 @@ impl Node {
                     0
                 });
                 self.begins.push(from);
-                let len = encode_offset(from, Some(OTA_CHUNK_DATA_MAX as u16), &mut body).unwrap();
-                reply(CommandResult::Ok, &body[..len], &mut out)
+                let body = offset(from, Some(OTA_CHUNK_DATA_MAX as u16));
+                (reply(CommandResult::Ok, &body), After::Nothing)
             }
-            Command::OtaChunk { ack, offset, data } => {
-                self.chunks.push(offset);
-                if self.lose_at == Some(offset) {
+            Command::OtaChunk {
+                ack,
+                offset: at,
+                data,
+            } => {
+                if self.lose_at == Some(at) {
                     self.lose_at = None;
-                    return None;
+                    return (None, After::Nothing);
                 }
-                let (_, held) = self.transfer.as_mut()?;
-                let next = held.len() as u32;
+                let next = self.held();
                 if self.mute_after.is_some_and(|after| next >= after) {
-                    return None;
+                    return (None, After::Nothing);
                 }
-                if offset > next {
+                let Some((_, held)) = self.transfer.as_mut() else {
+                    return (None, After::Nothing);
+                };
+                if at > next {
                     self.gaps_sent += 1;
-                    let len = encode_offset(next, None, &mut body).unwrap();
-                    return reply(CommandResult::Gap, &body[..len], &mut out);
+                    return (
+                        reply(CommandResult::Gap, &offset(next, None)),
+                        After::Nothing,
+                    );
                 }
-                let skip = (next - offset) as usize;
+                let skip = (next - at) as usize;
                 if skip < data.len() {
                     held.extend_from_slice(&data[skip..]);
                 }
-                let next = held.len() as u32;
-                ack.then(|| {
-                    let len = encode_offset(next, None, &mut body).unwrap();
-                    reply(CommandResult::Ok, &body[..len], &mut out)
-                })
-                .flatten()
+                let next = self.held();
+                let answer = ack
+                    .then(|| reply(CommandResult::Ok, &offset(next, None)))
+                    .flatten();
+                if self.drop_after.is_some_and(|after| next >= after) {
+                    self.drop_after = None;
+                    return (answer, After::DropLink);
+                }
+                (answer, After::Nothing)
             }
             Command::OtaFinish => {
-                let (manifest, held) = self.transfer.take()?;
+                let Some((manifest, held)) = self.transfer.take() else {
+                    return (reply(CommandResult::Invalid, &[]), After::Nothing);
+                };
                 assert_eq!(rns_crypto::sha::sha256(&held), manifest.image_sha256);
-                self.restart(manifest);
-                let len = encode_offset(manifest.sequence, None, &mut body).unwrap();
-                reply(CommandResult::Ok, &body[..len], &mut out)
+                self.boot_into(manifest);
+                let body = offset(manifest.sequence, None);
+                (reply(CommandResult::Ok, &body), After::Restart)
             }
             Command::OtaAbort => {
                 self.transfer = None;
                 self.aborted = true;
-                reply(CommandResult::Ok, &[], &mut out)
+                (reply(CommandResult::Ok, &[]), After::Nothing)
             }
         }
     }
 
-    fn restart(&mut self, manifest: OtaManifest) {
-        self.restarting = 2;
-        self.status.uptime_s = 12;
+    /// The status the node reports once it is back.
+    fn boot_into(&mut self, manifest: OtaManifest) {
         let running = self.boot == Boot::Install;
+        self.status.uptime_s = 12;
         self.status.last_update = Some(LastUpdateStatus {
             sequence: manifest.sequence,
             source: UpdateSource::Link,
@@ -219,136 +262,292 @@ impl Node {
     }
 }
 
-struct FakeConnector {
-    node: Arc<Mutex<Node>>,
-    /// Links this connector opens before reporting its identity gone.
-    links_before_suspend: Option<u32>,
+/// Answer `rsnode.manage` Links until the test ends.
+fn serve(mut registration: RegisteredDestination, node: Arc<Mutex<Node>>) {
+    tokio::spawn(async move {
+        let handle = registration.handle.clone();
+        loop {
+            tokio::select! {
+                Some(link) = registration.events.links_established.recv() => {
+                    let restarting = {
+                        let mut node = node.lock().unwrap();
+                        node.links.insert(link);
+                        node.restarting
+                    };
+                    if restarting {
+                        let _ = handle.close_link(link, CloseReason::DestinationClosed, true).await;
+                    }
+                }
+                Some(link) = registration.events.links_closed.recv() => {
+                    node.lock().unwrap().links.remove(&link);
+                }
+                Some((data, link)) = registration.events.link_packets.recv() => {
+                    let (reply, after) = node.lock().unwrap().handle(&data);
+                    if let Some(reply) = reply {
+                        let _ = handle.send_link_packet(link, reply).await;
+                    }
+                    match after {
+                        After::Nothing => {}
+                        After::DropLink => {
+                            let _ = handle.close_link(link, CloseReason::DestinationClosed, true).await;
+                        }
+                        After::Restart => restart(&handle, &node),
+                    }
+                }
+                else => break,
+            }
+        }
+    });
 }
 
-impl FakeConnector {
-    fn new(node: &Arc<Mutex<Node>>) -> Self {
-        Self {
-            node: Arc::clone(node),
-            links_before_suspend: None,
+/// Drop every Link, refuse new ones for a moment, then come back.
+fn restart(handle: &DestinationHandle, node: &Arc<Mutex<Node>>) {
+    let (handle, node) = (handle.clone(), Arc::clone(node));
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let links: Vec<[u8; 16]> = {
+            let mut node = node.lock().unwrap();
+            node.restarting = true;
+            node.links.iter().copied().collect()
+        };
+        for link in links {
+            let _ = handle
+                .close_link(link, CloseReason::DestinationClosed, true)
+                .await;
         }
-    }
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        node.lock().unwrap().restarting = false;
+    });
 }
 
-struct FakeLink {
-    node: Arc<Mutex<Node>>,
-    inbox: VecDeque<Vec<u8>>,
-    dead: bool,
-}
+#[derive(Default)]
+struct Recorder(Mutex<Vec<(String, Value)>>);
 
-impl ManageConnector for FakeConnector {
-    type Link = FakeLink;
-
-    async fn connect(&self) -> Result<FakeLink, LinkError> {
-        let mut node = self.node.lock().unwrap();
-        if self
-            .links_before_suspend
-            .is_some_and(|max| node.links >= max)
-        {
-            return Err(LinkError::Suspended);
-        }
-        if node.restarting > 0 {
-            node.restarting -= 1;
-            return Err(LinkError::Lost("no path to the node".into()));
-        }
-        node.links += 1;
-        Ok(FakeLink {
-            node: Arc::clone(&self.node),
-            inbox: VecDeque::new(),
-            dead: false,
-        })
-    }
-}
-
-impl ManageLink for FakeLink {
-    async fn send(&mut self, plaintext: Vec<u8>) -> Result<(), LinkError> {
-        if self.dead {
-            return Err(LinkError::Lost("the Link closed".into()));
-        }
-        let mut node = self.node.lock().unwrap();
-        if let Some(reply) = node.handle(&plaintext) {
-            self.inbox.push_back(reply);
-        }
-        let held = node
-            .transfer
-            .as_ref()
-            .map_or(0, |(_, bytes)| bytes.len() as u32);
-        if node.drop_after.is_some_and(|after| held >= after) {
-            node.drop_after = None;
-            self.dead = true;
-        }
+impl ratspeak_core::Emitter for Recorder {
+    fn try_emit(&self, event: &str, payload: Value) -> Result<(), ratspeak_core::EmitError> {
+        self.0.lock().unwrap().push((event.to_owned(), payload));
         Ok(())
     }
-
-    async fn recv(&mut self, timeout: Duration) -> Result<Option<Vec<u8>>, LinkError> {
-        if self.dead {
-            return Err(LinkError::Lost("the Link closed".into()));
-        }
-        if let Some(reply) = self.inbox.pop_front() {
-            return Ok(Some(reply));
-        }
-        tokio::time::sleep(timeout).await;
-        Ok(None)
-    }
-
-    async fn close(&mut self) {}
 }
 
-async fn run(
-    connector: &FakeConnector,
-    bundle: &Bundle,
-    resume: Resume,
-    control: watch::Receiver<Control>,
-) -> (Outcome, Vec<Progress>) {
-    let mut seen = Vec::new();
-    let outcome = Run {
-        connector,
-        bundle,
-        control,
+impl Recorder {
+    fn progress(&self) -> Vec<Value> {
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(event, _)| event == "rsnode_update_progress")
+            .map(|(_, payload)| payload.clone())
+            .collect()
     }
-    .execute(resume, &mut |progress| seen.push(progress))
-    .await;
-    (outcome, seen)
+
+    async fn wait_for(&self, what: &str, done: impl Fn(&Value) -> bool) -> Value {
+        tokio::time::timeout(WAIT, async {
+            loop {
+                if let Some(found) = self.progress().into_iter().find(|p| done(p)) {
+                    return found;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("no {what}: {:?}", self.progress()))
+    }
+
+    async fn outcome(&self) -> Value {
+        self.wait_for("outcome", |p| {
+            ["installed", "rolled_back", "failed", "cancelled"]
+                .contains(&p["stage"].as_str().unwrap())
+        })
+        .await
+    }
+
+    fn stages(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for p in self.progress() {
+            let stage = p["stage"].as_str().unwrap().to_owned();
+            if out.last() != Some(&stage) {
+                out.push(stage);
+            }
+        }
+        out
+    }
 }
 
-fn stages(seen: &[Progress]) -> Vec<&'static str> {
-    let mut out: Vec<&'static str> = Vec::new();
-    for progress in seen {
-        let stage = progress.stage.as_str();
-        if out.last() != Some(&stage) {
-            out.push(stage);
+struct Net {
+    state: Arc<AppState>,
+    events: Arc<Recorder>,
+    node: Arc<Mutex<Node>>,
+    identity: String,
+    contact: String,
+    _node_rns: ReticulumHandle,
+    _dirs: (tempfile::TempDir, tempfile::TempDir),
+}
+
+fn reticulum_config(interface: &str) -> String {
+    format!(
+        "[reticulum]\n  enable_transport = no\n  share_instance = no\n\n[interfaces]\n  [[loopback]]\n{interface}"
+    )
+}
+
+impl Net {
+    /// The app and a node on loopback TCP, with the node as a device contact holding `caps`.
+    async fn new(node: Node, caps: &[&str]) -> Self {
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+
+        let node_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            node_dir.path().join("config"),
+            reticulum_config(&format!(
+                "    type = TCPServerInterface\n    enabled = yes\n    listen_ip = 127.0.0.1\n    listen_port = {port}\n"
+            )),
+        )
+        .unwrap();
+        let node_rns = rns_runtime::reticulum::init(
+            Some(node_dir.path().to_str().unwrap()),
+            Some(node_dir.path().join("sockets")),
+            ShutdownSignal::new(),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+        let node_identity = Identity::new();
+        let registration = RegisteredDestination::register(
+            node_rns.transport_tx.clone(),
+            node_identity.clone(),
+            update::MANAGE_APP_NAME,
+            DestinationRuntimeOptions::default(),
+        )
+        .await
+        .unwrap();
+        let manage = registration.handle.destination_hash();
+        let node = Arc::new(Mutex::new(node));
+        serve(registration, Arc::clone(&node));
+
+        let app_dir = tempfile::tempdir().unwrap();
+        let root = app_dir.path().to_path_buf();
+        ratspeak_runtime::lxmf::initialize_storage_namespace(&root).unwrap();
+        let rns_dir = root.join("rns");
+        std::fs::create_dir_all(&rns_dir).unwrap();
+        std::fs::write(
+            rns_dir.join("config"),
+            reticulum_config(&format!(
+                "    type = TCPClientInterface\n    enabled = yes\n    target_host = 127.0.0.1\n    target_port = {port}\n"
+            )),
+        )
+        .unwrap();
+        let config = DashboardConfig {
+            data_root: root.clone(),
+            data_dir: root.join(".ratspeak"),
+            rns_config_dir: rns_dir.clone(),
+            rns_config_dir_overridden: true,
+            max_log_entries: 20,
+        };
+        let pool = db::init_pool(&root).unwrap();
+        db::init_schema(&pool).unwrap();
+        let events = Arc::new(Recorder::default());
+        let state = Arc::new(AppState::new(
+            config,
+            pool,
+            Arc::clone(&events) as Arc<dyn ratspeak_core::Emitter>,
+            Arc::new(ratspeak_core::NoopNotifier),
+        ));
+        let mgr = LxmfManager::load_or_create(&root, None, None).unwrap();
+        let identity = mgr.identity_hash.clone();
+        db::save_identity(&state.db, &identity, &mgr.lxmf_hash, "Me", "");
+        db::set_active_identity(&state.db, &identity).unwrap();
+        state.set_lxmf(mgr);
+        let rns = RnsManager::init(
+            rns_dir.to_str().unwrap(),
+            Some(root.join("sockets")),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+        let transport = rns.handle.transport_tx.clone();
+        state.set_rns(rns);
+
+        let contact = hex::encode(Destination::hash_from_name_and_identity(
+            "lxmf.delivery",
+            Some(&node_identity.hash),
+        ));
+        db::save_contact_with_identity_pubkey(
+            &state.db,
+            &contact,
+            Some("rsNode 1A2B"),
+            Some(&hex::encode(node_identity.get_public_key())),
+            "trusted",
+            &identity,
+        );
+        let caps: Vec<String> = caps.iter().map(|cap| cap.to_string()).collect();
+        db::set_contact_kind(&state.db, &contact, &identity, "device", &caps);
+
+        // The TCP link comes up on its own schedule; wait until the node answers a path request.
+        tokio::time::timeout(WAIT, async {
+            while resolve_destination_on_transport(
+                &transport,
+                manage,
+                DestinationResolveOptions::new(Duration::from_secs(2)),
+            )
+            .await
+            .is_err()
+            {}
+        })
+        .await
+        .expect("the node never answered a path request");
+
+        Self {
+            state,
+            events,
+            node,
+            identity,
+            contact,
+            _node_rns: node_rns,
+            _dirs: (node_dir, app_dir),
         }
     }
-    out
+
+    async fn start(&self, bytes: Vec<u8>) -> Result<Value, String> {
+        update::start(&self.state, &self.contact, bytes)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    fn row(&self, bytes: &[u8]) -> db::RsnodeUpdateRow {
+        let image = hex::encode(rns_crypto::sha::sha256(&bytes[128..]));
+        db::get_rsnode_update(&self.state.db, &self.identity, &self.contact, &image).unwrap()
+    }
+
+    fn last_note(&self) -> Option<String> {
+        db::get_conversation(&self.state.db, &self.contact, &self.identity, 50)
+            .into_iter()
+            .rev()
+            .find(|m| m["direction"] == "note")
+            .map(|m| m["content"].as_str().unwrap().to_owned())
+    }
+
+    fn caps(&self) -> Vec<String> {
+        let row = db::get_contact(&self.state.db, &self.contact, &self.identity).unwrap();
+        serde_json::from_value(row["caps"].clone()).unwrap()
+    }
 }
 
-#[tokio::test(start_paused = true)]
-async fn installs_through_a_lost_chunk_and_a_dropped_link() {
-    let new = image(20_000);
-    let bundle = Bundle::parse(bundle_bytes(BOARD, &new)).unwrap();
-    let node = Node::new(Boot::Install);
-    {
-        let mut node = node.lock().unwrap();
-        node.lose_at = Some(3 * OTA_CHUNK_DATA_MAX as u32);
-        node.drop_after = Some(9_000);
-    }
-    let (_control, rx) = watch::channel(Control::Run);
-    let (outcome, seen) = run(&FakeConnector::new(&node), &bundle, Resume::FRESH, rx).await;
+#[tokio::test(flavor = "multi_thread")]
+async fn installs_through_a_gap_and_a_dropped_link_and_learns_the_update_cap() {
+    let mut node = Node::new(Boot::Install);
+    node.lose_at = Some(3 * OTA_CHUNK_DATA_MAX as u32);
+    node.drop_after = Some(9_000);
+    // Marked an rsNode by its replies only: the first status proves it takes the transfer.
+    let net = Net::new(node, &["rsnode"]).await;
+    let bytes = bundle(BOARD, &image(20_000));
+    assert_eq!(net.start(bytes.clone()).await.unwrap()["release"], "1.0.1");
 
-    assert_eq!(outcome, Outcome::Installed("1.0.1".into()));
-    let node = node.lock().unwrap();
-    assert!(node.gaps_sent >= 1, "the lost chunk was reported as a gap");
-    assert_eq!(node.begins.len(), 2, "one begin per Link that sent");
-    assert!(
-        node.begins[1] >= 9_000,
-        "the second Link resumed: {:?}",
-        node.begins
-    );
-    let stages = stages(&seen);
+    let outcome = net.events.outcome().await;
+    assert_eq!(outcome["stage"], "installed", "{:?}", net.events.stages());
+    let stages = net.events.stages();
     for stage in [
         "connecting",
         "sending",
@@ -357,254 +556,152 @@ async fn installs_through_a_lost_chunk_and_a_dropped_link() {
         "restarting",
         "verifying",
     ] {
-        assert!(stages.contains(&stage), "{stage} in {stages:?}");
+        assert!(stages.iter().any(|s| s == stage), "{stage} in {stages:?}");
     }
-    // Progress never goes back, and the baseline is kept from the first status.
-    let sent: Vec<u32> = seen.iter().map(|p| p.sent).collect();
-    assert!(sent.windows(2).all(|w| w[0] <= w[1]), "{sent:?}");
-    assert!(seen.iter().skip(2).all(|p| p.baseline.is_some()));
-    assert_eq!(seen.last().unwrap().phase, Phase::Verify);
-}
-
-#[tokio::test(start_paused = true)]
-async fn paces_over_lora_and_still_installs() {
-    let new = image(6_000);
-    let bundle = Bundle::parse(bundle_bytes(BOARD, &new)).unwrap();
-    let node = Node::new(Boot::Install);
     {
-        let mut node = node.lock().unwrap();
-        node.status.path = Some(SessionPath {
-            interface_id: 1,
-            hops: 1,
-        });
-        node.status.radio = Some(StatusRadio {
-            frequency_hz: 869_525_000,
-            bandwidth_hz: 250_000,
-            spreading_factor: 9,
-            coding_rate: 5,
-            tx_power_dbm: 14,
-            duty_tenths_percent: 10,
-            ..StatusRadio::default()
-        });
+        let node = net.node.lock().unwrap();
+        assert!(node.gaps_sent >= 1, "the lost chunk came back as a Gap");
+        assert_eq!(node.begins.len(), 2, "{:?}", node.begins);
+        assert!(
+            node.begins[1] >= 9_000,
+            "the second Link resumed: {:?}",
+            node.begins
+        );
     }
-    let (_control, rx) = watch::channel(Control::Run);
-    let started = tokio::time::Instant::now();
-    let (outcome, _) = run(&FakeConnector::new(&node), &bundle, Resume::FRESH, rx).await;
-    assert_eq!(outcome, Outcome::Installed("1.0.1".into()));
-    assert!(started.elapsed() < Duration::from_secs(3_600));
+    assert_eq!(net.row(&bytes).stage, "installed");
+    assert_eq!(net.last_note().as_deref(), Some("Installed 1.0.1"));
+    assert_eq!(
+        db::get_all_unread_counts(&net.state.db, &net.identity)
+            .values()
+            .sum::<i64>(),
+        0
+    );
+    assert!(net.caps().contains(&"rsnode.update".to_string()));
+    assert!(update::current(&net.state, &net.contact).is_none());
 }
 
-#[tokio::test(start_paused = true)]
-async fn resumes_from_the_persisted_phase_after_a_restart() {
-    let new = image(30_000);
-    let bundle = Bundle::parse(bundle_bytes(BOARD, &new)).unwrap();
-    let node = Node::new(Boot::Install);
-    node.lock().unwrap().drop_after = Some(12_000);
-    // The first run's identity goes away after its first Link, as when the app quits.
-    let first = FakeConnector {
-        node: Arc::clone(&node),
-        links_before_suspend: Some(1),
-    };
-    let (_control, rx) = watch::channel(Control::Run);
-    let (outcome, seen) = run(&first, &bundle, Resume::FRESH, rx).await;
-    assert_eq!(outcome, Outcome::Suspended);
-    let checkpoint = seen.last().unwrap();
-    assert_eq!(checkpoint.phase, Phase::Transfer);
-    let baseline = checkpoint.baseline.expect("baseline persisted");
-    assert_eq!(baseline.ota_accepted_sequence, OLD_SEQUENCE);
+#[tokio::test(flavor = "multi_thread")]
+async fn resumes_after_an_app_restart_paced_for_lora() {
+    let mut node = Node::new(Boot::Install);
+    node.status.path = Some(SessionPath {
+        interface_id: 1,
+        hops: 1,
+    });
+    node.status.radio = Some(StatusRadio {
+        frequency_hz: 914_875_000,
+        bandwidth_hz: 500_000,
+        spreading_factor: 7,
+        coding_rate: 5,
+        tx_power_dbm: 14,
+        duty_tenths_percent: 10,
+        ..StatusRadio::default()
+    });
+    node.mute_after = Some(12_000);
+    let net = Net::new(node, &["rsnode", "rsnode.update"]).await;
+    let bytes = bundle(BOARD, &image(30_000));
+    net.start(bytes.clone()).await.unwrap();
+    net.events
+        .wait_for("12 kB acknowledged", |p| {
+            p["stage"] == "sending" && p["sent"].as_u64().unwrap() >= 12_000
+        })
+        .await;
 
-    let (_control, rx) = watch::channel(Control::Run);
-    let resume = Resume {
-        phase: Phase::Transfer,
-        baseline: Some(baseline),
-    };
-    let (outcome, _) = run(&FakeConnector::new(&node), &bundle, resume, rx).await;
-    assert_eq!(outcome, Outcome::Installed("1.0.1".into()));
-    let node = node.lock().unwrap();
-    assert!(node.begins[1] >= 12_000, "{:?}", node.begins);
+    // The app goes away mid-transfer: runs stop without a verdict and keep their phase.
+    net.state.rsnode_updates.stop_all();
+    let row = net.row(&bytes);
+    assert_eq!(row.stage, "transfer");
+    assert!(row.baseline.is_some(), "the pre-transfer status is kept");
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    net.node.lock().unwrap().mute_after = None;
+
+    update::resume_pending(&net.state);
+    let outcome = net.events.outcome().await;
+    assert_eq!(outcome["stage"], "installed", "{:?}", net.events.stages());
+    let node = net.node.lock().unwrap();
     assert!(
-        node.chunks[node.chunks.len() - 1] as usize + OTA_CHUNK_DATA_MAX >= new.len(),
-        "the image went out to its end"
+        node.begins.last().is_some_and(|from| *from >= 12_000),
+        "{:?}",
+        node.begins
     );
+    assert_eq!(net.last_note().as_deref(), Some("Installed 1.0.1"));
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "multi_thread")]
 async fn a_rollback_is_reported_and_never_retried() {
-    let new = image(5_000);
-    let bundle = Bundle::parse(bundle_bytes(BOARD, &new)).unwrap();
-    let node = Node::new(Boot::RollBack);
-    let (_control, rx) = watch::channel(Control::Run);
-    let (outcome, _) = run(&FakeConnector::new(&node), &bundle, Resume::FRESH, rx).await;
-    assert_eq!(outcome, Outcome::RolledBack("1.0.0".into()));
+    let net = Net::new(Node::new(Boot::RollBack), &["rsnode", "rsnode.update"]).await;
+    let bytes = bundle(BOARD, &image(5_000));
+    net.start(bytes.clone()).await.unwrap();
+    assert_eq!(net.events.outcome().await["stage"], "rolled_back");
+    assert_eq!(net.row(&bytes).stage, "rolled_back");
+    assert_eq!(net.last_note().as_deref(), Some("Rolled back to 1.0.0"));
 
-    let (_control, rx) = watch::channel(Control::Run);
-    let begins = node.lock().unwrap().begins.len();
-    let (outcome, _) = run(&FakeConnector::new(&node), &bundle, Resume::FRESH, rx).await;
     assert_eq!(
-        outcome,
-        Outcome::Failed("This update rolled back before, so it is not tried again.".into())
+        net.start(bytes).await.unwrap_err(),
+        "This update rolled back before, so it is not tried again."
     );
     assert_eq!(
-        node.lock().unwrap().begins.len(),
-        begins,
+        net.node.lock().unwrap().begins.len(),
+        1,
         "no second transfer"
     );
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "multi_thread")]
 async fn another_board_is_refused_before_any_transfer() {
+    let net = Net::new(Node::new(Boot::Install), &["rsnode", "rsnode.update"]).await;
     let other = BoardTarget {
         board: 0x3B,
         ..BOARD
     };
-    let bundle = Bundle::parse(bundle_bytes(other, &image(2_000))).unwrap();
-    let node = Node::new(Boot::Install);
-    let (_control, rx) = watch::channel(Control::Run);
-    let (outcome, _) = run(&FakeConnector::new(&node), &bundle, Resume::FRESH, rx).await;
+    net.start(bundle(other, &image(2_000))).await.unwrap();
+    let outcome = net.events.outcome().await;
+    assert_eq!(outcome["stage"], "failed");
+    assert_eq!(outcome["detail"], "This update is for a different board.");
+    assert!(net.node.lock().unwrap().begins.is_empty());
     assert_eq!(
-        outcome,
-        Outcome::Failed("This update is for a different board.".into())
+        net.last_note().as_deref(),
+        Some("Update stopped. This update is for a different board.")
     );
-    assert!(node.lock().unwrap().begins.is_empty());
 }
 
-#[tokio::test(start_paused = true)]
+#[tokio::test(flavor = "multi_thread")]
 async fn cancel_aborts_the_transfer_on_the_node() {
-    let bundle = Bundle::parse(bundle_bytes(BOARD, &image(40_000))).unwrap();
-    let node = Node::new(Boot::Install);
-    // Silence after a while keeps the run waiting on acknowledgements until it is cancelled.
-    node.lock().unwrap().mute_after = Some(10_000);
-    let (control, rx) = watch::channel(Control::Run);
-    let connector = FakeConnector::new(&node);
-    let canceller = async {
-        tokio::time::sleep(Duration::from_millis(1_500)).await;
-        control.send(Control::Cancel).unwrap();
-    };
-    let ((outcome, _), ()) = tokio::join!(run(&connector, &bundle, Resume::FRESH, rx), canceller);
-    assert_eq!(outcome, Outcome::Cancelled);
-    let node = node.lock().unwrap();
+    let mut node = Node::new(Boot::Install);
+    node.mute_after = Some(8_000);
+    let net = Net::new(node, &["rsnode", "rsnode.update"]).await;
+    let bytes = bundle(BOARD, &image(40_000));
+    net.start(bytes.clone()).await.unwrap();
+    net.events
+        .wait_for("8 kB acknowledged", |p| {
+            p["stage"] == "sending" && p["sent"].as_u64().unwrap() >= 8_000
+        })
+        .await;
+    assert!(update::cancel(&net.state, &net.contact));
+    assert_eq!(net.events.outcome().await["stage"], "cancelled");
+    let node = net.node.lock().unwrap();
     assert!(node.aborted, "ota.abort freed the node");
     assert!(node.transfer.is_none());
+    assert_eq!(net.row(&bytes).stage, "cancelled");
 }
 
-#[test]
-fn damaged_and_foreign_files_are_not_bundles() {
-    let good = bundle_bytes(BOARD, &image(1_000));
-    assert!(Bundle::parse(good.clone()).is_ok());
-    let mut damaged = good.clone();
-    *damaged.last_mut().unwrap() ^= 1;
+#[tokio::test(flavor = "multi_thread")]
+async fn only_nodes_that_take_the_transfer_are_updated() {
+    // A device whose node answers status with Unsupported fails at once and learns nothing.
+    let mut node = Node::new(Boot::Install);
+    node.unsupported = true;
+    let net = Net::new(node, &["rsnode"]).await;
+    net.start(bundle(BOARD, &image(2_000))).await.unwrap();
+    let outcome = net.events.outcome().await;
     assert_eq!(
-        Bundle::parse(damaged).err().as_deref(),
-        Some("This update file is damaged.")
+        outcome["detail"],
+        "This node does not take updates over the network."
     );
-    assert!(Bundle::parse(b"hello".to_vec()).is_err());
-    let mut foreign = good;
-    foreign[0] = b'X';
-    assert!(Bundle::parse(foreign).is_err());
-}
+    assert_eq!(net.caps(), ["rsnode"]);
 
-fn app_state() -> (tempfile::TempDir, Arc<AppState>) {
-    let root = tempfile::tempdir().unwrap();
-    let data_root = root.path().to_path_buf();
-    ratspeak_runtime::lxmf::initialize_storage_namespace(&data_root).unwrap();
-    let config = DashboardConfig {
-        data_root: data_root.clone(),
-        data_dir: data_root.join(".ratspeak"),
-        rns_config_dir: data_root.join("rns"),
-        rns_config_dir_overridden: true,
-        max_log_entries: 20,
-    };
-    let pool = db::init_pool(&data_root).unwrap();
-    db::init_schema(&pool).unwrap();
-    let state = AppState::new(
-        config,
-        pool,
-        Arc::new(ratspeak_core::NoopEmitter),
-        Arc::new(ratspeak_core::NoopNotifier),
-    );
-    (root, Arc::new(state))
-}
-
-const IDENTITY: &str = "11111111111111111111111111111111";
-const CONTACT: &str = "22222222222222222222222222222222";
-
-fn row(bundle: &Bundle) -> db::RsnodeUpdateRow {
-    db::RsnodeUpdateRow {
-        contact: CONTACT.into(),
-        image_sha256: bundle.image_sha256_hex(),
-        release: bundle.release(),
-        stage: "transfer".into(),
-        sent: 0,
-        total: bundle.image.len() as u32,
-        baseline: None,
-        detail: String::new(),
-        updated_at: 1.0,
-    }
-}
-
-#[tokio::test(start_paused = true)]
-async fn the_service_records_outcomes_and_refuses_a_rolled_back_image() {
-    let (_root, state) = app_state();
-    db::save_identity(&state.db, IDENTITY, &IDENTITY[..16], "", "");
-    db::set_active_identity(&state.db, IDENTITY).unwrap();
-    let key = rns_identity::identity::Identity::new().get_public_key();
-    db::save_contact_with_identity_pubkey(
-        &state.db,
-        CONTACT,
-        Some("rsNode 1A2B"),
-        Some(&hex::encode(key)),
-        "trusted",
-        IDENTITY,
-    );
-
-    for (boot, stage, note) in [
-        (Boot::Install, "installed", "Installed 1.0.1"),
-        (Boot::RollBack, "rolled_back", "Rolled back to 1.0.0"),
-    ] {
-        let bytes = bundle_bytes(
-            BOARD,
-            &image(if boot == Boot::Install { 4_000 } else { 4_100 }),
-        );
-        let bundle = Bundle::parse(bytes.clone()).unwrap();
-        let node = Node::new(boot);
-        let (_control, rx) = watch::channel(Control::Run);
-        update::drive(
-            &state,
-            IDENTITY,
-            row(&bundle),
-            &bundle,
-            &FakeConnector::new(&node),
-            Resume::FRESH,
-            rx,
-        )
-        .await;
-        let saved = db::get_rsnode_update(&state.db, IDENTITY, CONTACT, &bundle.image_sha256_hex())
-            .unwrap();
-        assert_eq!(saved.stage, stage);
-        let messages = db::get_conversation(&state.db, CONTACT, IDENTITY, 50);
-        let last = messages.last().unwrap();
-        assert_eq!(
-            (last["direction"].as_str(), last["content"].as_str()),
-            (Some("note"), Some(note))
-        );
-        assert!(last["results"].is_null());
-        assert_eq!(
-            db::get_all_unread_counts(&state.db, IDENTITY)
-                .values()
-                .sum::<i64>(),
-            0
-        );
-
-        if boot == Boot::RollBack {
-            let refused = update::start(&state, CONTACT, bytes).await.unwrap_err();
-            assert_eq!(
-                refused.to_string(),
-                "This update rolled back before, so it is not tried again."
-            );
-        }
-    }
-    assert!(
-        update::current(&state, CONTACT).is_none(),
-        "nothing left running"
+    // A contact that is not an rsNode device is never offered one.
+    db::set_contact_kind(&net.state.db, &net.contact, &net.identity, "person", &[]);
+    assert_eq!(
+        net.start(bundle(BOARD, &image(2_000))).await.unwrap_err(),
+        "Firmware updates are for rsNode devices."
     );
 }
