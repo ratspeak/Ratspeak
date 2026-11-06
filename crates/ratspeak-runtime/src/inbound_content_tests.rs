@@ -745,3 +745,111 @@ async fn a_reaction_processed_across_a_transition_is_not_emitted() {
     pipeline.await.unwrap();
     assert_eq!(emitter.count("reaction_update"), 0);
 }
+
+fn rsnode_results(schema: bool) -> Vec<u8> {
+    use rmpv::Value as V;
+    let mut entries = vec![
+        (V::from(1), V::from("status")),
+        (V::from(2), V::from("1.0.1")),
+        (V::from(3), V::Boolean(true)),
+    ];
+    if schema {
+        entries.insert(0, (V::from(0), V::from(1)));
+    }
+    let mut out = Vec::new();
+    rmpv::encode::write_value(&mut out, &V::Map(entries)).unwrap();
+    out
+}
+
+async fn deliver_rsnode_reply(
+    state: &Arc<AppState>,
+    signing: &rns_crypto::ed25519::Ed25519PrivateKey,
+    src: [u8; 16],
+    results: Vec<u8>,
+) {
+    let mut msg = lxmf_core::message::LxMessageDraft::new(
+        local_dest(state),
+        src,
+        "",
+        "Running 1.0.1, up 1 h",
+        lxmf_core::message_api::DeliveryMethod::Direct,
+    )
+    .unwrap();
+    msg.set_msgpack_field(lxmf_core::constants::FIELD_RESULTS, results)
+        .unwrap();
+    let wire = msg.sign(signing).unwrap().finalize(None).unwrap().pack().unwrap();
+    handle_decrypted_lxmf(state, wire, InboundLxmfSource::Propagated).await;
+}
+
+fn contact_kind(state: &AppState, src: [u8; 16]) -> (String, Vec<String>) {
+    let row = db::get_contact(&state.db, &hex::encode(src), &local_identity(state)).unwrap();
+    (
+        row["kind"].as_str().unwrap().to_owned(),
+        serde_json::from_value(row["caps"].clone()).unwrap(),
+    )
+}
+
+#[tokio::test]
+async fn verified_rsnode_results_are_stored_and_mark_the_contact_a_device() {
+    let (state, emitter, _) = content_pipeline_state();
+    let identity = local_identity(&state);
+    let signing = rns_crypto::ed25519::Ed25519PrivateKey::generate();
+    let src = register_source_identity(&state, &signing);
+    db::save_contact(&state.db, &hex::encode(src), Some("Node"), "trusted", &identity);
+    assert_eq!(contact_kind(&state, src).0, "person");
+
+    deliver_rsnode_reply(&state, &signing, src, rsnode_results(true)).await;
+
+    assert_eq!(contact_kind(&state, src), ("device".into(), vec!["rsnode".into()]));
+    let history = db::get_conversation(&state.db, &hex::encode(src), &identity, 10);
+    let expected = serde_json::json!({
+        "schema": 1, "command": "status", "release": "1.0.1", "running": true,
+    });
+    assert_eq!(history[0]["results"], expected);
+    let live = emitter
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|(event, _)| event == "lxmf_message")
+        .map(|(_, payload)| payload.clone())
+        .unwrap();
+    assert_eq!(live["results"], history[0]["results"], "live and history agree");
+    let contacts = emitter
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|(event, _)| event == "contacts_update")
+        .map(|(_, payload)| payload.clone())
+        .unwrap();
+    assert_eq!(contacts[0]["kind"], "device");
+    assert_eq!(contacts[0]["caps"], serde_json::json!(["rsnode"]));
+}
+
+#[tokio::test]
+async fn unverified_or_unmarked_results_never_upgrade_a_contact() {
+    // An unknown sender's signature cannot be checked: its results are not kept.
+    let (state, _emitter, _) = content_pipeline_state();
+    let identity = local_identity(&state);
+    let signing = rns_crypto::ed25519::Ed25519PrivateKey::generate();
+    let src = [0x5A; 16];
+    db::save_contact(&state.db, &hex::encode(src), Some("Who"), "trusted", &identity);
+    deliver_rsnode_reply(&state, &signing, src, rsnode_results(true)).await;
+    assert_eq!(message_rows(&state), 1, "the text still arrives");
+    assert_eq!(contact_kind(&state, src).0, "person");
+    let history = db::get_conversation(&state.db, &hex::encode(src), &identity, 10);
+    assert!(history[0]["results"].is_null());
+
+    // Verified, but without the schema key: stored, no upgrade.
+    let (state, _emitter, _) = content_pipeline_state();
+    let identity = local_identity(&state);
+    let src = register_source_identity(&state, &signing);
+    db::save_contact(&state.db, &hex::encode(src), Some("Peer"), "trusted", &identity);
+    deliver_rsnode_reply(&state, &signing, src, rsnode_results(false)).await;
+    assert_eq!(contact_kind(&state, src).0, "person");
+    let history = db::get_conversation(&state.db, &hex::encode(src), &identity, 10);
+    assert_eq!(history[0]["results"]["command"], "status");
+}

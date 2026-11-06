@@ -37,6 +37,7 @@ pub mod rnode_status;
 pub mod rns;
 pub mod rns_config;
 pub mod rrc;
+pub mod rsnode;
 pub mod state;
 pub mod transport_observation;
 pub mod vault;
@@ -5578,6 +5579,11 @@ async fn process_inbound_lxmf(
     let renderer = lxmf::message_renderer(&msg);
     let thread = lxmf::message_thread(&msg);
     let delivery_method = source.stored_delivery_method();
+    // Only a verified sender's results are kept; they alone mark it an rsNode.
+    let results = (sig_valid == Some(true))
+        .then(|| msg.get_field(lxmf_core::constants::FIELD_RESULTS))
+        .flatten()
+        .and_then(|field| rsnode::decode_results(field.encoded()));
     // The receiver's media is written to its own files with the row that
     // names it, in one blocking task off the manager lock.
     let saved = {
@@ -5589,6 +5595,7 @@ async fn process_inbound_lxmf(
         let identity_id = identity_id.clone();
         let reply_to_id = reply_to_id.clone();
         let reply_to_preview = reply_to_preview.clone();
+        let results = results.clone();
         db::spawn_db(state.db.clone(), move |p| {
             let files_dir = config.identity_files_dir(&identity_id);
             let attachment = extract_and_save_attachment(&files_dir, &msg);
@@ -5643,6 +5650,12 @@ async fn process_inbound_lxmf(
             } else {
                 // Inbound message un-hides the conversation.
                 db::unhide_conversation(&p, &source_hash, &identity_id);
+                if let Some(results) = results.as_ref() {
+                    db::save_message_results(&p, &msg_id, &identity_id, results);
+                    if rsnode::marks_rsnode(results) {
+                        db::mark_contact_rsnode_device(&p, &source_hash, &identity_id);
+                    }
+                }
             }
             (msg, attachment, audio, saved)
         })
@@ -5695,6 +5708,7 @@ async fn process_inbound_lxmf(
         "renderer": renderer,
         "delivery_method": delivery_method,
         "thread": thread,
+        "results": results,
     });
     if let Some(ref att) = attachment_file {
         let obj = event_data.as_object_mut().unwrap();
