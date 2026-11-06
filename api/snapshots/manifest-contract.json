@@ -1032,6 +1032,17 @@
           "sourceKind": "path"
         },
         {
+          "name": "rsnode-update",
+          "rename": null,
+          "kind": null,
+          "target": null,
+          "requirement": "^0.1.0",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [],
+          "sourceKind": "path"
+        },
+        {
           "name": "rusqlite",
           "rename": null,
           "kind": null,

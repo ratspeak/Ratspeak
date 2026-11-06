@@ -2206,6 +2206,100 @@ pub fn ratspeak_runtime::rrc::resource_envelope_body(&ratspeak_runtime::rrc::Res
 pub fn ratspeak_runtime::rrc::sanitize_display_timestamp_ms(u64, u64) -> u64
 pub fn ratspeak_runtime::rrc::text_body(&ratspeak_runtime::rrc::Envelope) -> core::option::Option<&str>
 pub fn ratspeak_runtime::rrc::welcome_body(&ratspeak_runtime::rrc::WelcomeInfo) -> ciborium::value::Value
+pub mod ratspeak_runtime::rsnode
+pub mod ratspeak_runtime::rsnode::update
+pub enum ratspeak_runtime::rsnode::update::Control
+pub ratspeak_runtime::rsnode::update::Control::Cancel
+pub ratspeak_runtime::rsnode::update::Control::Run
+pub ratspeak_runtime::rsnode::update::Control::Suspend
+pub enum ratspeak_runtime::rsnode::update::LinkError
+pub ratspeak_runtime::rsnode::update::LinkError::Lost(alloc::string::String)
+pub ratspeak_runtime::rsnode::update::LinkError::Suspended
+pub enum ratspeak_runtime::rsnode::update::Outcome
+pub ratspeak_runtime::rsnode::update::Outcome::Cancelled
+pub ratspeak_runtime::rsnode::update::Outcome::Failed(alloc::string::String)
+pub ratspeak_runtime::rsnode::update::Outcome::Installed(alloc::string::String)
+pub ratspeak_runtime::rsnode::update::Outcome::RolledBack(alloc::string::String)
+pub ratspeak_runtime::rsnode::update::Outcome::Suspended
+pub ratspeak_runtime::rsnode::update::Outcome::Unconfirmed
+pub enum ratspeak_runtime::rsnode::update::Phase
+pub ratspeak_runtime::rsnode::update::Phase::Transfer
+pub ratspeak_runtime::rsnode::update::Phase::Verify
+pub enum ratspeak_runtime::rsnode::update::Stage
+pub ratspeak_runtime::rsnode::update::Stage::Connecting
+pub ratspeak_runtime::rsnode::update::Stage::Finishing
+pub ratspeak_runtime::rsnode::update::Stage::Restarting
+pub ratspeak_runtime::rsnode::update::Stage::Sending
+pub ratspeak_runtime::rsnode::update::Stage::Verifying
+pub ratspeak_runtime::rsnode::update::Stage::Waiting
+impl ratspeak_runtime::rsnode::update::Stage
+pub fn ratspeak_runtime::rsnode::update::Stage::as_str(self) -> &'static str
+pub enum ratspeak_runtime::rsnode::update::StartError
+pub ratspeak_runtime::rsnode::update::StartError::Conflict(alloc::string::String)
+pub ratspeak_runtime::rsnode::update::StartError::Invalid(alloc::string::String)
+pub ratspeak_runtime::rsnode::update::StartError::Unavailable(alloc::string::String)
+pub struct ratspeak_runtime::rsnode::update::Bundle
+pub ratspeak_runtime::rsnode::update::Bundle::image: alloc::vec::Vec<u8>
+pub ratspeak_runtime::rsnode::update::Bundle::manifest: rsnode_update::manifest::OtaManifest
+pub ratspeak_runtime::rsnode::update::Bundle::manifest_bytes: [u8; 128]
+impl ratspeak_runtime::rsnode::update::Bundle
+pub fn ratspeak_runtime::rsnode::update::Bundle::check(&self, &rsnode_update::status::ManageStatus) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_runtime::rsnode::update::Bundle::image_sha256_hex(&self) -> alloc::string::String
+pub fn ratspeak_runtime::rsnode::update::Bundle::parse(alloc::vec::Vec<u8>) -> core::result::Result<Self, alloc::string::String>
+pub fn ratspeak_runtime::rsnode::update::Bundle::release(&self) -> alloc::string::String
+pub struct ratspeak_runtime::rsnode::update::NodeConnector
+impl ratspeak_runtime::rsnode::update::ManageConnector for ratspeak_runtime::rsnode::update::NodeConnector
+pub type ratspeak_runtime::rsnode::update::NodeConnector::Link = ratspeak_runtime::rsnode::update::NodeLink
+pub async fn ratspeak_runtime::rsnode::update::NodeConnector::connect(&self) -> core::result::Result<ratspeak_runtime::rsnode::update::NodeLink, ratspeak_runtime::rsnode::update::LinkError>
+pub struct ratspeak_runtime::rsnode::update::NodeLink
+impl ratspeak_runtime::rsnode::update::ManageLink for ratspeak_runtime::rsnode::update::NodeLink
+pub async fn ratspeak_runtime::rsnode::update::NodeLink::close(&mut self)
+pub async fn ratspeak_runtime::rsnode::update::NodeLink::recv(&mut self, core::time::Duration) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, ratspeak_runtime::rsnode::update::LinkError>
+pub async fn ratspeak_runtime::rsnode::update::NodeLink::send(&mut self, alloc::vec::Vec<u8>) -> core::result::Result<(), ratspeak_runtime::rsnode::update::LinkError>
+pub struct ratspeak_runtime::rsnode::update::Progress
+pub ratspeak_runtime::rsnode::update::Progress::baseline: core::option::Option<rsnode_update::status::ManageStatus>
+pub ratspeak_runtime::rsnode::update::Progress::phase: ratspeak_runtime::rsnode::update::Phase
+pub ratspeak_runtime::rsnode::update::Progress::sent: u32
+pub ratspeak_runtime::rsnode::update::Progress::stage: ratspeak_runtime::rsnode::update::Stage
+pub ratspeak_runtime::rsnode::update::Progress::total: u32
+pub struct ratspeak_runtime::rsnode::update::Registry
+impl ratspeak_runtime::rsnode::update::Registry
+pub fn ratspeak_runtime::rsnode::update::Registry::stop_all(&self)
+pub struct ratspeak_runtime::rsnode::update::Resume
+pub ratspeak_runtime::rsnode::update::Resume::baseline: core::option::Option<rsnode_update::status::ManageStatus>
+pub ratspeak_runtime::rsnode::update::Resume::phase: ratspeak_runtime::rsnode::update::Phase
+impl ratspeak_runtime::rsnode::update::Resume
+pub const ratspeak_runtime::rsnode::update::Resume::FRESH: Self
+pub struct ratspeak_runtime::rsnode::update::Run<'a, C: ratspeak_runtime::rsnode::update::ManageConnector>
+pub ratspeak_runtime::rsnode::update::Run::bundle: &'a ratspeak_runtime::rsnode::update::Bundle
+pub ratspeak_runtime::rsnode::update::Run::connector: &'a C
+pub ratspeak_runtime::rsnode::update::Run::control: tokio::sync::watch::Receiver<ratspeak_runtime::rsnode::update::Control>
+impl<C: ratspeak_runtime::rsnode::update::ManageConnector> ratspeak_runtime::rsnode::update::Run<'_, C>
+pub async fn ratspeak_runtime::rsnode::update::Run<'_, C>::execute(self, ratspeak_runtime::rsnode::update::Resume, &mut (dyn core::ops::function::FnMut(ratspeak_runtime::rsnode::update::Progress) + core::marker::Send)) -> ratspeak_runtime::rsnode::update::Outcome
+pub const ratspeak_runtime::rsnode::update::MANAGE_APP_NAME: &str
+pub const ratspeak_runtime::rsnode::update::PROGRESS_EVENT: &str
+pub trait ratspeak_runtime::rsnode::update::ManageConnector: core::marker::Send + core::marker::Sync
+pub type ratspeak_runtime::rsnode::update::ManageConnector::Link: ratspeak_runtime::rsnode::update::ManageLink
+pub fn ratspeak_runtime::rsnode::update::ManageConnector::connect(&self) -> impl core::future::future::Future<Output = core::result::Result<Self::Link, ratspeak_runtime::rsnode::update::LinkError>> + core::marker::Send
+impl ratspeak_runtime::rsnode::update::ManageConnector for ratspeak_runtime::rsnode::update::NodeConnector
+pub type ratspeak_runtime::rsnode::update::NodeConnector::Link = ratspeak_runtime::rsnode::update::NodeLink
+pub async fn ratspeak_runtime::rsnode::update::NodeConnector::connect(&self) -> core::result::Result<ratspeak_runtime::rsnode::update::NodeLink, ratspeak_runtime::rsnode::update::LinkError>
+pub trait ratspeak_runtime::rsnode::update::ManageLink: core::marker::Send
+pub fn ratspeak_runtime::rsnode::update::ManageLink::close(&mut self) -> impl core::future::future::Future<Output = ()> + core::marker::Send
+pub fn ratspeak_runtime::rsnode::update::ManageLink::recv(&mut self, core::time::Duration) -> impl core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, ratspeak_runtime::rsnode::update::LinkError>> + core::marker::Send
+pub fn ratspeak_runtime::rsnode::update::ManageLink::send(&mut self, alloc::vec::Vec<u8>) -> impl core::future::future::Future<Output = core::result::Result<(), ratspeak_runtime::rsnode::update::LinkError>> + core::marker::Send
+impl ratspeak_runtime::rsnode::update::ManageLink for ratspeak_runtime::rsnode::update::NodeLink
+pub async fn ratspeak_runtime::rsnode::update::NodeLink::close(&mut self)
+pub async fn ratspeak_runtime::rsnode::update::NodeLink::recv(&mut self, core::time::Duration) -> core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, ratspeak_runtime::rsnode::update::LinkError>
+pub async fn ratspeak_runtime::rsnode::update::NodeLink::send(&mut self, alloc::vec::Vec<u8>) -> core::result::Result<(), ratspeak_runtime::rsnode::update::LinkError>
+pub fn ratspeak_runtime::rsnode::update::cancel(&ratspeak_runtime::state::AppState, &str) -> bool
+pub fn ratspeak_runtime::rsnode::update::current(&ratspeak_runtime::state::AppState, &str) -> core::option::Option<serde_json::value::Value>
+pub async fn ratspeak_runtime::rsnode::update::drive<C: ratspeak_runtime::rsnode::update::ManageConnector>(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, &str, ratspeak_db::db::RsnodeUpdateRow, &ratspeak_runtime::rsnode::update::Bundle, &C, ratspeak_runtime::rsnode::update::Resume, tokio::sync::watch::Receiver<ratspeak_runtime::rsnode::update::Control>) -> ratspeak_runtime::rsnode::update::Outcome
+pub fn ratspeak_runtime::rsnode::update::manage_destination(&[u8; 64]) -> core::option::Option<[u8; 16]>
+pub fn ratspeak_runtime::rsnode::update::resume_pending(&alloc::sync::Arc<ratspeak_runtime::state::AppState>)
+pub async fn ratspeak_runtime::rsnode::update::start(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, &str, alloc::vec::Vec<u8>) -> core::result::Result<serde_json::value::Value, ratspeak_runtime::rsnode::update::StartError>
+pub fn ratspeak_runtime::rsnode::decode_results(&[u8]) -> core::option::Option<serde_json::value::Value>
+pub fn ratspeak_runtime::rsnode::marks_rsnode(&serde_json::value::Value) -> bool
 pub mod ratspeak_runtime::state
 pub use ratspeak_runtime::state::ContinuousInstant
 pub use ratspeak_runtime::state::DbPool
@@ -2310,6 +2404,7 @@ pub ratspeak_runtime::state::AppState::propagation_node_stamp_cost: core::sync::
 pub ratspeak_runtime::state::AppState::required_stamp_cost: core::sync::atomic::AtomicU8
 pub ratspeak_runtime::state::AppState::rns: std::sync::poison::rwlock::RwLock<core::option::Option<ratspeak_runtime::rns::RnsManager>>
 pub ratspeak_runtime::state::AppState::rns_config_lock: std::sync::poison::mutex::Mutex<()>
+pub ratspeak_runtime::state::AppState::rsnode_updates: ratspeak_runtime::rsnode::update::Registry
 pub ratspeak_runtime::state::AppState::seen_announce_hashes: std::sync::poison::mutex::Mutex<std::collections::hash::set::HashSet<alloc::string::String>>
 pub ratspeak_runtime::state::AppState::session_shutdown: std::sync::poison::rwlock::RwLock<rns_runtime::lifecycle::ShutdownSignal>
 pub ratspeak_runtime::state::AppState::startup_stage: std::sync::poison::rwlock::RwLock<alloc::string::String>
@@ -2716,6 +2811,8 @@ pub fn ratspeak_runtime::RNodeActivityRuntimeContext::origin(&self) -> ratspeak_
 pub fn ratspeak_runtime::any_interface_online_cached(&ratspeak_runtime::state::AppState) -> core::option::Option<bool>
 pub fn ratspeak_runtime::apply_lxmf_settings_from_state(&ratspeak_runtime::state::AppState, &mut ratspeak_runtime::lxmf::LxmfManager)
 pub fn ratspeak_runtime::arm_auto_lock(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, &str, &'static str, bool)
+pub fn ratspeak_runtime::contact_list_payload(alloc::vec::Vec<serde_json::value::Value>) -> alloc::vec::Vec<serde_json::value::Value>
+pub fn ratspeak_runtime::contact_payload(&serde_json::value::Value) -> serde_json::value::Value
 pub fn ratspeak_runtime::derive_identity_key_from_phrase(&str) -> core::result::Result<zeroize::Zeroizing<[u8; 64]>, alloc::string::String>
 pub async fn ratspeak_runtime::finish_shutdown(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, &ratspeak_runtime::ActivityReset)
 pub fn ratspeak_runtime::generate_recoverable_key() -> core::result::Result<(zeroize::Zeroizing<alloc::string::String>, zeroize::Zeroizing<[u8; 64]>), alloc::string::String>

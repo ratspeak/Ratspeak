@@ -660,6 +660,13 @@ pub async fn ratspeak_tauri::commands::paper::preview_paper_message(tauri::state
 pub mod ratspeak_tauri::commands::peers
 pub const ratspeak_tauri::commands::peers::PEER_RECENCY_SECS: f64
 pub async fn ratspeak_tauri::commands::peers::api_get_peers_snapshot(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub mod ratspeak_tauri::commands::rsnode
+pub struct ratspeak_tauri::commands::rsnode::RsnodeUpdateStartArgs
+pub ratspeak_tauri::commands::rsnode::RsnodeUpdateStartArgs::dest_hash: alloc::string::String
+pub ratspeak_tauri::commands::rsnode::RsnodeUpdateStartArgs::stage_token: alloc::string::String
+pub async fn ratspeak_tauri::commands::rsnode::rsnode_update_cancel(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::rsnode::rsnode_update_start(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::rsnode::RsnodeUpdateStartArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::rsnode::rsnode_update_state(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub mod ratspeak_tauri::commands::shared
 pub mod ratspeak_tauri::commands::system
 pub struct ratspeak_tauri::commands::system::SetForegroundArgs
