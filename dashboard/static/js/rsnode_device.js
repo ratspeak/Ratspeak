@@ -2,41 +2,69 @@
 // autocomplete, a status card from the newest FIELD_RESULTS, and firmware
 // updates started by dropping or picking a .rsota file.
 (function() {
-    // The node's command set; `form` is what autocomplete fills in.
-    var COMMANDS = [
-        { form: '/help', hint: 'Commands you can use' },
-        { form: '/status', hint: 'Release, radio, and links' },
-        { form: '/stats', hint: 'Packets and airtime' },
-        { form: '/neighbors', hint: 'Interfaces and paths' },
-        { form: '/settings', hint: 'Wi-Fi, uplink, and peers' },
-        { form: '/settings wifi off', hint: 'Turn Wi-Fi off' },
-        { form: '/settings wifi join "<name>" ["<password>"]', hint: 'Join a network' },
-        { form: '/settings wifi own "<password>" [channel <1-13>]', hint: 'Run its own network' },
-        { form: '/settings uplink <host>:<port>', hint: 'Connect to a server' },
-        { form: '/settings uplink off', hint: 'Stop the uplink' },
-        { form: '/settings peers on [port <n>]', hint: 'Accept local peers' },
-        { form: '/settings peers off', hint: 'Stop local peers' },
-        { form: '/radio', hint: 'Region, preset, and power' },
-        { form: '/radio region <americas|europe|uhf433|australia|asia>', hint: 'Set the region' },
-        { form: '/radio preset <name>', hint: 'Set the preset' },
-        { form: '/radio freq <MHz>', hint: 'Set the frequency' },
-        { form: '/radio bw <kHz>', hint: 'Set the bandwidth' },
-        { form: '/radio sf <7-12>', hint: 'Set the spreading factor' },
-        { form: '/radio cr <5-8>', hint: 'Set the coding rate' },
-        { form: '/radio power <dBm>', hint: 'Set the power' },
-        { form: '/radio limits <off|default|custom <dBm> [duty on|off]>', hint: 'Set the limits' },
-        { form: '/managers', hint: 'Owner and admins' },
-        { form: '/add-admin <address>', hint: 'Add an admin' },
-        { form: '/remove <address>', hint: 'Remove an admin' },
-        { form: '/announce <off|10m|30m|60m|<N>h>', hint: 'Announce interval' },
-        { form: '/start', hint: 'Start forwarding' },
-        { form: '/stop', hint: 'Pause forwarding' },
-        { form: '/reboot', hint: 'Restart the node' },
-        { form: '/nearby-only <on|off>', hint: 'Managers nearby only' },
-        { form: '/update', hint: 'Last update' },
-        { form: '/confirm <code>', hint: 'Confirm a change' },
+    // The node's command set by group; `form` is what autocomplete fills in.
+    var GROUPS = [
+        ['Status', [
+            { form: '/help', hint: 'Commands you can use' },
+            { form: '/help <command>', hint: 'How to use one command' },
+            { form: '/status', hint: 'Release, radio, and links' },
+            { form: '/stats', hint: 'Packets and airtime' },
+            { form: '/version', hint: 'Release, board, and image' },
+            { form: '/health', hint: 'Memory, storage, and faults' },
+            { form: '/network', hint: 'Live Wi-Fi, uplink, and peers' },
+            { form: '/neighbors', hint: 'Interfaces and paths' },
+            { form: '/paths [n]', hint: 'Known destinations' },
+            { form: '/update', hint: 'Last update' },
+        ]],
+        ['Diagnostics', [
+            { form: '/ping [text]', hint: 'Check that it answers' },
+            { form: '/echo <text>', hint: 'Get your text back' },
+            { form: '/signal', hint: 'How your message arrived' },
+            { form: '/log', hint: 'Recent events' },
+            { form: '/stamps', hint: 'Stamp counters' },
+            { form: '/blink', hint: 'Flash the LED to find it' },
+            { form: '/reset-stats', hint: 'Zero the counters', owner: true },
+        ]],
+        ['Settings', [
+            { form: '/settings', hint: 'Wi-Fi, uplink, and peers' },
+            { form: '/settings wifi off', hint: 'Turn Wi-Fi off', owner: true },
+            { form: '/settings wifi join "<name>" ["<password>"]', hint: 'Join a network', owner: true },
+            { form: '/settings wifi own "<password>" [channel <1-13>]', hint: 'Run its own network', owner: true },
+            { form: '/settings uplink <host>:<port>', hint: 'Connect to a server', owner: true },
+            { form: '/settings uplink off', hint: 'Stop the uplink', owner: true },
+            { form: '/settings peers on [port <n>]', hint: 'Accept local peers', owner: true },
+            { form: '/settings peers off', hint: 'Stop local peers', owner: true },
+            { form: '/radio', hint: 'Region, preset, and power' },
+            { form: '/radio region <americas|europe|uhf433|australia|asia>', hint: 'Set the region', owner: true },
+            { form: '/radio preset <name>', hint: 'Set the preset', owner: true },
+            { form: '/radio freq <MHz>', hint: 'Set the frequency', owner: true },
+            { form: '/radio bw <kHz>', hint: 'Set the bandwidth', owner: true },
+            { form: '/radio sf <7-12>', hint: 'Set the spreading factor', owner: true },
+            { form: '/radio cr <5-8>', hint: 'Set the coding rate', owner: true },
+            { form: '/radio power <dBm>', hint: 'Set the power', owner: true },
+            { form: '/radio limits <off|default|custom <dBm> [duty on|off]>', hint: 'Set the limits', owner: true },
+            { form: '/announce <off|10m|30m|60m|<N>h>', hint: 'Announce interval', owner: true },
+            { form: '/nearby-only <on|off>', hint: 'Managers nearby only', owner: true },
+        ]],
+        ['Managers', [
+            { form: '/managers', hint: 'Owner and admins' },
+            { form: '/whoami', hint: 'Your role, key, and ticket' },
+            { form: '/add-admin <address>', hint: 'Add an admin', owner: true },
+            { form: '/remove <address>', hint: 'Remove an admin', owner: true },
+        ]],
+        ['Control', [
+            { form: '/announce now', hint: 'Announce once now', owner: true },
+            { form: '/start', hint: 'Start forwarding', owner: true },
+            { form: '/stop', hint: 'Pause forwarding', owner: true },
+            { form: '/reboot', hint: 'Restart the node', owner: true },
+            { form: '/confirm <code>', hint: 'Confirm a change' },
+        ]],
     ];
-    var QUICK = ['/status', '/stats', '/neighbors', '/settings', '/radio', '/help'];
+    var COMMANDS = [];
+    GROUPS.forEach(function(g) {
+        g[1].forEach(function(c) { c.group = g[0]; COMMANDS.push(c); });
+    });
+    var QUICK = ['/status', '/stats', '/signal', '/ping', '/help'];
     var REGIONS = { 1: 'Americas 915', 2: 'Europe 868', 3: '433 UHF', 4: 'Australia 915', 5: 'Asia 923' };
     var LIMITS = { off: 'Off', 'default': 'Default', custom: 'Custom' };
     var UPLINK = { off: 'Off', connecting: 'Connecting', up: 'Up' };
@@ -253,6 +281,24 @@
         input.dispatchEvent(new Event('input'));
     }
 
+    function hintText(c) {
+        return c.owner ? c.hint + ' · Owner only' : c.hint;
+    }
+
+    function itemHtml(c, active) {
+        return '<button type="button" role="option" class="rsnode-suggest-item' + (active ? ' active' : '') +
+            '" aria-selected="' + !!active + '" data-rsnode-fill="' + escapeHtml(completion(c.form)) + '">' +
+            '<code>' + escapeHtml(c.form) + '</code><span>' + escapeHtml(hintText(c)) + '</span></button>';
+    }
+
+    // The full list, under a heading per group.
+    function allHtml() {
+        return GROUPS.map(function(g) {
+            return '<div class="rsnode-suggest-group" role="presentation">' + escapeHtml(g[0]) + '</div>' +
+                g[1].map(function(c) { return itemHtml(c, false); }).join('');
+        }).join('');
+    }
+
     function hideSuggest() {
         var box = document.getElementById('rsnode-suggest');
         if (box) { box.hidden = true; box.innerHTML = ''; }
@@ -264,11 +310,7 @@
         if (!box) return;
         if (!list.length) { hideSuggest(); return; }
         if (suggestIndex >= list.length) suggestIndex = list.length - 1;
-        box.innerHTML = list.map(function(c, i) {
-            return '<button type="button" role="option" class="rsnode-suggest-item' + (i === suggestIndex ? ' active' : '') +
-                '" aria-selected="' + (i === suggestIndex) + '" data-rsnode-fill="' + escapeHtml(completion(c.form)) + '">' +
-                '<code>' + escapeHtml(c.form) + '</code><span>' + escapeHtml(c.hint) + '</span></button>';
-        }).join('');
+        box.innerHTML = list.map(function(c, i) { return itemHtml(c, i === suggestIndex); }).join('');
         box.hidden = false;
     }
 
@@ -285,11 +327,7 @@
         else if (input) input.focus();
         var box = document.getElementById('rsnode-suggest');
         if (!box) return;
-        var all = COMMANDS.map(function(c) {
-            return '<button type="button" role="option" class="rsnode-suggest-item" data-rsnode-fill="' +
-                escapeHtml(completion(c.form)) + '"><code>' + escapeHtml(c.form) + '</code><span>' + escapeHtml(c.hint) + '</span></button>';
-        }).join('');
-        box.innerHTML = all;
+        box.innerHTML = allHtml();
         box.hidden = false;
         box.classList.add('rsnode-suggest-all');
     }
@@ -404,6 +442,10 @@
         // Pure helpers, exercised by scripts/dashboard/test_rsnode_device.js.
         _suggestions: suggestions,
         _completion: completion,
+        _commands: COMMANDS,
+        _quick: QUICK,
+        _hintText: hintText,
+        _allHtml: allHtml,
         _statusRows: statusRows,
         _summary: summary,
         _newestResults: newestResults,

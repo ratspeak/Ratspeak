@@ -42,16 +42,47 @@ assert.strictEqual(rs._completion('/radio region <americas|europe>'), '/radio re
 assert.strictEqual(rs._completion('/settings wifi join "<name>" ["<password>"]'), '/settings wifi join ');
 assert.strictEqual(rs._completion('/status'), '/status');
 const forms = (text) => JSON.parse(JSON.stringify(rs._suggestions(text).map((c) => c.form)));
-assert.deepStrictEqual(forms('/st'), ['/status', '/stats', '/start', '/stop']);
+assert.deepStrictEqual(forms('/st'), ['/status', '/stats', '/stamps', '/start', '/stop']);
+assert.deepStrictEqual(forms('/announce '), ['/announce now'], 'the interval form is already filled in');
+assert.deepStrictEqual(forms('/h'), ['/help', '/help <command>', '/health']);
 assert.deepStrictEqual(forms('/STATUS'), [], 'an exact command has nothing left to complete');
 assert.strictEqual(forms('/').length, 6, 'the list stays short');
 assert.deepStrictEqual(forms('/radio r'), ['/radio region <americas|europe|uhf433|australia|asia>']);
 assert.deepStrictEqual(forms('status'), [], 'only slash commands');
 assert.deepStrictEqual(forms('/status\nmore'), []);
-for (const command of ['/help', '/status', '/stats', '/neighbors', '/settings', '/radio', '/managers',
-    '/add-admin', '/remove', '/announce', '/start', '/stop', '/reboot', '/nearby-only', '/update', '/confirm']) {
-    assert(source.includes("form: '" + command), command + ' is offered');
+const offered = rs._commands.map((c) => c.form);
+for (const command of ['/help', '/help <command>', '/status', '/stats', '/neighbors', '/settings', '/radio',
+    '/managers', '/add-admin <address>', '/remove <address>', '/announce <off|10m|30m|60m|<N>h>', '/start', '/stop',
+    '/reboot', '/nearby-only <on|off>', '/update', '/confirm <code>', '/ping [text]', '/echo <text>', '/signal',
+    '/version', '/health', '/network', '/paths [n]', '/log', '/whoami', '/stamps', '/blink', '/announce now',
+    '/reset-stats']) {
+    assert(offered.includes(command), command + ' is offered');
 }
+assert.strictEqual(new Set(offered).size, offered.length, 'no command is listed twice');
+
+// Every command sits in a group, and Owner-only ones say so.
+const groups = [...new Set(rs._commands.map((c) => c.group))];
+assert.deepStrictEqual(groups, ['Status', 'Diagnostics', 'Settings', 'Managers', 'Control']);
+assert(rs._commands.every((c) => c.hint && c.group));
+const ownerOnly = rs._commands.filter((c) => c.owner).map((c) => c.form);
+for (const command of ['/reset-stats', '/announce now', '/announce <off|10m|30m|60m|<N>h>', '/start', '/stop',
+    '/reboot', '/nearby-only <on|off>', '/add-admin <address>', '/remove <address>', '/settings wifi off',
+    '/radio power <dBm>']) {
+    assert(ownerOnly.includes(command), command + ' is Owner-only');
+}
+for (const command of ['/help', '/status', '/settings', '/radio', '/managers', '/ping [text]', '/signal',
+    '/whoami', '/blink', '/update', '/confirm <code>']) {
+    assert(!ownerOnly.includes(command), command + ' is for every manager');
+}
+const reset = rs._commands.find((c) => c.form === '/reset-stats');
+assert.strictEqual(rs._hintText(reset), 'Zero the counters · Owner only');
+assert.strictEqual(rs._hintText(rs._commands.find((c) => c.form === '/signal')), 'How your message arrived');
+const all = rs._allHtml();
+assert.strictEqual(all.split('rsnode-suggest-group').length - 1, 5, 'one heading per group');
+assert.strictEqual(all.split('data-rsnode-fill=').length - 1, rs._commands.length, 'every command is listed');
+assert(all.indexOf('>Diagnostics<') < all.indexOf('/ping [text]') && all.indexOf('/ping [text]') < all.indexOf('>Settings<'));
+assert.deepStrictEqual(JSON.parse(JSON.stringify(rs._quick)), ['/status', '/stats', '/signal', '/ping', '/help']);
+assert(rs._quick.every((q) => offered.some((f) => f === q || f.startsWith(q + ' ['))), 'quick chips are real commands');
 
 // The status card reads the newest /status and /stats results.
 const messages = [

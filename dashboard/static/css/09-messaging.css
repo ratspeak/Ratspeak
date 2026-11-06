@@ -3130,6 +3130,14 @@ html[data-input-modality="touch"] .msg-context-actions { min-width: 240px; }
     text-align: left;
     cursor: pointer;
 }
+.rsnode-suggest-group {
+    padding: var(--space-5) var(--space-6) var(--space-2);
+    color: var(--text-muted);
+    font-size: var(--type-section-label-size);
+    font-weight: var(--type-section-label-weight);
+    text-transform: uppercase;
+    letter-spacing: var(--type-section-label-tracking);
+}
 .rsnode-suggest-item code { font-family: var(--font-mono); font-size: var(--text-xs); }
 .rsnode-suggest-item span { color: var(--text-muted); font-size: var(--type-row-meta-size); }
 .rsnode-suggest-item:hover,
