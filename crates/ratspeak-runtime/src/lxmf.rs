@@ -3450,19 +3450,7 @@ impl LxmfManager {
     }
 
     pub fn get_contacts_list(&self, db_pool: &DbPool, identity_id: &str) -> Vec<Value> {
-        db::get_all_contacts(db_pool, identity_id)
-            .into_iter()
-            .map(|c| {
-                json!({
-                    "hash": c.get("dest_hash"),
-                    "display_name": c.get("display_name"),
-                    "trust": c.get("trust"),
-                    "notes": c.get("notes"),
-                    "first_seen": c.get("first_seen"),
-                    "last_seen": c.get("last_seen"),
-                })
-            })
-            .collect()
+        crate::contact_list_payload(db::get_all_contacts(db_pool, identity_id))
     }
 
     pub fn get_conversation(

@@ -1822,20 +1822,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                 })
                 .await
                 .expect("db task panicked");
-                let contacts_list: Vec<serde_json::Value> = contacts
-                    .into_iter()
-                    .map(|c| {
-                        serde_json::json!({
-                            "hash": c.get("dest_hash"),
-                            "display_name": c.get("display_name"),
-                            "trust": c.get("trust"),
-                            "notes": c.get("notes"),
-                            "first_seen": c.get("first_seen"),
-                            "last_seen": c.get("last_seen"),
-                            "services": c.get("services"),
-                        })
-                    })
-                    .collect();
+                let contacts_list: Vec<serde_json::Value> = contact_list_payload(contacts);
                 state.emit_to_all("contacts_update", serde_json::json!(contacts_list));
             }
 
@@ -5355,21 +5342,23 @@ pub(crate) async fn read_inbound_lists(
     .ok()
 }
 
-pub(crate) fn contact_list_payload(contacts: Vec<Value>) -> Vec<Value> {
-    contacts
-        .into_iter()
-        .map(|c| {
-            json!({
-                "hash": c.get("dest_hash"),
-                "display_name": c.get("display_name"),
-                "trust": c.get("trust"),
-                "notes": c.get("notes"),
-                "first_seen": c.get("first_seen"),
-                "last_seen": c.get("last_seen"),
-                "services": c.get("services"),
-            })
-        })
-        .collect()
+/// The one contact payload every list and event carries.
+pub fn contact_payload(c: &Value) -> Value {
+    json!({
+        "hash": c.get("dest_hash"),
+        "display_name": c.get("display_name"),
+        "trust": c.get("trust"),
+        "notes": c.get("notes"),
+        "first_seen": c.get("first_seen"),
+        "last_seen": c.get("last_seen"),
+        "services": c.get("services"),
+        "kind": c.get("kind"),
+        "caps": c.get("caps"),
+    })
+}
+
+pub fn contact_list_payload(contacts: Vec<Value>) -> Vec<Value> {
+    contacts.iter().map(contact_payload).collect()
 }
 
 /// Whether `msg_id` is still stored: a bulk delete that committed after the
@@ -6552,20 +6541,7 @@ async fn poll_stats_loop(
                         })
                         .await
                         .expect("db task panicked");
-                        let contacts_list: Vec<serde_json::Value> = contacts
-                            .into_iter()
-                            .map(|c| {
-                                json!({
-                                    "hash": c.get("dest_hash"),
-                                    "display_name": c.get("display_name"),
-                                    "trust": c.get("trust"),
-                                    "notes": c.get("notes"),
-                                    "first_seen": c.get("first_seen"),
-                                    "last_seen": c.get("last_seen"),
-                                    "services": c.get("services"),
-                                })
-                            })
-                            .collect();
+                        let contacts_list: Vec<serde_json::Value> = contact_list_payload(contacts);
                         publish_in_session(&state, poll_generation, || {
                             state.emit_to_all("contacts_update", serde_json::json!(contacts_list))
                         })

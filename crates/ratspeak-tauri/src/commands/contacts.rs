@@ -28,21 +28,7 @@ pub async fn api_contacts(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
         tracing::error!(reason = "task_panicked", "contacts db task panicked");
         Default::default()
     });
-    let result: Vec<Value> = contacts
-        .into_iter()
-        .map(|c| {
-            json!({
-                "hash": c.get("dest_hash"),
-                "display_name": c.get("display_name"),
-                "trust": c.get("trust"),
-                "notes": c.get("notes"),
-                "first_seen": c.get("first_seen"),
-                "last_seen": c.get("last_seen"),
-                "services": c.get("services"),
-            })
-        })
-        .collect();
-    Ok(json!(result))
+    Ok(json!(format_contacts_list(&contacts)))
 }
 
 #[tauri::command]

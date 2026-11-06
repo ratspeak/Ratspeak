@@ -376,17 +376,7 @@ pub(crate) fn hub_interfaces_payload(state: &AppState, mut ifaces: Value) -> Val
 pub(crate) fn format_contacts_list(contacts: &[Value]) -> Vec<Value> {
     contacts
         .iter()
-        .map(|c| {
-            json!({
-                "hash": c.get("dest_hash"),
-                "display_name": c.get("display_name"),
-                "trust": c.get("trust"),
-                "notes": c.get("notes"),
-                "first_seen": c.get("first_seen"),
-                "last_seen": c.get("last_seen"),
-                "services": c.get("services"),
-            })
-        })
+        .map(ratspeak_runtime::contact_payload)
         .collect()
 }
 

@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-pub(crate) const SCHEMA_VERSION: i64 = 48;
+pub(crate) const SCHEMA_VERSION: i64 = 49;
 
 const VOICE_FORMAT_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS conversation_voice_formats (
@@ -38,6 +38,32 @@ CREATE TABLE IF NOT EXISTS conversation_thread_counters (
     last_number INTEGER NOT NULL,
     PRIMARY KEY (identity_id, peer_hash)
 );";
+// rsNode management: decoded FIELD_RESULTS per message, and firmware
+// transfers keyed by contact and image so they resume across restarts.
+const RSNODE_SCHEMA_SQL: &str = "
+CREATE TABLE IF NOT EXISTS message_results (
+    message_id TEXT NOT NULL,
+    identity_id TEXT NOT NULL,
+    results TEXT NOT NULL,
+    PRIMARY KEY (message_id, identity_id)
+);
+CREATE TRIGGER IF NOT EXISTS message_results_ad AFTER DELETE ON messages BEGIN
+    DELETE FROM message_results WHERE message_id = old.id AND identity_id = old.identity_id;
+END;
+CREATE TABLE IF NOT EXISTS rsnode_updates (
+    identity_id TEXT NOT NULL,
+    contact TEXT NOT NULL CHECK (length(contact) = 32),
+    image_sha256 TEXT NOT NULL CHECK (length(image_sha256) = 64),
+    release TEXT NOT NULL DEFAULT '',
+    stage TEXT NOT NULL,
+    sent INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    baseline TEXT,
+    detail TEXT NOT NULL DEFAULT '',
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (identity_id, contact, image_sha256)
+);";
+
 // Applied after `messages` exists; migrations only add the column.
 const CONVERSATION_THREADS_INDEX_SQL: &str = "CREATE INDEX IF NOT EXISTS idx_messages_thread ON messages(identity_id, thread) WHERE thread != '';";
 
@@ -243,6 +269,7 @@ pub fn init_schema(pool: &DbPool) -> Result<(), Box<dyn std::error::Error + Send
     tx.execute_batch(VOICE_FORMAT_SCHEMA_SQL)?;
     tx.execute_batch(CONVERSATION_THREADS_SCHEMA_SQL)?;
     tx.execute_batch(CONVERSATION_THREADS_INDEX_SQL)?;
+    tx.execute_batch(RSNODE_SCHEMA_SQL)?;
     tx.execute_batch(CHANNEL_HISTORY_SCHEMA_SQL)?;
     tx.execute_batch(CHANNEL_ROOM_STATE_SCHEMA_SQL)?;
     tx.execute_batch(CHANNEL_PARTICIPANT_OBSERVATION_SCHEMA_SQL)?;
@@ -290,6 +317,8 @@ CREATE TABLE IF NOT EXISTS contacts (
     last_seen REAL,
     trust TEXT DEFAULT 'pending',
     notes TEXT DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'person',
+    caps TEXT NOT NULL DEFAULT '',
     UNIQUE(dest_hash, identity_id)
 );
 
@@ -2039,6 +2068,30 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 49 {
+        migration_step(conn, 49, |conn| {
+            if table_exists(conn, "contacts")? {
+                let columns = get_column_names(conn, "contacts")?;
+                if !columns.iter().any(|column| column == "kind") {
+                    conn.execute_batch(
+                        "ALTER TABLE contacts ADD COLUMN kind TEXT NOT NULL DEFAULT 'person';",
+                    )?;
+                }
+                if !columns.iter().any(|column| column == "caps") {
+                    conn.execute_batch(
+                        "ALTER TABLE contacts ADD COLUMN caps TEXT NOT NULL DEFAULT '';",
+                    )?;
+                }
+            }
+            if table_exists(conn, "messages")? {
+                conn.execute_batch(RSNODE_SCHEMA_SQL)?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 49;")?;
+            tracing::info!("Migrated to schema version 49 (rsNode contacts and results)");
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -2296,6 +2349,8 @@ pub const RESET_TABLES: &[&str] = &[
     "conversation_voice_formats",
     "conversation_threads",
     "conversation_thread_counters",
+    "message_results",
+    "rsnode_updates",
     "messages",
     "contacts",
     "identities",
@@ -2423,8 +2478,16 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
         "conversation_thread_counters",
         "DELETE FROM conversation_thread_counters WHERE identity_id = ?1",
     ),
+    (
+        "rsnode_updates",
+        "DELETE FROM rsnode_updates WHERE identity_id = ?1",
+    ),
     ("contacts", "DELETE FROM contacts WHERE identity_id = ?1"),
     ("messages", "DELETE FROM messages WHERE identity_id = ?1"),
+    (
+        "message_results",
+        "DELETE FROM message_results WHERE identity_id = ?1",
+    ),
 ];
 
 pub fn delete_identity(pool: &DbPool, hash_hex: &str, cascade: bool) -> Result<(), String> {
@@ -2529,12 +2592,9 @@ pub fn delete_contact(pool: &DbPool, dest_hash: &str, identity_id: &str) {
     .ok();
 }
 
-pub fn get_all_contacts(pool: &DbPool, identity_id: &str) -> Vec<serde_json::Value> {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return vec![],
-    };
-    let mut stmt = match conn.prepare(
+// `row_to_contact` reads these positions.
+macro_rules! contact_select_sql {
+    () => {
         "SELECT
             c.dest_hash,
             c.identity_id,
@@ -2544,12 +2604,24 @@ pub fn get_all_contacts(pool: &DbPool, identity_id: &str) -> Vec<serde_json::Val
             c.last_seen,
             c.trust,
             c.notes,
-            COALESCE(ia.services, '') AS services
+            COALESCE(ia.services, '') AS services,
+            c.kind,
+            c.caps
          FROM contacts c
-         LEFT JOIN identity_activity ia ON ia.dest_hash = c.dest_hash
-         WHERE c.identity_id = ?1
-         ORDER BY c.display_name",
-    ) {
+         LEFT JOIN identity_activity ia ON ia.dest_hash = c.dest_hash"
+    };
+}
+const CONTACTS_FOR_IDENTITY_SQL: &str = concat!(
+    contact_select_sql!(),
+    " WHERE c.identity_id = ?1 ORDER BY c.display_name"
+);
+
+pub fn get_all_contacts(pool: &DbPool, identity_id: &str) -> Vec<serde_json::Value> {
+    let conn = match pool.get() {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare(CONTACTS_FOR_IDENTITY_SQL) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
@@ -2560,22 +2632,7 @@ pub fn get_all_contacts(pool: &DbPool, identity_id: &str) -> Vec<serde_json::Val
 }
 
 pub fn get_all_contacts_conn(conn: &Connection, identity_id: &str) -> Vec<serde_json::Value> {
-    let mut stmt = match conn.prepare(
-        "SELECT
-            c.dest_hash,
-            c.identity_id,
-            c.display_name,
-            c.identity_pubkey,
-            c.first_seen,
-            c.last_seen,
-            c.trust,
-            c.notes,
-            COALESCE(ia.services, '') AS services
-         FROM contacts c
-         LEFT JOIN identity_activity ia ON ia.dest_hash = c.dest_hash
-         WHERE c.identity_id = ?1
-         ORDER BY c.display_name",
-    ) {
+    let mut stmt = match conn.prepare(CONTACTS_FOR_IDENTITY_SQL) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
@@ -2636,10 +2693,250 @@ pub fn fill_unnamed_contact_names(
 pub fn get_contact(pool: &DbPool, dest_hash: &str, identity_id: &str) -> Option<serde_json::Value> {
     let conn = pool.get().ok()?;
     let mut stmt = conn
-        .prepare("SELECT * FROM contacts WHERE dest_hash = ?1 AND identity_id = ?2")
+        .prepare(concat!(
+            contact_select_sql!(),
+            " WHERE c.dest_hash = ?1 AND c.identity_id = ?2"
+        ))
         .ok()?;
     stmt.query_row(params![dest_hash, identity_id], row_to_contact)
         .ok()
+}
+
+pub const CONTACT_KIND_PERSON: &str = "person";
+pub const CONTACT_KIND_DEVICE: &str = "device";
+/// Speaks the rsNode messaging-management contract.
+pub const CONTACT_CAP_RSNODE: &str = "rsnode";
+
+fn parse_contact_caps(raw: &str) -> Vec<String> {
+    let mut caps: Vec<String> = Vec::new();
+    for cap in raw.split(',').map(str::trim).filter(|cap| !cap.is_empty()) {
+        if !caps.iter().any(|known| known == cap) {
+            caps.push(cap.to_owned());
+        }
+    }
+    caps
+}
+
+/// Record a contact's kind and capabilities as a card states them.
+pub fn set_contact_kind(
+    pool: &DbPool,
+    dest_hash: &str,
+    identity_id: &str,
+    kind: &str,
+    caps: &[String],
+) -> bool {
+    let Ok(conn) = pool.get() else {
+        return false;
+    };
+    conn.execute(
+        "UPDATE contacts SET kind = ?1, caps = ?2 WHERE dest_hash = ?3 AND identity_id = ?4",
+        params![kind, caps.join(","), dest_hash, identity_id],
+    )
+    .is_ok_and(|changed| changed > 0)
+}
+
+/// Mark an existing contact as an rsNode device; true when that changed it.
+pub fn mark_contact_rsnode_device(pool: &DbPool, dest_hash: &str, identity_id: &str) -> bool {
+    let Ok(conn) = pool.get() else {
+        return false;
+    };
+    let Ok(Some((kind, caps))) = conn
+        .query_row(
+            "SELECT kind, caps FROM contacts WHERE dest_hash = ?1 AND identity_id = ?2",
+            params![dest_hash, identity_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()
+    else {
+        return false;
+    };
+    let mut caps = parse_contact_caps(&caps);
+    let had_cap = caps.iter().any(|cap| cap == CONTACT_CAP_RSNODE);
+    if kind == CONTACT_KIND_DEVICE && had_cap {
+        return false;
+    }
+    if !had_cap {
+        caps.push(CONTACT_CAP_RSNODE.to_owned());
+    }
+    conn.execute(
+        "UPDATE contacts SET kind = ?1, caps = ?2 WHERE dest_hash = ?3 AND identity_id = ?4",
+        params![CONTACT_KIND_DEVICE, caps.join(","), dest_hash, identity_id],
+    )
+    .is_ok_and(|changed| changed > 0)
+}
+
+/// Store a message's decoded FIELD_RESULTS (a JSON object).
+pub fn save_message_results(
+    pool: &DbPool,
+    message_id: &str,
+    identity_id: &str,
+    results: &serde_json::Value,
+) -> bool {
+    let Ok(conn) = pool.get() else {
+        return false;
+    };
+    conn.execute(
+        "INSERT OR REPLACE INTO message_results (message_id, identity_id, results)
+         VALUES (?1, ?2, ?3)",
+        params![message_id, identity_id, results.to_string()],
+    )
+    .is_ok()
+}
+
+fn get_message_results_batch(
+    conn: &Connection,
+    message_ids: &[String],
+    identity_id: &str,
+) -> std::collections::HashMap<String, serde_json::Value> {
+    let mut out = std::collections::HashMap::new();
+    for chunk in message_ids.chunks(500) {
+        let placeholders = vec!["?"; chunk.len()].join(",");
+        let sql = format!(
+            "SELECT message_id, results FROM message_results
+             WHERE identity_id = ? AND message_id IN ({placeholders})"
+        );
+        let Ok(mut stmt) = conn.prepare(&sql) else {
+            continue;
+        };
+        let params = std::iter::once(&identity_id as &dyn rusqlite::ToSql)
+            .chain(chunk.iter().map(|id| id as &dyn rusqlite::ToSql))
+            .collect::<Vec<_>>();
+        let Ok(rows) = stmt.query_map(params.as_slice(), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        }) else {
+            continue;
+        };
+        for (id, raw) in rows.filter_map(Result::ok) {
+            if let Ok(value) = serde_json::from_str(&raw) {
+                out.insert(id, value);
+            }
+        }
+    }
+    out
+}
+
+/// Attach each message's `results` (or null) in place.
+fn attach_message_results(
+    conn: &Connection,
+    messages: &mut [serde_json::Value],
+    identity_id: &str,
+) {
+    let ids: Vec<String> = messages
+        .iter()
+        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_owned))
+        .collect();
+    let mut results = get_message_results_batch(conn, &ids, identity_id);
+    for message in messages {
+        let id = message.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let value = results.remove(id).unwrap_or(serde_json::Value::Null);
+        if let Some(object) = message.as_object_mut() {
+            object.insert("results".into(), value);
+        }
+    }
+}
+
+/// One firmware transfer to an rsNode, as persisted between attempts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RsnodeUpdateRow {
+    pub contact: String,
+    pub image_sha256: String,
+    pub release: String,
+    pub stage: String,
+    pub sent: u32,
+    pub total: u32,
+    /// The node's status before the transfer, as the service encodes it.
+    pub baseline: Option<String>,
+    pub detail: String,
+    pub updated_at: f64,
+}
+
+fn row_to_rsnode_update(row: &rusqlite::Row<'_>) -> rusqlite::Result<RsnodeUpdateRow> {
+    Ok(RsnodeUpdateRow {
+        contact: row.get(0)?,
+        image_sha256: row.get(1)?,
+        release: row.get(2)?,
+        stage: row.get(3)?,
+        sent: row.get::<_, i64>(4)?.clamp(0, u32::MAX as i64) as u32,
+        total: row.get::<_, i64>(5)?.clamp(0, u32::MAX as i64) as u32,
+        baseline: row.get(6)?,
+        detail: row.get(7)?,
+        updated_at: row.get(8)?,
+    })
+}
+
+const RSNODE_UPDATE_COLUMNS: &str =
+    "contact, image_sha256, release, stage, sent, total, baseline, detail, updated_at";
+
+pub fn save_rsnode_update(pool: &DbPool, identity_id: &str, row: &RsnodeUpdateRow) -> bool {
+    let Ok(conn) = pool.get() else {
+        return false;
+    };
+    conn.execute(
+        "INSERT INTO rsnode_updates
+            (identity_id, contact, image_sha256, release, stage, sent, total, baseline, detail, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+         ON CONFLICT(identity_id, contact, image_sha256) DO UPDATE SET
+            release = excluded.release, stage = excluded.stage, sent = excluded.sent,
+            total = excluded.total, baseline = excluded.baseline, detail = excluded.detail,
+            updated_at = excluded.updated_at",
+        params![
+            identity_id,
+            row.contact,
+            row.image_sha256,
+            row.release,
+            row.stage,
+            i64::from(row.sent),
+            i64::from(row.total),
+            row.baseline,
+            row.detail,
+            row.updated_at,
+        ],
+    )
+    .is_ok()
+}
+
+pub fn get_rsnode_update(
+    pool: &DbPool,
+    identity_id: &str,
+    contact: &str,
+    image_sha256: &str,
+) -> Option<RsnodeUpdateRow> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        &format!(
+            "SELECT {RSNODE_UPDATE_COLUMNS} FROM rsnode_updates
+             WHERE identity_id = ?1 AND contact = ?2 AND image_sha256 = ?3"
+        ),
+        params![identity_id, contact, image_sha256],
+        row_to_rsnode_update,
+    )
+    .optional()
+    .ok()
+    .flatten()
+}
+
+/// Every transfer of this identity whose stage is one of `stages`, newest first.
+pub fn rsnode_updates_in_stages(
+    pool: &DbPool,
+    identity_id: &str,
+    stages: &[&str],
+) -> Vec<RsnodeUpdateRow> {
+    let Ok(conn) = pool.get() else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(&format!(
+        "SELECT {RSNODE_UPDATE_COLUMNS} FROM rsnode_updates
+         WHERE identity_id = ?1 ORDER BY updated_at DESC"
+    )) else {
+        return Vec::new();
+    };
+    stmt.query_map(params![identity_id], row_to_rsnode_update)
+        .map(|rows| {
+            rows.filter_map(Result::ok)
+                .filter(|row| stages.contains(&row.stage.as_str()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub fn block_contact(pool: &DbPool, dest_hash: &str, display_name: &str, identity_id: &str) {
@@ -3721,14 +4018,19 @@ pub fn get_message_for_identity(
     identity_id: &str,
 ) -> Option<serde_json::Value> {
     let conn = pool.get().ok()?;
-    conn.query_row(
-        "SELECT * FROM messages WHERE id = ?1 AND identity_id = ?2",
-        params![msg_id, identity_id],
-        row_to_message,
-    )
-    .optional()
-    .ok()
-    .flatten()
+    let message = conn
+        .query_row(
+            "SELECT * FROM messages WHERE id = ?1 AND identity_id = ?2",
+            params![msg_id, identity_id],
+            row_to_message,
+        )
+        .optional()
+        .ok()
+        .flatten()?;
+    let mut messages = [message];
+    attach_message_results(&conn, &mut messages, identity_id);
+    let [message] = messages;
+    Some(message)
 }
 
 /// One-way lattice: terminal states (delivered/propagated/failed/cancelled/rejected/timeout/paper)
@@ -3830,6 +4132,8 @@ fn get_conversation_scoped(
         .map(|rows| rows.filter_map(|r| r.ok()).collect())
         .unwrap_or_default();
 
+    let mut rows = rows;
+    attach_message_results(&conn, &mut rows, identity_id);
     let msg_ids: Vec<String> = rows
         .iter()
         .filter_map(|m: &serde_json::Value| {
@@ -10045,6 +10349,8 @@ fn row_to_contact(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
         "trust": row.get::<_, String>(6).unwrap_or("pending".into()),
         "notes": row.get::<_, String>(7).unwrap_or_default(),
         "services": parse_peer_services(row.get::<_, String>(8).unwrap_or_default()),
+        "kind": row.get::<_, String>(9).unwrap_or_else(|_| CONTACT_KIND_PERSON.into()),
+        "caps": parse_contact_caps(&row.get::<_, String>(10).unwrap_or_default()),
     }))
 }
 
@@ -12356,6 +12662,142 @@ mod migration_tests {
         drop(conn);
         let messages = get_conversation(&pool, "source", "identity", 10);
         assert!(messages[0]["renderer"].is_null());
+    }
+
+    #[test]
+    fn migration_49_adds_contact_kind_and_rsnode_tables() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "DROP TRIGGER message_results_ad;
+                 DROP TABLE message_results;
+                 DROP TABLE rsnode_updates;
+                 ALTER TABLE contacts DROP COLUMN caps;
+                 ALTER TABLE contacts DROP COLUMN kind;
+                 INSERT INTO contacts (dest_hash, identity_id, display_name, first_seen, last_seen)
+                 VALUES ('node', 'identity', 'Node', 1.0, 1.0);
+                 UPDATE schema_version SET version = 48;",
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+        let conn = pool.get().unwrap();
+        assert!(table_exists(&conn, "message_results").unwrap());
+        assert!(table_exists(&conn, "rsnode_updates").unwrap());
+        drop(conn);
+        let contact = get_contact(&pool, "node", "identity").unwrap();
+        assert_eq!(contact["kind"], "person");
+        assert_eq!(contact["caps"], serde_json::json!([]));
+        assert_eq!(contact["display_name"], "Node");
+    }
+
+    #[test]
+    fn contact_kind_caps_and_rsnode_upgrade() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        assert!(
+            !mark_contact_rsnode_device(&pool, "node", "identity"),
+            "no contact, no upgrade"
+        );
+        save_contact(&pool, "node", Some("Node"), "trusted", "identity");
+        let caps = vec!["rsnode.update".to_string(), "future".to_string()];
+        assert!(set_contact_kind(&pool, "node", "identity", "device", &caps));
+        assert!(mark_contact_rsnode_device(&pool, "node", "identity"));
+        assert!(
+            !mark_contact_rsnode_device(&pool, "node", "identity"),
+            "already one"
+        );
+        let all = get_all_contacts(&pool, "identity");
+        assert_eq!(all[0]["kind"], "device");
+        assert_eq!(
+            all[0]["caps"],
+            serde_json::json!(["rsnode.update", "future", "rsnode"])
+        );
+        // A later card is authoritative for kind and caps.
+        assert!(set_contact_kind(&pool, "node", "identity", "person", &[]));
+        assert_eq!(
+            get_contact(&pool, "node", "identity").unwrap()["kind"],
+            "person"
+        );
+    }
+
+    #[test]
+    fn message_results_ride_history_and_leave_with_their_message() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        for id in ["with", "without"] {
+            try_save_message(
+                &pool, id, "node", "me", "reply", "", 1.0, "received", "inbound", "identity", "",
+                "", "", "", "", "", None,
+            )
+            .unwrap();
+        }
+        let results = serde_json::json!({"schema": 1, "command": "status"});
+        assert!(save_message_results(&pool, "with", "identity", &results));
+        let history = get_conversation(&pool, "node", "identity", 10);
+        let by_id = |id: &str| history.iter().find(|m| m["id"] == id).unwrap().clone();
+        assert_eq!(by_id("with")["results"], results);
+        assert!(by_id("without")["results"].is_null());
+        assert_eq!(
+            get_message_for_identity(&pool, "with", "identity").unwrap()["results"],
+            results
+        );
+        assert!(get_conversation(&pool, "node", "other", 10).is_empty());
+        pool.get()
+            .unwrap()
+            .execute("DELETE FROM messages WHERE id = 'with'", [])
+            .unwrap();
+        let left: i64 = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM message_results", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn rsnode_updates_persist_by_contact_and_image() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        let mut row = RsnodeUpdateRow {
+            contact: "aa".repeat(16),
+            image_sha256: "bb".repeat(32),
+            release: "1.0.1".into(),
+            stage: "transfer".into(),
+            sent: 0,
+            total: 1_000,
+            baseline: None,
+            detail: String::new(),
+            updated_at: 1.0,
+        };
+        assert!(save_rsnode_update(&pool, "identity", &row));
+        row.sent = 420;
+        row.baseline = Some("0102".into());
+        row.updated_at = 2.0;
+        assert!(save_rsnode_update(&pool, "identity", &row));
+        let other = RsnodeUpdateRow {
+            image_sha256: "cc".repeat(32),
+            stage: "rolled_back".into(),
+            ..row.clone()
+        };
+        assert!(save_rsnode_update(&pool, "identity", &other));
+        assert_eq!(
+            get_rsnode_update(&pool, "identity", &row.contact, &row.image_sha256),
+            Some(row.clone())
+        );
+        let open = rsnode_updates_in_stages(&pool, "identity", &["transfer", "verify"]);
+        assert_eq!(open, vec![row.clone()]);
+        assert!(rsnode_updates_in_stages(&pool, "other", &["transfer"]).is_empty());
+        // A bad contact or image hash never lands.
+        let bad = RsnodeUpdateRow {
+            contact: "short".into(),
+            ..row
+        };
+        assert!(!save_rsnode_update(&pool, "identity", &bad));
     }
 
     #[test]
