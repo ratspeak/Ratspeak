@@ -502,7 +502,10 @@
                             </button>
                             <div class="lxmf-chat-header-avatar" id="lxmf-contact-avatar"></div>
                             <div class="lxmf-chat-header-info">
-                                <span class="lxmf-chat-header-name" id="lxmf-chat-header-name"></span>
+                                <span class="lxmf-chat-header-title">
+                                    <span class="lxmf-chat-header-name" id="lxmf-chat-header-name"></span>
+                                    <span class="rsnode-badge" id="lxmf-rsnode-badge" hidden>rsNode</span>
+                                </span>
                                 <span class="lxmf-chat-header-status" id="lxmf-chat-header-status"></span>
                                 <button type="button" class="conv-thread-chip" id="lxmf-thread-chip" hidden></button>
                             </div>
@@ -520,6 +523,7 @@
                         </div>
                         <div class="conv-thread-tabs" id="lxmf-thread-tabs" role="tablist" aria-label="Conversations" hidden></div>
                         <div class="conv-thread-note" id="lxmf-thread-note" hidden></div>
+                        <section class="rsnode-panel" id="rsnode-panel" aria-label="Node status" hidden></section>
                         <div class="lxmf-select-bar" id="lxmf-select-bar" role="toolbar" aria-label="Selected messages" hidden>
                             <button class="lxmf-select-bar-btn" id="lxmf-select-cancel-btn" type="button">Cancel</button>
                             <span class="sr-only" id="lxmf-select-status" aria-live="polite"></span>
@@ -603,6 +607,8 @@
                                 </button>
                             </span>
                         </div>
+                        <div class="rsnode-commands" id="rsnode-commands" role="toolbar" aria-label="Node commands" hidden></div>
+                        <div class="rsnode-suggest" id="rsnode-suggest" role="listbox" aria-label="Commands" hidden></div>
                         <div class="lxmf-compose message-composer" id="lxmf-compose-bar" style="display:none;">
                             <input type="file" id="lxmf-file-input" style="display:none;">
                             <input type="file" id="lxmf-photos-input" accept="image/*,video/*" style="display:none;">
@@ -2163,6 +2169,7 @@
 <script src="/static/js/markdown.js?v=ui-20260924-4"></script>
 <script src="/static/js/lxmf.js?v=ui-20260924-4"></script>
 <script src="/static/js/conversation_threads.js?v=ui-20260924-4"></script>
+<script src="/static/js/rsnode_device.js?v=ui-20260924-4"></script>
 <script src="/static/js/message_search.js?v=ui-20260924-4"></script>
 <script src="/static/js/voice_memos.js?v=ui-20260924-4"></script>
 <script src="/static/js/channels.js?v=ui-20260924-4"></script>

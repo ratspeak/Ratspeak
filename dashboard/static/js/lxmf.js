@@ -1229,6 +1229,7 @@ function normalizeContactRecord(c) {
     hash = _canonicalConversationHash(hash);
     if (!hash) return null;
     var services = Array.isArray(c.services) ? c.services.slice() : [];
+    var caps = Array.isArray(c.caps) ? c.caps.slice() : [];
     return {
         hash: hash,
         display_name: c.display_name || '',
@@ -1237,7 +1238,11 @@ function normalizeContactRecord(c) {
         first_seen: c.first_seen,
         last_seen: c.last_seen,
         services: services,
-        supports_ratspeak: services.indexOf('ratspeak.client') !== -1
+        supports_ratspeak: services.indexOf('ratspeak.client') !== -1,
+        // Unknown kinds read as person; the raw value is kept.
+        kind: c.kind || 'person',
+        caps: caps,
+        is_rsnode: c.kind === 'device' && caps.indexOf('rsnode') !== -1
     };
 }
 
@@ -1834,6 +1839,11 @@ function _messageDeliveryMethod(msg) {
 
 function _messageIsPaper(msg) {
     return !!msg && (msg.state === 'paper' || _messageDeliveryMethod(msg) === 'paper');
+}
+
+// Local notes (rsNode update outcomes) are never sent and never alert.
+function _messageIsNote(msg) {
+    return !!msg && msg.direction === 'note';
 }
 
 // Paper never touches the network, so it replaces the delivery icon.
@@ -3711,6 +3721,7 @@ function renderConversation(options) {
         }
     }
     if (RS.threads) RS.threads.render();
+    if (RS.rsnode) RS.rsnode.render();
     renderVoiceUi();
 
     if (!lxmfActiveContact) {
@@ -3757,6 +3768,11 @@ function renderConversation(options) {
             (msg.timestamp - msgs[mi - 1].timestamp < 180) && dateLabel === _formatDateLabel(msgs[mi - 1].timestamp);
         var sameSenderAsNext = (mi < msgs.length - 1) && msgs[mi + 1].direction === msg.direction &&
             (msgs[mi + 1].timestamp - msg.timestamp < 180) && _formatDateLabel(msgs[mi + 1].timestamp) === dateLabel;
+        if (_messageIsNote(msg)) {
+            htmlParts.push('<div class="msg-note" data-msg-id="' + escapeHtml(msg.id || '') + '"><span>' +
+                escapeHtml(msg.content || '') + '</span><time>' + escapeHtml(formatTime(msg.timestamp)) + '</time></div>');
+            continue;
+        }
         var groupClass = '';
         if (sameSenderAsPrev && sameSenderAsNext) groupClass = ' msg-group-middle';
         else if (sameSenderAsPrev) groupClass = ' msg-group-last';
@@ -4272,7 +4288,10 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
     var input = document.getElementById('lxmf-input');
     if (!input) return;
     var shouldRestoreComposerFocus = _consumeLxmfSendFocusState(input);
-    var composed = _prepareComposedMessage(input.value.trim());
+    // A node reads commands as plain text.
+    var composed = RS.rsnode && RS.rsnode.isDevice(targetHash)
+        ? { content: input.value.trim(), renderer: null, preview: input.value.trim() }
+        : _prepareComposedMessage(input.value.trim());
     var text = composed.content;
     var renderer = composed.renderer;
     var chosenDelivery = _deliveryPrefOrAuto(deliveryMethod);
@@ -4944,6 +4963,10 @@ function attachSharedImage(image, nativeStage) {
 function handleFileSelected(inputEl) {
     var file = inputEl.files[0];
     if (!file) return;
+    if (RS.rsnode && RS.rsnode.interceptFile(file, lxmfActiveContact)) {
+        inputEl.value = '';
+        return;
+    }
 
     var maxSize = lxmfLimits.max_attachment_bytes || 128000000;
     if (file.size > maxSize) {
@@ -6675,7 +6698,7 @@ RS.listen('lxmf_message', function(msg) {
         _refreshActiveConversationThreads();
     }
     // Paper rows are filed by the user's own action, so they never alert.
-    if (_messageIsPaper(msg)) return;
+    if (_messageIsPaper(msg) || _messageIsNote(msg)) return;
     if (appForeground && !conversationVisible) {
         var fromLabel = _messageSourceName(msg);
         var hasAudio = !!msg.audio;

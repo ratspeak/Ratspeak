@@ -5,6 +5,11 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+### Added
+
+- **rsNode Repeaters**: manage a node by messaging it. Its conversation shows an rsNode badge, a command bar, and a status card, and dropping or choosing a `.rsota` file there updates its firmware.
+- Contact cards now use the RSCP2 format, which can mark a device. Cards from earlier releases still import, but Ratspeak 1.0.41 and earlier cannot read new cards.
+
 ## [1.0.41] - 2026-11-05
 
 ### Added
