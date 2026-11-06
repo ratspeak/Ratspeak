@@ -307,6 +307,7 @@ pub const ratspeak_db::db::PUBLIC_CHANNEL_CONSENT_VERSION: u16
 pub const ratspeak_db::db::RESET_TABLES: &[&str]
 pub const ratspeak_db::db::SOFT_CAP_IDENTITIES: usize
 pub fn ratspeak_db::db::activate_identity(&ratspeak_db::DbPool, &str) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::db::add_contact_cap(&ratspeak_db::DbPool, &str, &str, &str) -> bool
 pub fn ratspeak_db::db::append_channel_history_events(&ratspeak_db::DbPool, &str, &[ratspeak_db::NewChannelHistoryEvent]) -> core::result::Result<ratspeak_db::ChannelHistoryAppendOutcome, alloc::string::String>
 pub fn ratspeak_db::db::append_game_action(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, core::option::Option<&[u8]>) -> core::option::Option<i64>
 pub fn ratspeak_db::db::apply_hub_ops(&ratspeak_db::DbPool, &str, &[ratspeak_db::HubRoomOp]) -> core::result::Result<(), alloc::string::String>
@@ -704,6 +705,7 @@ pub const ratspeak_db::PUBLIC_CHANNEL_CONSENT_VERSION: u16
 pub const ratspeak_db::RESET_TABLES: &[&str]
 pub const ratspeak_db::SOFT_CAP_IDENTITIES: usize
 pub fn ratspeak_db::activate_identity(&ratspeak_db::DbPool, &str) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::add_contact_cap(&ratspeak_db::DbPool, &str, &str, &str) -> bool
 pub fn ratspeak_db::append_channel_history_events(&ratspeak_db::DbPool, &str, &[ratspeak_db::NewChannelHistoryEvent]) -> core::result::Result<ratspeak_db::ChannelHistoryAppendOutcome, alloc::string::String>
 pub fn ratspeak_db::append_game_action(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, core::option::Option<&[u8]>) -> core::option::Option<i64>
 pub fn ratspeak_db::apply_hub_ops(&ratspeak_db::DbPool, &str, &[ratspeak_db::HubRoomOp]) -> core::result::Result<(), alloc::string::String>
