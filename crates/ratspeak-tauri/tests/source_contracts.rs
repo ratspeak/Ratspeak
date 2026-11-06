@@ -7853,7 +7853,12 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(android_main.contains("put(\"microg_detected\", microGDetected)"));
     assert!(android_main.contains("put(\"prefer_live_scanner\", preferLive)"));
 
-    assert!(contact_card_rs.contains(r#"const CONTACT_CARD_PREFIX: &str = "RSCP1:""#));
+    assert!(contact_card_rs.contains(r#"const CONTACT_CARD_PREFIX: &str = "RSCP2:""#));
+    assert!(contact_card_rs.contains(r#"const CONTACT_CARD_V1_PREFIX: &str = "RSCP1:""#));
+    assert!(
+        contact_card_rs
+            .contains("db::set_contact_kind(&p, &dest_for_db, &id_for_db, &kind, &caps);")
+    );
     assert!(contact_card_rs.contains("Identity::from_public_key(&public_key)"));
     assert!(contact_card_rs.contains("Destination::hash_from_name_and_identity(LXMF_APP_NAME"));
     assert!(

@@ -242,6 +242,7 @@ fn commands() -> impl Fn(tauri::ipc::Invoke<MockRuntime>) -> bool + Send + Sync 
         ratspeak_tauri::commands::messaging::send_lxmf_reply,
         ratspeak_tauri::commands::messaging::send_lxmf_with_attachment,
         ratspeak_tauri::commands::contact_card::import_contact_card,
+        ratspeak_tauri::commands::contact_card::api_preview_contact_card,
         ratspeak_tauri::commands::identity::api_set_display_name,
         ratspeak_tauri::commands::identity::set_identity_status,
         ratspeak_tauri::commands::interfaces::api_notification_settings,
@@ -753,6 +754,70 @@ fn contact_card_payload() -> String {
         hex::encode(identity.hash),
         B64URL.encode(identity.get_public_key()),
     )
+}
+
+/// An RSCP2 card when `kind_caps` is given, else RSCP1; with its LXMF address.
+fn card(kind_caps: Option<(&str, &str)>) -> (String, String) {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64URL;
+    let identity = rns_identity::identity::Identity::new();
+    let lxmf = hex::encode(
+        rns_identity::destination::Destination::hash_from_name_and_identity(
+            ratspeak_core::LXMF_DELIVERY_APP_NAME,
+            Some(&identity.hash),
+        ),
+    );
+    let fields = format!(
+        "{}:{lxmf}:{}:{}",
+        B64URL.encode("rsNode 1A2B"),
+        hex::encode(identity.hash),
+        B64URL.encode(identity.get_public_key()),
+    );
+    let payload = match kind_caps {
+        None => format!("RSCP1:{fields}"),
+        Some((kind, caps)) => format!("RSCP2:{kind}:{fields}:{caps}"),
+    };
+    (payload, lxmf)
+}
+
+#[test]
+fn card_imports_record_kind_and_caps() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let fixture = Fixture::new(Some(A), false);
+    let (device, device_hash) = card(Some(("device", "rsnode,rsnode.update")));
+    let preview = fixture
+        .invoke("api_preview_contact_card", json!({ "payload": device }))
+        .unwrap();
+    assert_eq!(preview["kind"], "device");
+    assert_eq!(preview["is_device"], true);
+    fixture
+        .invoke("import_contact_card", json!({ "payload": device }))
+        .unwrap();
+    let contacts = fixture.wait_for_event("contacts_update");
+    let node = contacts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["hash"] == device_hash.as_str())
+        .unwrap();
+    assert_eq!(node["kind"], "device");
+    assert_eq!(node["caps"], json!(["rsnode", "rsnode.update"]));
+
+    let (person, person_hash) = card(None);
+    fixture
+        .invoke("import_contact_card", json!({ "payload": person }))
+        .unwrap();
+    let listed = fixture.invoke("api_contacts", json!({})).unwrap();
+    let old = listed
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["hash"] == person_hash.as_str())
+        .unwrap();
+    assert_eq!(old["kind"], "person");
+    assert_eq!(old["caps"], json!([]));
 }
 
 #[test]

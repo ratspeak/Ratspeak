@@ -17,9 +17,12 @@ use crate::state::AppState;
 
 use ratspeak_core::LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME;
 
-const CONTACT_CARD_PREFIX: &str = "RSCP1:";
-const CONTACT_CARD_FORMAT: &str = "ratspeak.contact.v1";
+const CONTACT_CARD_PREFIX: &str = "RSCP2:";
+const CONTACT_CARD_V1_PREFIX: &str = "RSCP1:";
+const CONTACT_CARD_FORMAT: &str = "ratspeak.contact.v2";
 const CONTACT_CARD_NAME_BYTES: usize = 40;
+const CONTACT_CARD_TOKEN_BYTES: usize = 32;
+const CONTACT_CARD_CAPS_MAX: usize = 16;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ContactCard {
@@ -27,6 +30,15 @@ pub(crate) struct ContactCard {
     pub lxmf_hash: String,
     pub identity_hash: String,
     pub public_key: [u8; 64],
+    /// As the card states it; readers treat anything but `device` as a person.
+    pub kind: String,
+    pub caps: Vec<String>,
+}
+
+impl ContactCard {
+    pub fn is_device(&self) -> bool {
+        self.kind == db::CONTACT_KIND_DEVICE
+    }
 }
 
 fn trim_utf8_bytes(input: &str, max_bytes: usize) -> String {
@@ -45,6 +57,7 @@ fn trim_utf8_bytes(input: &str, max_bytes: usize) -> String {
     trimmed[..end].trim().to_string()
 }
 
+/// A person's own card; nodes are carded by the web flasher.
 pub(crate) fn build_contact_card_payload(
     display_name: &str,
     lxmf_hash: &str,
@@ -55,7 +68,8 @@ pub(crate) fn build_contact_card_payload(
     let name_b64 = B64URL.encode(name.as_bytes());
     let key_b64 = B64URL.encode(public_key);
     format!(
-        "{CONTACT_CARD_PREFIX}{name_b64}:{lxmf}:{identity}:{key}",
+        "{CONTACT_CARD_PREFIX}{kind}:{name_b64}:{lxmf}:{identity}:{key}:",
+        kind = db::CONTACT_KIND_PERSON,
         lxmf = lxmf_hash.to_ascii_lowercase(),
         identity = identity_hash.to_ascii_lowercase(),
         key = key_b64,
@@ -72,30 +86,64 @@ fn parse_hex16(value: &str, label: &str) -> Result<[u8; 16], String> {
     Ok(out)
 }
 
+fn card_token(value: &str) -> Option<String> {
+    let token = value.trim().to_ascii_lowercase();
+    (!token.is_empty()
+        && token.len() <= CONTACT_CARD_TOKEN_BYTES
+        && token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')))
+    .then_some(token)
+}
+
 pub(crate) fn parse_contact_card_payload(payload: &str) -> Result<ContactCard, String> {
     let trimmed = payload.trim();
-    let raw = trimmed
-        .strip_prefix(CONTACT_CARD_PREFIX)
-        .ok_or_else(|| "Not a Ratspeak contact card".to_string())?;
-    let parts: Vec<&str> = raw.split(':').collect();
-    if parts.len() != 4 {
-        return Err("Ratspeak contact card is incomplete".into());
-    }
+    let (kind, caps, fields) = if let Some(raw) = trimmed.strip_prefix(CONTACT_CARD_PREFIX) {
+        let parts: Vec<&str> = raw.split(':').collect();
+        if parts.len() != 6 {
+            return Err("Ratspeak contact card is incomplete".into());
+        }
+        let kind = card_token(parts[0]).ok_or("Contact-card kind is invalid")?;
+        let mut caps: Vec<String> = Vec::new();
+        for cap in parts[5].split(',').filter(|cap| !cap.is_empty()) {
+            let cap = card_token(cap).ok_or("Contact-card capabilities are invalid")?;
+            if !caps.contains(&cap) {
+                caps.push(cap);
+            }
+        }
+        if caps.len() > CONTACT_CARD_CAPS_MAX {
+            return Err("Contact card lists too many capabilities".into());
+        }
+        (kind, caps, [parts[1], parts[2], parts[3], parts[4]])
+    } else if let Some(raw) = trimmed.strip_prefix(CONTACT_CARD_V1_PREFIX) {
+        let parts: Vec<&str> = raw.split(':').collect();
+        if parts.len() != 4 {
+            return Err("Ratspeak contact card is incomplete".into());
+        }
+        (
+            db::CONTACT_KIND_PERSON.to_string(),
+            Vec::new(),
+            [parts[0], parts[1], parts[2], parts[3]],
+        )
+    } else {
+        return Err("Not a Ratspeak contact card".into());
+    };
+    let [name_b64, lxmf_hash, identity_hash, key_b64] = fields;
 
     let name_bytes = B64URL
-        .decode(parts[0])
+        .decode(name_b64)
         .map_err(|_| "Contact-card name is invalid".to_string())?;
     let display_name = String::from_utf8(name_bytes)
         .map_err(|_| "Contact-card name is not valid UTF-8".to_string())
         .map(|s| sanitize_text(&s, 64))?;
 
-    let lxmf_hash = parts[1].to_ascii_lowercase();
-    let identity_hash = parts[2].to_ascii_lowercase();
+    let lxmf_hash = lxmf_hash.to_ascii_lowercase();
+    let identity_hash = identity_hash.to_ascii_lowercase();
     let lxmf_bytes = parse_hex16(&lxmf_hash, "LXMF address")?;
     let identity_bytes = parse_hex16(&identity_hash, "Identity hash")?;
 
     let key_bytes = B64URL
-        .decode(parts[3])
+        .decode(key_b64)
         .map_err(|_| "Contact-card public key is invalid".to_string())?;
     if key_bytes.len() != 64 {
         return Err("Contact-card public key must be 64 bytes".into());
@@ -120,6 +168,8 @@ pub(crate) fn parse_contact_card_payload(payload: &str) -> Result<ContactCard, S
         lxmf_hash,
         identity_hash,
         public_key,
+        kind,
+        caps,
     })
 }
 
@@ -132,6 +182,9 @@ fn contact_card_json(card: &ContactCard, payload: Option<&str>) -> Value {
         "identity_hash": card.identity_hash,
         "public_key": hex::encode(card.public_key),
         "public_key_base64": B64.encode(card.public_key),
+        "kind": card.kind,
+        "caps": card.caps,
+        "is_device": card.is_device(),
     })
 }
 
@@ -212,6 +265,8 @@ pub async fn import_contact_card(
     let name_for_db = display_name.clone();
     let id_for_db = identity_id.clone();
     let key_for_db = public_key_hex.clone();
+    let kind = card.kind.clone();
+    let caps = card.caps.clone();
     let contacts_list = db::spawn_db(state.db.clone(), move |p| {
         let conn = match p.get() {
             Ok(c) => c,
@@ -229,6 +284,7 @@ pub async fn import_contact_card(
             "trusted",
             &id_for_db,
         );
+        db::set_contact_kind(&p, &dest_for_db, &id_for_db, &kind, &caps);
         db::touch_identity_activity_for_service(
             &p,
             &[(
@@ -353,5 +409,86 @@ mod tests {
         );
 
         assert!(payload.len() <= 230);
+    }
+
+    fn card_fields(identity: &Identity) -> (String, String, String) {
+        let lxmf = hex::encode(Destination::hash_from_name_and_identity(
+            LXMF_APP_NAME,
+            Some(&identity.hash),
+        ));
+        (
+            lxmf,
+            hex::encode(identity.hash),
+            B64URL.encode(identity.get_public_key()),
+        )
+    }
+
+    #[test]
+    fn own_card_is_rscp2_person_with_empty_caps() {
+        let identity = Identity::new();
+        let (lxmf, id, _) = card_fields(&identity);
+        let payload = build_contact_card_payload("Ann", &lxmf, &id, &identity.get_public_key());
+        assert!(payload.starts_with("RSCP2:person:"));
+        assert!(payload.ends_with(':'));
+        let parsed = parse_contact_card_payload(&payload).unwrap();
+        assert_eq!((parsed.kind.as_str(), parsed.caps.len()), ("person", 0));
+        assert!(!parsed.is_device());
+    }
+
+    #[test]
+    fn rscp1_cards_still_import_as_people() {
+        let identity = Identity::new();
+        let (lxmf, id, key) = card_fields(&identity);
+        let payload = format!("RSCP1:{}:{lxmf}:{id}:{key}", B64URL.encode("Old"));
+        let parsed = parse_contact_card_payload(&payload).unwrap();
+        assert_eq!(parsed.display_name, "Old");
+        assert_eq!(parsed.kind, "person");
+        assert!(parsed.caps.is_empty());
+        // Five fields were never an RSCP1 card.
+        assert!(parse_contact_card_payload(&format!("{payload}:rsnode")).is_err());
+    }
+
+    #[test]
+    fn rscp2_device_cards_carry_kind_and_caps() {
+        let identity = Identity::new();
+        let (lxmf, id, key) = card_fields(&identity);
+        let name = B64URL.encode("rsNode 1A2B");
+        let payload = format!("RSCP2:device:{name}:{lxmf}:{id}:{key}:rsnode,rsnode.update,future");
+        let parsed = parse_contact_card_payload(&payload).unwrap();
+        assert!(parsed.is_device());
+        assert_eq!(parsed.caps, ["rsnode", "rsnode.update", "future"]);
+        assert_eq!(parsed.display_name, "rsNode 1A2B");
+
+        let unknown = format!("RSCP2:sensor:{name}:{lxmf}:{id}:{key}:");
+        let parsed = parse_contact_card_payload(&unknown).unwrap();
+        assert_eq!(parsed.kind, "sensor", "the raw kind is kept");
+        assert!(!parsed.is_device(), "and read as a person");
+
+        for bad in [
+            format!("RSCP2:device:{name}:{lxmf}:{id}:{key}"),
+            format!("RSCP2::{name}:{lxmf}:{id}:{key}:"),
+            format!("RSCP2:device:{name}:{lxmf}:{id}:{key}:bad cap"),
+        ] {
+            assert!(parse_contact_card_payload(&bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn rscp2_checks_hashes_against_the_key_like_rscp1() {
+        let identity = Identity::new();
+        let other = Identity::new();
+        let (lxmf, id, key) = card_fields(&identity);
+        let (other_lxmf, other_id, _) = card_fields(&other);
+        let name = B64URL.encode("x");
+        let err = parse_contact_card_payload(&format!(
+            "RSCP2:device:{name}:{other_lxmf}:{id}:{key}:rsnode"
+        ))
+        .unwrap_err();
+        assert!(err.contains("LXMF address"));
+        let err = parse_contact_card_payload(&format!(
+            "RSCP2:device:{name}:{lxmf}:{other_id}:{key}:rsnode"
+        ))
+        .unwrap_err();
+        assert!(err.contains("identity hash"));
     }
 }

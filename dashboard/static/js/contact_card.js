@@ -1130,12 +1130,17 @@ z`,
 
     function showScannedCardPreview(parent, payload, card, closeAll) {
         var name = card.display_name || 'Unnamed Contact';
+        var caps = Array.isArray(card.caps) ? card.caps : [];
+        var deviceRow = card.is_device
+            ? '<div class="contact-card-detail-row"><span>Device</span><code>' +
+                escapeHtml(caps.indexOf('rsnode') !== -1 ? 'rsNode Repeater' : 'Device') + '</code></div>'
+            : '';
         parent.innerHTML =
             '<div class="contact-scan-success">' +
                 '<div class="contact-scan-avatar">' + (typeof identityAvatar === 'function' ? identityAvatar(card.lxmf_hash, 72) : '') + '</div>' +
                 '<div class="contact-scan-name">' + escapeHtml(name) + '</div>' +
-                '<div class="contact-scan-subtitle">Contact card verified</div>' +
-                '<div class="contact-card-detail-list">' +
+                '<div class="contact-scan-subtitle">' + (card.is_device ? 'Device card verified' : 'Contact card verified') + '</div>' +
+                '<div class="contact-card-detail-list">' + deviceRow +
                     '<div class="contact-card-detail-row"><span>LXMF Address</span><code>' + escapeHtml(shortValue(card.lxmf_hash, 12, 8)) + '</code></div>' +
                     '<div class="contact-card-detail-row"><span>Identity Hash</span><code>' + escapeHtml(shortValue(card.identity_hash, 12, 8)) + '</code></div>' +
                     '<div class="contact-card-detail-row"><span>Public Identity Key</span><code>' + escapeHtml(shortValue(card.public_key, 12, 10)) + '</code></div>' +
