@@ -4371,6 +4371,47 @@ body.setup-active .main-content {
     background: #fffaf3;
 }
 
+.contact-share-format {
+    width: min(68vw, 292px);
+    margin: var(--space-4) auto 0;
+}
+
+.contact-share-format .contact-share-format-option {
+    min-height: var(--control-height-md);
+    font-size: var(--type-control-size);
+    font-weight: var(--type-weight-medium);
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.contact-share-format .contact-share-format-option:not(.active) {
+    background: transparent;
+}
+
+.contact-share-format .contact-share-format-option.active {
+    font-weight: var(--type-weight-semibold);
+}
+
+/* The segmented container clips overflow, so the ring sits inside. */
+.contact-share-format .contact-share-format-option:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: -2px;
+}
+
+/* Two lines reserved so the address block holds still when the hint changes. */
+.contact-share-format-hint {
+    max-width: 34ch;
+    min-height: calc(2em * var(--type-leading-copy));
+    margin: var(--space-4) auto 0;
+    padding: 0 var(--space-7);
+    text-align: center;
+}
+
+@media (max-width: 768px) {
+    .contact-share-format .contact-share-format-option {
+        min-height: var(--touch-target);
+    }
+}
+
 .contact-share-loading,
 .contact-share-error {
     min-height: 360px;
@@ -4446,6 +4487,11 @@ body.setup-active .main-content {
     text-transform: uppercase;
     letter-spacing: 0;
     margin-bottom: var(--space-1);
+}
+
+.contact-share-address.mono,
+.contact-scan-name.mono {
+    font-family: var(--font-mono);
 }
 
 .contact-share-address {
@@ -4638,7 +4684,7 @@ body.setup-active .main-content {
     max-height: min(calc(var(--app-height, 100vh) - 32px - var(--sat) - var(--sab)), 880px);
 }
 
-.contact-share-sheet.paper-share-sheet:focus {
+.contact-share-sheet:focus {
     outline: none;
 }
 

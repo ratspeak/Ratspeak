@@ -1,4 +1,5 @@
-//! Public contact-card export/import for QR sharing.
+//! Public contact-card export/import for QR sharing: Ratspeak RSCP cards and the
+//! `lxma://` form Columba and other LXMF apps scan.
 
 use std::sync::Arc;
 
@@ -19,7 +20,9 @@ use ratspeak_core::LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME;
 
 const CONTACT_CARD_PREFIX: &str = "RSCP2:";
 const CONTACT_CARD_V1_PREFIX: &str = "RSCP1:";
+const LEGACY_CONTACT_PREFIX: &str = "lxma://";
 const CONTACT_CARD_FORMAT: &str = "ratspeak.contact.v2";
+const LEGACY_CONTACT_FORMAT: &str = "lxma.contact";
 const CONTACT_CARD_NAME_BYTES: usize = 40;
 const CONTACT_CARD_TOKEN_BYTES: usize = 32;
 const CONTACT_CARD_CAPS_MAX: usize = 16;
@@ -33,6 +36,8 @@ pub(crate) struct ContactCard {
     /// As the card states it; readers treat anything but `device` as a person.
     pub kind: String,
     pub caps: Vec<String>,
+    /// Read from an `lxma://` code: no name, no caps, same key binding.
+    pub legacy: bool,
 }
 
 impl ContactCard {
@@ -76,6 +81,16 @@ pub(crate) fn build_contact_card_payload(
     )
 }
 
+/// `lxma://<address>:<public key>`, both lowercase hex: the Columba contact
+/// format that MeshChatX, Retichat, and rettui also scan. Carries no name.
+pub(crate) fn build_legacy_contact_payload(lxmf_hash: &str, public_key: &[u8; 64]) -> String {
+    format!(
+        "{LEGACY_CONTACT_PREFIX}{}:{}",
+        lxmf_hash.to_ascii_lowercase(),
+        hex::encode(public_key)
+    )
+}
+
 fn parse_hex16(value: &str, label: &str) -> Result<[u8; 16], String> {
     if !validate_hex(value, 32, 32) {
         return Err(format!("{label} must be a 16-byte hex value"));
@@ -98,6 +113,9 @@ fn card_token(value: &str) -> Option<String> {
 
 pub(crate) fn parse_contact_card_payload(payload: &str) -> Result<ContactCard, String> {
     let trimmed = payload.trim();
+    if let Some(raw) = strip_legacy_prefix(trimmed) {
+        return parse_legacy_contact_payload(raw);
+    }
     let (kind, caps, fields) = if let Some(raw) = trimmed.strip_prefix(CONTACT_CARD_PREFIX) {
         let parts: Vec<&str> = raw.split(':').collect();
         if parts.len() != 6 {
@@ -137,10 +155,7 @@ pub(crate) fn parse_contact_card_payload(payload: &str) -> Result<ContactCard, S
         .map_err(|_| "Contact-card name is not valid UTF-8".to_string())
         .map(|s| sanitize_text(&s, 64))?;
 
-    let lxmf_hash = lxmf_hash.to_ascii_lowercase();
-    let identity_hash = identity_hash.to_ascii_lowercase();
-    let lxmf_bytes = parse_hex16(&lxmf_hash, "LXMF address")?;
-    let identity_bytes = parse_hex16(&identity_hash, "Identity hash")?;
+    let identity_bytes = parse_hex16(&identity_hash.to_ascii_lowercase(), "Identity hash")?;
 
     let key_bytes = B64URL
         .decode(key_b64)
@@ -151,31 +166,84 @@ pub(crate) fn parse_contact_card_payload(payload: &str) -> Result<ContactCard, S
     let mut public_key = [0u8; 64];
     public_key.copy_from_slice(&key_bytes);
 
-    let identity = Identity::from_public_key(&public_key)
-        .map_err(|_| "Contact-card public key is not a Reticulum identity".to_string())?;
-    if identity.hash != identity_bytes {
-        return Err("Contact-card identity hash does not match the public key".into());
-    }
-
-    let expected_lxmf =
-        Destination::hash_from_name_and_identity(LXMF_APP_NAME, Some(&identity.hash));
-    if expected_lxmf != lxmf_bytes {
-        return Err("Contact-card LXMF address does not match the public key".into());
-    }
-
-    Ok(ContactCard {
+    verified_card(
         display_name,
-        lxmf_hash,
-        identity_hash,
+        lxmf_hash.to_ascii_lowercase(),
+        Some(identity_bytes),
         public_key,
         kind,
         caps,
+        false,
+    )
+}
+
+fn strip_legacy_prefix(payload: &str) -> Option<&str> {
+    let (head, rest) = payload.split_at_checked(LEGACY_CONTACT_PREFIX.len())?;
+    head.eq_ignore_ascii_case(LEGACY_CONTACT_PREFIX)
+        .then_some(rest)
+}
+
+// Columba's reader: exactly `<address>:<key>`, so a trailing field fails the key check.
+fn parse_legacy_contact_payload(raw: &str) -> Result<ContactCard, String> {
+    let Some((lxmf_hash, key_hex)) = raw.split_once(':') else {
+        return Err("This legacy code has no public key. Add the contact by its address instead.".into());
+    };
+    if !validate_hex(key_hex, 128, 128) {
+        return Err("Legacy code public key must be 64 bytes of hex".into());
+    }
+    let mut public_key = [0u8; 64];
+    public_key.copy_from_slice(
+        &hex::decode(key_hex).map_err(|_| "Legacy code public key is not valid hex".to_string())?,
+    );
+    verified_card(
+        String::new(),
+        lxmf_hash.to_ascii_lowercase(),
+        None,
+        public_key,
+        db::CONTACT_KIND_PERSON.to_string(),
+        Vec::new(),
+        true,
+    )
+}
+
+/// Binds a card to its key: the LXMF address, and the identity hash when the
+/// card states one, must both derive from the public key.
+fn verified_card(
+    display_name: String,
+    lxmf_hash: String,
+    stated_identity: Option<[u8; 16]>,
+    public_key: [u8; 64],
+    kind: String,
+    caps: Vec<String>,
+    legacy: bool,
+) -> Result<ContactCard, String> {
+    let what = if legacy { "Legacy code" } else { "Contact-card" };
+    let lxmf_bytes = parse_hex16(&lxmf_hash, "LXMF address")?;
+    let identity = Identity::from_public_key(&public_key)
+        .map_err(|_| format!("{what} public key is not a Reticulum identity"))?;
+    if stated_identity.is_some_and(|stated| stated != identity.hash) {
+        return Err("Contact-card identity hash does not match the public key".into());
+    }
+    let expected_lxmf =
+        Destination::hash_from_name_and_identity(LXMF_APP_NAME, Some(&identity.hash));
+    if expected_lxmf != lxmf_bytes {
+        return Err(format!("{what} LXMF address does not match the public key"));
+    }
+    Ok(ContactCard {
+        display_name,
+        lxmf_hash,
+        identity_hash: hex::encode(identity.hash),
+        public_key,
+        kind,
+        caps,
+        legacy,
     })
 }
 
 fn contact_card_json(card: &ContactCard, payload: Option<&str>) -> Value {
     json!({
-        "format": CONTACT_CARD_FORMAT,
+        "format": if card.legacy { LEGACY_CONTACT_FORMAT } else { CONTACT_CARD_FORMAT },
+        "legacy": card.legacy,
         "payload": payload.unwrap_or(""),
         "display_name": card.display_name,
         "lxmf_hash": card.lxmf_hash,
@@ -237,7 +305,9 @@ pub async fn api_contact_card(
     let payload =
         build_contact_card_payload(&display_name, &lxmf_hash, &identity_hash, &public_key);
     let card = parse_contact_card_payload(&payload).map_err(AppError::internal)?;
-    Ok(contact_card_json(&card, Some(&payload)))
+    let mut json = contact_card_json(&card, Some(&payload));
+    json["legacy_payload"] = json!(build_legacy_contact_payload(&lxmf_hash, &public_key));
+    Ok(json)
 }
 
 #[tauri::command]
@@ -490,5 +560,58 @@ mod tests {
         ))
         .unwrap_err();
         assert!(err.contains("identity hash"));
+    }
+
+    #[test]
+    fn legacy_payload_is_columba_shaped_and_round_trips() {
+        let identity = Identity::new();
+        let (lxmf, id, key) = card_fields(&identity);
+        let payload = build_legacy_contact_payload(&lxmf.to_ascii_uppercase(), &identity.get_public_key());
+        assert_eq!(payload, format!("lxma://{lxmf}:{}", hex::encode(identity.get_public_key())));
+        assert_eq!(payload.len(), 7 + 32 + 1 + 128);
+        let parsed = parse_contact_card_payload(&payload).unwrap();
+        assert!(parsed.legacy);
+        assert_eq!(parsed.display_name, "");
+        assert_eq!(parsed.lxmf_hash, lxmf);
+        assert_eq!(parsed.identity_hash, id);
+        assert_eq!(parsed.public_key, identity.get_public_key());
+        assert_eq!((parsed.kind.as_str(), parsed.caps.len()), ("person", 0));
+        assert!(!parsed.is_device());
+        assert!(!parse_contact_card_payload(&format!("RSCP1:{}:{lxmf}:{id}:{key}", B64URL.encode("n")))
+            .unwrap()
+            .legacy);
+    }
+
+    #[test]
+    fn legacy_payload_reads_any_case_with_surrounding_whitespace() {
+        let identity = Identity::new();
+        let (lxmf, id, _) = card_fields(&identity);
+        let key = hex::encode(identity.get_public_key()).to_ascii_uppercase();
+        let payload = format!("  LXMA://{}:{key}\n", lxmf.to_ascii_uppercase());
+        let parsed = parse_contact_card_payload(&payload).unwrap();
+        assert_eq!((parsed.lxmf_hash, parsed.identity_hash), (lxmf, id));
+    }
+
+    #[test]
+    fn legacy_payload_is_bound_to_its_key() {
+        let identity = Identity::new();
+        let other = Identity::new();
+        let (lxmf, _, _) = card_fields(&identity);
+        let (other_lxmf, _, _) = card_fields(&other);
+        let key = hex::encode(identity.get_public_key());
+        let err = parse_contact_card_payload(&format!("lxma://{other_lxmf}:{key}")).unwrap_err();
+        assert!(err.contains("LXMF address"), "{err}");
+        let err = parse_contact_card_payload(&format!("lxma://{lxmf}")).unwrap_err();
+        assert!(err.contains("no public key"), "{err}");
+        for bad in [
+            format!("lxma://{lxmf}:{}", &key[..126]),
+            format!("lxma://{lxmf}:{key}:extra"),
+            format!("lxma://{lxmf}:{}", key.replace('a', "g")),
+            format!("lxma://{}:{key}", &lxmf[..30]),
+            "lxma://".to_string(),
+            "lxma:/".to_string(),
+        ] {
+            assert!(parse_contact_card_payload(&bad).is_err(), "{bad}");
+        }
     }
 }

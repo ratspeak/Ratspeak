@@ -1,5 +1,6 @@
 (function() {
     var CONTACT_QR_FILE = 'ratspeak-contact-card.png';
+    var LEGACY_QR_FILE = 'ratspeak-contact-legacy.png';
     var CONTACT_SCAN_MAX_IMAGE_DIMENSION = 1800;
     var activeContactAddDial = null;
 
@@ -652,6 +653,17 @@ z`,
         return drawQrSymbol(canvas, qr, pixels, pixels / (qr.size + QR_QUIET_MODULES * 2), true, true);
     }
 
+    // The lxma:// code is for other apps' scanners: square modules, no logo,
+    // and the smallest ECC M symbol so modules stay large. Columba encodes at M.
+    function renderLegacyQrCanvas(canvas, payload) {
+        var version = qrFitVersion(textBytes(payload).length, 'M', 40);
+        if (!version) throw new Error('Legacy payload is too large for a QR code');
+        var qr = QrEncode(payload, { version: version, ecc: 'M' });
+        var modules = qr.size + QR_QUIET_MODULES * 2;
+        var cell = Math.floor(900 / modules);
+        return drawQrSymbol(canvas, qr, cell * modules, cell, false, false);
+    }
+
     // Up to v20 at ECC Q keeps the centre logo; larger payloads use the smallest
     // ECC L symbol (upstream LXMF), which cannot absorb one. Paper modules are
     // always square: jsQR (Scan Photo) misreads rounded modules above v10.
@@ -720,6 +732,26 @@ z`,
         return out;
     }
 
+    // Half-size box filter. Large rounded-module exports (the 900px card PNG)
+    // only decode once a module spans a few pixels rather than a dozen.
+    function halveRgba(rgba, width, height) {
+        var w = width >> 1;
+        var h = height >> 1;
+        var out = new Uint8ClampedArray(w * h * 4);
+        for (var y = 0; y < h; y++) {
+            for (var x = 0; x < w; x++) {
+                var o = (y * w + x) * 4;
+                var p = (y * 2 * width + x * 2) * 4;
+                var q = p + width * 4;
+                for (var c = 0; c < 3; c++) {
+                    out[o + c] = (rgba[p + c] + rgba[p + 4 + c] + rgba[q + c] + rgba[q + 4 + c]) >> 2;
+                }
+                out[o + 3] = 255;
+            }
+        }
+        return { data: out, width: w, height: h };
+    }
+
     function decodeRoundedQr(rgba, width, height) {
         if (typeof window.jsQR !== 'function') return null;
         var base = Math.max(1, Math.round(Math.max(width, height) / 900));
@@ -728,7 +760,10 @@ z`,
             var code = window.jsQR(closeQrGaps(rgba, width, height, radii[i]), width, height, { inversionAttempts: 'dontInvert' });
             if (code && code.data) return code;
         }
-        return null;
+        if (Math.max(width, height) <= 600) return null;
+        var half = halveRgba(rgba, width, height);
+        var direct = window.jsQR(half.data, half.width, half.height, { inversionAttempts: 'dontInvert' });
+        return direct && direct.data ? direct : decodeRoundedQr(half.data, half.width, half.height);
     }
 
     function canvasBlob(canvas) {
@@ -789,9 +824,19 @@ z`,
     }
 
     function showIdentityShareScreen(identityHash) {
+        if (document.querySelector('.contact-share-sheet.open')) return;
         var built = buildSheet('contact-share-sheet');
         var closed = false;
         var loadGeneration = 0;
+        built.sheet.setAttribute('role', 'dialog');
+        built.sheet.setAttribute('aria-modal', 'true');
+        built.sheet.setAttribute('tabindex', '-1');
+        built.sheet.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                closeShareScreen();
+            }
+        });
 
         function closeShareScreen() {
             if (closed) return;
@@ -840,6 +885,22 @@ z`,
             if (closed || generation !== loadGeneration) return;
             var name = card.display_name || 'Ratspeak Contact';
             var fileBase = safeFileBase(name);
+            var formats = {
+                ratspeak: {
+                    subtitle: 'Ratspeak Contact Card',
+                    hint: 'Scans in Ratspeak. Carries your name, address, and key.',
+                    ariaLabel: 'Ratspeak contact card QR for ' + name,
+                    file: fileBase + '-' + CONTACT_QR_FILE
+                },
+                legacy: {
+                    subtitle: 'Legacy Contact QR',
+                    hint: 'For Columba and other Reticulum apps. Address and key only, no name.',
+                    ariaLabel: 'Legacy contact QR for ' + name,
+                    file: fileBase + '-' + LEGACY_QR_FILE
+                }
+            };
+            var format = 'ratspeak';
+            var drawSequence = 0;
             built.sheet.removeAttribute('aria-busy');
             built.sheet.innerHTML =
                 '<div class="contact-card-topbar">' +
@@ -848,11 +909,16 @@ z`,
                 '<div class="contact-share-identity">' +
                     '<div class="contact-share-avatar">' + (typeof identityAvatar === 'function' ? identityAvatar(card.lxmf_hash, 56) : '') + '</div>' +
                     '<div class="contact-share-name">' + escapeHtml(name) + '</div>' +
-                    '<div class="contact-share-subtitle">Ratspeak Contact Card</div>' +
+                    '<div class="contact-share-subtitle">' + escapeHtml(formats.ratspeak.subtitle) + '</div>' +
                 '</div>' +
                 '<div class="contact-share-qr-shell">' +
-                    '<canvas class="contact-share-qr" aria-label="Ratspeak contact card QR"></canvas>' +
+                    '<canvas class="contact-share-qr" aria-label="' + escapeHtml(formats.ratspeak.ariaLabel) + '"></canvas>' +
                 '</div>' +
+                '<div class="sheet-segmented-tabs contact-share-format" role="group" aria-label="QR format">' +
+                    '<button type="button" class="contact-share-format-option active" data-format="ratspeak" aria-pressed="true">Ratspeak</button>' +
+                    '<button type="button" class="contact-share-format-option" data-format="legacy" aria-pressed="false">Legacy</button>' +
+                '</div>' +
+                '<div class="contact-share-subtitle contact-share-format-hint">' + escapeHtml(formats.ratspeak.hint) + '</div>' +
                 '<div class="contact-share-address-block">' +
                     '<div class="contact-share-address-label">LXMF Address</div>' +
                     '<div class="contact-share-address mono">' + escapeHtml(card.lxmf_hash || '') + '</div>' +
@@ -864,13 +930,16 @@ z`,
 
             var canvas = built.sheet.querySelector('canvas');
             var shareButton = built.sheet.querySelector('#contact-share-qr');
+            var subtitle = built.sheet.querySelector('.contact-share-identity .contact-share-subtitle');
+            var hint = built.sheet.querySelector('.contact-share-format-hint');
+            var formatButtons = Array.prototype.slice.call(built.sheet.querySelectorAll('.contact-share-format-option'));
             bindCloseButton();
             built.sheet.querySelector('#contact-copy-address').addEventListener('click', function() {
                 copyText(card.lxmf_hash, 'Address');
             });
             shareButton.addEventListener('click', function() {
                 canvasBlob(canvas).then(function(blob) {
-                    return saveQrBlob(blob, fileBase + '-' + CONTACT_QR_FILE);
+                    return saveQrBlob(blob, formats[format].file);
                 }).then(function(method) {
                     if (method === 'share') showToast('QR code shared', 'toast-success', 2500);
                     else showToast('QR image saved', 'toast-success', 2500);
@@ -884,19 +953,45 @@ z`,
             var nextFrame = window.requestAnimationFrame || function(callback) {
                 return window.setTimeout(callback, 0);
             };
-            nextFrame(function() {
+            function drawCurrentFormat() {
+                var sequence = ++drawSequence;
+                shareButton.disabled = true;
+                shareButton.setAttribute('aria-busy', 'true');
                 nextFrame(function() {
-                    if (closed || generation !== loadGeneration || !canvas.isConnected) return;
-                    try {
-                        renderQrCanvas(canvas, card.payload || '');
-                        shareButton.disabled = false;
-                        shareButton.removeAttribute('aria-busy');
-                    } catch (err) {
-                        shareButton.removeAttribute('aria-busy');
-                        showToast(err && err.message ? err.message : 'Could not render QR', 'toast-error', 3000);
-                    }
+                    nextFrame(function() {
+                        if (closed || generation !== loadGeneration || sequence !== drawSequence || !canvas.isConnected) return;
+                        try {
+                            if (format === 'legacy') renderLegacyQrCanvas(canvas, card.legacy_payload || '');
+                            else renderQrCanvas(canvas, card.payload || '');
+                            shareButton.disabled = false;
+                            shareButton.removeAttribute('aria-busy');
+                        } catch (err) {
+                            shareButton.removeAttribute('aria-busy');
+                            showToast(err && err.message ? err.message : 'Could not render QR', 'toast-error', 3000);
+                        }
+                    });
+                });
+            }
+            function selectFormat(next) {
+                if (next === format || !formats[next]) return;
+                format = next;
+                formatButtons.forEach(function(button) {
+                    var selected = button.getAttribute('data-format') === format;
+                    button.classList.toggle('active', selected);
+                    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+                });
+                subtitle.textContent = formats[format].subtitle;
+                hint.textContent = formats[format].hint;
+                canvas.setAttribute('aria-label', formats[format].ariaLabel);
+                drawCurrentFormat();
+            }
+            formatButtons.forEach(function(button) {
+                button.addEventListener('click', function() {
+                    selectFormat(button.getAttribute('data-format'));
                 });
             });
+            drawCurrentFormat();
+            try { built.sheet.focus({ preventScroll: true }); } catch (_) { built.sheet.focus(); }
         }
 
         function loadCard() {
@@ -1129,7 +1224,10 @@ z`,
     }
 
     function showScannedCardPreview(parent, payload, card, closeAll) {
-        var name = card.display_name || 'Unnamed Contact';
+        var legacy = !!card.legacy;
+        var name = card.display_name || (legacy ? shortValue(card.lxmf_hash, 8, 4) : 'Unnamed Contact');
+        var subtitle = legacy ? 'Legacy contact QR \u00b7 no name included'
+            : (card.is_device ? 'Device card verified' : 'Contact card verified');
         var caps = Array.isArray(card.caps) ? card.caps : [];
         var deviceRow = card.is_device
             ? '<div class="contact-card-detail-row"><span>Device</span><code>' +
@@ -1138,8 +1236,8 @@ z`,
         parent.innerHTML =
             '<div class="contact-scan-success">' +
                 '<div class="contact-scan-avatar">' + (typeof identityAvatar === 'function' ? identityAvatar(card.lxmf_hash, 72) : '') + '</div>' +
-                '<div class="contact-scan-name">' + escapeHtml(name) + '</div>' +
-                '<div class="contact-scan-subtitle">' + (card.is_device ? 'Device card verified' : 'Contact card verified') + '</div>' +
+                '<div class="contact-scan-name' + (legacy && !card.display_name ? ' mono' : '') + '">' + escapeHtml(name) + '</div>' +
+                '<div class="contact-scan-subtitle">' + subtitle + '</div>' +
                 '<div class="contact-card-detail-list">' + deviceRow +
                     '<div class="contact-card-detail-row"><span>LXMF Address</span><code>' + escapeHtml(shortValue(card.lxmf_hash, 12, 8)) + '</code></div>' +
                     '<div class="contact-card-detail-row"><span>Identity Hash</span><code>' + escapeHtml(shortValue(card.identity_hash, 12, 8)) + '</code></div>' +
@@ -1168,12 +1266,12 @@ z`,
 
     function openContactQrScanner(options) {
         options = options || {};
-        var scannerTitle = options.title || 'Scan Ratspeak QR';
+        var scannerTitle = options.title || 'Scan QR Code';
         var checkingText = options.checkingText || 'Checking QR\u2026';
-        var invalidText = options.invalidText || 'That QR isn\'t a Ratspeak contact or paper message.';
+        var invalidText = options.invalidText || 'That QR isn\'t a contact card, paper message, or lxma:// address.';
         var invalidImageText = options.invalidImageText || invalidText;
         var emptyImageText = options.emptyImageText ||
-            'No Ratspeak QR found in that image.';
+            'No QR code found in that image.';
         var previewCommand = options.previewCommand || 'api_preview_contact_card';
         var built = buildSheet('contact-scan-sheet');
         var stream = null;
@@ -1306,7 +1404,8 @@ z`,
                 }
             }).catch(function(err) {
                 contactScanDiag('payload_rejected', scanErrorDetail(err));
-                status.textContent = invalidMessage || invalidText;
+                var legacyReason = /^lxma:\/\//i.test(paperUri) && err && err.message;
+                status.textContent = legacyReason || invalidMessage || invalidText;
                 if (typeof retry === 'function') retry();
             });
         }
@@ -1780,6 +1879,7 @@ z`,
     window.RS.qr = {
         openPaperShare: showPaperShareScreen,
         renderCanvas: renderQrCanvas,
+        renderLegacyCanvas: renderLegacyQrCanvas,
         renderPaperCanvas: renderPaperQrCanvas,
         paperPlan: paperQrPlan,
         encode: QrEncode,
