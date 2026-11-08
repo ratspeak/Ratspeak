@@ -1,23 +1,23 @@
 {
   "schemaVersion": 1,
   "product": {
-    "displayVersion": "1.0.41",
-    "marketingVersion": "1.0.41",
+    "displayVersion": "1.0.42",
+    "marketingVersion": "1.0.42",
     "androidArtifactTargets": [
       "aarch64",
       "armv7",
       "x86_64"
     ],
     "platformBuilds": {
-      "androidVersionCode": 1000071,
-      "iosBundleVersion": "1000071"
+      "androidVersionCode": 1000072,
+      "iosBundleVersion": "1000072"
     },
     "predecessor": {
-      "displayVersion": "1.0.40",
-      "tag": "v1.0.40",
-      "commit": "15831404cd792dbdc56aa682ba9221a9039821f5",
-      "androidVersionCode": 1000070,
-      "iosBundleVersion": "1000070"
+      "displayVersion": "1.0.41",
+      "tag": "v1.0.41",
+      "commit": "80b9dc37483c8f0a275f2f3003f75c6dbe9070e7",
+      "androidVersionCode": 1000071,
+      "iosBundleVersion": "1000071"
     }
   },
   "toolchains": {
@@ -36,9 +36,9 @@
       "name": "rsReticulum",
       "repository": "https://github.com/ratspeak/rsReticulum.git",
       "path": "../rsReticulum",
-      "commit": "ac9ea27752987d283661cfacaf210c8209a4e680",
+      "commit": "302626c38a8ca12436114f7a8e9b054254a19931",
       "version": "1.4.0",
-      "integrationTag": "ratspeak-v1.0.41"
+      "integrationTag": "ratspeak-v1.0.42"
     },
     {
       "id": "rslxmf",
@@ -47,16 +47,16 @@
       "path": "../rsLXMF",
       "commit": "5a6a0cbbdb40e97d7879ceb43547c5e59fb72b1f",
       "version": "1.4.0",
-      "integrationTag": "ratspeak-v1.0.41"
+      "integrationTag": "ratspeak-v1.0.42"
     },
     {
       "id": "rslxst",
       "name": "rsLXST",
       "repository": "https://github.com/ratspeak/rsLXST.git",
       "path": "../rsLXST",
-      "commit": "b6d7d921f501d5500cbbb74302e9eb5d8e8d47ed",
+      "commit": "dff93e73af428fac50f06d868723f5e576c51320",
       "version": "0.3.0",
-      "integrationTag": "ratspeak-v1.0.41"
+      "integrationTag": "ratspeak-v1.0.42"
     },
     {
       "id": "lrgp",
@@ -65,7 +65,7 @@
       "path": "../lrgp-rs",
       "commit": "f44147a851588948b6faba2640c3baae258ab079",
       "version": "0.4.1",
-      "integrationTag": "ratspeak-v1.0.41"
+      "integrationTag": "ratspeak-v1.0.42"
     }
   ]
 }

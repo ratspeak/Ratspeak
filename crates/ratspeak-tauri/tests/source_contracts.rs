@@ -6549,8 +6549,8 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "start more than one conversation with the same contact from the chat's dropdown menu.",
-        "Ratspeak's background wakes/s dropped by about 95%.",
+        "manage a node by messaging it.",
+        "Legacy format for Columba and other Reticulum apps",
     ];
 
     for workflow_path in [
