@@ -54,7 +54,7 @@ expect_raw "$info_plist" CFBundleShortVersionString "$expected_version"
 expect_raw "$info_plist" CFBundleVersion "$expected_build"
 expect_raw "$info_plist" LSRequiresIPhoneOS true
 expect_raw "$info_plist" UILaunchStoryboardName LaunchScreen
-expect_json "$info_plist" CFBundleURLTypes '[{"CFBundleURLName":"ratspeak","CFBundleURLSchemes":["ratspeak"]}]'
+expect_json "$info_plist" CFBundleURLTypes '[{"CFBundleURLName":"ratspeak","CFBundleURLSchemes":["ratspeak","lxm"]}]'
 expect_json "$info_plist" UIBackgroundModes '["audio","bluetooth-central","bluetooth-peripheral"]'
 expect_json "$info_plist" UIRequiredDeviceCapabilities '["arm64","metal"]'
 expect_json "$info_plist" UISupportedInterfaceOrientations '["UIInterfaceOrientationPortrait"]'

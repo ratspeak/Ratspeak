@@ -51,6 +51,7 @@ targets:
           - CFBundleURLName: ratspeak
             CFBundleURLSchemes:
               - ratspeak
+              - lxm
         LSRequiresIPhoneOS: true
         NSBluetoothAlwaysUsageDescription: Ratspeak uses Bluetooth to connect to hardware nodes and other Bluetooth peers when enabled.
         NSBluetoothPeripheralUsageDescription: Ratspeak uses Bluetooth to connect to hardware nodes and other Bluetooth peers when enabled.
