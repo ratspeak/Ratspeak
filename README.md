@@ -4,7 +4,7 @@
 
 # Ratspeak
 
-Ratspeak is a native desktop and mobile client for end-to-end encrypted direct conversations over Reticulum. It includes file/image sharing, experimental voice calls and voice messages, shared Channels, LoRa and Bluetooth connections, offline inbox support, and turn-based games. Channel hubs can read the messages they distribute.
+Ratspeak is a native desktop and mobile client for end-to-end encrypted direct conversations over Reticulum. It includes file/image sharing, experimental voice calls and voice messages, shared Channels, LoRa and Bluetooth connections, offline inbox support, and turn-based games.
 
 [Click here for iOS TestFlight Public Beta!](https://testflight.apple.com/join/AzzW4Jg6)
 
