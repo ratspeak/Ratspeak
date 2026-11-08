@@ -2880,14 +2880,14 @@ dependencies = [
 
 [[package]]
 name = "lxst-codec2"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "lxst-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "half",
  "opus-rs",
@@ -2897,7 +2897,7 @@ dependencies = [
 
 [[package]]
 name = "lxst-rns"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "lxst-core",
@@ -2910,7 +2910,7 @@ dependencies = [
 
 [[package]]
 name = "lxst-telephony"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bytes",
  "lxst-codec2",

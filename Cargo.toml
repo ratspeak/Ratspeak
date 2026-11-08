@@ -32,10 +32,10 @@ rns-ratkey = { path = "../rsReticulum/crates/rns-ratkey", version = "~1.4.0" }
 lxmf-core = { path = "../rsLXMF/crates/lxmf-core", version = "~1.4.0" }
 
 # --- From rsLXST (sibling directory) ---
-lxst-core = { path = "../rsLXST/crates/lxst-core", version = "0.3.0" }
-lxst-codec2 = { path = "../rsLXST/crates/lxst-codec2", version = "0.3.0" }
-lxst-rns = { path = "../rsLXST/crates/lxst-rns", version = "0.3.0" }
-lxst-telephony = { path = "../rsLXST/crates/lxst-telephony", version = "0.3.0" }
+lxst-core = { path = "../rsLXST/crates/lxst-core", version = "0.3.1" }
+lxst-codec2 = { path = "../rsLXST/crates/lxst-codec2", version = "0.3.1" }
+lxst-rns = { path = "../rsLXST/crates/lxst-rns", version = "0.3.1" }
+lxst-telephony = { path = "../rsLXST/crates/lxst-telephony", version = "0.3.1" }
 
 # --- Internal crates ---
 # lrgp is an exact sibling source dependency; registry publication is out of scope.
