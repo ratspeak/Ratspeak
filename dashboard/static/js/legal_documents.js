@@ -10,7 +10,8 @@
         privacy: 'https://ratspeak.org/privacy.html',
         terms: 'https://ratspeak.org/terms.html',
         guidelines: 'https://ratspeak.org/community-guidelines.html',
-        support: 'https://ratspeak.org/support.html'
+        support: 'https://ratspeak.org/support.html',
+        licenses: 'https://docs.ratspeak.org/docs/reference/licenses'
     });
 
     var DOCUMENTS = Object.freeze({
@@ -99,6 +100,21 @@
                 <section><h2>Independent hubs and nodes</h2><p>Most Reticulum infrastructure is not owned or controlled by Ratspeak LLC. We can review app behavior, official listings, and official services. We may contact an independent operator if one is known, but only that operator can moderate or delete content from its hub.</p><p>If an independent hub is unsafe, leave it and block the relevant participant. A hub appearing in discovery is not proof that Ratspeak operates or endorses it.</p></section>
                 <section><h2>Privacy and deletion requests</h2><p>Most Ratspeak information lives on your device and can be removed with local controls or by clearing app data. For support correspondence or data intentionally sent to an official Ratspeak service, email us from the relevant address with “Privacy request” in the subject. We may need enough information to locate the correspondence and verify the request.</p><p>See the <button type="button" class="rs-legal-inline-link" data-legal-document="privacy">Privacy Policy</button> for what cannot be recalled from recipients or independent network infrastructure.</p></section>
                 <section><h2>Not an emergency service</h2><div class="rs-legal-notice"><strong>Immediate danger</strong><p>Ratspeak cannot dispatch help, reliably identify a person from a network nickname, or guarantee delivery. Contact emergency services or a trusted local safety organization appropriate to your location.</p></div><p>For a credible, time-sensitive issue involving an official Ratspeak service, use the subject “Urgent safety report” and explain why it is urgent. Do not use that label for ordinary support requests.</p></section>
+            `
+        },
+        licenses: {
+            title: 'Licenses',
+            eyebrow: 'Licenses',
+            headline: 'What Ratspeak is built from, and on which terms.',
+            lede: 'Ratspeak is experimental software built on unofficial Rust ports of Mark Qvist\'s Reticulum, LXMF, and LXST. It is not the Reticulum reference implementation and is not endorsed by the Reticulum project.',
+            meta: 'Effective November 7, 2026 · Ratspeak LLC',
+            url: URLS.licenses,
+            content: `
+                <section><h2>Ratspeak</h2><p>Ratspeak is licensed under the Reticulum License, Copyright (c) 2026 Ratspeak LLC. The source is published at github.com/ratspeak/Ratspeak.</p></section>
+                <section><h2>Reticulum and LXMF components</h2><p>Ratspeak bundles rsReticulum and rsLXMF, Rust ports of Mark Qvist's reference implementations of Reticulum and LXMF. Firmware that Ratspeak manages bundles rsReticulumLite and rsLXMFLite, ports of those ports. They carry his copyright under the Reticulum License, and its conditions apply to Ratspeak as distributed.</p><ul><li>rsReticulum: derived from github.com/markqvist/Reticulum. Copyright (c) 2016-2026 Mark Qvist, unless otherwise noted; additions and modifications Copyright (c) 2026 Ratspeak LLC.</li><li>rsLXMF: derived from github.com/markqvist/LXMF. Copyright (c) 2020-2026 Mark Qvist, unless otherwise noted; additions and modifications Copyright (c) 2026 Ratspeak LLC.</li></ul></section>
+                <section><h2>Voice (LXST)</h2><p>Voice calls use rsLXST, a port of the LXST reference implementation, which is published under CC BY-NC-ND 4.0. Ratspeak LLC grants no rights to that component. A license for its use in Ratspeak is being arranged with its author, and this page will carry that license once it is in place.</p></section>
+                <section><h2>Reticulum License</h2><p>Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:</p><ul><li>The Software shall not be used in any kind of system which includes amongst its functions the ability to purposefully do harm to human beings.</li><li>The Software shall not be used, directly or indirectly, in the creation of an artificial intelligence, machine learning or language model training dataset, including but not limited to any use that contributes to the training or development of such a model or algorithm.</li><li>The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.</li></ul><p>THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.</p></section>
+                <section><h2>Other components</h2><p>Other bundled third-party components keep their own licenses. Their notices ship with the app's resources and are listed in the source repository.</p></section>
             `
         }
     });
@@ -200,7 +216,7 @@
     }
 
     window.RS.legal = Object.freeze({
-        version: '2026-08-15',
+        version: '2026-11-07',
         urls: URLS,
         documents: DOCUMENTS,
         open: openDocument

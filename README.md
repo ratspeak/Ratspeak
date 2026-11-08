@@ -15,7 +15,7 @@ Ratspeak is a native desktop and mobile client for end-to-end encrypted direct c
 [rsLXST](https://github.com/ratspeak/rsLXST)
 
 
-[![License: AGPL-3.0-or-later](https://img.shields.io/badge/license-AGPL--3.0--or--later-blue.svg)](LICENSE)
+[![License: Reticulum License](https://img.shields.io/badge/license-Reticulum%20License-blue.svg)](LICENSE)
 [![Rust 1.90+](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org)
 [![Status](https://img.shields.io/badge/status-alpha-yellow.svg)](#current-state)
 
@@ -31,7 +31,8 @@ Ratspeak is for private messaging when the normal internet is unavailable,
 untrusted, or not the path you want to depend on. When your cell tower is down, when natural disaster hits, or when you just want an alternative. When you know the current system is broken.
 
 It runs on
-[Reticulum](https://github.com/ratspeak/rsReticulum) and [LXMF](https://github.com/ratspeak/rsLXMF), so conversations can happen
+[rsReticulum](https://github.com/ratspeak/rsReticulum) and [rsLXMF](https://github.com/ratspeak/rsLXMF), Rust ports of
+[Reticulum](https://github.com/markqvist/Reticulum) and [LXMF](https://github.com/markqvist/LXMF), so conversations can happen
 over regular internet, compatible LoRa radios, WiFi and Bluetooth. The usable paths depend on your configured interfaces, hardware and platform.
 
 There is no Ratspeak account server, no central database, no hub where everything routes through by default. Your Reticulum identity is generated on
@@ -163,4 +164,9 @@ ringtones, and platform audio routing are all subject to change.
 
 ## License
 
-GNU Affero General Public License v3.0 or later. See [`LICENSE`](LICENSE).
+Ratspeak is licensed under the [Reticulum License](LICENSE), Copyright (c) 2026
+Ratspeak LLC. It is built on rsReticulum and rsLXMF, ports of Mark Qvist's
+reference implementations of Reticulum and LXMF that carry his copyright under
+the same license, and on rsLXST, a port of LXST for which a license for Ratspeak
+is being arranged with its author. The notices are in [NOTICE](NOTICE) and in
+the app under About → Licenses.

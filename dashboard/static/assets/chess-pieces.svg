@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   Ratspeak chess piece sprite.
-  Original artwork licensed under AGPL-3.0-or-later alongside the project.
+  Original artwork licensed under the project license alongside the project.
   12 symbols: w{p,n,b,r,q,k} (white) and b{p,n,b,r,q,k} (black).
   Each symbol renders on a 45x45 viewBox so pieces line up regardless of
   square size when referenced via <use href="#wp"/>.

@@ -9,13 +9,15 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "publisher": "Ratspeak Contributors",
-    "copyright": "Copyright © 2026 Ratspeak LLC",
+    "publisher": "Ratspeak LLC",
+    "copyright": "Copyright © 2026 Ratspeak LLC. Includes Rust ports of Mark Qvist's Reticulum, LXMF, and LXST.",
     "homepage": "https://ratspeak.org",
     "category": "SocialNetworking",
     "shortDescription": "End-to-end encrypted mesh messenger",
     "longDescription": "End-to-end encrypted messenger for desktop, mobile, and LoRa handhelds. If the internet goes down, messages can still travel over Wi-Fi, Bluetooth, or radio. Built on Reticulum and LXMF.",
     "resources": {
+      "../LICENSE": "LICENSE",
+      "../NOTICE": "NOTICE",
       "../third_party/btleplug/LICENSE.md": "third-party/btleplug/LICENSE.md",
       "../third_party/opus-rs-0.1.29-COPYING": "third-party/opus-rs-0.1.29-COPYING.txt",
       "../third_party/lxst-codec2/NOTICE": "third-party/lxst-codec2/NOTICE",

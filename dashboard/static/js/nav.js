@@ -690,6 +690,7 @@ function showAboutModal() {
                     '<button type="button" data-about-document="terms">Terms</button>' +
                     '<button type="button" data-about-document="guidelines">Guidelines</button>' +
                     '<button type="button" data-about-document="support">Support</button>' +
+                    '<button type="button" data-about-document="licenses">Licenses</button>' +
                 '</div>' +
             '</div>' +
         '</div>';

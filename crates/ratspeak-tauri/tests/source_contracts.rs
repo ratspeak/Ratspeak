@@ -2449,7 +2449,7 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
         .expect("bundle config");
     assert_eq!(
         bundle.get("publisher").and_then(|value| value.as_str()),
-        Some("Ratspeak Contributors")
+        Some("Ratspeak LLC")
     );
     assert_eq!(
         bundle.get("homepage").and_then(|value| value.as_str()),
@@ -2678,7 +2678,7 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
     let metainfo = read_source(root.join("src-tauri").join(metainfo_path)).expect("metainfo");
     assert!(metainfo.contains("<name>Ratspeak</name>"));
     assert!(metainfo.contains("<summary>End-to-end encrypted mesh messenger</summary>"));
-    assert!(metainfo.contains("<developer_name>Ratspeak Contributors</developer_name>"));
+    assert!(metainfo.contains("<developer_name>Ratspeak LLC</developer_name>"));
     assert!(metainfo.contains("<url type=\"homepage\">https://ratspeak.org</url>"));
     assert!(
         metainfo.contains("<url type=\"vcs-browser\">https://github.com/ratspeak/Ratspeak</url>")
@@ -10050,7 +10050,7 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
     ] {
         assert!(legal.contains(url));
     }
-    assert!(legal.contains("version: '2026-08-15'"));
+    assert!(legal.contains("version: '2026-11-07'"));
     assert!(legal.contains("Available offline"));
     assert!(legal.contains("function openDocument(documentId)"));
     assert!(legal.contains("View current version online"));

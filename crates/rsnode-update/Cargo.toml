@@ -3,7 +3,7 @@ name = "rsnode-update"
 description = "rsNode firmware-transfer wire formats: Link command framing, status, .rsota manifests and RSDP deltas"
 version = "0.1.0"
 edition = "2024"
-license = "AGPL-3.0-or-later"
+license-file = "../../LICENSE"
 # Self-contained: firmware outside this workspace depends on it by path.
 rust-version = "1.85"
 publish = false

@@ -2,7 +2,7 @@
 <component type="desktop-application">
   <id>org.ratspeak.desktop</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>AGPL-3.0-or-later</project_license>
+  <project_license>LicenseRef-Reticulum-License</project_license>
   <name>Ratspeak</name>
   <summary>End-to-end encrypted mesh messenger</summary>
   <description>
@@ -21,9 +21,9 @@
       <li>Free and open source, with no account or phone number</li>
     </ul>
   </description>
-  <developer_name>Ratspeak Contributors</developer_name>
+  <developer_name>Ratspeak LLC</developer_name>
   <developer id="org.ratspeak">
-    <name>Ratspeak Contributors</name>
+    <name>Ratspeak LLC</name>
   </developer>
   <url type="homepage">https://ratspeak.org</url>
   <url type="help">https://docs.ratspeak.org</url>
