@@ -186,7 +186,9 @@ fn strip_legacy_prefix(payload: &str) -> Option<&str> {
 // Columba's reader: exactly `<address>:<key>`, so a trailing field fails the key check.
 fn parse_legacy_contact_payload(raw: &str) -> Result<ContactCard, String> {
     let Some((lxmf_hash, key_hex)) = raw.split_once(':') else {
-        return Err("This legacy code has no public key. Add the contact by its address instead.".into());
+        return Err(
+            "This legacy code has no public key. Add the contact by its address instead.".into(),
+        );
     };
     if !validate_hex(key_hex, 128, 128) {
         return Err("Legacy code public key must be 64 bytes of hex".into());
@@ -217,7 +219,11 @@ fn verified_card(
     caps: Vec<String>,
     legacy: bool,
 ) -> Result<ContactCard, String> {
-    let what = if legacy { "Legacy code" } else { "Contact-card" };
+    let what = if legacy {
+        "Legacy code"
+    } else {
+        "Contact-card"
+    };
     let lxmf_bytes = parse_hex16(&lxmf_hash, "LXMF address")?;
     let identity = Identity::from_public_key(&public_key)
         .map_err(|_| format!("{what} public key is not a Reticulum identity"))?;
@@ -566,8 +572,12 @@ mod tests {
     fn legacy_payload_is_columba_shaped_and_round_trips() {
         let identity = Identity::new();
         let (lxmf, id, key) = card_fields(&identity);
-        let payload = build_legacy_contact_payload(&lxmf.to_ascii_uppercase(), &identity.get_public_key());
-        assert_eq!(payload, format!("lxma://{lxmf}:{}", hex::encode(identity.get_public_key())));
+        let payload =
+            build_legacy_contact_payload(&lxmf.to_ascii_uppercase(), &identity.get_public_key());
+        assert_eq!(
+            payload,
+            format!("lxma://{lxmf}:{}", hex::encode(identity.get_public_key()))
+        );
         assert_eq!(payload.len(), 7 + 32 + 1 + 128);
         let parsed = parse_contact_card_payload(&payload).unwrap();
         assert!(parsed.legacy);
@@ -577,9 +587,11 @@ mod tests {
         assert_eq!(parsed.public_key, identity.get_public_key());
         assert_eq!((parsed.kind.as_str(), parsed.caps.len()), ("person", 0));
         assert!(!parsed.is_device());
-        assert!(!parse_contact_card_payload(&format!("RSCP1:{}:{lxmf}:{id}:{key}", B64URL.encode("n")))
-            .unwrap()
-            .legacy);
+        assert!(
+            !parse_contact_card_payload(&format!("RSCP1:{}:{lxmf}:{id}:{key}", B64URL.encode("n")))
+                .unwrap()
+                .legacy
+        );
     }
 
     #[test]

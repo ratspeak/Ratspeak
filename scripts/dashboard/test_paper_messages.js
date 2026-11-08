@@ -437,10 +437,10 @@ const PREVIEW = {
     assert(/\.contact-share-sheet\.paper-share-sheet\s*\{[^}]*880px\)/s.test(viewsCss));
 
     // Scanner: lxm:// payloads route to the paper preview; new default copy.
-    assert(contactSource.includes("var scannerTitle = options.title || 'Scan Ratspeak QR';"));
+    assert(contactSource.includes("var scannerTitle = options.title || 'Scan QR Code';"));
     assert(contactSource.includes("var checkingText = options.checkingText || 'Checking QR\\u2026';"));
-    assert(contactSource.includes("var invalidText = options.invalidText || 'That QR isn\\'t a Ratspeak contact or paper message.';"));
-    assert(contactSource.includes("'No Ratspeak QR found in that image.'"));
+    assert(contactSource.includes("var invalidText = options.invalidText || 'That QR isn\\'t a contact card, paper message, or lxma:// address.';"));
+    assert(contactSource.includes("'No QR code found in that image.'"));
     assert(contactSource.includes("if (/^lxm:\\/\\//i.test(paperUri) && window.RS.paper) {\n                return RS.paper.preview(paperUri).then(function(preview) {\n                    stopStream();\n                    RS.paper.renderResult(body, paperUri, preview, { close: closeAll });"));
     // Popup copy.
     for (const copy of ['Preparing paper message&hellip;', "'<div class=\"contact-share-subtitle\">Ratspeak paper message</div>'",
