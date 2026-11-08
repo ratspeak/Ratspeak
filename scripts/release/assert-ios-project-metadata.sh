@@ -55,6 +55,15 @@ expect_raw "$info_plist" CFBundleVersion "$expected_build"
 expect_raw "$info_plist" LSRequiresIPhoneOS true
 expect_raw "$info_plist" UILaunchStoryboardName LaunchScreen
 expect_json "$info_plist" CFBundleURLTypes '[{"CFBundleURLName":"ratspeak","CFBundleURLSchemes":["ratspeak","lxm"]}]'
+
+# xcodegen regenerates Info.plist from project.yml at build time, so URL schemes
+# edited only in the plist disappear from the built app.
+model_url_types="$(ruby -ryaml -rjson -e 'puts JSON.generate(YAML.load_file(ARGV[0]).dig("targets", "ratspeak_iOS", "info", "properties", "CFBundleURLTypes"))' "$project_model" | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))')"
+plist_url_types="$(plist_json "$info_plist" CFBundleURLTypes | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin), sort_keys=True))')"
+if [[ "$model_url_types" != "$plist_url_types" ]]; then
+  echo "$project_model: CFBundleURLTypes $model_url_types does not match $info_plist: $plist_url_types" >&2
+  exit 1
+fi
 expect_json "$info_plist" UIBackgroundModes '["audio","bluetooth-central","bluetooth-peripheral"]'
 expect_json "$info_plist" UIRequiredDeviceCapabilities '["arm64","metal"]'
 expect_json "$info_plist" UISupportedInterfaceOrientations '["UIInterfaceOrientationPortrait"]'

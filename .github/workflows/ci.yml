@@ -76,6 +76,9 @@ jobs:
       - name: Check reviewed compatibility floor
         run: python3 tools/check-api-compatibility.py
         working-directory: Ratspeak
+      - name: Check iOS project metadata
+        run: bash scripts/release/assert-ios-project-metadata.sh .
+        working-directory: Ratspeak
 
   test:
     name: Test
