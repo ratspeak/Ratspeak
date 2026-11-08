@@ -12,7 +12,7 @@ changes that materially affect how an artifact is reproduced.
 
 ### Changed
 
-- License: Ratspeak moves from AGPL-3.0-or-later to the Reticulum License. The bundled rsReticulum and rsLXMF carry Mark Qvist's copyright under that license. Voice uses rsLXST, a port of LXST for which a license is being arranged with its author. The notices ship in NOTICE and in the app under About → Licenses.
+- License: Ratspeak moves from AGPL-3.0-or-later to the Reticulum License. The bundled rsReticulum and rsLXMF carry Mark Qvist's copyright under that license, and voice uses rsLXST under his separate non-commercial LXST license. The notices ship in NOTICE and in the app under About → Licenses.
 
 ## [1.0.41] - 2026-11-05
 

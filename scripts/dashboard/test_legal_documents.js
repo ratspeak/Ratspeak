@@ -68,7 +68,7 @@ context.RS = context.window.RS;
 vm.runInNewContext(source, context, { filename: 'legal_documents.js' });
 
 const legal = context.window.RS.legal;
-assert.strictEqual(legal.version, '2026-11-07');
+assert.strictEqual(legal.version, '2026-11-08');
 assert.strictEqual(
     Array.from(Object.keys(legal.documents)).join(','),
     'privacy,terms,guidelines,support,licenses'

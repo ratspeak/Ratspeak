@@ -12,10 +12,22 @@ the same license:
                     Copyright (c) 2020-2026 Mark Qvist, unless otherwise noted
                     Additions and modifications Copyright (c) 2026 Ratspeak LLC
 
-Voice calls use rsLXST, a port of the LXST reference implementation, which is
-published under CC BY-NC-ND 4.0. Ratspeak LLC grants no rights to that
-component. A license for its use in Ratspeak is being arranged with its author,
-and this notice will carry that license once it is in place.
+Voice calls use rsLXST, a port of the LXST reference implementation, under a
+separate license from its author, reproduced exactly:
+
+LXST Copyright 2026 Mark Qvist.
+
+This implementation of LXST is derived from the LXST reference implementation,
+and used under license for Ratspeak, for non-commercial use only.
+No derivatives or use outside Ratspeak is permitted.
+
+For commercial licensing inquiries, contact license@unsigned.io
+
+Because of those terms, any build of Ratspeak that includes rsLXST is
+non-commercial, and no derivative of rsLXST or use of it outside Ratspeak is
+permitted. The Reticulum License's permission to sell covers the rest of the
+software; a build meant for sale or for use outside Ratspeak has to leave the
+LXST component out (the lxst-voice feature) or carry a license from its author.
 
 The Reticulum License text follows. Its conditions apply to Ratspeak as
 distributed.

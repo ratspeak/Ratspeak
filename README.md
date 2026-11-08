@@ -167,6 +167,7 @@ ringtones, and platform audio routing are all subject to change.
 Ratspeak is licensed under the [Reticulum License](LICENSE), Copyright (c) 2026
 Ratspeak LLC. It is built on rsReticulum and rsLXMF, ports of Mark Qvist's
 reference implementations of Reticulum and LXMF that carry his copyright under
-the same license, and on rsLXST, a port of LXST for which a license for Ratspeak
-is being arranged with its author. The notices are in [NOTICE](NOTICE) and in
-the app under About → Licenses.
+the same license, and on rsLXST, a port of LXST used under a separate
+non-commercial license from its author, so builds that include voice are
+non-commercial. The notices are in [NOTICE](NOTICE) and in the app under
+About → Licenses.

@@ -10050,7 +10050,7 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
     ] {
         assert!(legal.contains(url));
     }
-    assert!(legal.contains("version: '2026-11-07'"));
+    assert!(legal.contains("version: '2026-11-08'"));
     assert!(legal.contains("Available offline"));
     assert!(legal.contains("function openDocument(documentId)"));
     assert!(legal.contains("View current version online"));
