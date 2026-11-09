@@ -1898,37 +1898,6 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn coalescer_does_not_start_a_second_batch_latency_window() {
-        let sink = Arc::new(RecordingSink::default());
-        let recorder = ActivityRecorder::with_batch_sink(sink.clone());
-        recorder.start().await.unwrap();
-        wait_until(|| !sink.batches().is_empty()).await;
-        let initial_batches = sink.batches().len();
-
-        assert_eq!(
-            recorder.record(|| coalescible_draft(41)),
-            ActivityRecordOutcome::Accepted
-        );
-        tokio::time::timeout(Duration::from_millis(180), async {
-            while sink.batches().len() == initial_batches {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("a coalesced event must share the original 100 ms budget");
-
-        let kinds: Vec<String> = sink
-            .batches()
-            .iter()
-            .skip(initial_batches)
-            .flat_map(|batch| batch.events())
-            .map(|event| event.kind().to_string())
-            .collect();
-        assert!(kinds.iter().any(|kind| kind == "rns.path.discovered"));
-        recorder.shutdown().await.unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn an_emitted_event_is_never_mutated_by_later_coalescing() {
         let sink = Arc::new(RecordingSink::default());
         let recorder = ActivityRecorder::with_batch_sink(sink.clone());

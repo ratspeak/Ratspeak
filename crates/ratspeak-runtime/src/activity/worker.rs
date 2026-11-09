@@ -1497,6 +1497,65 @@ mod tests {
         assert_eq!(shared.health.snapshot().byte_limit_evicted_events(), "2");
     }
 
+    #[test]
+    fn a_due_coalescer_publishes_without_a_second_batch_window() {
+        let sink = Arc::new(RecordingSink::default());
+        let (_ingress_tx, ingress_rx) = crossbeam_channel::bounded(1);
+        let (_urgent_tx, urgent_rx) = crossbeam_channel::bounded(1);
+        let (_query_tx, query_rx) = crossbeam_channel::bounded(1);
+        let mut worker = WorkerCore::new(
+            Arc::new(test_shared()),
+            Arc::clone(&sink) as Arc<dyn ActivityBatchSink>,
+            ingress_rx,
+            urgent_rx,
+            query_rx,
+            1,
+            false,
+        );
+        worker.session = Some(SessionCore::new(
+            CapturePrivacy::random(),
+            ActivityRing::platform_default().unwrap(),
+            1,
+            CaptureProfile::Normal,
+        ));
+        worker.process_draft(IngressDraft {
+            generation: 1,
+            profile: CaptureProfile::Normal,
+            draft: catalog::test_network_event(
+                41,
+                41,
+                [41; 16],
+                "example.net:4242",
+                super::super::classified::CoalescingPolicy::AdjacentEquivalent,
+            )
+            .unwrap(),
+            low_permit: None,
+        });
+        let session = worker.session.as_mut().unwrap();
+        // Age the held event by one full latency budget instead of sleeping.
+        let held_since = session.coalescer_since.expect("the event should be held");
+        session.coalescer_since =
+            Some(held_since - Duration::from_millis(ACTIVITY_BATCH_MAX_LATENCY_MS));
+
+        worker.on_tick();
+
+        let batches = sink
+            .batches
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_eq!(
+            batches.len(),
+            1,
+            "the due tick must publish, not start a batch timer"
+        );
+        assert!(
+            batches[0]
+                .events()
+                .iter()
+                .any(|event| event.kind() == "rns.path.discovered")
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn replay_is_serviced_after_a_bounded_ingress_burst() {
         const QUEUED_EVENTS: usize = 64;
