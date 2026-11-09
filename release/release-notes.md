@@ -1,15 +1,11 @@
-## v1.0.42
+## v1.0.43
 
 ### Added
 
-- **rsNode Repeaters**: manage a node by messaging it. Its conversation shows an rsNode badge, a command bar, and a status card, and dropping or choosing a `.rsota` file there updates its firmware.
-- Contact cards now use the RSCP2 format, which can mark a device. Cards from earlier releases still import, but Ratspeak 1.0.41 and earlier cannot read new cards.
-- Contact QR codes have a Legacy format for Columba and other Reticulum apps, and the scanner reads their `lxma://` codes.
+- **Close button choice on Windows**: closing the window now asks whether to quit Ratspeak or keep it running in the system tray. Tick Don't ask again to keep your answer, and change it later in Settings › System › Close Button.
 
 ### Fixed and improved
 
-- USB RNodes with a CP2102 serial chip, such as the Heltec V3, now connect on Android.
-
-### Build and compatibility
-
-- License: Ratspeak moves from AGPL-3.0-or-later to the Reticulum License. The bundled rsReticulum and rsLXMF carry Mark Qvist's copyright under that license, and voice uses rsLXST under his separate non-commercial LXST license. The notices ship in NOTICE and in the app under About → Licenses.
+- USB RNodes on nRF52 boards, such as the Heltec T114 and T096, now connect on Windows instead of staying at Initializing.
+- A newly added RNode now appears in the Radio list right away, while the radio is still starting.
+- On iOS, `lxm://` paper message links open Ratspeak.

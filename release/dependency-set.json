@@ -1,23 +1,23 @@
 {
   "schemaVersion": 1,
   "product": {
-    "displayVersion": "1.0.42",
-    "marketingVersion": "1.0.42",
+    "displayVersion": "1.0.43",
+    "marketingVersion": "1.0.43",
     "androidArtifactTargets": [
       "aarch64",
       "armv7",
       "x86_64"
     ],
     "platformBuilds": {
-      "androidVersionCode": 1000072,
-      "iosBundleVersion": "1000072"
+      "androidVersionCode": 1000073,
+      "iosBundleVersion": "1000073"
     },
     "predecessor": {
-      "displayVersion": "1.0.41",
-      "tag": "v1.0.41",
-      "commit": "80b9dc37483c8f0a275f2f3003f75c6dbe9070e7",
-      "androidVersionCode": 1000071,
-      "iosBundleVersion": "1000071"
+      "displayVersion": "1.0.42",
+      "tag": "v1.0.42",
+      "commit": "196eca1326853fd94653a3c0be2ea7b73ae865a1",
+      "androidVersionCode": 1000072,
+      "iosBundleVersion": "1000072"
     }
   },
   "toolchains": {
@@ -36,9 +36,9 @@
       "name": "rsReticulum",
       "repository": "https://github.com/ratspeak/rsReticulum.git",
       "path": "../rsReticulum",
-      "commit": "14241a383910e6ee7665303eff1e7c8d98957cc0",
+      "commit": "b8c1446b9397b41e333df59397de328d49311136",
       "version": "1.4.0",
-      "integrationTag": "ratspeak-v1.0.42"
+      "integrationTag": "ratspeak-v1.0.43"
     },
     {
       "id": "rslxmf",
@@ -47,7 +47,7 @@
       "path": "../rsLXMF",
       "commit": "00f439df7e6d14d29e5ca75efc7c694ab4990b3d",
       "version": "1.4.0",
-      "integrationTag": "ratspeak-v1.0.42"
+      "integrationTag": "ratspeak-v1.0.43"
     },
     {
       "id": "rslxst",
@@ -56,7 +56,7 @@
       "path": "../rsLXST",
       "commit": "cb857c69d070615f604cfadbd3579ad20e75b8ca",
       "version": "0.3.1",
-      "integrationTag": "ratspeak-v1.0.42"
+      "integrationTag": "ratspeak-v1.0.43"
     },
     {
       "id": "lrgp",
@@ -65,7 +65,7 @@
       "path": "../lrgp-rs",
       "commit": "f44147a851588948b6faba2640c3baae258ab079",
       "version": "0.4.1",
-      "integrationTag": "ratspeak-v1.0.42"
+      "integrationTag": "ratspeak-v1.0.43"
     }
   ]
 }

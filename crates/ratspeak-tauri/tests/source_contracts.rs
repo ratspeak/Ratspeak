@@ -6549,8 +6549,8 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "manage a node by messaging it.",
-        "Legacy format for Columba and other Reticulum apps",
+        "keep it running in the system tray",
+        "now connect on Windows instead of staying at Initializing",
     ];
 
     for workflow_path in [
