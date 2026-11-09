@@ -6549,8 +6549,8 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "keep it running in the system tray",
-        "now connect on Windows instead of staying at Initializing",
+        "One check means sent, two mean delivered, and a red ! means not delivered.",
+        "Ratspeak fits screens down to 640×480.",
     ];
 
     for workflow_path in [

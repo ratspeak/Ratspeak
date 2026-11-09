@@ -5,16 +5,26 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+## [1.0.44] - 2026-11-09
+
+### Added
+
+- **Retry**: resend a message that wasn't delivered, or that you cancelled, from its menu by Auto, Opportunistic, Direct, or Offline Inbox. The same message goes again, so it's never duplicated.
+
 ### Fixed and improved
 
-- Ratspeak fits small screens down to 640×480: narrow windows zoom the desktop layout out, the sidebar becomes an icon rail, and short windows no longer cut off the sidebar.
-- The hardware key wizard says when a YubiKey is found but its firmware is older than 5.7.0, instead of reporting that no key was found.
-- Settings › System › Cache: Clear Announces is now Clear Peers, since it also clears discovered peers.
-- **Retry**: a message that wasn't delivered, or that you cancelled, has Retry in its message menu, with a choice of Auto, Opportunistic, Direct, or Offline Inbox. It sends the identical message, so someone who already has it won't see it twice.
-- Delivered messages show two checks, one check means sent but not yet confirmed, and a red ! marks a message that wasn't delivered.
-- Messages still on their way are sent again after Ratspeak restarts instead of failing, and a message that arrives after Ratspeak stopped waiting now shows as delivered.
-- A message that can't be delivered while you're in another chat shows a notice that opens it.
-- Deleting a conversation or all messages also stops sending any of its messages still on their way.
+- One check means sent, two mean delivered, and a red ! means not delivered.
+- Messages still sending now survive a restart, and late delivery confirmations are no longer missed.
+- Messages fall back to your Offline Inbox more reliably on slow links.
+- A message that fails in another chat shows a notice, and deleting a chat stops its pending sends.
+- Ratspeak fits screens down to 640×480.
+- The YubiKey wizard names firmware older than 5.7.0 instead of saying no key was found.
+- Clear Announces is now Clear Peers.
+- The Rejected icon shows again.
+
+### Build and compatibility
+
+- To keep unsent messages across restarts, 1.0.44 updates how messages are stored. Ratspeak 1.0.43 and earlier can't read the updated storage after updating, so backup data if important.
 
 ## [1.0.43] - 2026-11-09
 
