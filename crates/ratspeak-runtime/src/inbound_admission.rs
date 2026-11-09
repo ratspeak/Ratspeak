@@ -1959,6 +1959,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deleting_messages_stops_their_sends() {
+        let _serial = SERIAL.lock().await;
+        let (_temp, state) = fixture();
+        let mut manager =
+            lxmf::LxmfManager::load_or_create(&state.config.data_root, None, None).unwrap();
+        let identity = manager.identity_hash.clone();
+        let send = |manager: &mut lxmf::LxmfManager, dest: &str, thread: &str| {
+            manager
+                .send_message_with_preference_report(lxmf::MessageSendRequest {
+                    dest_hash_hex: dest,
+                    content: "on its way",
+                    title: "",
+                    db_pool: &state.db,
+                    identity_id: &identity,
+                    preference: lxmf::DeliveryPreference::Direct,
+                    profile: lxmf::DeliveryProfile::Message,
+                    renderer: None,
+                    thread,
+                })
+                .unwrap()
+                .message_id
+        };
+        let (peer, other) = ("e1".repeat(16), "e2".repeat(16));
+        let thread = "ab".repeat(16);
+        send(&mut manager, &peer, "");
+        send(&mut manager, &peer, &thread);
+        let kept = send(&mut manager, &other, "");
+        *state.lxmf.lock().unwrap() = Some(manager);
+        let queued = || {
+            state
+                .lxmf
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .router
+                .pending_outbound
+                .len()
+        };
+        assert_eq!(queued(), 3);
+
+        crate::propagation_recovery::delete_thread_messages(&state, &identity, &peer, &thread)
+            .unwrap()
+            .remove_files()
+            .unwrap();
+        assert_eq!(queued(), 2, "only that conversation's send stops");
+        crate::propagation_recovery::delete_messages(&state, &identity, Some(&peer))
+            .unwrap()
+            .remove_files()
+            .unwrap();
+        assert_eq!(queued(), 1);
+        let left = state
+            .lxmf
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .router
+            .pending_outbound[0]
+            .message_id();
+        assert_eq!(hex::encode(left), kept);
+        crate::propagation_recovery::delete_messages(&state, &identity, None)
+            .unwrap()
+            .remove_files()
+            .unwrap();
+        assert_eq!(queued(), 0, "Delete All Messages stops every send");
+    }
+
+    #[tokio::test]
     async fn a_committed_delete_invalidates_conversation_lists_even_when_a_file_stays() {
         let _serial = SERIAL.lock().await;
         let (_temp, state) = fixture();

@@ -102,7 +102,10 @@ pub fn delete_messages(
     identity: &str,
     peer: Option<&str>,
 ) -> Result<DeletedMessages, crate::db::admission::AdmissionDbError> {
-    crate::inbound_admission::delete_messages(state, identity, peer)
+    let sending = crate::db::outbound_on_its_way(&state.db, identity, peer, None);
+    let deleted = crate::inbound_admission::delete_messages(state, identity, peer)?;
+    stop_deleted_sends(state, identity, &sending);
+    Ok(deleted)
 }
 
 /// `delete_messages` for one conversation with `peer`; `""` is Main.
@@ -112,7 +115,34 @@ pub fn delete_thread_messages(
     peer: &str,
     thread: &str,
 ) -> Result<DeletedMessages, crate::db::admission::AdmissionDbError> {
-    crate::inbound_admission::delete_thread_messages(state, identity, peer, thread)
+    let sending = crate::db::outbound_on_its_way(&state.db, identity, Some(peer), Some(thread));
+    let deleted = crate::inbound_admission::delete_thread_messages(state, identity, peer, thread)?;
+    stop_deleted_sends(state, identity, &sending);
+    Ok(deleted)
+}
+
+/// A deleted message is not sent on: its queued, resumed or retried send stops
+/// with its row.
+fn stop_deleted_sends(state: &AppState, identity: &str, ids: &[String]) {
+    if ids.is_empty() {
+        return;
+    }
+    if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(manager) = lxmf.as_mut()
+        && manager.identity_hash == identity
+    {
+        for id in ids {
+            manager.cancel_outbound_message(id);
+        }
+    }
+    for id in ids {
+        state.release_attachment_delivery_lease(id);
+    }
+    if let Ok(mut times) = state.message_send_times.lock() {
+        for id in ids {
+            times.remove(id);
+        }
+    }
 }
 
 /// `delete_messages` for chosen `ids` with `peer`; also returns the ids deleted.

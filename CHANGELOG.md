@@ -14,6 +14,7 @@ changes that materially affect how an artifact is reproduced.
 - Delivered messages show two checks; one check means sent but not yet confirmed.
 - Messages still on their way are sent again after Ratspeak restarts instead of failing, and a message that arrives after Ratspeak stopped waiting now shows as delivered.
 - A message that can't be delivered while you're in another chat shows a notice that opens it.
+- Deleting a conversation or all messages also stops sending any of its messages still on their way.
 
 ## [1.0.43] - 2026-11-09
 

@@ -443,6 +443,7 @@ pub fn ratspeak_db::db::message_thread(&ratspeak_db::DbPool, &str, &str) -> allo
 pub fn ratspeak_db::db::next_conversation_observed_timestamp(&ratspeak_db::DbPool, &str, &str, f64) -> f64
 pub fn ratspeak_db::db::next_conversation_thread_number(&ratspeak_db::DbPool, &str, &str) -> i64
 pub fn ratspeak_db::db::note_identity_tables_changed()
+pub fn ratspeak_db::db::outbound_on_its_way(&ratspeak_db::DbPool, &str, core::option::Option<&str>, core::option::Option<&str>) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::db::outbox_rows(&ratspeak_db::DbPool, &str) -> core::result::Result<alloc::vec::Vec<ratspeak_db::OutboxRow>, alloc::string::String>
 pub fn ratspeak_db::db::pending_network_lifts(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::db::persist_inbound_game_action(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &[u8], core::option::Option<&lrgp::session::Session>) -> core::option::Option<bool>
@@ -875,6 +876,7 @@ pub fn ratspeak_db::message_thread(&ratspeak_db::DbPool, &str, &str) -> alloc::s
 pub fn ratspeak_db::next_conversation_observed_timestamp(&ratspeak_db::DbPool, &str, &str, f64) -> f64
 pub fn ratspeak_db::next_conversation_thread_number(&ratspeak_db::DbPool, &str, &str) -> i64
 pub fn ratspeak_db::note_identity_tables_changed()
+pub fn ratspeak_db::outbound_on_its_way(&ratspeak_db::DbPool, &str, core::option::Option<&str>, core::option::Option<&str>) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::outbox_rows(&ratspeak_db::DbPool, &str) -> core::result::Result<alloc::vec::Vec<ratspeak_db::OutboxRow>, alloc::string::String>
 pub fn ratspeak_db::pending_network_lifts(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::persist_inbound_game_action(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &[u8], core::option::Option<&lrgp::session::Session>) -> core::option::Option<bool>

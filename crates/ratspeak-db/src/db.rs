@@ -3760,6 +3760,29 @@ pub fn save_outbound_message(pool: &DbPool, message: &OutboundMessage<'_>) -> Re
     tx.commit().map_err(|error| error.to_string())
 }
 
+/// `identity_id`'s outbound messages still on their way, all of them or those
+/// with `peer` (in `thread`, when given).
+pub fn outbound_on_its_way(
+    pool: &DbPool,
+    identity_id: &str,
+    peer: Option<&str>,
+    thread: Option<&str>,
+) -> Vec<String> {
+    let Ok(conn) = pool.get() else {
+        return Vec::new();
+    };
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT id FROM messages WHERE identity_id = ?1 AND direction = 'outbound'
+           AND (?2 IS NULL OR destination = ?2) AND (?3 IS NULL OR thread = ?3)
+           AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper')",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map(params![identity_id, peer, thread], |row| row.get(0))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
 /// One outbox entry: a message to send again.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OutboxRow {
@@ -3780,7 +3803,7 @@ pub fn outbox_rows(pool: &DbPool, identity_id: &str) -> Result<Vec<OutboxRow>, S
              FROM lxmf_outbox o JOIN messages m
                ON m.id = o.message_id AND m.identity_id = o.identity_id
              WHERE o.identity_id = ?1 AND m.state NOT IN {OUTBOX_ENDED_STATES}
-             ORDER BY o.queued_at ASC"
+             ORDER BY o.queued_at ASC, o.rowid ASC"
         ))
         .map_err(|error| error.to_string())?;
     stmt.query_map(params![identity_id], outbox_row)

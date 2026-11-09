@@ -1585,6 +1585,7 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::acknowledge_download_suppression(&mu
 pub fn ratspeak_runtime::lxmf::LxmfManager::acknowledge_known_identities_snapshot(&mut self, &ratspeak_runtime::lxmf::KnownIdentitiesSnapshot)
 pub fn ratspeak_runtime::lxmf::LxmfManager::acknowledge_persistence_delta(&mut self, &ratspeak_runtime::lxmf::LxmfPersistenceDelta)
 pub fn ratspeak_runtime::lxmf::LxmfManager::add_contact(&self, &str, core::option::Option<&str>, &str, &ratspeak_db::db::DbPool, &str)
+pub fn ratspeak_runtime::lxmf::LxmfManager::admit_resumes_within_budget(&mut self, impl core::ops::function::FnMut(&str, usize) -> bool)
 pub fn ratspeak_runtime::lxmf::LxmfManager::auto_propagation_check_due(&self, bool) -> bool
 pub fn ratspeak_runtime::lxmf::LxmfManager::cancel_and_take_propagation_workers(&mut self) -> alloc::vec::Vec<tokio::runtime::task::join::JoinHandle<()>>
 pub fn ratspeak_runtime::lxmf::LxmfManager::cancel_outbound_message(&mut self, &str) -> bool
@@ -1648,6 +1649,7 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::request_all_paths(&self, &ratspeak_d
 pub fn ratspeak_runtime::lxmf::LxmfManager::requeue_expired_received_ratchets(&mut self, alloc::vec::Vec<alloc::string::String>)
 pub fn ratspeak_runtime::lxmf::LxmfManager::restore_known_identities(&mut self, &[(alloc::string::String, [u8; 64])]) -> usize
 pub fn ratspeak_runtime::lxmf::LxmfManager::resume_outbox(&mut self, alloc::vec::Vec<ratspeak_db::db::OutboxRow>, &ratspeak_db::db::DbPool) -> alloc::vec::Vec<alloc::string::String>
+pub fn ratspeak_runtime::lxmf::LxmfManager::resumes_awaiting_budget(&self) -> usize
 pub fn ratspeak_runtime::lxmf::LxmfManager::retry_outbound(&mut self, &ratspeak_db::db::DbPool, &str, &ratspeak_db::db::OutboxRow, ratspeak_runtime::lxmf::DeliveryPreference) -> core::result::Result<lxmf_core::constants::DeliveryMethod, &'static str>
 pub fn ratspeak_runtime::lxmf::LxmfManager::save_attachment(&self, &str, &[u8]) -> core::io::error::Result<alloc::string::String>
 pub fn ratspeak_runtime::lxmf::LxmfManager::save_crypto_state(&self) -> core::io::error::Result<()>

@@ -2775,6 +2775,9 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                             );
                         }
                         let hold_started = std::time::Instant::now();
+                        if !delivery_only {
+                            admit_resumes_within_budget(&tick_state_for_lxmf, mgr);
+                        }
                         let results = if delivery_only {
                             mgr.process_delivery_events()
                         } else {
@@ -6647,6 +6650,20 @@ async fn poll_stats_loop(
     }
 }
 
+/// Resumed attachments load under the same transfer budget as fresh sends;
+/// each holds its lease until it settles, as a fresh send does.
+fn admit_resumes_within_budget(state: &Arc<AppState>, mgr: &mut lxmf::LxmfManager) {
+    mgr.admit_resumes_within_budget(
+        |msg_id, size| match state.reserve_attachment_transfer(size) {
+            Ok(lease) => {
+                state.hold_attachment_delivery_lease(msg_id.to_string(), lease);
+                true
+            }
+            Err(_) => false,
+        },
+    );
+}
+
 /// Queue the outbox's unfinished sends again (the tick sends them); a record
 /// that cannot be read fails its message.
 async fn resume_outbox(state: &Arc<AppState>, mgr: lxmf::LxmfManager) -> lxmf::LxmfManager {
@@ -6662,13 +6679,6 @@ async fn resume_outbox(state: &Arc<AppState>, mgr: lxmf::LxmfManager) -> lxmf::L
     if rows.is_empty() {
         return mgr;
     }
-    let attachments = rows
-        .iter()
-        .filter(|row| row.profile == lxmf::DeliveryProfile::Attachment.as_str())
-        .filter_map(|row| {
-            lxmf::LxmfManager::outbox_send_size(row).map(|size| (row.message_id.clone(), size))
-        })
-        .collect::<Vec<_>>();
     let total = rows.len();
     let pool = state.db.clone();
     let (mgr, unreadable) = tokio::task::spawn_blocking(move || {
@@ -6678,19 +6688,6 @@ async fn resume_outbox(state: &Arc<AppState>, mgr: lxmf::LxmfManager) -> lxmf::L
     })
     .await
     .expect("outbox resume task panicked");
-    for (message_id, bytes) in attachments {
-        if unreadable.contains(&message_id) {
-            continue;
-        }
-        match state.reserve_attachment_transfer(bytes) {
-            Ok(lease) => state.hold_attachment_delivery_lease(message_id, lease),
-            Err(error) => tracing::warn!(
-                ?error,
-                msg_id = %short_id(&message_id),
-                "resumed attachment goes out without a transfer budget"
-            ),
-        }
-    }
     tracing::info!(
         resumed = total - unreadable.len(),
         unreadable = unreadable.len(),
@@ -9749,6 +9746,97 @@ mod transport_startup_tests {
 
         assert!(rns_config::transport_mode_enabled(&config_dir));
         std::fs::remove_dir_all(root).ok();
+    }
+}
+
+#[cfg(test)]
+mod outbox_budget_tests {
+    use super::*;
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    fn state_and_manager() -> (Arc<AppState>, lxmf::LxmfManager) {
+        let tmp = std::env::temp_dir().join(format!(
+            "ratspeak-outbox-budget-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        lxmf::initialize_storage_namespace(&tmp).unwrap();
+        let pool = r2d2::Pool::builder()
+            .max_size(2)
+            .build(SqliteConnectionManager::memory())
+            .unwrap();
+        db::init_schema(&pool).unwrap();
+        let config = ratspeak_core::config::DashboardConfig::from_env_and_defaults(tmp.clone());
+        let state = Arc::new(AppState::new(
+            config,
+            pool,
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        ));
+        let mgr = lxmf::LxmfManager::load_or_create(&tmp, None, None).unwrap();
+        (state, mgr)
+    }
+
+    fn send_large(state: &AppState, mgr: &mut lxmf::LxmfManager, seed: u8) -> String {
+        let bytes = (0..1_200_000u32)
+            .map(|i| (i.wrapping_mul(131) as u8) ^ seed)
+            .collect::<Vec<_>>();
+        let identity_id = mgr.identity_hash.clone();
+        mgr.send_message_with_attachment_fields_preference_report(lxmf::AttachmentMessageRequest {
+            dest_hash_hex: &"d1".repeat(16),
+            content: "",
+            title: "",
+            file_name: "video.mp4",
+            file_bytes: &bytes,
+            staged_path: None,
+            is_image: false,
+            image_mime: "",
+            db_pool: &state.db,
+            identity_id: &identity_id,
+            preference: lxmf::DeliveryPreference::Direct,
+            renderer: None,
+            thread: "",
+        })
+        .unwrap()
+        .message_id
+    }
+
+    #[test]
+    fn large_resumed_attachments_load_one_at_a_time() {
+        let (state, mut mgr) = state_and_manager();
+        let first = send_large(&state, &mut mgr, 1);
+        let second = send_large(&state, &mut mgr, 2);
+        let root = mgr.data_dir.parent().unwrap().to_path_buf();
+        let identity_id = mgr.identity_hash.clone();
+        drop(mgr);
+        let mut mgr = lxmf::LxmfManager::load_or_create(&root, Some(&identity_id), None).unwrap();
+        let rows = db::outbox_rows(&state.db, &identity_id).unwrap();
+        assert!(mgr.resume_outbox(rows, &state.db).is_empty());
+        assert_eq!(mgr.resumes_awaiting_budget(), 2);
+
+        admit_resumes_within_budget(&state, &mut mgr);
+        assert_eq!(
+            mgr.resumes_awaiting_budget(),
+            1,
+            "the large lane loads one file"
+        );
+        admit_resumes_within_budget(&state, &mut mgr);
+        assert_eq!(
+            mgr.resumes_awaiting_budget(),
+            1,
+            "the next waits for that one to settle"
+        );
+
+        assert!(state.release_attachment_delivery_lease(&first));
+        admit_resumes_within_budget(&state, &mut mgr);
+        assert_eq!(mgr.resumes_awaiting_budget(), 0);
+        assert!(
+            state.release_attachment_delivery_lease(&second),
+            "it holds its own lease"
+        );
     }
 }
 

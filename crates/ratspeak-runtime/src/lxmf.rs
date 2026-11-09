@@ -1408,6 +1408,10 @@ struct ResumableSend {
     profile: DeliveryProfile,
     auto_compress: bool,
     since: f64,
+    /// An attachment's size until the transfer budget admits it: rebuilding
+    /// reads the whole file, so resumed attachments load one budget's worth
+    /// at a time, as fresh sends do.
+    budget: Option<usize>,
 }
 
 enum Resumed {
@@ -3071,12 +3075,13 @@ impl LxmfManager {
     pub fn resume_outbox(&mut self, rows: Vec<db::OutboxRow>, db_pool: &DbPool) -> Vec<String> {
         let mut unreadable = Vec::new();
         for row in rows {
-            match self.resumable_send(
-                &row,
-                DeliveryPreference::parse(Some(&row.preference)),
-                db_pool,
-            ) {
-                Some(send) => self.resumable.push(send),
+            let preference = DeliveryPreference::parse(Some(&row.preference));
+            match self.resumable_send(&row, preference, db_pool) {
+                Some(mut send) => {
+                    send.budget =
+                        (send.profile == DeliveryProfile::Attachment).then(|| send.message.size());
+                    self.resumable.push(send);
+                }
                 None => unreadable.push(row.message_id),
             }
         }
@@ -3108,7 +3113,37 @@ impl LxmfManager {
                 .duration_since(UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_secs_f64(),
+            budget: None,
         })
+    }
+
+    /// Admit resumed attachments, oldest first, while `reserve` grants their
+    /// transfer budget (it keeps what it grants); the rest wait for a later tick.
+    pub fn admit_resumes_within_budget(&mut self, mut reserve: impl FnMut(&str, usize) -> bool) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        for send in &mut self.resumable {
+            let Some(size) = send.budget else {
+                continue;
+            };
+            if size <= rns_protocol::resource::MAX_RESOURCE_SIZE
+                && reserve(&hex::encode(send.message_id), size)
+            {
+                send.budget = None;
+                // The relay wait starts once it may load.
+                send.since = now;
+            }
+        }
+    }
+
+    /// Resumed attachments still waiting for a transfer budget.
+    pub fn resumes_awaiting_budget(&self) -> usize {
+        self.resumable
+            .iter()
+            .filter(|send| send.budget.is_some())
+            .count()
     }
 
     /// Send a Not delivered or Cancelled message again, as the identical
@@ -3159,6 +3194,17 @@ impl LxmfManager {
 
     fn queue_resumable(&mut self, now: f64, results: &mut Vec<(String, &'static str)>) {
         for send in std::mem::take(&mut self.resumable) {
+            match send.budget {
+                Some(size) if size > rns_protocol::resource::MAX_RESOURCE_SIZE => {
+                    results.push((hex::encode(send.message_id), "failed"));
+                    continue;
+                }
+                Some(_) => {
+                    self.resumable.push(send);
+                    continue;
+                }
+                None => {}
+            }
             match self.queue_resumed(&send, now) {
                 Resumed::Queued(_) => {}
                 Resumed::Waiting => self.resumable.push(send),
@@ -13703,6 +13749,7 @@ mod tests {
 
     fn assert_resumes_identically(mgr: LxmfManager, pool: &DbPool, id: [u8; 32], wire: &[u8]) {
         let mut mgr = restarted(mgr, pool);
+        mgr.admit_resumes_within_budget(|_, _| true);
         let mut results = Vec::new();
         mgr.queue_resumable(unix_now(), &mut results);
         assert!(results.is_empty(), "{results:?}");
@@ -13808,9 +13855,78 @@ mod tests {
             std::fs::remove_file(entry.unwrap().path()).unwrap();
         }
         let mut mgr = restarted(mgr, &pool);
+        mgr.admit_resumes_within_budget(|_, _| true);
         let mut results = Vec::new();
         mgr.queue_resumable(unix_now(), &mut results);
         assert_eq!(results, [(hex::encode(id), "failed")]);
         assert!(mgr.router.pending_outbound.is_empty());
+    }
+
+    #[test]
+    fn resumed_attachments_load_only_as_their_budget_admits_them() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let first = send_attachment(&mut mgr, &pool, &media_bytes(48_000), false, None);
+        let second = send_attachment(&mut mgr, &pool, &media_bytes(52_000), true, None);
+        let text = send_for_resume(
+            &mut mgr,
+            &pool,
+            &"c3".repeat(16),
+            DeliveryPreference::Direct,
+        );
+        let queued = |mgr: &LxmfManager| {
+            mgr.router
+                .pending_outbound
+                .iter()
+                .map(|message| message.message_id())
+                .collect::<Vec<_>>()
+        };
+
+        let mut mgr = restarted(mgr, &pool);
+        let mut results = Vec::new();
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert_eq!(
+            queued(&mgr),
+            [text],
+            "text needs no budget; attachments wait"
+        );
+        assert_eq!(mgr.resumes_awaiting_budget(), 2);
+        assert!(
+            mgr.still_owned(&hex::encode(first)),
+            "a waiting attachment is not orphaned"
+        );
+
+        // Room for one load, as the large lane allows.
+        let mut asked = Vec::new();
+        mgr.admit_resumes_within_budget(|id, size| {
+            asked.push((id.to_string(), size));
+            asked.len() == 1
+        });
+        assert_eq!(asked.len(), 2);
+        assert_eq!(asked[0].0, hex::encode(first), "oldest first");
+        assert!(
+            asked[0].1 >= 48_000 && asked[1].1 >= 52_000,
+            "asks for the file's size"
+        );
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert_eq!(queued(&mgr), [text, first]);
+        assert_eq!(mgr.resumes_awaiting_budget(), 1);
+
+        mgr.admit_resumes_within_budget(|_, _| true);
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert_eq!(queued(&mgr), [text, first, second]);
+        assert!(results.is_empty(), "{results:?}");
+    }
+
+    #[test]
+    fn a_cancel_reaches_an_attachment_waiting_for_its_budget() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let id = send_attachment(&mut mgr, &pool, &media_bytes(30_000), false, None);
+        let mut mgr = restarted(mgr, &pool);
+        assert_eq!(mgr.resumes_awaiting_budget(), 1);
+        assert!(mgr.cancel_outbound_message(&hex::encode(id)));
+        mgr.admit_resumes_within_budget(|_, _| panic!("nothing left to admit"));
+        assert_eq!(mgr.resumes_awaiting_budget(), 0);
     }
 }
