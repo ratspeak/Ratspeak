@@ -474,6 +474,7 @@ pub async fn ratspeak_tauri::commands::interfaces::enable_auto_interface(tauri::
 pub async fn ratspeak_tauri::commands::interfaces::migrate_interface_ifac_units(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::interfaces::IfacUnitMigrationArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::network_type_changed(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::interfaces::NetworkTypeArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::pause_interface(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::interfaces::InterfaceLifecycleArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub fn ratspeak_tauri::commands::interfaces::remember_close_button_action(&ratspeak_runtime::state::AppState, ratspeak_tauri::window_prefs::CloseButtonAction) -> core::result::Result<(), alloc::string::String>
 pub async fn ratspeak_tauri::commands::interfaces::remove_backbone_connection(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::remove_backbone_server(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::remove_lora_interface(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
@@ -486,6 +487,7 @@ pub async fn ratspeak_tauri::commands::interfaces::set_android_ble_rnode_auto_re
 pub async fn ratspeak_tauri::commands::interfaces::set_announce_ratspeak_usage(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, bool) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_appearance(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_auto_announce(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, u64) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::interfaces::set_close_button_action(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_desktop_notifications(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, bool) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_developer_mode(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, bool) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_hardware_lock_timeout(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, u64) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
@@ -498,6 +500,7 @@ pub async fn ratspeak_tauri::commands::interfaces::set_peers_sort(tauri::state::
 pub async fn ratspeak_tauri::commands::interfaces::set_text_scale(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, u16) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_transport_mode(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::interfaces::TransportModeArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub fn ratspeak_tauri::commands::interfaces::spawn_auto_event_broadcaster(&alloc::sync::Arc<ratspeak_runtime::state::AppState>)
+pub fn ratspeak_tauri::commands::interfaces::stored_close_button_action(&ratspeak_runtime::state::AppState) -> ratspeak_tauri::window_prefs::CloseButtonAction
 pub async fn ratspeak_tauri::commands::interfaces::trust_link_host(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::untrust_link_host(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::update_backbone_connection(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::interfaces::UpdateBackboneConnectionArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
@@ -852,6 +855,14 @@ pub fn ratspeak_tauri::notifier::TauriNotifier::withdraw_all(&self)
 pub mod ratspeak_tauri::process
 pub fn ratspeak_tauri::process::harden()
 pub mod ratspeak_tauri::window_prefs
+pub enum ratspeak_tauri::window_prefs::CloseButtonAction
+pub ratspeak_tauri::window_prefs::CloseButtonAction::Ask
+pub ratspeak_tauri::window_prefs::CloseButtonAction::Quit
+pub ratspeak_tauri::window_prefs::CloseButtonAction::Tray
+impl ratspeak_tauri::window_prefs::CloseButtonAction
+pub fn ratspeak_tauri::window_prefs::CloseButtonAction::as_setting(self) -> &'static str
+pub fn ratspeak_tauri::window_prefs::CloseButtonAction::from_setting(core::option::Option<&str>) -> Self
+pub fn ratspeak_tauri::window_prefs::CloseButtonAction::parse(&str) -> core::option::Option<Self>
 pub enum ratspeak_tauri::window_prefs::DecorationsPref
 pub ratspeak_tauri::window_prefs::DecorationsPref::Auto
 pub ratspeak_tauri::window_prefs::DecorationsPref::Off
@@ -862,6 +873,7 @@ pub fn ratspeak_tauri::window_prefs::DecorationsPref::from_setting(core::option:
 pub struct ratspeak_tauri::window_prefs::SessionEnv
 pub ratspeak_tauri::window_prefs::SessionEnv::tiling_compositor: bool
 pub ratspeak_tauri::window_prefs::SessionEnv::wayland_session: bool
+pub const ratspeak_tauri::window_prefs::CLOSE_BUTTON_SETTING: &str
 pub fn ratspeak_tauri::window_prefs::desktop_names_indicate_tiling(core::option::Option<&str>, core::option::Option<&str>) -> bool
 pub fn ratspeak_tauri::window_prefs::detect_session_env() -> ratspeak_tauri::window_prefs::SessionEnv
 pub fn ratspeak_tauri::window_prefs::resolve_window_decorations(ratspeak_tauri::window_prefs::DecorationsPref, ratspeak_tauri::window_prefs::SessionEnv) -> bool

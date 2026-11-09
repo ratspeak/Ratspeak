@@ -411,6 +411,21 @@
           "sourceKind": "registry"
         },
         {
+          "name": "windows-sys",
+          "rename": null,
+          "kind": null,
+          "target": "cfg(target_os = \"windows\")",
+          "requirement": "^0.61",
+          "optional": false,
+          "defaultFeatures": true,
+          "features": [
+            "Win32_Foundation",
+            "Win32_UI_Controls",
+            "Win32_UI_WindowsAndMessaging"
+          ],
+          "sourceKind": "registry"
+        },
+        {
           "name": "tauri-build",
           "rename": null,
           "kind": "build",
