@@ -5313,6 +5313,13 @@ pub async fn add_lora_interface(
         );
         return Err(AppError::internal("Config write error"));
     }
+    // Show the saved row now: the readiness wait can hold the final refresh for minutes.
+    if !deferred_fresh_ble_config {
+        emit_hub_interfaces(
+            &state_arc,
+            crate::rns_config::get_all_interfaces(&config_dir),
+        );
+    }
     // USB-OTG permission prompts belong to the Activity. The Rust probe only
     // verifies the grant before it claims the exact configured device.
     #[cfg(target_os = "android")]
