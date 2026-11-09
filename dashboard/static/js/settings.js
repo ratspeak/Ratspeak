@@ -2373,9 +2373,9 @@ var clearAnnouncesBtn = document.getElementById('settings-clear-announces');
 if (clearAnnouncesBtn) {
     clearAnnouncesBtn.addEventListener('click', function() {
         clearWithConfirm('api_clear_announces',
-            'Clear announce history?',
-            'Announce history cleared',
-            'Could not clear announce history');
+            'Clear discovered peers and announces? Contacts, blocked users, and people you have messaged stay. Others reappear when they announce again.',
+            'Peers and announces cleared',
+            'Could not clear peers and announces');
     });
 }
 
@@ -2560,10 +2560,10 @@ function confirmDangerAction(action, onClose) {
             fail: 'Could not clear paths'
         },
         'clear-announces': {
-            msg: 'Clear announce history?',
+            msg: 'Clear discovered peers and announces? Contacts, blocked users, and people you have messaged stay. Others reappear when they announce again.',
             command: 'api_clear_announces',
-            success: 'Announce history cleared',
-            fail: 'Could not clear announce history'
+            success: 'Peers and announces cleared',
+            fail: 'Could not clear peers and announces'
         },
         'clear-messages': {
             msg: 'Delete ALL messages? This cannot be undone.',
