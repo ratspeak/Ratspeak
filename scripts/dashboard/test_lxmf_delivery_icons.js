@@ -50,7 +50,7 @@ function assertDelivered(method) {
     assert(html.includes('msg-state-delivered'), method + ' proof must use the confirmed treatment');
     assert(html.includes('aria-label="Delivered"'), method + ' proof must be accessible as Delivered');
     assert(!html.includes('msg-state-sent'), method + ' proof must not be collapsed back to Sent');
-    assert(html.includes('<polyline points="1 8 4 11 9 4"/><polyline points="5 8 8 11 13 4"/>'),
+    assert(html.includes('<polyline points="11 4 4.5 10.5 1.5 7.5"/><polyline points="15 6.5 9.5 12 8.5 11"/>'),
         method + ' proof must show two checks');
 }
 
@@ -66,6 +66,9 @@ var failed = icon('failed', 'opportunistic');
 assert(failed.includes('msg-state-failed'));
 assert(failed.includes('aria-label="Not delivered"') && failed.includes('title="Not delivered"'),
     'the bubble shows only the icon; its name is the hover title');
+assert(failed.includes('<line x1="8" y1="2.5" x2="8" y2="9"/>') && !failed.includes('x1="4" y1="4"'),
+    'not delivered is a "!", not the cancel cross');
+assert(icon('cancelled', 'direct').includes('x1="4" y1="4"'), 'cancelled keeps the cross');
 assert(icon('timeout', 'direct').includes('aria-label="Not delivered"'), 'a timeout is Not delivered');
 assert(!icon('read', 'direct').includes('msg-state-read'), 'no outbound message shows a Read state');
 
@@ -109,6 +112,7 @@ assert(source.includes("showToast(ok ? 'Paper link copied' : 'Could not copy'"))
 var css = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '09-messaging.css'), 'utf8');
 assert(/button\.msg-paper-state::after\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px;/s.test(css),
     'the paper chip keeps a 44px hit target');
+assert(/\.msg-state-rejected svg\s*\{[^}]*stroke:/s.test(css), 'the rejected icon has a stroke, or it draws nothing');
 assert(/\.msg-state-sent svg,\s*\.msg-state-delivered svg\s*\{[^}]*var\(--text-muted\)/s.test(css),
     'Sent and Delivered share one colour; the glyph tells them apart');
 
@@ -131,6 +135,8 @@ assert(!context._messageCanRetry({ id: id, direction: 'inbound', state: 'failed'
 assert(source.includes("retryBtn.innerHTML = _messageActionIcon('retry') + '<span>Retry</span>';"));
 assert(source.includes("{ label: 'Auto', icon: LXMF_SEND_METHOD_ICONS.auto,"),
     'Retry offers the send methods, Auto first');
+assert(source.includes("container.querySelector('.lxmf-msg[data-msg-id=\"' + msg.id + '\"]')"),
+    'the method list opens at the bubble');
 
 // A proof outranks an earlier outcome; Not delivered elsewhere is one toast.
 assert(source.includes("var proofOutranks = resolvedState === 'delivered' &&"));

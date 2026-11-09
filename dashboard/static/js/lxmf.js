@@ -1798,10 +1798,11 @@ function _messageStateIconHtml(msg) {
     var state = msg.state;
     var SVG_OPEN = '<svg viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
     var ICON = {
-        double: '<polyline points="1 8 4 11 9 4"/><polyline points="5 8 8 11 13 4"/>',
+        double: '<polyline points="11 4 4.5 10.5 1.5 7.5"/><polyline points="15 6.5 9.5 12 8.5 11"/>',
         check: '<polyline points="3 8 7 12 13 4"/>',
         clock: '<circle cx="8" cy="8" r="6"/><polyline points="8 4 8 8 11 10"/>',
         x: '<line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/>',
+        bang: '<line x1="8" y1="2.5" x2="8" y2="9"/><line x1="8" y1="13" x2="8" y2="13.01"/>',
         rejected: '<circle cx="8" cy="8" r="6"/><line x1="5" y1="5" x2="11" y2="11"/><line x1="11" y1="5" x2="5" y2="11"/>',
         envelope: '<rect x="2" y="4" width="12" height="9" rx="1.5"/><polyline points="2.5 5 8 10 13.5 5"/>',
         paper: '<rect x="2" y="2" width="5" height="5"/><rect x="9" y="2" width="5" height="5"/><rect x="2" y="9" width="5" height="5"/><path d="M9 9h2v2H9zM13 9v1M9 14h5v-2"/>'
@@ -1811,7 +1812,8 @@ function _messageStateIconHtml(msg) {
     }
 
     if (state === 'paper') return wrap('msg-state-paper', 'Paper message', ICON.paper);
-    if (state === 'failed' || state === 'timeout') return wrap('msg-state-failed', 'Not delivered', ICON.x);
+    // "!" as other messengers mark a send that needs you; ✕ is for what you cancelled.
+    if (state === 'failed' || state === 'timeout') return wrap('msg-state-failed', 'Not delivered', ICON.bang);
     if (state === 'cancelled') return wrap('msg-state-cancelled', 'Sending cancelled', ICON.x);
     if (state === 'rejected') return wrap('msg-state-rejected', 'Rejected', ICON.rejected) + ' <span class="msg-state-label">Rejected</span>';
     if (state === 'propagated') return wrap('msg-state-propagated', 'Stored in Offline Inbox', ICON.envelope);
@@ -1923,8 +1925,8 @@ function _retryLxmfMessage(msg, method) {
 
 function _openRetryMethodPopover(msg) {
     var container = document.getElementById('lxmf-messages');
-    var target = container ? container.querySelector('[data-msg-id="' + msg.id + '"]') : null;
-    var anchor = target && target.closest ? (target.closest('.msg-row') || target) : null;
+    // The bubble, so the list opens beside the message rather than mid-row.
+    var anchor = container ? container.querySelector('.lxmf-msg[data-msg-id="' + msg.id + '"]') : null;
     if (!anchor || typeof actionPopover !== 'function') {
         _retryLxmfMessage(msg, 'auto');
         return;

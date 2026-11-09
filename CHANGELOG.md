@@ -11,7 +11,7 @@ changes that materially affect how an artifact is reproduced.
 - The hardware key wizard says when a YubiKey is found but its firmware is older than 5.7.0, instead of reporting that no key was found.
 - Settings › System › Cache: Clear Announces is now Clear Peers, since it also clears discovered peers.
 - **Retry**: a message that wasn't delivered, or that you cancelled, has Retry in its message menu, with a choice of Auto, Opportunistic, Direct, or Offline Inbox. It sends the identical message, so someone who already has it won't see it twice.
-- Delivered messages show two checks; one check means sent but not yet confirmed.
+- Delivered messages show two checks, one check means sent but not yet confirmed, and a red ! marks a message that wasn't delivered.
 - Messages still on their way are sent again after Ratspeak restarts instead of failing, and a message that arrives after Ratspeak stopped waiting now shows as delivered.
 - A message that can't be delivered while you're in another chat shows a notice that opens it.
 - Deleting a conversation or all messages also stops sending any of its messages still on their way.

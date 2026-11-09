@@ -1294,6 +1294,7 @@ body.image-viewer-open {
 /* Propagation node accepted the message; recipient may not have pulled it yet. */
 .msg-state-propagated svg { stroke: var(--text-muted); }
 .msg-state-failed svg { stroke: var(--status-error-fg); }
+.msg-state-rejected svg { stroke: var(--status-error-fg); }
 .msg-state-cancelled svg { stroke: var(--text-muted); }
 .msg-state-paper svg { stroke: var(--text-muted); }
 /* Paper: a neutral label, never a clock or check; outbound taps reopen the QR. */
