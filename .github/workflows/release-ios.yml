@@ -169,6 +169,8 @@ jobs:
         with:
           toolchain: ${{ steps.source.outputs.rust_toolchain }}
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
+          # swift-rs needs llvm-objcopy on Xcode 27 to export the plugins' @_cdecl symbols.
+          components: llvm-tools
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6

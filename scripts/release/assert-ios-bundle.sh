@@ -89,7 +89,7 @@ expect_raw LSRequiresIPhoneOS true
 expect_raw MinimumOSVersion 15.0
 expect_raw UILaunchStoryboardName LaunchScreen
 expect_json UIDeviceFamily '[1,2]'
-expect_json CFBundleURLTypes '[{"CFBundleURLName":"ratspeak","CFBundleURLSchemes":["ratspeak"]}]'
+expect_json CFBundleURLTypes '[{"CFBundleURLName":"ratspeak","CFBundleURLSchemes":["ratspeak","lxm"]}]'
 expect_json UIBackgroundModes '["audio","bluetooth-central","bluetooth-peripheral"]'
 expect_json UIRequiredDeviceCapabilities '["arm64","metal"]'
 expect_json UISupportedInterfaceOrientations '["UIInterfaceOrientationPortrait"]'
@@ -124,14 +124,16 @@ if [[ "$build_number" != "$expected_build" ]]; then
   exit 1
 fi
 
+expected_xcode="$(node -p "require(process.argv[1]).toolchains.xcode" "$dependency_set")"
+expected_sdk="$(node -p "require(process.argv[1]).toolchains.iosSdk" "$dependency_set")"
 xcode_build="$(plist_raw "$info" DTXcode || true)"
 sdk_name="$(plist_raw "$info" DTSDKName || true)"
-if [[ ! "$xcode_build" =~ ^[0-9]+$ ]] || ((10#$xcode_build < 2600)); then
-  echo "$info: artifact was not built with Xcode 26 or newer: ${xcode_build:-<missing>}" >&2
+if [[ ! "$xcode_build" =~ ^[0-9]+$ ]] || ((10#$xcode_build / 100 != 10#${expected_xcode%%.*})); then
+  echo "$info: artifact was not built with Xcode $expected_xcode: ${xcode_build:-<missing>}" >&2
   exit 1
 fi
-if [[ ! "$sdk_name" =~ ^(iphoneos|iphonesimulator)26([.]|$) ]]; then
-  echo "$info: artifact was not built with an iOS 26 SDK: ${sdk_name:-<missing>}" >&2
+if [[ "$sdk_name" != "iphoneos$expected_sdk" && "$sdk_name" != "iphonesimulator$expected_sdk" ]]; then
+  echo "$info: artifact was not built with the iOS $expected_sdk SDK: ${sdk_name:-<missing>}" >&2
   exit 1
 fi
 
