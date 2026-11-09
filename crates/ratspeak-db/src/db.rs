@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-pub(crate) const SCHEMA_VERSION: i64 = 49;
+pub(crate) const SCHEMA_VERSION: i64 = 50;
 
 const VOICE_FORMAT_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS conversation_voice_formats (
@@ -83,6 +83,33 @@ const MESSAGE_AUDIO_STORED_NAME_COLUMN_INDEX: usize = 23;
 const MESSAGE_RENDERER_COLUMN_INDEX: usize = 24;
 const MESSAGE_PAPER_URI_COLUMN_INDEX: usize = 25;
 const MESSAGE_THREAD_COLUMN_INDEX: usize = 26;
+
+// The durable outbox: what a restart or Retry needs to send a message again,
+// kept until the message is delivered, stored in an Offline Inbox or
+// rejected. The foreign key drops it with the message.
+const OUTBOX_SCHEMA_SQL: &str = r#"
+CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_client_msg_id
+    ON messages(identity_id, client_msg_id) WHERE client_msg_id IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS lxmf_outbox (
+    identity_id TEXT NOT NULL,
+    message_id  TEXT NOT NULL,
+    preference  TEXT NOT NULL,
+    profile     TEXT NOT NULL,
+    message     BLOB NOT NULL,
+    queued_at   REAL NOT NULL,
+    PRIMARY KEY (identity_id, message_id),
+    FOREIGN KEY (message_id, identity_id)
+        REFERENCES messages(id, identity_id) ON DELETE CASCADE
+);
+
+CREATE TRIGGER IF NOT EXISTS lxmf_outbox_settled
+AFTER UPDATE OF state ON messages
+WHEN NEW.state IN ('delivered', 'propagated', 'rejected')
+BEGIN
+    DELETE FROM lxmf_outbox WHERE identity_id = NEW.identity_id AND message_id = NEW.id;
+END;
+"#;
 
 const IDENTITY_SELECT_COLUMNS: &str = "hash,
     lxmf_hash,
@@ -265,6 +292,7 @@ pub fn init_schema(pool: &DbPool) -> Result<(), Box<dyn std::error::Error + Send
     // a schema without its version.
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute_batch(SCHEMA_SQL)?;
+    tx.execute_batch(OUTBOX_SCHEMA_SQL)?;
     tx.execute_batch(crate::admission::SCHEMA_SQL)?;
     tx.execute_batch(VOICE_FORMAT_SCHEMA_SQL)?;
     tx.execute_batch(CONVERSATION_THREADS_SCHEMA_SQL)?;
@@ -350,6 +378,7 @@ CREATE TABLE IF NOT EXISTS messages (
     renderer INTEGER CHECK (renderer IS NULL OR renderer BETWEEN 0 AND 255),
     paper_uri TEXT,
     thread TEXT NOT NULL DEFAULT '',
+    client_msg_id TEXT,
     PRIMARY KEY (id, identity_id)
 );
 
@@ -2092,6 +2121,21 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 50 {
+        migration_step(conn, 50, |conn| {
+            if table_exists(conn, "messages")? {
+                let columns = get_column_names(conn, "messages")?;
+                if !columns.iter().any(|column| column == "client_msg_id") {
+                    conn.execute_batch("ALTER TABLE messages ADD COLUMN client_msg_id TEXT;")?;
+                }
+                conn.execute_batch(OUTBOX_SCHEMA_SQL)?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 50;")?;
+            tracing::info!("Migrated to schema version 50 (durable outbox)");
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -2351,6 +2395,7 @@ pub const RESET_TABLES: &[&str] = &[
     "conversation_thread_counters",
     "message_results",
     "rsnode_updates",
+    "lxmf_outbox",
     "messages",
     "contacts",
     "identities",
@@ -2483,6 +2528,10 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
         "DELETE FROM rsnode_updates WHERE identity_id = ?1",
     ),
     ("contacts", "DELETE FROM contacts WHERE identity_id = ?1"),
+    (
+        "lxmf_outbox",
+        "DELETE FROM lxmf_outbox WHERE identity_id = ?1",
+    ),
     ("messages", "DELETE FROM messages WHERE identity_id = ?1"),
     (
         "message_results",
@@ -3306,6 +3355,22 @@ pub fn get_message_delivery_method(
     .flatten()
 }
 
+/// The contact an outbound message went to.
+pub fn get_outbound_message_destination(
+    pool: &DbPool,
+    msg_id: &str,
+    identity_id: &str,
+) -> Option<String> {
+    let conn = pool.get().ok()?;
+    conn.query_row(
+        "SELECT destination FROM messages \
+         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' LIMIT 1",
+        params![msg_id, identity_id],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+}
+
 pub fn update_message_delivery_method(
     pool: &DbPool,
     msg_id: &str,
@@ -3615,6 +3680,186 @@ pub fn try_save_message_with_audio_conn(
         ).map_err(|error| error.to_string())?;
     }
     Ok(())
+}
+
+/// An outbound message as it enters the network queue: its history row and
+/// what a restart or Retry needs to send it again.
+#[derive(Default)]
+pub struct OutboundMessage<'a> {
+    pub msg_id: &'a str,
+    pub identity_id: &'a str,
+    pub source: &'a str,
+    pub destination: &'a str,
+    pub content: &'a str,
+    pub title: &'a str,
+    pub timestamp: f64,
+    pub delivery_method: &'a str,
+    pub attachment_name: &'a str,
+    pub attachment_stored_name: &'a str,
+    pub image_name: &'a str,
+    pub image_stored_name: &'a str,
+    pub reply_to_id: &'a str,
+    pub reply_to_preview: &'a str,
+    pub audio_mode: Option<u8>,
+    pub audio_stored_name: &'a str,
+    pub renderer: Option<u8>,
+    /// FIELD_THREAD hex of its conversation; empty is Main.
+    pub thread: &'a str,
+    pub resend: Resend<'a>,
+}
+
+/// The outbox half of an [`OutboundMessage`].
+#[derive(Default)]
+pub struct Resend<'a> {
+    pub preference: &'a str,
+    pub profile: &'a str,
+    pub message: &'a [u8],
+}
+
+/// Write the history row and its outbox entry in one transaction.
+pub fn save_outbound_message(pool: &DbPool, message: &OutboundMessage<'_>) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    try_save_message_with_audio_conn(
+        &tx,
+        message.msg_id,
+        message.source,
+        message.destination,
+        message.content,
+        message.title,
+        message.timestamp,
+        "sending",
+        "outbound",
+        message.identity_id,
+        message.attachment_name,
+        message.attachment_stored_name,
+        message.image_name,
+        message.image_stored_name,
+        message.reply_to_id,
+        message.reply_to_preview,
+        Some(message.delivery_method),
+        message.audio_mode,
+        message.audio_stored_name,
+        message.renderer,
+        message.thread,
+    )?;
+    tx.execute(
+        "INSERT INTO lxmf_outbox (identity_id, message_id, preference, profile, message, queued_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        params![
+            message.identity_id,
+            message.msg_id,
+            message.resend.preference,
+            message.resend.profile,
+            message.resend.message,
+            now_ts(),
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())
+}
+
+/// One outbox entry: a message to send again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OutboxRow {
+    pub message_id: String,
+    pub preference: String,
+    pub profile: String,
+    pub message: Vec<u8>,
+}
+
+const OUTBOX_ENDED_STATES: &str = "('failed', 'cancelled', 'timeout')";
+
+/// `identity_id`'s messages still on their way, oldest first.
+pub fn outbox_rows(pool: &DbPool, identity_id: &str) -> Result<Vec<OutboxRow>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT o.message_id, o.preference, o.profile, o.message
+             FROM lxmf_outbox o JOIN messages m
+               ON m.id = o.message_id AND m.identity_id = o.identity_id
+             WHERE o.identity_id = ?1 AND m.state NOT IN {OUTBOX_ENDED_STATES}
+             ORDER BY o.queued_at ASC"
+        ))
+        .map_err(|error| error.to_string())?;
+    stmt.query_map(params![identity_id], outbox_row)
+        .and_then(|rows| rows.collect())
+        .map_err(|error| error.to_string())
+}
+
+/// The outbox entry of a message that ended Not delivered or Cancelled.
+pub fn retryable_outbox_row(
+    pool: &DbPool,
+    identity_id: &str,
+    msg_id: &str,
+) -> Result<Option<OutboxRow>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    conn.query_row(
+        &format!(
+            "SELECT o.message_id, o.preference, o.profile, o.message
+             FROM lxmf_outbox o JOIN messages m
+               ON m.id = o.message_id AND m.identity_id = o.identity_id
+             WHERE o.identity_id = ?1 AND o.message_id = ?2
+               AND m.direction = 'outbound' AND m.state IN {OUTBOX_ENDED_STATES}"
+        ),
+        params![identity_id, msg_id],
+        outbox_row,
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+/// Put a Not delivered or Cancelled message back on its way, sent as
+/// `preference` from now on. Returns the state it left, or `None` when it is
+/// no longer retryable (already restarted, settled, or without an entry).
+pub fn restart_outbound_message(
+    pool: &DbPool,
+    identity_id: &str,
+    msg_id: &str,
+    preference: &str,
+    delivery_method: &str,
+) -> Result<Option<String>, String> {
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let previous = tx
+        .query_row(
+            &format!(
+                "SELECT m.state FROM messages m JOIN lxmf_outbox o
+                   ON o.identity_id = m.identity_id AND o.message_id = m.id
+                 WHERE m.id = ?1 AND m.identity_id = ?2 AND m.direction = 'outbound'
+                   AND m.state IN {OUTBOX_ENDED_STATES}"
+            ),
+            params![msg_id, identity_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if previous.is_some() {
+        tx.execute(
+            "UPDATE messages SET state = 'sending', delivery_method = ?3, rtt_ms = NULL WHERE id = ?1 AND identity_id = ?2",
+            params![msg_id, identity_id, delivery_method],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.execute(
+            "UPDATE lxmf_outbox SET preference = ?3, queued_at = ?4 WHERE identity_id = ?1 AND message_id = ?2",
+            params![identity_id, msg_id, preference, now_ts()],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(previous)
+}
+
+fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
+    Ok(OutboxRow {
+        message_id: row.get(0)?,
+        preference: row.get(1)?,
+        profile: row.get(2)?,
+        message: row.get(3)?,
+    })
 }
 
 /// Remove only the exact identity-scoped row created for a send that failed
@@ -4075,21 +4320,22 @@ pub fn update_message_state(
         Ok(c) => c,
         Err(_) => return false,
     };
-    let result = if let Some(rtt) = rtt_ms {
-        conn.execute(
-            "UPDATE messages SET state = ?1, rtt_ms = ?2 \
-             WHERE id = ?3 AND identity_id = ?4 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper')",
-            params![state, rtt, msg_id, identity_id],
-        )
-        .map(|updated| updated > 0)
+    // A proof outranks every earlier outcome: a message that arrived was never
+    // undelivered. Nothing else leaves a settled state.
+    let settled = if state == "delivered" {
+        "('delivered', 'rejected', 'paper')"
     } else {
-        conn.execute(
-            "UPDATE messages SET state = ?1 \
-             WHERE id = ?2 AND identity_id = ?3 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper')",
-            params![state, msg_id, identity_id],
-        )
-        .map(|updated| updated > 0)
+        "('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper')"
     };
+    let result = conn
+        .execute(
+            &format!(
+                "UPDATE messages SET state = ?1, rtt_ms = COALESCE(?2, rtt_ms) \
+                 WHERE id = ?3 AND identity_id = ?4 AND direction = 'outbound' AND state NOT IN {settled}"
+            ),
+            params![state, rtt_ms, msg_id, identity_id],
+        )
+        .map(|updated| updated > 0);
     result.unwrap_or(false)
 }
 
@@ -4144,9 +4390,9 @@ fn get_conversation_scoped(
     let mut stmt = match conn.prepare(
         "SELECT * FROM (
             SELECT * FROM (
-                SELECT *, rowid AS _rw FROM messages WHERE source = ?1 AND identity_id = ?2 AND (?4 IS NULL OR thread = ?4)
+                SELECT *, rowid AS _rw, EXISTS(SELECT 1 FROM lxmf_outbox o WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) AS retryable FROM messages WHERE source = ?1 AND identity_id = ?2 AND (?4 IS NULL OR thread = ?4)
                 UNION ALL
-                SELECT *, rowid AS _rw FROM messages WHERE destination = ?1 AND identity_id = ?2 AND source != ?1 AND (?4 IS NULL OR thread = ?4)
+                SELECT *, rowid AS _rw, EXISTS(SELECT 1 FROM lxmf_outbox o WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) AS retryable FROM messages WHERE destination = ?1 AND identity_id = ?2 AND source != ?1 AND (?4 IS NULL OR thread = ?4)
             ) ORDER BY timestamp DESC, _rw DESC LIMIT ?3
         ) ORDER BY timestamp ASC, _rw ASC"
     ) { Ok(s) => s, Err(_) => return vec![] };
@@ -4379,6 +4625,8 @@ pub fn get_all_unread_counts_conn(
     })
 }
 
+/// Fail what the last run left on its way, except what the outbox sends
+/// again and Sent messages, which already left the device.
 pub fn cleanup_stale_outbound(pool: &DbPool, identity_id: &str) {
     let conn = match pool.get() {
         Ok(c) => c,
@@ -4390,7 +4638,10 @@ pub fn cleanup_stale_outbound(pool: &DbPool, identity_id: &str) {
          'propagating', 'resending', 'link_establishing', 'sending_via_link', \
          'resource_link_ready', 'resource_advertised', 'resource_transferring', \
          'resource_waiting_for_proof', 'reusing_direct_link', 'reusing_backchannel', \
-         'sent') AND direction = 'outbound' AND identity_id = ?1",
+         'sent') AND direction = 'outbound' AND identity_id = ?1 \
+         AND NOT EXISTS (SELECT 1 FROM lxmf_outbox o \
+             WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) \
+         AND NOT (state = 'sent' AND lower(COALESCE(delivery_method, '')) <> 'direct')",
         params![identity_id],
     );
     if let Some(count) = result.ok().filter(|count| *count > 0) {
@@ -10468,6 +10719,8 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
         "renderer": renderer,
         "paper_uri": paper_uri,
         "thread": thread,
+        // Only conversation reads select it: an outbox entry Retry can send again.
+        "retryable": row.get::<_, bool>("retryable").unwrap_or(false),
     }))
 }
 
@@ -11991,7 +12244,7 @@ mod unread_breakdown_tests {
     }
 
     #[test]
-    fn timeout_is_terminal_against_late_delivery_and_cancel_updates() {
+    fn timeout_takes_a_late_proof_but_not_a_cancel() {
         let pool = test_pool();
         save_message(
             &pool,
@@ -12012,13 +12265,6 @@ mod unread_breakdown_tests {
             "",
             Some("direct"),
         );
-        assert!(!update_message_state(
-            &pool,
-            "timed-out",
-            "identity-a",
-            "delivered",
-            Some(3.0)
-        ));
         assert!(!cancel_outbound_message_state(
             &pool,
             "timed-out",
@@ -12034,6 +12280,14 @@ mod unread_breakdown_tests {
             )
             .unwrap();
         assert_eq!(state, "timeout");
+        // A copy that left the device may still be proven.
+        assert!(update_message_state(
+            &pool,
+            "timed-out",
+            "identity-a",
+            "delivered",
+            Some(3.0)
+        ));
     }
 
     #[test]
@@ -12276,7 +12530,11 @@ mod migration_tests {
                 .map(String::as_str),
             Some("thread")
         );
-        assert_eq!(message_cols.len(), MESSAGE_THREAD_COLUMN_INDEX + 1);
+        assert_eq!(message_cols.len(), MESSAGE_THREAD_COLUMN_INDEX + 2);
+        assert_eq!(
+            message_cols.last().map(String::as_str),
+            Some("client_msg_id")
+        );
     }
 
     #[test]
@@ -12320,7 +12578,7 @@ mod migration_tests {
                 .unwrap()
                 .execute_batch(&format!(
                     "UPDATE schema_version SET version = {newer};
-                     CREATE TABLE lxmf_outbox (id TEXT PRIMARY KEY);
+                     CREATE TABLE future_table (id TEXT PRIMARY KEY);
                      INSERT INTO identities (hash, created_at) VALUES ('{id}', 0.0);
                      INSERT INTO channel_history_room_usage
                          VALUES ('{id}', '{hub}', 'room', 1, 4096);
@@ -12597,7 +12855,11 @@ mod migration_tests {
         {
             let conn = pool.get().unwrap();
             conn.execute_batch(
-                "DROP INDEX idx_messages_thread;
+                "DROP TRIGGER lxmf_outbox_settled;
+                 DROP TABLE lxmf_outbox;
+                 DROP INDEX idx_messages_client_msg_id;
+                 ALTER TABLE messages DROP COLUMN client_msg_id;
+                 DROP INDEX idx_messages_thread;
                  ALTER TABLE messages DROP COLUMN thread;
                  ALTER TABLE messages DROP COLUMN paper_uri;
                  ALTER TABLE messages DROP COLUMN renderer;
@@ -12624,7 +12886,8 @@ mod migration_tests {
                 .map(String::as_str),
             Some("audio_stored_name")
         );
-        assert_eq!(columns.len(), MESSAGE_THREAD_COLUMN_INDEX + 1);
+        assert_eq!(columns.len(), MESSAGE_THREAD_COLUMN_INDEX + 2);
+        assert_eq!(columns.last().map(String::as_str), Some("client_msg_id"));
         conn.execute(
             "INSERT INTO messages (
                 id, source, destination, timestamp, identity_id
@@ -12649,7 +12912,11 @@ mod migration_tests {
         {
             let conn = pool.get().unwrap();
             conn.execute_batch(
-                "DROP INDEX idx_messages_thread;
+                "DROP TRIGGER lxmf_outbox_settled;
+                 DROP TABLE lxmf_outbox;
+                 DROP INDEX idx_messages_client_msg_id;
+                 ALTER TABLE messages DROP COLUMN client_msg_id;
+                 DROP INDEX idx_messages_thread;
                  ALTER TABLE messages DROP COLUMN thread;
                  ALTER TABLE messages DROP COLUMN paper_uri;
                  ALTER TABLE messages DROP COLUMN renderer;
@@ -12670,7 +12937,8 @@ mod migration_tests {
                 .map(String::as_str),
             Some("renderer")
         );
-        assert_eq!(columns.len(), MESSAGE_THREAD_COLUMN_INDEX + 1);
+        assert_eq!(columns.len(), MESSAGE_THREAD_COLUMN_INDEX + 2);
+        assert_eq!(columns.last().map(String::as_str), Some("client_msg_id"));
         let kept: (String, Option<i64>) = conn
             .query_row(
                 "SELECT content, renderer FROM messages WHERE id = 'pre-renderer'",
@@ -12689,6 +12957,267 @@ mod migration_tests {
         drop(conn);
         let messages = get_conversation(&pool, "source", "identity", 10);
         assert!(messages[0]["renderer"].is_null());
+    }
+
+    #[test]
+    fn migration_50_adds_the_outbox_to_a_49_database() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        let fresh = get_column_names(&pool.get().unwrap(), "messages").unwrap();
+        assert_eq!(fresh.last().map(String::as_str), Some("client_msg_id"));
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(
+                "DROP TRIGGER lxmf_outbox_settled;
+                 DROP TABLE lxmf_outbox;
+                 DROP INDEX idx_messages_client_msg_id;
+                 ALTER TABLE messages DROP COLUMN client_msg_id;
+                 INSERT INTO messages (id, source, destination, timestamp, state, direction, identity_id)
+                 VALUES ('m1', 'me', 'peer', 1.0, 'failed', 'outbound', 'identity');
+                 UPDATE schema_version SET version = 49;",
+            )
+            .unwrap();
+        }
+
+        init_schema(&pool).unwrap();
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+        let conn = pool.get().unwrap();
+        assert!(table_exists(&conn, "lxmf_outbox").unwrap());
+        assert_eq!(
+            get_column_names(&conn, "messages").unwrap(),
+            fresh,
+            "a migrated table orders its columns as a fresh one does"
+        );
+        drop(conn);
+        let messages = get_conversation(&pool, "peer", "identity", 10);
+        assert_eq!(messages[0]["state"], "failed");
+        assert_eq!(
+            messages[0]["retryable"], false,
+            "nothing stored to send again"
+        );
+    }
+
+    fn outbound(pool: &DbPool, id: &str, preference: &str) {
+        save_outbound_message(
+            pool,
+            &OutboundMessage {
+                msg_id: id,
+                identity_id: "identity",
+                source: "me",
+                destination: "peer",
+                content: "hi",
+                timestamp: 1.0,
+                delivery_method: "direct",
+                resend: Resend {
+                    preference,
+                    profile: "message",
+                    message: b"parts",
+                },
+                ..OutboundMessage::default()
+            },
+        )
+        .unwrap();
+    }
+
+    fn state_of(pool: &DbPool, id: &str) -> String {
+        pool.get()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM messages WHERE id = ?1 AND identity_id = 'identity'",
+                params![id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn outbox_ids(pool: &DbPool) -> Vec<String> {
+        let conn = pool.get().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT message_id FROM lxmf_outbox ORDER BY message_id")
+            .unwrap();
+        stmt.query_map([], |row| row.get(0))
+            .unwrap()
+            .map(Result::unwrap)
+            .collect()
+    }
+
+    #[test]
+    fn an_outbox_entry_stays_for_retry_until_the_message_settles() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        pool.get()
+            .unwrap()
+            .execute_batch("PRAGMA foreign_keys=ON;")
+            .unwrap();
+        let ended = ["cancelled", "failed", "timeout"];
+        let settled = ["delivered", "propagated", "rejected"];
+        for id in ended.iter().chain(&settled).chain(&["sent"]) {
+            outbound(&pool, id, "auto");
+            assert!(update_message_state(&pool, id, "identity", id, None));
+        }
+        assert_eq!(
+            outbox_ids(&pool),
+            ["cancelled", "failed", "sent", "timeout"]
+        );
+        let on_its_way = outbox_rows(&pool, "identity").unwrap();
+        assert_eq!(
+            on_its_way.len(),
+            1,
+            "a restart resumes only what is on its way"
+        );
+        assert_eq!(on_its_way[0].message_id, "sent");
+        assert_eq!(on_its_way[0].message, b"parts");
+        for id in ended {
+            assert!(
+                retryable_outbox_row(&pool, "identity", id)
+                    .unwrap()
+                    .is_some(),
+                "{id}"
+            );
+        }
+        for id in settled.iter().chain(&["sent"]) {
+            assert!(
+                retryable_outbox_row(&pool, "identity", id)
+                    .unwrap()
+                    .is_none(),
+                "{id}"
+            );
+        }
+        let conversation = get_conversation(&pool, "peer", "identity", 10);
+        assert!(conversation.iter().all(|message| {
+            message["retryable"]
+                == (outbox_ids(&pool).contains(&message["id"].as_str().unwrap().to_string()))
+        }));
+
+        assert_eq!(
+            restart_outbound_message(&pool, "identity", "failed", "propagated", "propagated")
+                .unwrap()
+                .as_deref(),
+            Some("failed")
+        );
+        assert_eq!(
+            restart_outbound_message(&pool, "identity", "failed", "direct", "direct").unwrap(),
+            None,
+            "claimed once"
+        );
+        assert_eq!(state_of(&pool, "failed"), "sending");
+        assert_eq!(
+            get_message_delivery_method(&pool, "failed", "identity").as_deref(),
+            Some("propagated")
+        );
+        let resumed = outbox_rows(&pool, "identity").unwrap();
+        assert!(
+            resumed
+                .iter()
+                .any(|row| row.message_id == "failed" && row.preference == "propagated")
+        );
+        assert_eq!(
+            restart_outbound_message(&pool, "identity", "delivered", "auto", "direct").unwrap(),
+            None,
+            "a delivered message is never sent again"
+        );
+
+        delete_message_for_identity(&pool, "cancelled", "identity").unwrap();
+        assert!(
+            !outbox_ids(&pool).contains(&"cancelled".to_string()),
+            "goes with its message"
+        );
+    }
+
+    #[test]
+    fn a_proof_outranks_every_earlier_outcome() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        for prior in ["failed", "timeout", "cancelled", "propagated"] {
+            outbound(&pool, prior, "auto");
+            assert!(update_message_state(&pool, prior, "identity", prior, None));
+            assert!(
+                update_message_state(&pool, prior, "identity", "delivered", Some(12.0)),
+                "{prior}"
+            );
+            assert_eq!(state_of(&pool, prior), "delivered");
+            assert!(
+                retryable_outbox_row(&pool, "identity", prior)
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        for settled in ["rejected", "paper"] {
+            outbound(&pool, settled, "auto");
+            assert!(update_message_state(
+                &pool, settled, "identity", settled, None
+            ));
+            assert!(
+                !update_message_state(&pool, settled, "identity", "delivered", None),
+                "{settled}"
+            );
+        }
+        outbound(&pool, "late", "auto");
+        assert!(update_message_state(
+            &pool, "late", "identity", "failed", None
+        ));
+        assert!(
+            !update_message_state(&pool, "late", "identity", "sent", None),
+            "nothing else leaves a settled state"
+        );
+        assert!(
+            !update_message_state(&pool, "failed", "identity", "failed", None),
+            "delivered stays delivered"
+        );
+    }
+
+    #[test]
+    fn startup_cleanup_spares_the_outbox_and_sent_messages() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        outbound(&pool, "queued", "auto");
+        for (id, state, method) in [
+            ("legacy", "routing", "direct"),
+            ("left", "sent", "opportunistic"),
+            ("linked", "sent", "direct"),
+        ] {
+            try_save_message_with_audio(
+                &pool,
+                id,
+                "me",
+                "peer",
+                "hi",
+                "",
+                1.0,
+                state,
+                "outbound",
+                "identity",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                Some(method),
+                None,
+                "",
+                None,
+                "",
+            )
+            .unwrap();
+        }
+        cleanup_stale_outbound(&pool, "identity");
+        assert_eq!(
+            state_of(&pool, "queued"),
+            "sending",
+            "the outbox sends it again"
+        );
+        assert_eq!(state_of(&pool, "legacy"), "failed");
+        assert_eq!(
+            state_of(&pool, "left"),
+            "sent",
+            "it left the device; it stays Sent"
+        );
+        assert_eq!(
+            state_of(&pool, "linked"),
+            "failed",
+            "a Direct send had not been delivered"
+        );
     }
 
     #[test]
@@ -12841,7 +13370,11 @@ mod migration_tests {
         {
             let conn = pool.get().unwrap();
             conn.execute_batch(
-                "DROP INDEX idx_messages_thread;
+                "DROP TRIGGER lxmf_outbox_settled;
+                 DROP TABLE lxmf_outbox;
+                 DROP INDEX idx_messages_client_msg_id;
+                 ALTER TABLE messages DROP COLUMN client_msg_id;
+                 DROP INDEX idx_messages_thread;
                  ALTER TABLE messages DROP COLUMN thread;
                  DROP TABLE conversation_threads;
                  DROP TABLE conversation_thread_counters;
@@ -12875,7 +13408,11 @@ mod migration_tests {
         {
             let conn = pool.get().unwrap();
             conn.execute_batch(
-                "DROP INDEX idx_messages_thread;
+                "DROP TRIGGER lxmf_outbox_settled;
+                 DROP TABLE lxmf_outbox;
+                 DROP INDEX idx_messages_client_msg_id;
+                 ALTER TABLE messages DROP COLUMN client_msg_id;
+                 DROP INDEX idx_messages_thread;
                  ALTER TABLE messages DROP COLUMN thread;
                  ALTER TABLE messages DROP COLUMN paper_uri;
                  INSERT INTO messages (id, source, destination, content, timestamp, identity_id)
@@ -12895,7 +13432,8 @@ mod migration_tests {
                 .map(String::as_str),
             Some("paper_uri")
         );
-        assert_eq!(columns.len(), MESSAGE_THREAD_COLUMN_INDEX + 1);
+        assert_eq!(columns.len(), MESSAGE_THREAD_COLUMN_INDEX + 2);
+        assert_eq!(columns.last().map(String::as_str), Some("client_msg_id"));
         drop(conn);
         let messages = get_conversation(&pool, "source", "identity", 10);
         assert_eq!(messages[0]["content"], "kept");

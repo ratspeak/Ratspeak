@@ -1456,6 +1456,9 @@ pub enum ratspeak_runtime::lxmf::DeliveryProfile
 pub ratspeak_runtime::lxmf::DeliveryProfile::Attachment
 pub ratspeak_runtime::lxmf::DeliveryProfile::Lrgp
 pub ratspeak_runtime::lxmf::DeliveryProfile::Message
+impl ratspeak_runtime::lxmf::DeliveryProfile
+pub fn ratspeak_runtime::lxmf::DeliveryProfile::as_str(self) -> &'static str
+pub fn ratspeak_runtime::lxmf::DeliveryProfile::parse(&str) -> core::option::Option<Self>
 pub enum ratspeak_runtime::lxmf::IdentityImportError
 pub ratspeak_runtime::lxmf::IdentityImportError::Exists
 pub ratspeak_runtime::lxmf::IdentityImportError::InvalidKey(alloc::string::String)
@@ -1625,6 +1628,7 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::list_received_files(&self) -> alloc:
 pub fn ratspeak_runtime::lxmf::LxmfManager::load_or_create(&std::path::Path, core::option::Option<&str>, core::option::Option<alloc::string::String>) -> core::result::Result<Self, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn ratspeak_runtime::lxmf::LxmfManager::mark_foreground_resume(&mut self)
 pub fn ratspeak_runtime::lxmf::LxmfManager::note_pending_direct_backchannel(&mut self, [u8; 16], [u8; 16])
+pub fn ratspeak_runtime::lxmf::LxmfManager::outbox_send_size(&ratspeak_db::db::OutboxRow) -> core::option::Option<usize>
 pub fn ratspeak_runtime::lxmf::LxmfManager::pause_download_admission(&mut self)
 pub fn ratspeak_runtime::lxmf::LxmfManager::persistence_delta_snapshot(&self, bool, &[alloc::string::String], bool) -> ratspeak_runtime::lxmf::LxmfPersistenceDelta
 pub fn ratspeak_runtime::lxmf::LxmfManager::pick_delivery_method(&self, &ratspeak_db::db::DbPool, &str, ratspeak_runtime::lxmf::DeliveryPreference, ratspeak_runtime::lxmf::DeliveryProfile) -> lxmf_core::constants::DeliveryMethod
@@ -1643,6 +1647,8 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::replace_route_hops_from_path_table(&
 pub fn ratspeak_runtime::lxmf::LxmfManager::request_all_paths(&self, &ratspeak_db::db::DbPool, &str) -> usize
 pub fn ratspeak_runtime::lxmf::LxmfManager::requeue_expired_received_ratchets(&mut self, alloc::vec::Vec<alloc::string::String>)
 pub fn ratspeak_runtime::lxmf::LxmfManager::restore_known_identities(&mut self, &[(alloc::string::String, [u8; 64])]) -> usize
+pub fn ratspeak_runtime::lxmf::LxmfManager::resume_outbox(&mut self, alloc::vec::Vec<ratspeak_db::db::OutboxRow>, &ratspeak_db::db::DbPool) -> alloc::vec::Vec<alloc::string::String>
+pub fn ratspeak_runtime::lxmf::LxmfManager::retry_outbound(&mut self, &ratspeak_db::db::DbPool, &str, &ratspeak_db::db::OutboxRow, ratspeak_runtime::lxmf::DeliveryPreference) -> core::result::Result<lxmf_core::constants::DeliveryMethod, &'static str>
 pub fn ratspeak_runtime::lxmf::LxmfManager::save_attachment(&self, &str, &[u8]) -> core::io::error::Result<alloc::string::String>
 pub fn ratspeak_runtime::lxmf::LxmfManager::save_crypto_state(&self) -> core::io::error::Result<()>
 pub fn ratspeak_runtime::lxmf::LxmfManager::save_router_state(&self)

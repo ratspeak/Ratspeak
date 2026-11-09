@@ -27,6 +27,7 @@ pub mod messaging;
 pub mod mobile_platform;
 pub mod network_ownership;
 mod network_secrets;
+mod outbox;
 pub mod owner_lock;
 pub mod paper;
 mod path_response;
@@ -1778,7 +1779,9 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
 
             apply_lxmf_settings_from_state(&state, &mut mgr);
 
-            // Clear in-flight outbound from previous session.
+            // The outbox's unfinished sends go out again; the previous run's
+            // other in-flight sends fail.
+            let mgr = resume_outbox(&state, mgr).await;
             let id_hash_for_cleanup = mgr.identity_hash.clone();
             db::spawn_db(state.db.clone(), move |p| {
                 db::cleanup_stale_outbound(&p, &id_hash_for_cleanup);
@@ -2948,12 +2951,15 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                     } else {
                         helpers::active_identity_id(&tick_state)
                     };
-                    let mut persisted: Vec<(
+                    // (msg_id, state, method, destination, failure)
+                    type PersistedStep = (
                         String,
                         &'static str,
                         Option<String>,
+                        Option<String>,
                         Option<lxmf::LxmfDeliveryFailureUpdate>,
-                    )> = Vec::with_capacity(results.len());
+                    );
+                    let mut persisted: Vec<PersistedStep> = Vec::with_capacity(results.len());
                     for (msg_id, new_state) in &results {
                         let rtt_ms = (*new_state == "delivered")
                             .then(|| packet_delivery_rtts.get(msg_id))
@@ -3005,14 +3011,28 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 &msg_id_for_db,
                                 &identity_for_db,
                             );
-                            (updated, method)
+                            // Names the chat for a Not delivered notice.
+                            let destination = (updated && new_state_for_db == "failed")
+                                .then(|| {
+                                    db::get_outbound_message_destination(
+                                        &p,
+                                        &msg_id_for_db,
+                                        &identity_for_db,
+                                    )
+                                })
+                                .flatten();
+                            (updated, method, destination)
                         })
                         .await
                         {
-                            Ok((true, method)) => {
-                                persisted.push((msg_id.clone(), *new_state, method, failure))
-                            }
-                            Ok((false, _)) => tracing::debug!(
+                            Ok((true, method, destination)) => persisted.push((
+                                msg_id.clone(),
+                                *new_state,
+                                method,
+                                destination,
+                                failure,
+                            )),
+                            Ok((false, _, _)) => tracing::debug!(
                                 msg_id = %short_id(msg_id),
                                 new_state = %new_state,
                                 reason = "terminal_state_preserved",
@@ -3026,7 +3046,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                             ),
                         }
                     }
-                    for (msg_id, new_state, method, failure) in &persisted {
+                    for (msg_id, new_state, method, destination, failure) in &persisted {
                         let rtt_ms = (*new_state == "delivered")
                             .then(|| packet_delivery_rtts.get(msg_id))
                             .flatten()
@@ -3054,6 +3074,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 "client_msg_id": client_msg_id,
                                 "method": method,
                                 "rtt_ms": rtt_ms,
+                                "destination": destination,
                             })
                         };
                         tick_state.emit_to_all("lxmf_step", step_payload);
@@ -6626,6 +6647,67 @@ async fn poll_stats_loop(
     }
 }
 
+/// Queue the outbox's unfinished sends again (the tick sends them); a record
+/// that cannot be read fails its message.
+async fn resume_outbox(state: &Arc<AppState>, mgr: lxmf::LxmfManager) -> lxmf::LxmfManager {
+    let identity_id = mgr.identity_hash.clone();
+    let rows =
+        match db::spawn_db(state.db.clone(), move |p| db::outbox_rows(&p, &identity_id)).await {
+            Ok(Ok(rows)) => rows,
+            _ => {
+                tracing::warn!(reason = "outbox_unreadable", "outbox not read at startup");
+                return mgr;
+            }
+        };
+    if rows.is_empty() {
+        return mgr;
+    }
+    let attachments = rows
+        .iter()
+        .filter(|row| row.profile == lxmf::DeliveryProfile::Attachment.as_str())
+        .filter_map(|row| {
+            lxmf::LxmfManager::outbox_send_size(row).map(|size| (row.message_id.clone(), size))
+        })
+        .collect::<Vec<_>>();
+    let total = rows.len();
+    let pool = state.db.clone();
+    let (mgr, unreadable) = tokio::task::spawn_blocking(move || {
+        let mut mgr = mgr;
+        let unreadable = mgr.resume_outbox(rows, &pool);
+        (mgr, unreadable)
+    })
+    .await
+    .expect("outbox resume task panicked");
+    for (message_id, bytes) in attachments {
+        if unreadable.contains(&message_id) {
+            continue;
+        }
+        match state.reserve_attachment_transfer(bytes) {
+            Ok(lease) => state.hold_attachment_delivery_lease(message_id, lease),
+            Err(error) => tracing::warn!(
+                ?error,
+                msg_id = %short_id(&message_id),
+                "resumed attachment goes out without a transfer budget"
+            ),
+        }
+    }
+    tracing::info!(
+        resumed = total - unreadable.len(),
+        unreadable = unreadable.len(),
+        "outbox resumed"
+    );
+    if !unreadable.is_empty() {
+        let identity_id = mgr.identity_hash.clone();
+        let _ = db::spawn_db(state.db.clone(), move |p| {
+            for message_id in &unreadable {
+                db::update_message_state(&p, message_id, &identity_id, "failed", None);
+            }
+        })
+        .await;
+    }
+    mgr
+}
+
 // Orphan/send watchdog. Actual bounded packet/Link/Resource clocks take
 // precedence; queued, expired and abandoned owners retain this ceiling.
 const MESSAGE_TIMEOUT_SECS: f64 = 180.0;
@@ -6851,12 +6933,13 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
                     Some((
                         msg_id.clone(),
                         db::get_message_delivery_method(&p, msg_id, &identity_id),
+                        db::get_outbound_message_destination(&p, msg_id, &identity_id),
                     ))
                 } else {
                     None
                 }
             })
-            .collect::<Vec<(String, Option<String>)>>()
+            .collect::<Vec<(String, Option<String>, Option<String>)>>()
     })
     .await
     .unwrap_or_default();
@@ -6866,12 +6949,12 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
     if let Ok(mut lxmf) = state.lxmf.lock()
         && let Some(manager) = lxmf.as_mut()
     {
-        for (msg_id, _) in &transitioned {
+        for (msg_id, _, _) in &transitioned {
             let _ = manager.cancel_outbound_message(msg_id);
         }
     }
 
-    for (msg_id, method) in transitioned {
+    for (msg_id, method, destination) in transitioned {
         state.release_attachment_delivery_lease(&msg_id);
         let client_msg_id = state
             .msg_id_map
@@ -6886,6 +6969,7 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
                 "client_msg_id": client_msg_id,
                 "reason": "timeout",
                 "method": method,
+                "destination": destination,
             }),
         );
         tracing::debug!(msg_id = %short_id(&msg_id), timeout_secs = MESSAGE_TIMEOUT_SECS, "Message timed out");
@@ -7022,7 +7106,7 @@ fn bounded_protocol_waits(state: &AppState, ids: &[String]) -> std::collections:
         .and_then(|lxmf| {
             lxmf.as_ref().map(|manager| {
                 ids.iter()
-                    .filter(|id| manager.has_bounded_protocol_wait(id))
+                    .filter(|id| manager.still_owned(id))
                     .cloned()
                     .collect()
             })

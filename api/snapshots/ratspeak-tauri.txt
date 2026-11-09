@@ -535,6 +535,9 @@ pub struct ratspeak_tauri::commands::messaging::PrepareImageAttachmentStageArgs
 pub ratspeak_tauri::commands::messaging::PrepareImageAttachmentStageArgs::automatic: bool
 pub ratspeak_tauri::commands::messaging::PrepareImageAttachmentStageArgs::profile: ratspeak_runtime::image_attachment::ImageSizeProfile
 pub ratspeak_tauri::commands::messaging::PrepareImageAttachmentStageArgs::token: alloc::string::String
+pub struct ratspeak_tauri::commands::messaging::RetryLxmfMessageArgs
+pub ratspeak_tauri::commands::messaging::RetryLxmfMessageArgs::delivery_method: core::option::Option<alloc::string::String>
+pub ratspeak_tauri::commands::messaging::RetryLxmfMessageArgs::msg_id: alloc::string::String
 pub struct ratspeak_tauri::commands::messaging::SendLxmfArgs
 pub ratspeak_tauri::commands::messaging::SendLxmfArgs::client_msg_id: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendLxmfArgs::content: alloc::string::String
@@ -605,6 +608,7 @@ pub async fn ratspeak_tauri::commands::messaging::mark_read(tauri::state::State<
 pub async fn ratspeak_tauri::commands::messaging::prepare_image_attachment_stage(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::PrepareImageAttachmentStageArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub fn ratspeak_tauri::commands::messaging::received_file_export(&ratspeak_runtime::state::AppState, &str) -> ratspeak_tauri::error::AppResult<(std::path::PathBuf, alloc::string::String, alloc::string::String)>
 pub async fn ratspeak_tauri::commands::messaging::rename_conversation_thread(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, alloc::string::String, core::option::Option<alloc::string::String>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::messaging::retry_lxmf_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::RetryLxmfMessageArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::send_lxmf_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::SendLxmfArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::send_lxmf_propagated(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::SendPropagatedArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::send_lxmf_reply(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::SendReplyArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>

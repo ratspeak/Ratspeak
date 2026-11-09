@@ -112,7 +112,7 @@ assert.deepEqual([opened, haptics, dial2.classList.contains('open')], [[0], ['se
     'the Paper dial item closes the dial and opens the decoder with no arguments');
 
 // Send popover: Paper is last, below a separator, disabled with an empty composer.
-assert(lxmf.includes("{ label: 'Offline Inbox', icon: ICON_RELAY, disabled: !hasRelay, onSelect: function() { sendLxmfMessage('propagated'); } },\n" +
+assert(lxmf.includes("{ label: 'Offline Inbox', icon: LXMF_SEND_METHOD_ICONS.propagated, disabled: !hasRelay, onSelect: function() { sendLxmfMessage('propagated'); } },\n" +
     "            { separator: true },\n            { label: 'Paper', icon: ICON_PAPER, disabled: !hasText, onSelect: sendLxmfPaperMessage },"));
 assert(lxmf.includes("var hasText = !!(input && input.value.trim());"));
 // Desktop compose popover: Contacts / New / Paper, only while the setting is on.

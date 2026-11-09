@@ -1230,6 +1230,7 @@ pub fn run() {
                 ratspeak_tauri::commands::messaging::mark_image_attachment_stage_as_file,
                 ratspeak_tauri::commands::messaging::send_lxmf_with_staged_attachment,
                 ratspeak_tauri::commands::messaging::cancel_lxmf_message,
+                ratspeak_tauri::commands::messaging::retry_lxmf_message,
                 ratspeak_tauri::commands::messaging::get_conversation,
                 ratspeak_tauri::commands::messaging::mark_read,
                 ratspeak_tauri::commands::messaging::get_conversation_threads,

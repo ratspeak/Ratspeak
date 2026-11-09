@@ -1792,13 +1792,13 @@ function _messageBodyHtml(msg, hasRenderedAudio) {
     return { html: text ? linkifyMessageText(text) : '', markdown: false };
 }
 
-// Check color reflects the observable delivery state, independent of transport
-// method. Propagation remains a node deposit, not recipient delivery.
+// One check is Sent, two are Delivered (the recipient's proof). The envelope
+// is a confirmed Offline Inbox deposit, not recipient delivery.
 function _messageStateIconHtml(msg) {
     var state = msg.state;
     var SVG_OPEN = '<svg viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
     var ICON = {
-        read: '<polyline points="1 8 4 11 9 4"/><polyline points="5 8 8 11 13 4"/>',
+        double: '<polyline points="1 8 4 11 9 4"/><polyline points="5 8 8 11 13 4"/>',
         check: '<polyline points="3 8 7 12 13 4"/>',
         clock: '<circle cx="8" cy="8" r="6"/><polyline points="8 4 8 8 11 10"/>',
         x: '<line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/>',
@@ -1807,16 +1807,15 @@ function _messageStateIconHtml(msg) {
         paper: '<rect x="2" y="2" width="5" height="5"/><rect x="9" y="2" width="5" height="5"/><rect x="2" y="9" width="5" height="5"/><path d="M9 9h2v2H9zM13 9v1M9 14h5v-2"/>'
     };
     function wrap(cls, label, body) {
-        return ' <span class="msg-state-icon ' + cls + '" role="img" aria-label="' + label + '">' + SVG_OPEN + body + '</svg></span>';
+        return ' <span class="msg-state-icon ' + cls + '" role="img" aria-label="' + label + '" title="' + label + '">' + SVG_OPEN + body + '</svg></span>';
     }
 
     if (state === 'paper') return wrap('msg-state-paper', 'Paper message', ICON.paper);
-    if (state === 'read') return wrap('msg-state-read', 'Read', ICON.read);
-    if (state === 'failed' || state === 'timeout') return wrap('msg-state-failed', 'Failed', ICON.x);
+    if (state === 'failed' || state === 'timeout') return wrap('msg-state-failed', 'Not delivered', ICON.x);
     if (state === 'cancelled') return wrap('msg-state-cancelled', 'Sending cancelled', ICON.x);
     if (state === 'rejected') return wrap('msg-state-rejected', 'Rejected', ICON.rejected) + ' <span class="msg-state-label">Rejected</span>';
     if (state === 'propagated') return wrap('msg-state-propagated', 'Stored in Offline Inbox', ICON.envelope);
-    if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.check);
+    if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.double);
     if (state === 'sent') return wrap('msg-state-sent', 'Sent', ICON.check);
     // In-flight: sending, routing, propagating, generating, outbound,
     // resending, Link setup, or Resource transfer.
@@ -1882,6 +1881,60 @@ function _messageCanCancelSend(msg) {
         'reusing_direct_link',
         'reusing_backchannel'
     ].indexOf(msg.state) !== -1;
+}
+
+// Retry sends the stored message again; rows from before the outbox have none.
+function _messageCanRetry(msg) {
+    return !!msg && msg.direction === 'outbound' && msg.retryable !== false &&
+        ['failed', 'timeout', 'cancelled'].indexOf(msg.state) !== -1 &&
+        _isCanonicalLxmfMsgId(msg.id) && !_messageIsPaper(msg);
+}
+
+var LXMF_SEND_METHOD_ICONS = {
+    auto: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/></svg>',
+    opportunistic: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
+    direct: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M8 19V5"/><path d="m4 9 4-4 4 4"/><path d="M16 5v14"/><path d="m12 15 4 4 4-4"/></svg>',
+    propagated: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>'
+};
+
+function _offlineInboxAvailable() {
+    if (typeof propagationStatus === 'undefined' || propagationStatus.mode === 'off') return false;
+    return propagationStatus.mode === 'auto'
+        ? !!propagationStatus.auto_active_node
+        : !!propagationStatus.propagation_node;
+}
+
+function _retryLxmfMessage(msg, method) {
+    return RS.invoke('retry_lxmf_message', {
+        args: { msg_id: msg.id, delivery_method: method }
+    }).then(function(resp) {
+        var current = _findLxmfMessageById(msg.id) || msg;
+        current.state = 'sending';
+        if (resp && resp.method) current.delivery_method = resp.method;
+        delete current.rtt;
+        delete current.delivery_progress;
+        _cacheActiveConversation();
+        renderConversation();
+        loadConversations();
+    }).catch(function(err) {
+        showToast((err && err.message) || 'Could not send this message again', 'toast-error', 3500);
+    });
+}
+
+function _openRetryMethodPopover(msg) {
+    var container = document.getElementById('lxmf-messages');
+    var target = container ? container.querySelector('[data-msg-id="' + msg.id + '"]') : null;
+    var anchor = target && target.closest ? (target.closest('.msg-row') || target) : null;
+    if (!anchor || typeof actionPopover !== 'function') {
+        _retryLxmfMessage(msg, 'auto');
+        return;
+    }
+    actionPopover(anchor, [
+        { label: 'Auto', icon: LXMF_SEND_METHOD_ICONS.auto, onSelect: function() { _retryLxmfMessage(msg, 'auto'); } },
+        { label: 'Opportunistic', icon: LXMF_SEND_METHOD_ICONS.opportunistic, onSelect: function() { _retryLxmfMessage(msg, 'opportunistic'); } },
+        { label: 'Direct', icon: LXMF_SEND_METHOD_ICONS.direct, onSelect: function() { _retryLxmfMessage(msg, 'direct'); } },
+        { label: 'Offline Inbox', icon: LXMF_SEND_METHOD_ICONS.propagated, disabled: !_offlineInboxAvailable(), onSelect: function() { _retryLxmfMessage(msg, 'propagated'); } },
+    ]);
 }
 
 function _messageHasTransferPayload(msg) {
@@ -5606,6 +5659,9 @@ function _messageActionIcon(name) {
     if (name === 'select') {
         return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9.5"/></svg>';
     }
+    if (name === 'retry') {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/></svg>';
+    }
     if (name === 'qr') {
         return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg>';
     }
@@ -6277,6 +6333,19 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     var actions = document.createElement('div');
     actions.className = 'msg-action-panel msg-context-actions';
 
+    if (_messageCanRetry(msgData)) {
+        var retryBtn = document.createElement('button');
+        retryBtn.className = 'msg-ctx-btn msg-ctx-retry';
+        retryBtn.type = 'button';
+        retryBtn.setAttribute('data-message-action', 'retry');
+        retryBtn.innerHTML = _messageActionIcon('retry') + '<span>Retry</span>';
+        _bindMessageFocusPreservingActivation(retryBtn, function() {
+            _dismissContextMenu({ restoreFocus: false });
+            _openRetryMethodPopover(msgData);
+        });
+        actions.appendChild(retryBtn);
+    }
+
     var replyBtn = document.createElement('button');
     replyBtn.className = 'msg-ctx-btn msg-ctx-reply';
     replyBtn.type = 'button';
@@ -6739,6 +6808,17 @@ document.addEventListener('rs-lifecycle-foreground-handled', function() {
     }
 });
 
+// The ✕ says it in an open chat; elsewhere one toast names the chat.
+function _noticeUndeliveredMessage(destination) {
+    var hash = _canonicalConversationHash(destination);
+    if (!hash || !_lxmfAttentionForeground() || _isConversationActivelyVisible(hash, lxmfActiveThread)) return;
+    var info = _conversationNameInfo(hash, null, false);
+    var name = (info && info.name) || _hashFallbackName(hash);
+    showToast('Message to ' + name + ' not delivered', 'toast-action', 4000, function() {
+        openConversationWith(hash);
+    });
+}
+
 RS.listen('lxmf_step', function(data) {
     // Remap optimistic client_msg_id to canonical server msg_id.
     if (data.client_msg_id && data.msg_id) {
@@ -6763,7 +6843,10 @@ RS.listen('lxmf_step', function(data) {
         var eventMsgId = data.msg_id || data.client_msg_id;
         lxmfConversation.forEach(function(msg) {
             if (eventMsgId && msg.id === eventMsgId) {
-                if (terminalStates.indexOf(msg.state) === -1) {
+                // A proof outranks an earlier outcome; nothing else leaves one.
+                var proofOutranks = resolvedState === 'delivered' &&
+                    msg.state !== 'rejected' && msg.state !== 'paper';
+                if (terminalStates.indexOf(msg.state) === -1 || proofOutranks) {
                     msg.state = resolvedState;
                     if (data.rtt_ms) msg.rtt = data.rtt_ms;
                     if (data.method) msg.delivery_method = data.method;
@@ -6810,8 +6893,8 @@ RS.listen('lxmf_step', function(data) {
         renderConversation();
     }
 
-    if (data.step === 'timeout') {
-        showToast('Message timed out. The recipient may be unreachable.', 'toast-error', 5000);
+    if (data.step === 'failed' || data.step === 'timeout') {
+        _noticeUndeliveredMessage(data.destination);
     }
     if (data.step === 'error') {
         showToast(data.message || 'Send error', 'toast-error', 5000);
@@ -7508,26 +7591,18 @@ document.addEventListener('DOMContentLoaded', function() {
     var ICON_PHOTOS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
     var ICON_CONTACTS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>';
     var ICON_NEW = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
-    var ICON_SEND_OPPORTUNISTIC = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>';
-    var ICON_SEND_DIRECT = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M8 19V5"/><path d="m4 9 4-4 4 4"/><path d="M16 5v14"/><path d="m12 15 4 4 4-4"/></svg>';
-    var ICON_RELAY = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>';
     var ICON_PAPER = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg>';
 
     function openSendMethodPopover() {
         if (!sendBtn || typeof actionPopover !== 'function' || !lxmfActiveContact) return;
-        var hasRelay = false;
-        if (typeof propagationStatus !== 'undefined' && propagationStatus.mode !== 'off') {
-            hasRelay = propagationStatus.mode === 'auto'
-                ? !!propagationStatus.auto_active_node
-                : !!propagationStatus.propagation_node;
-        }
+        var hasRelay = _offlineInboxAvailable();
         var input = document.getElementById('lxmf-input');
         var wasFocused = !!(input && document.activeElement === input);
         var hasText = !!(input && input.value.trim());
         actionPopover(sendBtn, [
-            { label: 'Opportunistic', icon: ICON_SEND_OPPORTUNISTIC, onSelect: function() { sendLxmfMessage('opportunistic'); } },
-            { label: 'Direct', icon: ICON_SEND_DIRECT, onSelect: function() { sendLxmfMessage('direct'); } },
-            { label: 'Offline Inbox', icon: ICON_RELAY, disabled: !hasRelay, onSelect: function() { sendLxmfMessage('propagated'); } },
+            { label: 'Opportunistic', icon: LXMF_SEND_METHOD_ICONS.opportunistic, onSelect: function() { sendLxmfMessage('opportunistic'); } },
+            { label: 'Direct', icon: LXMF_SEND_METHOD_ICONS.direct, onSelect: function() { sendLxmfMessage('direct'); } },
+            { label: 'Offline Inbox', icon: LXMF_SEND_METHOD_ICONS.propagated, disabled: !hasRelay, onSelect: function() { sendLxmfMessage('propagated'); } },
             { separator: true },
             { label: 'Paper', icon: ICON_PAPER, disabled: !hasText, onSelect: sendLxmfPaperMessage },
         ], {

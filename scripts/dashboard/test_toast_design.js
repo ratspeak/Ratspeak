@@ -275,7 +275,7 @@ assert(!extractCalls(voiceSource, 'showToast').some(function(call) {
 assert(lxmfSource.includes("content: 'Voice message'") &&
     lxmfSource.includes("state: resp && resp.cancelled ? 'cancelled' : 'sending'"),
     'outbound voice messages must enter the shared message delivery state machine');
-assert(lxmfSource.includes("if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.check)") &&
+assert(lxmfSource.includes("if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.double)") &&
     lxmfSource.includes("if (state === 'sent') return wrap('msg-state-sent', 'Sent', ICON.check)"),
     'voice and text messages must share the established checkmark delivery states');
 assert(!lxmfSource.includes("'New message from ' + escapeHtml(fromLabel)"),

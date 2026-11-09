@@ -1013,6 +1013,25 @@ pub enum DeliveryProfile {
     Lrgp,
 }
 
+impl DeliveryProfile {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Message => "message",
+            Self::Attachment => "attachment",
+            Self::Lrgp => "lrgp",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "message" => Some(Self::Message),
+            "attachment" => Some(Self::Attachment),
+            "lrgp" => Some(Self::Lrgp),
+            _ => None,
+        }
+    }
+}
+
 async fn forward_backchannel_receipt(
     mut runtime_rx: oneshot::Receiver<
         Result<
@@ -1374,7 +1393,31 @@ pub struct LxmfManager {
     /// through the configured Offline Inbox after live delivery fails.
     auto_live_fallback: HashSet<[u8; 32]>,
     live_preparation: preparation::LivePreparation,
+    /// Outbox sends from the last run or a Retry, queued by the tick.
+    resumable: Vec<ResumableSend>,
+    /// Failed sends whose earlier packets can still be proven; they fail only
+    /// once the last receipt expires.
+    deferred_failures: HashSet<[u8; 32]>,
 }
+
+/// An outbox send waiting to be queued again.
+struct ResumableSend {
+    message_id: [u8; 32],
+    message: crate::outbox::OutboxMessage,
+    preference: DeliveryPreference,
+    profile: DeliveryProfile,
+    auto_compress: bool,
+    since: f64,
+}
+
+enum Resumed {
+    Queued(DeliveryMethod),
+    Waiting,
+    Failed,
+}
+
+/// How long a resumed Offline Inbox send waits for its relay after startup.
+const RESUME_RELAY_WAIT_SECS: f64 = 120.0;
 
 /// Immutable known-identity artifact captured while the LXMF manager is
 /// locked and persisted only after that protocol lock has been released.
@@ -2416,6 +2459,8 @@ impl LxmfManager {
             last_reported_steps: HashMap::new(),
             auto_live_fallback: HashSet::new(),
             live_preparation: preparation::LivePreparation::default(),
+            resumable: Vec::new(),
+            deferred_failures: HashSet::new(),
         })
     }
 
@@ -2710,6 +2755,15 @@ impl LxmfManager {
         preference: DeliveryPreference,
         profile: DeliveryProfile,
     ) -> DeliveryMethod {
+        self.delivery_method_for(dest_hash_hex, preference, profile)
+    }
+
+    fn delivery_method_for(
+        &self,
+        dest_hash_hex: &str,
+        preference: DeliveryPreference,
+        profile: DeliveryProfile,
+    ) -> DeliveryMethod {
         match preference {
             DeliveryPreference::Opportunistic => DeliveryMethod::Opportunistic,
             DeliveryPreference::Direct => DeliveryMethod::Direct,
@@ -2951,42 +3005,218 @@ impl LxmfManager {
         self.preempt_opportunistic_path(&mut msg);
         let auto_fallback = Self::auto_live_fallback_hash(&msg, preference);
         let method = msg.method;
+        let message_id = msg.message_id();
+        let resend = crate::outbox::OutboxMessage::of(&msg).encode();
         self.router.submit_signed(msg).ok()?;
+        let source = self.lxmf_hash.clone();
+        let persisted = self.persist_outbound(
+            db_pool,
+            message_id,
+            &db::OutboundMessage {
+                msg_id: &msg_id,
+                identity_id,
+                source: &source,
+                destination: dest_hash_hex,
+                content,
+                title,
+                timestamp: display_timestamp,
+                delivery_method: delivery_method_name(method),
+                reply_to_id,
+                reply_to_preview,
+                renderer,
+                thread,
+                resend: db::Resend {
+                    preference: preference.as_str(),
+                    profile: profile.as_str(),
+                    message: &resend,
+                },
+                ..db::OutboundMessage::default()
+            },
+        );
+        if !persisted {
+            return None;
+        }
         self.auto_live_fallback.extend(auto_fallback);
         if preference == DeliveryPreference::Auto && profile == DeliveryProfile::Message {
             self.live_preparation.auto_messages.extend(auto_fallback);
         }
 
-        // The manager lock is still held here, so the router cannot advance
-        // this freshly accepted message before its local history row exists.
-        db::save_message_with_audio(
-            db_pool,
-            &msg_id,
-            &self.lxmf_hash,
-            dest_hash_hex,
-            content,
-            title,
-            display_timestamp,
-            "sending",
-            "outbound",
-            identity_id,
-            "",
-            "",
-            "",
-            "",
-            reply_to_id,
-            reply_to_preview,
-            Some(delivery_method_name(method)),
-            None,
-            "",
-            renderer,
-            thread,
-        );
-
         Some(LxmfQueuedMessage {
             message_id: msg_id,
             method,
         })
+    }
+
+    /// Write the history row and outbox entry of a message the router just
+    /// accepted. The manager lock is still held, so it cannot have left yet;
+    /// if the write fails it leaves the queue instead.
+    fn persist_outbound(
+        &mut self,
+        db_pool: &DbPool,
+        message_id: [u8; 32],
+        message: &db::OutboundMessage<'_>,
+    ) -> bool {
+        match db::save_outbound_message(db_pool, message) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%error, "outbound message not persisted; withdrawn from the queue");
+                self.router.cancel_outbound(&message_id);
+                false
+            }
+        }
+    }
+
+    /// Take this identity's unfinished sends from the outbox; the tick queues
+    /// them again. Returns the ids of records that cannot be read.
+    pub fn resume_outbox(&mut self, rows: Vec<db::OutboxRow>, db_pool: &DbPool) -> Vec<String> {
+        let mut unreadable = Vec::new();
+        for row in rows {
+            match self.resumable_send(
+                &row,
+                DeliveryPreference::parse(Some(&row.preference)),
+                db_pool,
+            ) {
+                Some(send) => self.resumable.push(send),
+                None => unreadable.push(row.message_id),
+            }
+        }
+        unreadable
+    }
+
+    /// The size an outbox record rebuilds to, for transfer budgets; `None`
+    /// when it cannot be read.
+    pub fn outbox_send_size(row: &db::OutboxRow) -> Option<usize> {
+        crate::outbox::OutboxMessage::decode(&row.message).map(|message| message.size())
+    }
+
+    fn resumable_send(
+        &self,
+        row: &db::OutboxRow,
+        preference: DeliveryPreference,
+        db_pool: &DbPool,
+    ) -> Option<ResumableSend> {
+        let message = crate::outbox::OutboxMessage::decode(&row.message)?;
+        let dest_hex = hex::encode(message.destination());
+        Some(ResumableSend {
+            message_id: hex::decode(&row.message_id).ok()?.try_into().ok()?,
+            auto_compress: self.peer_lxmf_compression_support(Some(db_pool), &dest_hex)
+                != CompressionSupport::Unsupported,
+            message,
+            preference,
+            profile: DeliveryProfile::parse(&row.profile)?,
+            since: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64(),
+        })
+    }
+
+    /// Send a Not delivered or Cancelled message again, as the identical
+    /// message (the recipient discards a copy it already has), by
+    /// `preference`. The row is claimed first, so a second Retry cannot queue
+    /// another copy; the lock holds the queue until it says `sending`.
+    pub fn retry_outbound(
+        &mut self,
+        db_pool: &DbPool,
+        identity_id: &str,
+        row: &db::OutboxRow,
+        preference: DeliveryPreference,
+    ) -> Result<DeliveryMethod, &'static str> {
+        const NOT_RETRYABLE: &str = "This message can't be sent again.";
+        let send = self
+            .resumable_send(row, preference, db_pool)
+            .ok_or(NOT_RETRYABLE)?;
+        let dest_hex = hex::encode(send.message.destination());
+        let planned = self.delivery_method_for(&dest_hex, preference, send.profile);
+        let previous = db::restart_outbound_message(
+            db_pool,
+            identity_id,
+            &row.message_id,
+            preference.as_str(),
+            delivery_method_name(planned),
+        )
+        .ok()
+        .flatten()
+        .ok_or(NOT_RETRYABLE)?;
+        match self.queue_resumed(&send, send.since) {
+            Resumed::Queued(method) => {
+                if method != planned {
+                    db::update_message_delivery_method(
+                        db_pool,
+                        &row.message_id,
+                        identity_id,
+                        delivery_method_name(method),
+                    );
+                }
+                Ok(method)
+            }
+            Resumed::Waiting | Resumed::Failed => {
+                db::update_message_state(db_pool, &row.message_id, identity_id, &previous, None);
+                Err("This message couldn't be queued. Try another method.")
+            }
+        }
+    }
+
+    fn queue_resumable(&mut self, now: f64, results: &mut Vec<(String, &'static str)>) {
+        for send in std::mem::take(&mut self.resumable) {
+            match self.queue_resumed(&send, now) {
+                Resumed::Queued(_) => {}
+                Resumed::Waiting => self.resumable.push(send),
+                Resumed::Failed => results.push((hex::encode(send.message_id), "failed")),
+            }
+        }
+    }
+
+    /// Sign the stored parts again and queue the message as a send would. An
+    /// Offline Inbox send waits a while for its relay; a rebuilt message that
+    /// is not the one stored fails rather than go out.
+    fn queue_resumed(&mut self, send: &ResumableSend, now: f64) -> Resumed {
+        let dest_hex = hex::encode(send.message.destination());
+        let method = self.delivery_method_for(&dest_hex, send.preference, send.profile);
+        if method == DeliveryMethod::Propagated && self.router.outbound_propagation_node.is_none() {
+            return if self.client_propagation_enabled && now - send.since < RESUME_RELAY_WAIT_SECS {
+                Resumed::Waiting
+            } else {
+                Resumed::Failed
+            };
+        }
+        let Ok(mut draft) = send.message.draft(method, &self.files_dir()) else {
+            return Resumed::Failed;
+        };
+        draft.auto_compress = send.auto_compress;
+        self.apply_peer_lxmf_compression_support(&mut draft, None, &dest_hex);
+        let Ok(intent) = self.router.prepare_outbound(&mut draft) else {
+            return Resumed::Failed;
+        };
+        if intent.persist(&self.lxmf_storage_dir, &mut draft).is_err() {
+            return Resumed::Failed;
+        }
+        let identity = self.identity.clone();
+        let Ok(mut msg) =
+            draft.sign_with(|bytes| identity.sign(bytes).ok_or("identity signing unavailable"))
+        else {
+            return Resumed::Failed;
+        };
+        if msg.message_id() != send.message_id {
+            tracing::warn!(
+                msg_id = %crate::short_id(&hex::encode(send.message_id)),
+                "outbox record does not rebuild its message; not sent"
+            );
+            return Resumed::Failed;
+        }
+        normalize_protocol_delivery_method(&mut msg);
+        self.preempt_opportunistic_path(&mut msg);
+        let auto_fallback = Self::auto_live_fallback_hash(&msg, send.preference);
+        let method = msg.method;
+        if self.router.submit_signed(msg).is_err() {
+            return Resumed::Failed;
+        }
+        self.deferred_failures.remove(&send.message_id);
+        self.auto_live_fallback.extend(auto_fallback);
+        if send.preference == DeliveryPreference::Auto && send.profile == DeliveryProfile::Message {
+            self.live_preparation.auto_messages.extend(auto_fallback);
+        }
+        Resumed::Queued(method)
     }
 
     pub fn send_ephemeral_opportunistic_message(
@@ -3131,54 +3361,67 @@ impl LxmfManager {
         self.preempt_opportunistic_path(&mut msg);
         let auto_fallback = Self::auto_live_fallback_hash(&msg, preference);
         let method = msg.method;
-        // Persist before queueing so the database can never reference a file
-        // that failed to reach durable storage. A router rejection removes the
-        // just-created file before returning.
+        // The file is durable before the message is queued, so its row can
+        // never reference a missing file; every failure below removes it.
         let stored_name = match staged_path {
             Some(path) => self.adopt_staged_attachment(file_name, path),
             None => self.save_attachment(file_name, file_bytes),
         }
         .map_err(|_| LxmfSubmissionFailure::StorageFailed)?;
-        let (attachment_name_col, attachment_stored_col, image_name_col, image_stored_col) =
-            if is_image {
-                ("", "", file_name, stored_name.as_str())
-            } else {
-                (file_name, stored_name.as_str(), "", "")
-            };
+        let (attachment_name, attachment_stored_name, image_name, image_stored_name) = if is_image {
+            ("", "", file_name, stored_name.as_str())
+        } else {
+            (file_name, stored_name.as_str(), "", "")
+        };
 
-        if db::try_save_message_with_audio(
-            db_pool,
-            &msg_id,
-            &self.lxmf_hash,
-            dest_hash_hex,
-            content,
-            title,
-            display_timestamp,
-            "sending",
-            "outbound",
-            identity_id,
-            attachment_name_col,
-            attachment_stored_col,
-            image_name_col,
-            image_stored_col,
-            "",
-            "",
-            Some(delivery_method_name(method)),
-            None,
-            "",
-            renderer,
-            thread,
+        let message_id = msg.message_id();
+        let resend = crate::outbox::OutboxMessage::referencing(
+            &msg,
+            Some(crate::outbox::StoredFile {
+                field: if is_image {
+                    lxmf_core::constants::FIELD_IMAGE
+                } else {
+                    lxmf_core::constants::FIELD_FILE_ATTACHMENTS
+                },
+                stored_name: &stored_name,
+                bytes: file_bytes,
+            }),
         )
-        .is_err()
-        {
-            let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
-            return Err(LxmfSubmissionFailure::StorageFailed);
-        }
-
+        .encode();
         if self.router.submit_signed(msg).is_err() {
-            let _ = db::delete_message_for_identity(db_pool, &msg_id, identity_id);
             let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
             return Err(LxmfSubmissionFailure::PreparationFailed);
+        }
+        let source = self.lxmf_hash.clone();
+        let persisted = self.persist_outbound(
+            db_pool,
+            message_id,
+            &db::OutboundMessage {
+                msg_id: &msg_id,
+                identity_id,
+                source: &source,
+                destination: dest_hash_hex,
+                content,
+                title,
+                timestamp: display_timestamp,
+                delivery_method: delivery_method_name(method),
+                attachment_name,
+                attachment_stored_name,
+                image_name,
+                image_stored_name,
+                renderer,
+                thread,
+                resend: db::Resend {
+                    preference: preference.as_str(),
+                    profile: DeliveryProfile::Attachment.as_str(),
+                    message: &resend,
+                },
+                ..db::OutboundMessage::default()
+            },
+        );
+        if !persisted {
+            let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
+            return Err(LxmfSubmissionFailure::StorageFailed);
         }
         self.auto_live_fallback.extend(auto_fallback);
         Ok(LxmfQueuedMessage {
@@ -3295,39 +3538,47 @@ impl LxmfManager {
         }
         .map_err(|_| LxmfSubmissionFailure::StorageFailed)?;
 
-        if db::try_save_message_with_audio(
-            db_pool,
-            &msg_id,
-            &self.lxmf_hash,
-            dest_hash_hex,
-            content,
-            title,
-            display_timestamp,
-            "sending",
-            "outbound",
-            identity_id,
-            "",
-            "",
-            "",
-            "",
-            "",
-            "",
-            Some(delivery_method_name(method)),
-            Some(audio_mode),
-            &stored_name,
-            None,
-            thread,
+        let message_id = msg.message_id();
+        let resend = crate::outbox::OutboxMessage::referencing(
+            &msg,
+            Some(crate::outbox::StoredFile {
+                field: lxmf_core::constants::FIELD_AUDIO,
+                stored_name: &stored_name,
+                bytes: audio_bytes,
+            }),
         )
-        .is_err()
-        {
-            let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
-            return Err(LxmfSubmissionFailure::StorageFailed);
-        }
-
+        .encode();
         if self.router.submit_signed(msg).is_err() {
-            let _ = db::delete_message_for_identity(db_pool, &msg_id, identity_id);
             let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
             return Err(LxmfSubmissionFailure::PreparationFailed);
+        }
+        let source = self.lxmf_hash.clone();
+        let persisted = self.persist_outbound(
+            db_pool,
+            message_id,
+            &db::OutboundMessage {
+                msg_id: &msg_id,
+                identity_id,
+                source: &source,
+                destination: dest_hash_hex,
+                content,
+                title,
+                timestamp: display_timestamp,
+                delivery_method: delivery_method_name(method),
+                audio_mode: Some(audio_mode),
+                audio_stored_name: &stored_name,
+                thread,
+                resend: db::Resend {
+                    preference: preference.as_str(),
+                    profile: DeliveryProfile::Attachment.as_str(),
+                    message: &resend,
+                },
+                ..db::OutboundMessage::default()
+            },
+        );
+        if !persisted {
+            let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
+            return Err(LxmfSubmissionFailure::StorageFailed);
         }
         self.auto_live_fallback.extend(auto_fallback);
         Ok(LxmfQueuedMessage {
@@ -4747,6 +4998,11 @@ impl LxmfManager {
     ) {
         if let Some(hash) = msg_hash {
             self.clear_auto_live_fallback(&hash);
+            // Not undelivered while an earlier packet can still be proven.
+            if self.has_live_proof(&hash) {
+                self.deferred_failures.insert(hash);
+                return;
+            }
             if self.ephemeral_outbound.remove(&hash) {
                 return;
             }
@@ -5342,6 +5598,7 @@ impl LxmfManager {
         self.hold_messages_for_path_recovery(now);
         self.hold_messages_for_timing(now);
         self.drain_backchannel_events(&mut results);
+        self.queue_resumable(now, &mut results);
         self.router.process_deferred_stamps();
         results.extend(self.prepare_live_outbound(now, Instant::now()));
         let known_identities = self
@@ -5571,6 +5828,8 @@ impl LxmfManager {
             return false;
         };
 
+        self.deferred_failures.remove(&hash);
+        self.resumable.retain(|send| send.message_id != hash);
         self.opportunistic_in_flight.remove(&hash);
         self.router.cancel_outbound(&hash);
         if let Some(delivery) = &mut self.link_delivery {
@@ -5630,12 +5889,18 @@ impl LxmfManager {
 
         let mut cancelled = false;
         self.clear_auto_live_fallback(&hash);
+        let resumable = self.resumable.len();
+        self.resumable.retain(|send| send.message_id != hash);
+        cancelled |= self.resumable.len() != resumable;
+        cancelled |= self.deferred_failures.remove(&hash);
         cancelled |= self.ephemeral_outbound.remove(&hash);
         cancelled |= self.in_flight_propagation.remove(&hash).is_some();
         self.propagation_envelopes.remove(&hash);
         self.pending_propagation_envelopes.remove(&hash);
         cancelled |= self.opportunistic_in_flight.remove(&hash).is_some();
-        cancelled |= self.opportunistic_proofs.remove(&hash).is_some();
+        // Packets already sent keep their receipts: a copy that arrives still
+        // shows as delivered.
+        cancelled |= self.opportunistic_proofs.contains_key(&hash);
 
         if self
             .link_delivery
@@ -13085,5 +13350,467 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    fn send_for_resume(
+        mgr: &mut LxmfManager,
+        pool: &DbPool,
+        dest: &str,
+        preference: DeliveryPreference,
+    ) -> [u8; 32] {
+        let identity_id = mgr.identity_hash.clone();
+        let queued = mgr
+            .send_message_with_preference_report(MessageSendRequest {
+                dest_hash_hex: dest,
+                content: "outlives a restart",
+                title: "",
+                db_pool: pool,
+                identity_id: &identity_id,
+                preference,
+                profile: DeliveryProfile::Message,
+                renderer: None,
+                thread: "",
+            })
+            .unwrap();
+        hex::decode(queued.message_id).unwrap().try_into().unwrap()
+    }
+
+    fn reloaded(mgr: LxmfManager) -> LxmfManager {
+        let root = mgr.data_dir.parent().unwrap().to_path_buf();
+        let identity_id = mgr.identity_hash.clone();
+        drop(mgr);
+        initialize_storage_namespace(&root).unwrap();
+        LxmfManager::load_or_create(&root, Some(&identity_id), None).unwrap()
+    }
+
+    fn restarted(mgr: LxmfManager, pool: &DbPool) -> LxmfManager {
+        let mut mgr = reloaded(mgr);
+        let rows = db::outbox_rows(pool, &mgr.identity_hash).unwrap();
+        assert!(mgr.resume_outbox(rows, pool).is_empty());
+        mgr
+    }
+
+    fn unix_now() -> f64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+    }
+
+    #[test]
+    fn a_restart_queues_the_outbox_again_as_the_same_message() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "ab".repeat(16);
+        let id = send_for_resume(&mut mgr, &pool, &dest, DeliveryPreference::Direct);
+        let wire = mgr.router.pending_outbound[0].wire_bytes().to_vec();
+        let identity_id = mgr.identity_hash.clone();
+        assert_eq!(db::outbox_rows(&pool, &identity_id).unwrap().len(), 1);
+
+        let mut mgr = restarted(mgr, &pool);
+        assert!(
+            mgr.router.pending_outbound.is_empty(),
+            "nothing until a tick"
+        );
+        let mut results = Vec::new();
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert!(results.is_empty(), "{results:?}");
+        assert_eq!(mgr.router.pending_outbound.len(), 1);
+        assert_eq!(mgr.router.pending_outbound[0].message_id(), id);
+        assert_eq!(
+            mgr.router.pending_outbound[0].wire_bytes(),
+            wire,
+            "the same signed message"
+        );
+        assert_eq!(
+            db::get_conversation(&pool, &dest, &identity_id, 10).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_restart_requeues_a_send_still_waiting_for_its_stamp() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "ac".repeat(16);
+        let dest_bytes: [u8; 16] = hex::decode(&dest).unwrap().try_into().unwrap();
+        mgr.router.set_stamp_cost(dest_bytes, 1);
+        let id = send_for_resume(&mut mgr, &pool, &dest, DeliveryPreference::Direct);
+        assert!(mgr.router.pending_deferred_stamps.contains_key(&id));
+
+        let mut mgr = restarted(mgr, &pool);
+        mgr.router.set_stamp_cost(dest_bytes, 1);
+        let mut results = Vec::new();
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert!(results.is_empty(), "{results:?}");
+        assert!(mgr.router.pending_deferred_stamps.contains_key(&id));
+    }
+
+    #[test]
+    fn an_outbox_record_that_rebuilds_another_message_is_not_sent() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        send_for_resume(
+            &mut mgr,
+            &pool,
+            &"ad".repeat(16),
+            DeliveryPreference::Direct,
+        );
+        let mut mgr = reloaded(mgr);
+        let mut rows = db::outbox_rows(&pool, &mgr.identity_hash).unwrap();
+        rows[0].message_id = "ee".repeat(32);
+        assert!(mgr.resume_outbox(rows, &pool).is_empty());
+        let mut results = Vec::new();
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert_eq!(results, [("ee".repeat(32), "failed")]);
+        assert!(mgr.router.pending_outbound.is_empty());
+
+        let unreadable = db::OutboxRow {
+            message_id: "ff".repeat(32),
+            preference: "auto".into(),
+            profile: "message".into(),
+            message: b"not a record".to_vec(),
+        };
+        assert_eq!(
+            mgr.resume_outbox(vec![unreadable], &pool),
+            ["ff".repeat(32)]
+        );
+    }
+
+    #[test]
+    fn a_resumed_offline_inbox_send_waits_a_while_for_its_relay() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let node = [0x42; 16];
+        mgr.router.set_outbound_propagation_node(Some(node));
+        let id = send_for_resume(
+            &mut mgr,
+            &pool,
+            &"ae".repeat(16),
+            DeliveryPreference::Propagated,
+        );
+
+        let mut mgr = restarted(mgr, &pool);
+        mgr.client_propagation_enabled = true;
+        let mut results = Vec::new();
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert!(results.is_empty());
+        assert_eq!(mgr.resumable.len(), 1, "waits for a relay");
+
+        mgr.router.set_outbound_propagation_node(Some(node));
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert!(results.is_empty(), "{results:?}");
+        assert!(mgr.resumable.is_empty());
+        assert_eq!(mgr.router.pending_outbound[0].message_id(), id);
+        assert_eq!(
+            mgr.router.pending_outbound[0].method,
+            DeliveryMethod::Propagated
+        );
+
+        let mut mgr = restarted(mgr, &pool);
+        mgr.client_propagation_enabled = true;
+        mgr.queue_resumable(unix_now() + RESUME_RELAY_WAIT_SECS + 1.0, &mut results);
+        assert_eq!(results, [(hex::encode(id), "failed")], "not forever");
+    }
+
+    #[test]
+    fn a_send_whose_history_cannot_be_written_leaves_the_queue() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "b0".repeat(16);
+        let identity_id = mgr.identity_hash.clone();
+        pool.get()
+            .unwrap()
+            .execute_batch("DROP TABLE lxmf_outbox;")
+            .unwrap();
+
+        let text = mgr.send_message_with_preference_report(MessageSendRequest {
+            dest_hash_hex: &dest,
+            content: "no history, no send",
+            title: "",
+            db_pool: &pool,
+            identity_id: &identity_id,
+            preference: DeliveryPreference::Direct,
+            profile: DeliveryProfile::Message,
+            renderer: None,
+            thread: "",
+        });
+        assert_eq!(text, Err(LxmfSubmissionFailure::PreparationFailed));
+        let attachment =
+            mgr.send_message_with_attachment_fields_preference_report(AttachmentMessageRequest {
+                dest_hash_hex: &dest,
+                content: "",
+                title: "",
+                file_name: "notes.txt",
+                file_bytes: b"notes",
+                staged_path: None,
+                is_image: false,
+                image_mime: "",
+                db_pool: &pool,
+                identity_id: &identity_id,
+                preference: DeliveryPreference::Direct,
+                renderer: None,
+                thread: "",
+            });
+        assert_eq!(attachment, Err(LxmfSubmissionFailure::StorageFailed));
+        assert!(mgr.router.pending_outbound.is_empty());
+        assert!(db::get_conversation(&pool, &dest, &identity_id, 10).is_empty());
+        assert_eq!(
+            std::fs::read_dir(mgr.files_dir()).unwrap().count(),
+            0,
+            "the attachment's file goes with it"
+        );
+    }
+
+    #[test]
+    fn a_cancel_reaches_a_send_still_waiting_to_resume() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let node = [0x42; 16];
+        mgr.router.set_outbound_propagation_node(Some(node));
+        let id = send_for_resume(
+            &mut mgr,
+            &pool,
+            &"af".repeat(16),
+            DeliveryPreference::Propagated,
+        );
+
+        let mut mgr = restarted(mgr, &pool);
+        mgr.client_propagation_enabled = true;
+        assert!(mgr.cancel_outbound_message(&hex::encode(id)));
+        mgr.router.set_outbound_propagation_node(Some(node));
+        let mut results = Vec::new();
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert!(
+            mgr.router.pending_outbound.is_empty(),
+            "a cancelled send stays cancelled"
+        );
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn retry_sends_the_same_message_by_the_chosen_method() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let dest = "b1".repeat(16);
+        let identity_id = mgr.identity_hash.clone();
+        let id = send_for_resume(&mut mgr, &pool, &dest, DeliveryPreference::Direct);
+        let msg_id = hex::encode(id);
+        assert!(
+            db::retryable_outbox_row(&pool, &identity_id, &msg_id)
+                .unwrap()
+                .is_none(),
+            "nothing to retry while it is on its way"
+        );
+        mgr.cancel_outbound_message(&msg_id);
+        assert!(db::update_message_state(
+            &pool,
+            &msg_id,
+            &identity_id,
+            "failed",
+            None
+        ));
+        assert!(mgr.router.pending_outbound.is_empty());
+
+        let row = db::retryable_outbox_row(&pool, &identity_id, &msg_id)
+            .unwrap()
+            .expect("a Not delivered message keeps its outbox entry");
+        mgr.router.set_outbound_propagation_node(Some([0x43; 16]));
+        let method = mgr
+            .retry_outbound(&pool, &identity_id, &row, DeliveryPreference::Propagated)
+            .unwrap();
+        assert_eq!(method, DeliveryMethod::Propagated);
+        assert_eq!(mgr.router.pending_outbound.len(), 1);
+        assert_eq!(
+            mgr.router.pending_outbound[0].message_id(),
+            id,
+            "the identical message"
+        );
+        let conversation = db::get_conversation(&pool, &dest, &identity_id, 10);
+        assert_eq!(conversation.len(), 1, "the same bubble");
+        assert_eq!(conversation[0]["state"], "sending");
+        assert_eq!(conversation[0]["delivery_method"], "propagated");
+        let rows = db::outbox_rows(&pool, &identity_id).unwrap();
+        assert_eq!(
+            rows[0].preference, "propagated",
+            "a restart resumes it the same way"
+        );
+
+        assert!(
+            mgr.retry_outbound(&pool, &identity_id, &row, DeliveryPreference::Direct)
+                .is_err(),
+            "a message on its way is not retried twice"
+        );
+        assert_eq!(
+            mgr.router.pending_outbound.len(),
+            1,
+            "the refused retry neither queues a copy nor stops the first"
+        );
+    }
+
+    /// A playable Ogg Opus clip of `frames` 20 ms frames, large enough to be
+    /// referenced rather than copied.
+    #[cfg(feature = "lxst-voice")]
+    fn long_ogg_opus_fixture(frames: usize) -> Vec<u8> {
+        use ogg::writing::{PacketWriteEndInfo, PacketWriter};
+
+        let serial = 0x5253_4156;
+        let mut writer = PacketWriter::new(Vec::new());
+        let mut head = b"OpusHead".to_vec();
+        head.extend_from_slice(&[1, 1]);
+        head.extend_from_slice(&0u16.to_le_bytes());
+        head.extend_from_slice(&24_000u32.to_le_bytes());
+        head.extend_from_slice(&0i16.to_le_bytes());
+        head.push(0);
+        writer
+            .write_packet(head, serial, PacketWriteEndInfo::EndPage, 0)
+            .unwrap();
+        let mut tags = b"OpusTags".to_vec();
+        tags.extend_from_slice(&0u32.to_le_bytes());
+        tags.extend_from_slice(&0u32.to_le_bytes());
+        writer
+            .write_packet(tags, serial, PacketWriteEndInfo::EndPage, 0)
+            .unwrap();
+        for frame in 0..frames {
+            let mut packet = vec![0xf8];
+            packet.extend((0..150u32).map(|i| (i * 31 + frame as u32 * 7) as u8));
+            let end = if frame + 1 == frames {
+                PacketWriteEndInfo::EndStream
+            } else {
+                PacketWriteEndInfo::NormalPacket
+            };
+            writer
+                .write_packet(packet, serial, end, 960 * (frame as u64 + 1))
+                .unwrap();
+        }
+        writer.into_inner()
+    }
+
+    fn media_bytes(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i * 131 % 251) as u8).collect()
+    }
+
+    fn assert_outbox_points_at_its_file(pool: &DbPool, identity_id: &str, len: usize) {
+        let rows = db::outbox_rows(pool, identity_id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(
+            rows[0].message.len() < 1024,
+            "the outbox holds a reference, not the {len}-byte file ({} bytes)",
+            rows[0].message.len()
+        );
+        assert!(LxmfManager::outbox_send_size(&rows[0]).unwrap() >= len);
+    }
+
+    fn assert_resumes_identically(mgr: LxmfManager, pool: &DbPool, id: [u8; 32], wire: &[u8]) {
+        let mut mgr = restarted(mgr, pool);
+        let mut results = Vec::new();
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert!(results.is_empty(), "{results:?}");
+        assert_eq!(mgr.router.pending_outbound.len(), 1);
+        assert_eq!(mgr.router.pending_outbound[0].message_id(), id);
+        assert_eq!(
+            mgr.router.pending_outbound[0].wire_bytes(),
+            wire,
+            "rebuilt from the stored file, byte for byte"
+        );
+    }
+
+    fn send_attachment(
+        mgr: &mut LxmfManager,
+        pool: &DbPool,
+        bytes: &[u8],
+        is_image: bool,
+        staged_path: Option<&Path>,
+    ) -> [u8; 32] {
+        let identity_id = mgr.identity_hash.clone();
+        let queued = mgr
+            .send_message_with_attachment_fields_preference_report(AttachmentMessageRequest {
+                dest_hash_hex: &"c1".repeat(16),
+                content: "see attached",
+                title: "",
+                file_name: if is_image { "photo.webp" } else { "notes.pdf" },
+                file_bytes: bytes,
+                staged_path,
+                is_image,
+                image_mime: if is_image { "image/webp" } else { "" },
+                db_pool: pool,
+                identity_id: &identity_id,
+                preference: DeliveryPreference::Direct,
+                renderer: None,
+                thread: "",
+            })
+            .unwrap();
+        hex::decode(queued.message_id).unwrap().try_into().unwrap()
+    }
+
+    #[test]
+    fn file_and_image_sends_resume_from_their_stored_files() {
+        for is_image in [false, true] {
+            let pool = test_pool();
+            let mut mgr = test_manager();
+            let bytes = media_bytes(48_000);
+            let id = send_attachment(&mut mgr, &pool, &bytes, is_image, None);
+            let wire = mgr.router.pending_outbound[0].wire_bytes().to_vec();
+            assert_outbox_points_at_its_file(&pool, &mgr.identity_hash.clone(), bytes.len());
+            assert_resumes_identically(mgr, &pool, id, &wire);
+        }
+    }
+
+    #[test]
+    fn a_staged_attachment_resumes_from_the_file_it_became() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let bytes = media_bytes(64_000);
+        let staged = mgr.data_dir.join("staged-photo");
+        std::fs::write(&staged, &bytes).unwrap();
+        let id = send_attachment(&mut mgr, &pool, &bytes, true, Some(&staged));
+        assert!(!staged.exists(), "adopted into the files folder");
+        let wire = mgr.router.pending_outbound[0].wire_bytes().to_vec();
+        assert_outbox_points_at_its_file(&pool, &mgr.identity_hash.clone(), bytes.len());
+        assert_resumes_identically(mgr, &pool, id, &wire);
+    }
+
+    #[cfg(feature = "lxst-voice")]
+    #[test]
+    fn a_voice_message_resumes_from_its_stored_clip() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let clip = long_ogg_opus_fixture(40);
+        assert!(clip.len() > 4096);
+        let identity_id = mgr.identity_hash.clone();
+        let queued = mgr
+            .send_audio_message_with_preference_report(AudioMessageRequest {
+                thread: "",
+                dest_hash_hex: &"c2".repeat(16),
+                content: "",
+                title: "",
+                audio_mode: lxmf_core::constants::AM_OPUS_OGG,
+                audio_bytes: &clip,
+                staged_path: None,
+                db_pool: &pool,
+                identity_id: &identity_id,
+                preference: DeliveryPreference::Direct,
+            })
+            .expect("voice message queued");
+        let id: [u8; 32] = hex::decode(queued.message_id).unwrap().try_into().unwrap();
+        let wire = mgr.router.pending_outbound[0].wire_bytes().to_vec();
+        assert_outbox_points_at_its_file(&pool, &identity_id, clip.len());
+        assert_resumes_identically(mgr, &pool, id, &wire);
+    }
+
+    #[test]
+    fn a_send_whose_file_is_gone_fails_instead_of_sending_another_message() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let bytes = media_bytes(20_000);
+        let id = send_attachment(&mut mgr, &pool, &bytes, false, None);
+        for entry in std::fs::read_dir(mgr.files_dir()).unwrap() {
+            std::fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        let mut mgr = restarted(mgr, &pool);
+        let mut results = Vec::new();
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert_eq!(results, [(hex::encode(id), "failed")]);
+        assert!(mgr.router.pending_outbound.is_empty());
     }
 }

@@ -31,6 +31,44 @@ impl LxmfManager {
         self.has_bounded_protocol_wait_at(msg_id, Instant::now())
     }
 
+    /// Whether anything still works on the message: a protocol wait, the
+    /// router's queue (its attempt budget ends it), a resumed send or a
+    /// failure held for a late proof. The watchdog ends only what this is not.
+    pub(crate) fn still_owned(&self, msg_id: &str) -> bool {
+        if self.has_bounded_protocol_wait(msg_id) {
+            return true;
+        }
+        let Some(hash) = hex::decode(msg_id)
+            .ok()
+            .and_then(|bytes| <[u8; 32]>::try_from(bytes.as_slice()).ok())
+        else {
+            return false;
+        };
+        self.router
+            .pending_outbound
+            .iter()
+            .any(|message| message.message_id() == hash)
+            || self.opportunistic_in_flight.contains_key(&hash)
+            || self.in_flight_propagation.contains_key(&hash)
+            || self.deferred_failures.contains(&hash)
+            || self.resumable.iter().any(|send| send.message_id == hash)
+            || self
+                .link_delivery
+                .as_ref()
+                .is_some_and(|delivery| delivery.message_timeout_window(hash).is_some())
+    }
+
+    /// Whether a packet already sent for the message can still be proven.
+    pub(super) fn has_live_proof(&self, hash: &[u8; 32]) -> bool {
+        let now = Instant::now();
+        self.opportunistic_proofs.get(hash).is_some_and(|owner| {
+            owner.attempts.iter().any(|attempt| {
+                now.saturating_duration_since(attempt.started) < attempt.lifetime
+                    && matches!(*attempt.status.borrow(), ReceiptUpdate::Sent)
+            })
+        })
+    }
+
     fn has_bounded_protocol_wait_at(&self, msg_id: &str, now: Instant) -> bool {
         let Ok(bytes) = hex::decode(msg_id) else {
             return false;
@@ -247,6 +285,19 @@ impl LxmfManager {
         }
         self.opportunistic_proofs
             .retain(|_, owner| !owner.attempts.is_empty());
+        // A held failure stands once no earlier packet can be proven.
+        let settled = self
+            .deferred_failures
+            .iter()
+            .filter(|hash| !self.has_live_proof(hash))
+            .copied()
+            .collect::<Vec<_>>();
+        for hash in settled {
+            self.deferred_failures.remove(&hash);
+            if !self.ephemeral_outbound.remove(&hash) {
+                results.push((hex::encode(hash), "failed"));
+            }
+        }
     }
 }
 
@@ -504,30 +555,58 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_and_retried_same_message_cannot_accept_old_attempt_proof() {
+    fn a_cancelled_messages_sent_copy_still_proves_delivery() {
         let (mut mgr, hash, mut rx) = packet();
-        let old_proof = accept(&mut rx);
-        let mut message = mgr.opportunistic_proofs[&hash].message.clone();
+        let proof = accept(&mut rx);
+        mgr.poll_opportunistic_proofs(&mut Vec::new());
         assert!(mgr.cancel_outbound_message(&hex::encode(hash)));
-        message.next_delivery_attempt = 0.0;
-        message.delivery_attempts = 0;
-        mgr.execute_encrypted_actions(vec![OutboundAction::DeliverOpportunistic {
-            dest_hash: message.destination_hash(),
-            message,
-        }]);
-        let new_proof = accept(&mut rx);
-        old_proof.send_replace(ReceiptUpdate::Delivered {
+        assert!(mgr.opportunistic_in_flight.is_empty(), "no more retries");
+        assert!(mgr.router.pending_outbound.is_empty());
+        proof.send_replace(ReceiptUpdate::Delivered {
             rtt: Duration::from_secs(1),
         });
         let mut updates = Vec::new();
         mgr.poll_opportunistic_proofs(&mut updates);
+        assert_eq!(updates, vec![(hex::encode(hash), "delivered")]);
+    }
+
+    #[test]
+    fn a_failure_waits_for_the_last_receipt() {
+        let (mut mgr, hash, mut rx) = packet();
+        let proof = accept(&mut rx);
+        mgr.poll_opportunistic_proofs(&mut Vec::new());
+        let mut updates = Vec::new();
+        mgr.push_failed_outbound_state(Some(hash), &mut updates);
+        assert!(
+            updates.is_empty(),
+            "not undelivered while the packet can be proven"
+        );
+        assert!(
+            mgr.still_owned(&hex::encode(hash)),
+            "the watchdog leaves it alone"
+        );
+        mgr.poll_opportunistic_proofs(&mut updates);
         assert!(updates.is_empty());
-        assert!(mgr.opportunistic_in_flight.contains_key(&hash));
-        new_proof.send_replace(ReceiptUpdate::Delivered {
-            rtt: Duration::from_secs(1),
+        proof.send_replace(ReceiptUpdate::TimedOut);
+        mgr.poll_opportunistic_proofs(&mut updates);
+        assert_eq!(updates, vec![(hex::encode(hash), "failed")]);
+        assert!(mgr.deferred_failures.is_empty());
+    }
+
+    #[test]
+    fn a_proof_after_the_attempt_budget_is_delivered_not_failed() {
+        let (mut mgr, hash, mut rx) = packet();
+        let proof = accept(&mut rx);
+        mgr.poll_opportunistic_proofs(&mut Vec::new());
+        let mut updates = Vec::new();
+        mgr.push_failed_outbound_state(Some(hash), &mut updates);
+        proof.send_replace(ReceiptUpdate::Delivered {
+            rtt: Duration::from_secs(2),
         });
         mgr.poll_opportunistic_proofs(&mut updates);
         assert_eq!(updates, vec![(hex::encode(hash), "delivered")]);
+        mgr.poll_opportunistic_proofs(&mut updates);
+        assert_eq!(updates.len(), 1, "and never failed afterwards");
     }
 
     #[test]

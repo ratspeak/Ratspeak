@@ -50,6 +50,8 @@ function assertDelivered(method) {
     assert(html.includes('msg-state-delivered'), method + ' proof must use the confirmed treatment');
     assert(html.includes('aria-label="Delivered"'), method + ' proof must be accessible as Delivered');
     assert(!html.includes('msg-state-sent'), method + ' proof must not be collapsed back to Sent');
+    assert(html.includes('<polyline points="1 8 4 11 9 4"/><polyline points="5 8 8 11 13 4"/>'),
+        method + ' proof must show two checks');
 }
 
 ['opportunistic', 'direct'].forEach(assertSent);
@@ -62,7 +64,10 @@ assert(propagated.includes('aria-label="Stored in Offline Inbox"'));
 
 var failed = icon('failed', 'opportunistic');
 assert(failed.includes('msg-state-failed'));
-assert(failed.includes('aria-label="Failed"'));
+assert(failed.includes('aria-label="Not delivered"') && failed.includes('title="Not delivered"'),
+    'the bubble shows only the icon; its name is the hover title');
+assert(icon('timeout', 'direct').includes('aria-label="Not delivered"'), 'a timeout is Not delivered');
+assert(!icon('read', 'direct').includes('msg-state-read'), 'no outbound message shows a Read state');
 
 var stopped = icon('cancelled', 'direct');
 assert(stopped.includes('aria-label="Sending cancelled"'));
@@ -104,9 +109,32 @@ assert(source.includes("showToast(ok ? 'Paper link copied' : 'Could not copy'"))
 var css = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '09-messaging.css'), 'utf8');
 assert(/button\.msg-paper-state::after\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px;/s.test(css),
     'the paper chip keeps a 44px hit target');
-assert(/\.msg-state-sent svg\s*\{[^}]*var\(--text-muted\)/s.test(css),
-    'sent checks must use the muted foreground');
-assert(/\.msg-state-delivered svg\s*\{[^}]*var\(--accent\)/s.test(css),
-    'proof-confirmed checks must use the accent foreground');
+assert(/\.msg-state-sent svg,\s*\.msg-state-delivered svg\s*\{[^}]*var\(--text-muted\)/s.test(css),
+    'Sent and Delivered share one colour; the glyph tells them apart');
+
+// Retry: in the message menu only, for messages with an outbox entry.
+['_isCanonicalLxmfMsgId', '_messageCanRetry'].forEach(function(name) {
+    vm.runInContext(functionSource(name), context);
+});
+var id = 'a'.repeat(64);
+['failed', 'timeout', 'cancelled'].forEach(function(state) {
+    assert(context._messageCanRetry({ id: id, direction: 'outbound', state: state }), state + ' can retry');
+});
+['sending', 'sent', 'delivered', 'propagated', 'rejected'].forEach(function(state) {
+    assert(!context._messageCanRetry({ id: id, direction: 'outbound', state: state }), state + ' has no retry');
+});
+assert(!context._messageCanRetry({ id: id, direction: 'outbound', state: 'failed', retryable: false }),
+    'a row from before the outbox has nothing to send again');
+assert(!context._messageCanRetry({ id: 'out_1', direction: 'outbound', state: 'cancelled' }),
+    'a send cancelled before it was queued has no stored message');
+assert(!context._messageCanRetry({ id: id, direction: 'inbound', state: 'failed' }));
+assert(source.includes("retryBtn.innerHTML = _messageActionIcon('retry') + '<span>Retry</span>';"));
+assert(source.includes("{ label: 'Auto', icon: LXMF_SEND_METHOD_ICONS.auto,"),
+    'Retry offers the send methods, Auto first');
+
+// A proof outranks an earlier outcome; Not delivered elsewhere is one toast.
+assert(source.includes("var proofOutranks = resolvedState === 'delivered' &&"));
+assert(source.includes("showToast('Message to ' + name + ' not delivered', 'toast-action', 4000,"));
+assert(!source.includes('Message timed out. The recipient may be unreachable.'));
 
 console.log('LXMF delivery icon tests passed');

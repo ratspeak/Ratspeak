@@ -8080,10 +8080,9 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     );
     assert!(lxmf.contains("function _restoreLxmfComposerKeyboard"));
     assert!(lxmf.contains("window.RS.closeMessageActionMenu"));
-    assert!(lxmf.contains("var ICON_SEND_OPPORTUNISTIC"));
-    assert!(lxmf.contains("var ICON_SEND_DIRECT"));
-    assert!(lxmf.contains("label: 'Opportunistic', icon: ICON_SEND_OPPORTUNISTIC"));
-    assert!(lxmf.contains("label: 'Direct', icon: ICON_SEND_DIRECT"));
+    assert!(lxmf.contains("var LXMF_SEND_METHOD_ICONS = {"));
+    assert!(lxmf.contains("label: 'Opportunistic', icon: LXMF_SEND_METHOD_ICONS.opportunistic"));
+    assert!(lxmf.contains("label: 'Direct', icon: LXMF_SEND_METHOD_ICONS.direct"));
     assert!(!lxmf.contains("label: 'Direct', icon: ICON_ROUTE"));
     assert!(lxmf.contains("function _copyToClipboard(text)"));
     assert!(lxmf.contains("function _messageMediaContextAction(msgData)"));

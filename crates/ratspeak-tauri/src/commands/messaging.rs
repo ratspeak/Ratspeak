@@ -383,6 +383,12 @@ pub struct CancelLxmfMessageArgs {
     pub msg_id: String,
 }
 
+#[derive(Deserialize)]
+pub struct RetryLxmfMessageArgs {
+    pub msg_id: String,
+    pub delivery_method: Option<String>,
+}
+
 /// Paper is not a network method: it is created by `create_paper_message`,
 /// never sent, so a live send must not fall back to Auto for it.
 pub(crate) fn parse_delivery_preference(value: Option<&str>) -> AppResult<DeliveryPreference> {
@@ -2414,6 +2420,76 @@ pub async fn cancel_lxmf_message(
         // Stopping our remaining owners and retries cannot recall bytes already
         // admitted to Reticulum or a device interface.
         "may_have_left_device": true,
+    }))
+}
+
+/// Sends a Not delivered or Cancelled message again, as the identical
+/// message, by the chosen method. A recipient that already has it discards
+/// the copy and still confirms it.
+#[tauri::command]
+pub async fn retry_lxmf_message(
+    state: State<'_, Arc<AppState>>,
+    args: RetryLxmfMessageArgs,
+) -> AppResult<Value> {
+    let msg_id = sanitize_text(&args.msg_id, 128).to_ascii_lowercase();
+    if !validate_hex(&msg_id, 64, 64) {
+        return Err(AppError::bad_request("Invalid message ID"));
+    }
+    let preference = parse_delivery_preference(args.delivery_method.as_deref())?;
+    let identity_id = active_identity_id(&state);
+    let (msg_for_db, identity_for_db) = (msg_id.clone(), identity_id.clone());
+    let row = db::spawn_db(state.db.clone(), move |p| {
+        db::retryable_outbox_row(&p, &identity_for_db, &msg_for_db)
+    })
+    .await
+    .map_err(|_| AppError::internal("retry_lxmf_message db task panicked"))?
+    .map_err(AppError::internal)?
+    .ok_or_else(|| AppError::conflict("This message can't be sent again."))?;
+
+    let lease = if row.profile == DeliveryProfile::Attachment.as_str() {
+        Some(
+            state
+                .reserve_attachment_transfer(
+                    LxmfManager::outbox_send_size(&row)
+                        .ok_or_else(|| AppError::conflict("This message can't be sent again."))?,
+                )
+                .map_err(|_| {
+                    AppError::new(
+                        "attachment_busy",
+                        "Another large attachment is being sent. Try again shortly.",
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
+
+    let st = Arc::clone(&state);
+    let (identity, row_for_retry) = (identity_id.clone(), row);
+    let queued = tokio::task::spawn_blocking(move || {
+        let mut lxmf = st.lxmf.lock().map_err(|_| "Messaging is unavailable.")?;
+        let mgr = lxmf
+            .as_mut()
+            .ok_or("Messaging is starting. Try again shortly.")?;
+        mgr.retry_outbound(&st.db, &identity, &row_for_retry, preference)
+    })
+    .await
+    .map_err(|_| AppError::internal("retry_lxmf_message task panicked"))?;
+    let method = queued.map_err(AppError::conflict)?;
+
+    if let Some(lease) = lease {
+        state.hold_attachment_delivery_lease(msg_id.clone(), lease);
+    }
+    if let Ok(mut times) = state.message_send_times.lock() {
+        times.remove(&msg_id);
+    }
+    let method = ratspeak_runtime::lxmf::delivery_method_name(method);
+    broadcast_conversations(Arc::clone(&state));
+    state.lxmf_notify.notify_one();
+    Ok(json!({
+        "ok": true,
+        "msg_id": msg_id,
+        "method": method,
     }))
 }
 
