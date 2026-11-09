@@ -25,7 +25,7 @@ const DEFAULT_MGMT_KEY: [u8; 24] = [
     0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
 ];
 pub const NOT_DETECTED: &str =
-    "YubiKey not detected. Please make sure it's a YubiKey 5+ running the latest firmware.";
+    "No YubiKey found. Connect a YubiKey 5 with firmware 5.7.0 or newer.";
 
 #[derive(serde::Serialize)]
 pub struct HwDetect {
@@ -80,6 +80,19 @@ fn firmware_ok(fw: Option<&str>) -> bool {
     maj > 5 || (maj == 5 && min >= 7)
 }
 
+/// Why a detected key cannot hold an identity; YubiKey firmware is not field-upgradeable.
+fn unsupported_firmware(fw: Option<&str>) -> String {
+    match fw {
+        Some(fw) => format!(
+            "This YubiKey has firmware {fw}. Hardware identities need firmware 5.7.0 or newer, \
+             and YubiKey firmware can't be updated."
+        ),
+        None => "Ratspeak couldn't read this key's firmware. Hardware identities need a \
+                 YubiKey 5 with firmware 5.7.0 or newer."
+            .to_string(),
+    }
+}
+
 pub fn detect(data_dir: &Path) -> HwDetect {
     let device = rns_ratkey::detect::detect_devices()
         .ok()
@@ -87,6 +100,7 @@ pub fn detect(data_dir: &Path) -> HwDetect {
     match device {
         Some(d) => {
             let ok = firmware_ok(d.firmware.as_deref());
+            let error = (!ok).then(|| unsupported_firmware(d.firmware.as_deref()));
             let existing = d
                 .serial
                 .and_then(|s| find_identity_by_serial(data_dir, s))
@@ -103,7 +117,7 @@ pub fn detect(data_dir: &Path) -> HwDetect {
                 serial: d.serial,
                 firmware: d.firmware,
                 firmware_ok: ok,
-                error: (!ok).then(|| NOT_DETECTED.to_string()),
+                error,
                 existing,
             }
         }
@@ -546,6 +560,18 @@ fn register(
 #[cfg(test)]
 mod tests {
     use super::verify_expected_serial;
+
+    #[test]
+    fn old_firmware_is_reported_as_detected_but_unsupported() {
+        assert!(super::firmware_ok(Some("5.7.0")));
+        assert!(!super::firmware_ok(Some("5.2.4")));
+        assert_eq!(
+            super::unsupported_firmware(Some("5.2.4")),
+            "This YubiKey has firmware 5.2.4. Hardware identities need firmware 5.7.0 or newer, \
+             and YubiKey firmware can't be updated."
+        );
+        assert!(super::unsupported_firmware(None).contains("couldn't read this key's firmware"));
+    }
 
     #[test]
     fn provisioned_mnemonic_keeps_its_optional_json_shape() {

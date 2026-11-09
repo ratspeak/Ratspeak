@@ -2020,7 +2020,7 @@ RS.listen('identity_switched', function(data) {
 
 var HW_BADGE_ICON = '<svg class="identity-hardware-badge-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M2.6 17.4A2 2 0 0 0 2 18.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8A6.5 6.5 0 1 0 9.4 10.6z"/><circle cx="16.5" cy="7.5" r="1.5"/></svg>';
 
-var HW_DETECT_ERROR_COPY = "YubiKey not detected. Please make sure it's a YubiKey 5+ running the latest firmware.";
+var HW_DETECT_ERROR_COPY = 'No YubiKey found. Connect a YubiKey 5 with firmware 5.7.0 or newer.';
 
 // Wizard state. `mnemonic` is held here only — never persisted, logged, or
 // echoed to storage. Cleared on close/finish.

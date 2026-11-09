@@ -8,6 +8,7 @@ changes that materially affect how an artifact is reproduced.
 ### Fixed and improved
 
 - Ratspeak fits small screens down to 640×480: narrow windows zoom the desktop layout out, the sidebar becomes an icon rail, and short windows no longer cut off the sidebar.
+- The hardware key wizard says when a YubiKey is found but its firmware is older than 5.7.0, instead of reporting that no key was found.
 
 ## [1.0.43] - 2026-11-09
 
