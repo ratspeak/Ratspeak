@@ -53,6 +53,7 @@ use crate::helpers::sanitize_text;
 use crate::state::{
     ActivityRequestFence, AppState, InterfaceLifecycleOperationLease, RNodeLifecycleOperationLease,
 };
+use crate::window_prefs::{CLOSE_BUTTON_SETTING, CloseButtonAction};
 
 const DEFAULT_PEERS_SORT: &str = "last_seen";
 const DEFAULT_THEME_FAMILY: &str = "nord";
@@ -1152,6 +1153,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         theme_mode,
         lxmf_limit_1mb,
         public_channel_consent_version,
+        close_button_action,
     ) = db::spawn_db(state.db.clone(), |p| {
         let hw_timeout = db::get_setting(&p, "hardware_session_timeout")
             .and_then(|v| v.parse::<u64>().ok())
@@ -1181,6 +1183,8 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
                 .filter(|value| db::public_channel_consent_is_current(Some(value)))
                 .and_then(|value| value.parse::<u16>().ok())
                 .unwrap_or(0);
+        let close_button_action =
+            CloseButtonAction::from_setting(db::get_setting(&p, CLOSE_BUTTON_SETTING).as_deref());
         (
             hw_timeout,
             developer_mode,
@@ -1194,6 +1198,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
             theme_mode,
             lxmf_limit_1mb,
             public_channel_consent_version,
+            close_button_action,
         )
     })
     .await
@@ -1210,6 +1215,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         DEFAULT_THEME_MODE.to_string(),
         true,
         0,
+        CloseButtonAction::Ask,
     ));
     Ok(json!({
         "auto_announce_interval": *state.announce_interval_rx.borrow(),
@@ -1229,6 +1235,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         "lxmf_limit_1mb": lxmf_limit_1mb,
         "public_channel_consent_version": public_channel_consent_version,
         "public_channel_consent_required_version": db::PUBLIC_CHANNEL_CONSENT_VERSION,
+        "close_button_action": close_button_action.as_setting(),
     }))
 }
 
@@ -1794,6 +1801,42 @@ pub async fn set_paper_messages_enabled(
         json!({ "paper_messages_enabled": enabled }),
     );
     Ok(json!({ "enabled": enabled }))
+}
+
+/// Stored on every desktop; only Windows reads it when the window closes.
+#[tauri::command]
+pub async fn set_close_button_action(
+    state: State<'_, Arc<AppState>>,
+    mode: String,
+) -> AppResult<Value> {
+    let action = CloseButtonAction::parse(&mode)
+        .ok_or_else(|| AppError::bad_request("close button action must be ask, tray, or quit"))?;
+    let state = Arc::clone(&state);
+    tokio::task::spawn_blocking(move || remember_close_button_action(&state, action))
+        .await
+        .map_err(|_| AppError::internal("set_close_button_action task panicked"))?
+        .map_err(|error| {
+            AppError::database_unavailable(format!("Failed to save close button setting: {error}"))
+        })?;
+    Ok(json!({ "close_button_action": action.as_setting() }))
+}
+
+/// Blocking read of the stored close-button choice.
+pub fn stored_close_button_action(state: &AppState) -> CloseButtonAction {
+    CloseButtonAction::from_setting(db::get_setting(&state.db, CLOSE_BUTTON_SETTING).as_deref())
+}
+
+/// Blocking write of the close-button choice; every window adopts it.
+pub fn remember_close_button_action(
+    state: &AppState,
+    action: CloseButtonAction,
+) -> Result<(), String> {
+    db::try_set_setting(&state.db, CLOSE_BUTTON_SETTING, action.as_setting())?;
+    state.emit_to_all(
+        "app_settings_updated",
+        json!({ "close_button_action": action.as_setting() }),
+    );
+    Ok(())
 }
 
 #[tauri::command]

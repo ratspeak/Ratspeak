@@ -1,4 +1,4 @@
-//! Desktop window decoration preference resolution.
+//! Desktop window preferences: Linux decorations and the Windows close button.
 //!
 //! GTK3 on Wayland always installs a client-side header bar (tao's `WlHeader`),
 //! which tiling compositors render as a second title bar below their own.
@@ -27,6 +27,40 @@ impl DecorationsPref {
             Self::Auto => "auto",
             Self::On => "on",
             Self::Off => "off",
+        }
+    }
+}
+
+pub const CLOSE_BUTTON_SETTING: &str = "close_button_action";
+
+/// What the main window's close button does on Windows. `Ask` shows the
+/// native prompt; Quit from the tray menu always quits.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CloseButtonAction {
+    Ask,
+    Tray,
+    Quit,
+}
+
+impl CloseButtonAction {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "ask" => Some(Self::Ask),
+            "tray" => Some(Self::Tray),
+            "quit" => Some(Self::Quit),
+            _ => None,
+        }
+    }
+
+    pub fn from_setting(value: Option<&str>) -> Self {
+        value.and_then(Self::parse).unwrap_or(Self::Ask)
+    }
+
+    pub fn as_setting(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Tray => "tray",
+            Self::Quit => "quit",
         }
     }
 }
@@ -120,6 +154,30 @@ mod tests {
             DecorationsPref::from_setting(Some("garbage")),
             DecorationsPref::Auto
         );
+    }
+
+    #[test]
+    fn close_button_action_defaults_to_ask_and_round_trips() {
+        assert_eq!(
+            CloseButtonAction::from_setting(None),
+            CloseButtonAction::Ask
+        );
+        assert_eq!(
+            CloseButtonAction::from_setting(Some("garbage")),
+            CloseButtonAction::Ask
+        );
+        assert_eq!(
+            CloseButtonAction::parse(" TRAY "),
+            Some(CloseButtonAction::Tray)
+        );
+        assert_eq!(CloseButtonAction::parse("exit"), None);
+        for action in [
+            CloseButtonAction::Ask,
+            CloseButtonAction::Tray,
+            CloseButtonAction::Quit,
+        ] {
+            assert_eq!(CloseButtonAction::parse(action.as_setting()), Some(action));
+        }
     }
 
     #[test]

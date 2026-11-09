@@ -4360,6 +4360,7 @@ dependencies = [
  "tracing-oslog",
  "tracing-subscriber",
  "url",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

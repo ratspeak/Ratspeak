@@ -9,6 +9,7 @@ function openSettings() {
     initActivityIdentityProtectionToggle();
     initDeveloperModeToggle();
     initWindowDecorationsToggle();
+    initCloseButtonToggle();
     syncSettingsIdentityActions();
     renderSettingsVersion();
     // Re-seal every System reset subsection on each visit. The collapse IS the
@@ -474,6 +475,55 @@ function initWindowDecorationsToggle() {
         var el = document.getElementById('settings-window-decorations-' + mode);
         if (el) el.addEventListener('change', function() {
             if (el.checked) setWindowDecorationsMode(mode);
+        });
+    });
+}
+
+var _settingsCloseButtonBound = false;
+var _settingsCloseButtonAction = 'ask';
+var _CLOSE_BUTTON_ACTIONS = ['ask', 'tray', 'quit'];
+
+// Windows only: the tray menu always quits, so only the close button needs a choice.
+function closeButtonRowApplies() {
+    return !!window.__RATSPEAK_DESKTOP__ && /windows/i.test(navigator.userAgent);
+}
+
+function syncCloseButtonRadioState() {
+    _CLOSE_BUTTON_ACTIONS.forEach(function(action) {
+        var el = document.getElementById('settings-close-button-' + action);
+        if (el) el.checked = (_settingsCloseButtonAction === action);
+    });
+}
+
+function setCloseButtonAction(action) {
+    if (_CLOSE_BUTTON_ACTIONS.indexOf(action) === -1) return;
+    var previous = _settingsCloseButtonAction;
+    _settingsCloseButtonAction = action;
+    syncCloseButtonRadioState();
+    RS.invoke('set_close_button_action', { mode: action }).catch(function() {
+        _settingsCloseButtonAction = previous;
+        syncCloseButtonRadioState();
+        showToast('Could not update the close button', 'toast-error', 4000);
+    });
+}
+
+function adoptCloseButtonActionFromBackend(action) {
+    if (_CLOSE_BUTTON_ACTIONS.indexOf(action) === -1) action = 'ask';
+    _settingsCloseButtonAction = action;
+    syncCloseButtonRadioState();
+}
+
+function initCloseButtonToggle() {
+    var row = document.getElementById('settings-close-button-row');
+    if (!row || !closeButtonRowApplies()) return;
+    row.style.display = '';
+    syncCloseButtonRadioState();
+    if (_settingsCloseButtonBound) return;
+    _settingsCloseButtonBound = true;
+    _CLOSE_BUTTON_ACTIONS.forEach(function(action) {
+        var el = document.getElementById('settings-close-button-' + action);
+        if (el) el.addEventListener('change', function() {
+            if (el.checked) setCloseButtonAction(action);
         });
     });
 }
@@ -1940,6 +1990,9 @@ function applyAppSettingsPayload(data) {
     }
     if (data.window_decorations !== undefined) {
         adoptWindowDecorationsFromBackend(data.window_decorations);
+    }
+    if (data.close_button_action !== undefined) {
+        adoptCloseButtonActionFromBackend(data.close_button_action);
     }
     if (data.channel_hosting_enabled !== undefined) {
         adoptChannelHostingFromBackend(data.channel_hosting_enabled);

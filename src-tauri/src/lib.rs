@@ -3,6 +3,8 @@ mod android_lifecycle;
 mod channel_deep_link;
 #[cfg(target_os = "linux")]
 mod clipboard_image;
+#[cfg(target_os = "windows")]
+mod close_prompt;
 #[cfg(any(target_os = "android", target_os = "ios", test))]
 #[cfg_attr(
     all(test, not(any(target_os = "android", target_os = "ios"))),
@@ -1282,6 +1284,7 @@ pub fn run() {
                 ratspeak_tauri::commands::interfaces::set_activity_identity_protection,
                 ratspeak_tauri::commands::interfaces::set_hide_known_spam_peers,
                 ratspeak_tauri::commands::interfaces::set_paper_messages_enabled,
+                ratspeak_tauri::commands::interfaces::set_close_button_action,
                 ratspeak_tauri::commands::interfaces::set_lxmf_limit_1mb,
                 ratspeak_tauri::commands::interfaces::accept_public_channel_consent,
                 ratspeak_tauri::commands::interfaces::set_appearance,
@@ -1692,10 +1695,7 @@ pub fn run() {
                     .is_none() =>
             {
                 api.prevent_close();
-                set_desktop_foreground(app_handle, false);
-                if let Some(window) = app_handle.get_webview_window("main") {
-                    let _ = window.hide();
-                }
+                close_main_window(app_handle);
             }
             tauri::RunEvent::ExitRequested { .. } => {
                 shutdown_desktop_core_for_exit(app_handle);
@@ -1725,6 +1725,78 @@ fn close_hides_main_window(_app: &tauri::AppHandle) -> bool {
 ))]
 fn close_hides_main_window(app: &tauri::AppHandle) -> bool {
     app.try_state::<DesktopTray>().is_some()
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn hide_main_window(app: &tauri::AppHandle) {
+    set_desktop_foreground(app, false);
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.hide();
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_os = "ios", target_os = "windows")))]
+fn close_main_window(app: &tauri::AppHandle) {
+    hide_main_window(app);
+}
+
+/// Windows follows the stored close-button choice and asks when there is none.
+#[cfg(target_os = "windows")]
+fn close_main_window(app: &tauri::AppHandle) {
+    use ratspeak_tauri::commands::interfaces::{
+        remember_close_button_action, stored_close_button_action,
+    };
+    use ratspeak_tauri::window_prefs::CloseButtonAction;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    static PROMPT_OPEN: AtomicBool = AtomicBool::new(false);
+    let Some(state) = app.try_state::<std::sync::Arc<ratspeak_tauri::state::AppState>>() else {
+        hide_main_window(app);
+        return;
+    };
+    if PROMPT_OPEN.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let state = std::sync::Arc::clone(state.inner());
+    let parent = app
+        .get_webview_window("main")
+        .and_then(|window| window.hwnd().ok())
+        .map_or(0, |hwnd| hwnd.0 as isize);
+    let handle = app.clone();
+    // The settings read and the modal prompt both block; keep them off the event loop.
+    let spawned = std::thread::Builder::new()
+        .name("close-prompt".into())
+        .spawn(move || {
+            let action = match stored_close_button_action(&state) {
+                CloseButtonAction::Ask => match close_prompt::ask(parent) {
+                    (close_prompt::Choice::Cancel, _) => None,
+                    (choice, remember) => {
+                        let action = if choice == close_prompt::Choice::Quit {
+                            CloseButtonAction::Quit
+                        } else {
+                            CloseButtonAction::Tray
+                        };
+                        if remember {
+                            if let Err(error) = remember_close_button_action(&state, action) {
+                                tracing::warn!(%error, "close button choice not saved");
+                            }
+                        }
+                        Some(action)
+                    }
+                },
+                stored => Some(stored),
+            };
+            PROMPT_OPEN.store(false, Ordering::Release);
+            match action {
+                Some(CloseButtonAction::Quit) => handle.exit(0),
+                Some(CloseButtonAction::Tray | CloseButtonAction::Ask) => hide_main_window(&handle),
+                None => {}
+            }
+        });
+    if spawned.is_err() {
+        PROMPT_OPEN.store(false, Ordering::Release);
+        hide_main_window(app);
+    }
 }
 
 // libappindicator-sys panics, rather than erroring, when none of these load.
