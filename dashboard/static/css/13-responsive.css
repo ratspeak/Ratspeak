@@ -2986,13 +2986,44 @@
     }
 }
 
-@media (orientation: landscape) and (max-height: 500px) and (min-width: 769px) {
+/* The full sidebar needs ~625px; short windows tighten it in steps, then scroll. */
+@media (min-width: 769px) {
+    .sidebar {
+        overflow-x: hidden;
+        overflow-y: auto;
+        scrollbar-width: none;
+    }
+    .sidebar::-webkit-scrollbar {
+        display: none;
+    }
+}
+
+@media (max-height: 640px) and (min-width: 769px) {
     .sidebar {
         padding: var(--space-4) 0;
+    }
+    .nav-item {
+        min-height: 38px;
+    }
+}
+
+@media (max-height: 560px) and (min-width: 769px) {
+    .sidebar {
         gap: var(--space-1);
     }
     .nav-item {
-        height: 36px;
+        min-height: 34px;
+    }
+    .sidebar-brand,
+    .sidebar-divider {
+        display: none;
+    }
+}
+
+/* nav.js forces the icon rail here, so its toggle would do nothing. */
+@media (min-width: 769px) and (max-width: 879px) {
+    .sidebar-collapse-btn {
+        display: none;
     }
 }
 

@@ -731,16 +731,28 @@ function initSidebarCollapse() {
     var sidebar = document.getElementById('sidebar');
     if (!btn || !sidebar) return;
 
-    var collapsed = false;
-    try { collapsed = localStorage.getItem('rs-sidebar-collapsed') === '1'; } catch(e) {}
-    if (collapsed) sidebar.classList.add('collapsed');
+    // Narrow desktop windows, including small screens the shell zooms out, use the icon rail.
+    var narrow = window.matchMedia
+        ? window.matchMedia('(min-width: ' + (RS.config.MOBILE_BREAKPOINT + 1) + 'px) and (max-width: 879px)')
+        : null;
 
-    btn.addEventListener('click', function() {
-        sidebar.classList.toggle('collapsed');
-        var isCollapsed = sidebar.classList.contains('collapsed');
-        try { localStorage.setItem('rs-sidebar-collapsed', isCollapsed ? '1' : '0'); } catch(e) {}
+    function stored() {
+        try { return localStorage.getItem('rs-sidebar-collapsed') === '1'; } catch(e) { return false; }
+    }
+
+    function apply() {
+        var isCollapsed = stored() || !!(narrow && narrow.matches);
+        sidebar.classList.toggle('collapsed', isCollapsed);
         var icon = btn.querySelector('.nav-icon');
         if (icon) icon.style.transform = isCollapsed ? 'rotate(180deg)' : '';
+    }
+
+    apply();
+    if (narrow) narrow.addEventListener('change', apply);
+    btn.addEventListener('click', function() {
+        var next = !sidebar.classList.contains('collapsed');
+        try { localStorage.setItem('rs-sidebar-collapsed', next ? '1' : '0'); } catch(e) {}
+        apply();
     });
 }
 

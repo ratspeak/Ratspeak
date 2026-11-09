@@ -1507,7 +1507,8 @@ pub fn run() {
             let window = window
                 .title("Ratspeak")
                 .inner_size(1200.0, 800.0)
-                .min_inner_size(800.0, 600.0)
+                // Fits a 640×480 screen with its panel and title bar (issue 73).
+                .min_inner_size(600.0, 360.0)
                 .disable_drag_drop_handler()
                 .devtools(diagnostics_enabled() || developer_mode);
 
@@ -1561,6 +1562,11 @@ pub fn run() {
             });
 
             let _window = window.build()?;
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                maximize_if_larger_than_screen(&_window);
+                fit_desktop_layout(app.handle());
+            }
             channel_deep_link::install(app);
             #[cfg(target_os = "android")]
             text_share::install(app.handle());
@@ -1697,6 +1703,12 @@ pub fn run() {
                 api.prevent_close();
                 close_main_window(app_handle);
             }
+            tauri::RunEvent::WindowEvent {
+                label,
+                event:
+                    tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. },
+                ..
+            } if label == "main" => fit_desktop_layout(app_handle),
             tauri::RunEvent::ExitRequested { .. } => {
                 shutdown_desktop_core_for_exit(app_handle);
             }
@@ -1725,6 +1737,42 @@ fn close_hides_main_window(_app: &tauri::AppHandle) -> bool {
 ))]
 fn close_hides_main_window(app: &tauri::AppHandle) -> bool {
     app.try_state::<DesktopTray>().is_some()
+}
+
+/// The 1200×800 first window would overflow small screens; fill the work area instead.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn maximize_if_larger_than_screen(window: &tauri::WebviewWindow) {
+    let (Ok(Some(monitor)), Ok(size)) = (window.current_monitor(), window.outer_size()) else {
+        return;
+    };
+    let area = monitor.work_area().size;
+    if size.width > area.width || size.height > area.height {
+        let _ = window.maximize();
+    }
+}
+
+/// Narrower windows zoom the desktop layout out instead of falling into the phone
+/// layout, which drops navigation on short screens (issue 73). 769 px is the
+/// dashboard's desktop breakpoint.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn fit_desktop_layout(app: &tauri::AppHandle) {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static ZOOM_PERMILLE: AtomicU32 = AtomicU32::new(1000);
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let (Ok(size), Ok(scale)) = (window.inner_size(), window.scale_factor()) else {
+        return;
+    };
+    let width = size.to_logical::<f64>(scale).width;
+    if width < 1.0 {
+        return; // minimized
+    }
+    // Floor keeps the zoomed CSS width at or above the breakpoint.
+    let permille = ((width / 769.0).min(1.0) * 1000.0).floor() as u32;
+    if ZOOM_PERMILLE.swap(permille, Ordering::Relaxed) != permille {
+        let _ = window.set_zoom(f64::from(permille) / 1000.0);
+    }
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
