@@ -3457,6 +3457,7 @@ async fn connect_to_hub(input: ConnectToHubInput) -> Result<ConnectedSession, Co
             identify: true,
             track_phy_stats: false,
             proof_strategy: rns_identity::destination::ProofStrategy::ProveAll,
+            resource_dir: None,
         },
     )
     .await
