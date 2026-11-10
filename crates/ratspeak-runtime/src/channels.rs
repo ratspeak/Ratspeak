@@ -3892,6 +3892,7 @@ fn link_connect_error(error: LinkSessionError) -> ConnectAttemptError {
         | LinkSessionError::RequestRequiresResource { .. }
         | LinkSessionError::RequestResourceFailed(_)
         | LinkSessionError::ResponseRejected { .. }
+        | LinkSessionError::StampFailure(_)
         | LinkSessionError::TooManyPendingRequests => {
             activity::ChannelSessionFailureReason::SendFailed
         }
@@ -10045,10 +10046,23 @@ mod tests {
         rx: &mut mpsc::Receiver<TransportMessage>,
         duration: Duration,
     ) -> TransportMessage {
-        tokio::time::timeout(duration, rx.recv())
-            .await
-            .expect("transport message timed out")
-            .expect("transport channel closed")
+        loop {
+            let message = tokio::time::timeout(duration, rx.recv())
+                .await
+                .expect("transport message timed out")
+                .expect("transport channel closed");
+            // The test transport knows no announced link cost.
+            if let TransportMessage::Rpc {
+                query: rns_transport::messages::TransportQuery::RecallLinkCost { .. },
+                response_tx,
+            } = message
+            {
+                let _ = response_tx
+                    .send(rns_transport::messages::TransportQueryResponse::FloatResult(None));
+                continue;
+            }
+            return message;
+        }
     }
 
     async fn next_outbound(rx: &mut mpsc::Receiver<TransportMessage>) -> OutboundRequest {

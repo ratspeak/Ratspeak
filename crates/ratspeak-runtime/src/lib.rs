@@ -9,6 +9,7 @@
 pub mod activity;
 pub mod announce;
 pub mod announce_handlers;
+mod announce_stamps;
 pub mod blackhole;
 pub mod channel_hub;
 pub mod channels;
@@ -90,6 +91,7 @@ const OPPORTUNISTIC_ANNOUNCE_COOLDOWN: Duration = Duration::from_secs(60);
 // manager lock while waiting and still has one bounded terminal deadline.
 const ANNOUNCE_LXMF_BUILD_RETRY_WINDOW: Duration = Duration::from_secs(30);
 const ANNOUNCE_LXMF_BUILD_RETRY_INTERVAL: Duration = Duration::from_millis(50);
+const ANNOUNCE_STAMP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const ANNOUNCE_QUEUE_ADMISSION_WAIT: Duration = Duration::from_secs(1);
 const ANNOUNCE_INTERFACE_DISPATCH_WAIT: Duration = Duration::from_secs(5);
 
@@ -1996,6 +1998,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                 if let Some(mgr) = lxmf.as_mut() {
                     mgr.router
                         .set_transport(rns_mgr.handle.transport_tx.clone());
+                    mgr.load_stored_destination_stamps();
                     Some(mgr.lxmf_dest_hash)
                 } else {
                     None
@@ -2239,6 +2242,9 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                         LXMF_PROPAGATION_APP_NAME,
                         Some(signing_key),
                     );
+                    if let Some(destination) = link_mgr.destination_mut() {
+                        destination.set_link_cost(lxmf_core::constants::PROPAGATION_LINK_COST);
+                    }
                     install_propagation_announce_metadata(&mut link_mgr, &state, prop_dest_hash);
 
                     let offer_node = prop_node.clone();
@@ -2425,6 +2431,9 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                             LXMF_DELIVERY_APP_NAME,
                             signing_key,
                         );
+                    if let Some(destination) = lxmf_link_mgr.destination_mut() {
+                        destination.set_link_cost(lxmf_core::constants::DELIVERY_LINK_COST);
+                    }
                     lxmf_link_mgr.set_link_endpoint_dispatch_handle(
                         rns_mgr.handle.link_endpoint_dispatch_handle(),
                     );
@@ -4053,6 +4062,8 @@ enum PresencePacketBuildAttempt {
         delivery_coalesced: bool,
         delivery_failed: bool,
     },
+    /// A destination stamp is still being generated off the runtime.
+    StampPending,
     Busy,
     Poisoned,
 }
@@ -4075,6 +4086,9 @@ fn try_build_presence_announce_packets(
         let propagation_packet = if state.effective_propagation_hosting() {
             match mgr.create_propagation_announce_packet() {
                 Ok(raw) => Some((mgr.propagation_dest_hash, raw, false)),
+                Err(lxmf::AnnounceBuildError::StampPending) => {
+                    return PresencePacketBuildAttempt::StampPending;
+                }
                 Err(error) => {
                     delivery_failed = true;
                     tracing::warn!(
@@ -4097,10 +4111,13 @@ fn try_build_presence_announce_packets(
                     packets.push((mgr.lxmf_dest_hash, raw, true));
                     packets.extend(propagation_packet);
                 }
-                Err(lxmf::CoordinatedDeliveryAnnounceError::Coalesced) => {
+                Err(lxmf::AnnounceBuildError::Coalesced) => {
                     delivery_coalesced = true;
                 }
-                Err(lxmf::CoordinatedDeliveryAnnounceError::Failed(error)) => {
+                Err(lxmf::AnnounceBuildError::StampPending) => {
+                    return PresencePacketBuildAttempt::StampPending;
+                }
+                Err(lxmf::AnnounceBuildError::Failed(error)) => {
                     delivery_failed = true;
                     tracing::warn!(
                         correlation_id,
@@ -4170,7 +4187,8 @@ async fn execute_announce_burst(
             activity_recorded: false,
         };
     }
-    let lock_deadline = std::time::Instant::now() + ANNOUNCE_LXMF_BUILD_RETRY_WINDOW;
+    let mut lock_deadline = std::time::Instant::now() + ANNOUNCE_LXMF_BUILD_RETRY_WINDOW;
+    let mut stamp_wait_logged = false;
     let (packets, delivery_failed) = loop {
         if !state.is_current_activity_origin_fence(activity_origin) {
             tracing::info!(
@@ -4204,6 +4222,19 @@ async fn execute_announce_burst(
                     "presence announce retry window expired on delivery ratchet coalescing"
                 );
                 break (Vec::new(), true);
+            }
+            PresencePacketBuildAttempt::StampPending => {
+                // Python parks the announce until its stamp is ready; so does
+                // this lifecycle, which runs off the caller's task.
+                if !stamp_wait_logged {
+                    stamp_wait_logged = true;
+                    tracing::info!(
+                        correlation_id = leadership.correlation_id,
+                        "presence announce waiting for destination stamp generation"
+                    );
+                }
+                tokio::time::sleep(ANNOUNCE_STAMP_POLL_INTERVAL).await;
+                lock_deadline = std::time::Instant::now() + ANNOUNCE_LXMF_BUILD_RETRY_WINDOW;
             }
             PresencePacketBuildAttempt::Busy if std::time::Instant::now() < lock_deadline => {
                 tokio::time::sleep(ANNOUNCE_LXMF_BUILD_RETRY_INTERVAL).await;
@@ -4709,7 +4740,7 @@ fn build_lxmf_path_response_message(
     attached_interface: Option<u64>,
     tag: Option<&[u8]>,
 ) -> Result<rns_transport::messages::TransportMessage, path_response::BuildError> {
-    use lxmf::CoordinatedDeliveryAnnounceError;
+    use lxmf::AnnounceBuildError;
     use path_response::BuildError;
 
     let mut guard = match state.lxmf.try_lock() {
@@ -4721,8 +4752,9 @@ fn build_lxmf_path_response_message(
     let raw = mgr
         .create_deferred_path_response_announce_packet(tag)
         .map_err(|error| match error {
-            CoordinatedDeliveryAnnounceError::Coalesced => BuildError::Coalesced,
-            CoordinatedDeliveryAnnounceError::Failed(_) => BuildError::Failed,
+            AnnounceBuildError::Coalesced => BuildError::Coalesced,
+            AnnounceBuildError::StampPending => BuildError::Busy,
+            AnnounceBuildError::Failed(_) => BuildError::Failed,
         })?;
     let request = rns_transport::messages::OutboundRequest {
         raw: Bytes::from(raw),

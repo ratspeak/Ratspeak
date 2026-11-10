@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use lxmf_core::admission::{AdmissionEpochs, DownloadedPropagationMessage, SuppressionLedger};
 use lxmf_core::constants::{
     DELIVERY_RETRY_WAIT, ENCRYPTED_PACKET_MAX_CONTENT, MAX_DELIVERY_ATTEMPTS, PATH_REQUEST_WAIT,
-    STRUCT_OVERHEAD, TIMESTAMP_SIZE,
+    PROPAGATION_LINK_COST, STRUCT_OVERHEAD, TIMESTAMP_SIZE,
 };
 use lxmf_core::delivery_ratchet::{
     DeliveryAnnounceKind, DeliveryRatchetError, DeliveryRatchetState,
@@ -33,7 +33,7 @@ use lxmf_core::router::{
     DirectReusableLinkState, LinkDeliveryPlan, LxmRouter, MediumSnapshot, OutboundAction,
     OutboundInputs, RouteInfo, RouterConfig, RouterStateSnapshot, attempt_limit,
 };
-use rns_identity::destination::Destination;
+use rns_identity::destination::{AnnounceTime, DestType, Destination, Direction};
 use rns_identity::identity::Identity;
 use rns_identity::persistence::{
     DurableFileReceipt, durable_create_dir_all, durable_reconcile, durable_remove,
@@ -45,6 +45,7 @@ use rns_transport::messages::{PathTableRpcEntry, TransportMessage};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::activity::producer::DeliveryFailureReason;
+use crate::announce_stamps::{AnnounceStamps, StampWait};
 use crate::db;
 use crate::state::DbPool;
 use ratspeak_core::{LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME, LXMF_PROPAGATION_APP_NAME};
@@ -111,9 +112,33 @@ pub const RATSPEAK_DEFAULT_CAPABILITIES: u64 =
     RATSPEAK_CAP_CLIENT | RATSPEAK_CAP_GAMES | RATSPEAK_CAP_CHAT;
 
 #[derive(Debug)]
-pub(crate) enum CoordinatedDeliveryAnnounceError {
+pub enum AnnounceBuildError {
+    /// The delivery ratchet already announced this wall-clock second.
     Coalesced,
+    /// The destination stamp is still being generated; build again later.
+    StampPending,
     Failed(String),
+}
+
+impl std::fmt::Display for AnnounceBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Coalesced => f.write_str(&DeliveryRatchetError::Coalesced.to_string()),
+            Self::StampPending => f.write_str("destination stamp is still being generated"),
+            Self::Failed(message) => f.write_str(message),
+        }
+    }
+}
+
+impl From<StampWait> for AnnounceBuildError {
+    fn from(wait: StampWait) -> Self {
+        match wait {
+            StampWait::Pending => Self::StampPending,
+            StampWait::Failed => Self::Failed(
+                "could not generate destination stamp, announce emission cancelled".to_string(),
+            ),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1318,6 +1343,9 @@ pub struct LxmfManager {
     pub status: String,
     pub announce_ratspeak_usage: bool,
     delivery_ratchets: DeliveryRatchetState,
+    delivery_stamps: AnnounceStamps,
+    propagation_destination: Destination,
+    propagation_stamps: AnnounceStamps,
     announce_cache_started: Instant,
     pub received_ratchets: HashMap<String, ReceivedRatchet>,
     /// Remote ratchets whose current value has not yet been acknowledged by
@@ -2327,6 +2355,13 @@ impl LxmfManager {
             ratchet_dir.join("ring.control"),
             wall_now,
         )?;
+        let mut propagation_destination = Destination::new(
+            Some(&identity),
+            Direction::In,
+            DestType::Single,
+            LXMF_PROPAGATION_APP_NAME,
+        )?;
+        propagation_destination.set_link_cost(PROPAGATION_LINK_COST);
 
         // Validate, expire and load each file exactly once. The former
         // clean-then-load sequence decoded every ratchet twice at startup.
@@ -2407,6 +2442,9 @@ impl LxmfManager {
             status: String::new(),
             announce_ratspeak_usage: true,
             delivery_ratchets,
+            delivery_stamps: AnnounceStamps::default(),
+            propagation_destination,
+            propagation_stamps: AnnounceStamps::default(),
             announce_cache_started: Instant::now(),
             received_ratchets,
             dirty_received_ratchets: HashSet::new(),
@@ -4420,9 +4458,7 @@ impl LxmfManager {
         self.build_delivery_announce_packet(DeliveryAnnounceKind::Broadcast)
     }
 
-    pub(crate) fn create_coordinated_announce_packet(
-        &mut self,
-    ) -> Result<Vec<u8>, CoordinatedDeliveryAnnounceError> {
+    pub fn create_coordinated_announce_packet(&mut self) -> Result<Vec<u8>, AnnounceBuildError> {
         let wall_now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -4444,14 +4480,14 @@ impl LxmfManager {
     pub fn create_path_response_announce_packet(
         &mut self,
         tag: Option<&[u8]>,
-    ) -> Result<Vec<u8>, String> {
-        self.build_delivery_announce_packet(DeliveryAnnounceKind::PathResponse { tag })
+    ) -> Result<Vec<u8>, AnnounceBuildError> {
+        self.create_deferred_path_response_announce_packet(tag)
     }
 
     pub(crate) fn create_deferred_path_response_announce_packet(
         &mut self,
         tag: Option<&[u8]>,
-    ) -> Result<Vec<u8>, CoordinatedDeliveryAnnounceError> {
+    ) -> Result<Vec<u8>, AnnounceBuildError> {
         let wall_now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -4464,6 +4500,7 @@ impl LxmfManager {
         )
     }
 
+    #[cfg(test)]
     fn build_delivery_announce_packet(
         &mut self,
         kind: DeliveryAnnounceKind<'_>,
@@ -4476,6 +4513,7 @@ impl LxmfManager {
         self.build_delivery_announce_packet_at(kind, wall_now, cache_now)
     }
 
+    #[cfg(test)]
     fn build_delivery_announce_packet_at(
         &mut self,
         kind: DeliveryAnnounceKind<'_>,
@@ -4483,12 +4521,7 @@ impl LxmfManager {
         cache_now: f64,
     ) -> Result<Vec<u8>, String> {
         self.build_delivery_announce_packet_at_typed(kind, wall_now, cache_now)
-            .map_err(|error| match error {
-                CoordinatedDeliveryAnnounceError::Coalesced => {
-                    DeliveryRatchetError::Coalesced.to_string()
-                }
-                CoordinatedDeliveryAnnounceError::Failed(message) => message,
-            })
+            .map_err(|error| error.to_string())
     }
 
     fn build_delivery_announce_packet_at_typed(
@@ -4496,7 +4529,7 @@ impl LxmfManager {
         kind: DeliveryAnnounceKind<'_>,
         wall_now: u64,
         cache_now: f64,
-    ) -> Result<Vec<u8>, CoordinatedDeliveryAnnounceError> {
+    ) -> Result<Vec<u8>, AnnounceBuildError> {
         // Pack as LXMF-compatible msgpack with a Ratspeak extension tail.
         // The first three fields match Python `LXMRouter.get_announce_app_data`.
         // Raw UTF-8 forces Python receivers onto a legacy path that skips
@@ -4519,6 +4552,12 @@ impl LxmfManager {
             self.announce_ratspeak_usage,
         );
 
+        let path_response = matches!(kind, DeliveryAnnounceKind::PathResponse { .. });
+        let stamp_ext = self.delivery_stamps.gate(
+            self.delivery_ratchets.destination_mut(),
+            &self.identity,
+            path_response,
+        )?;
         let raw = self
             .delivery_ratchets
             .create_announce(
@@ -4527,14 +4566,14 @@ impl LxmfManager {
                 wall_now,
                 cache_now,
                 kind,
-                None,
+                stamp_ext.as_ref(),
             )
             .map_err(|error| match error {
-                DeliveryRatchetError::Coalesced => CoordinatedDeliveryAnnounceError::Coalesced,
-                error => CoordinatedDeliveryAnnounceError::Failed(error.to_string()),
+                DeliveryRatchetError::Coalesced => AnnounceBuildError::Coalesced,
+                error => AnnounceBuildError::Failed(error.to_string()),
             })?;
         if raw.len() > rns_wire::constants::MTU {
-            return Err(CoordinatedDeliveryAnnounceError::Failed(format!(
+            return Err(AnnounceBuildError::Failed(format!(
                 "Announce packet exceeds Reticulum MTU ({} > {})",
                 raw.len(),
                 rns_wire::constants::MTU
@@ -4543,35 +4582,51 @@ impl LxmfManager {
         Ok(raw)
     }
 
-    pub fn create_propagation_announce_packet(&mut self) -> Result<Vec<u8>, String> {
-        use rns_identity::announce::AnnounceData;
+    /// Load stored destination stamps once Reticulum has configured the
+    /// stamper with this runtime's policy and storage directory.
+    pub fn load_stored_destination_stamps(&mut self) {
+        rns_runtime::destination_stamper::load_stored_stamp(
+            self.delivery_ratchets.destination_mut(),
+            &self.identity,
+        );
+        rns_runtime::destination_stamper::load_stored_stamp(
+            &mut self.propagation_destination,
+            &self.identity,
+        );
+    }
 
+    pub fn create_propagation_announce_packet(&mut self) -> Result<Vec<u8>, AnnounceBuildError> {
+        let stamp_ext = self.propagation_stamps.gate(
+            &mut self.propagation_destination,
+            &self.identity,
+            false,
+        )?;
         let app_data = self.router.get_propagation_node_app_data();
-        let announce =
-            AnnounceData::create(&self.identity, "lxmf.propagation", Some(&app_data), None)
-                .map_err(|e| format!("Failed to create propagation announce: {e}"))?;
-
-        let mut raw = rns_wire::header::PacketHeader {
-            flags: rns_wire::flags::PacketFlags {
-                header_type: rns_wire::flags::HeaderType::Header1,
-                context_flag: false,
-                transport_type: rns_wire::flags::TransportType::Broadcast,
-                destination_type: rns_wire::flags::DestinationType::Single,
-                packet_type: rns_wire::flags::PacketType::Announce,
-            },
-            hops: 0,
-            transport_id: None,
-            destination_hash: self.propagation_dest_hash,
-            context: rns_wire::context::PacketContext::None,
-        }
-        .pack();
-        raw.extend_from_slice(&announce.pack());
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        let failed = |e: rns_identity::destination::DestinationError| {
+            AnnounceBuildError::Failed(format!("Failed to create propagation announce: {e}"))
+        };
+        let raw = self
+            .propagation_destination
+            .announce_packet_with_ext_at(
+                &self.identity,
+                Some(&app_data),
+                None,
+                false,
+                None,
+                AnnounceTime::new(now as u64, now).map_err(failed)?,
+                stamp_ext.as_ref(),
+            )
+            .map_err(failed)?;
         if raw.len() > rns_wire::constants::MTU {
-            return Err(format!(
+            return Err(AnnounceBuildError::Failed(format!(
                 "Propagation announce packet exceeds Reticulum MTU ({} > {})",
                 raw.len(),
                 rns_wire::constants::MTU
-            ));
+            )));
         }
         Ok(raw)
     }
@@ -8061,7 +8116,7 @@ mod tests {
             .expect("first announce");
         assert!(matches!(
             mgr.build_delivery_announce_packet_at_typed(DeliveryAnnounceKind::Broadcast, 100, 1.5,),
-            Err(CoordinatedDeliveryAnnounceError::Coalesced)
+            Err(AnnounceBuildError::Coalesced)
         ));
     }
 
@@ -8082,6 +8137,40 @@ mod tests {
             "reusing the delivery ring here would make propagation unreachable to Python peers"
         );
         assert_eq!(announce.ratchet, None);
+    }
+
+    #[test]
+    fn unstamped_policy_keeps_announce_app_data_unchanged() {
+        let mut mgr = test_manager();
+        mgr.display_name = "Alice".to_string();
+        let expected_delivery = get_ratspeak_announce_app_data(
+            Some("Alice"),
+            mgr.router.config.stamp_cost,
+            Some(""),
+            mgr.announce_ratspeak_usage,
+        );
+        let delivery = mgr
+            .build_delivery_announce_packet_at(DeliveryAnnounceKind::Broadcast, 100, 1.0)
+            .unwrap();
+        // The node app data carries the current second: take it on both sides.
+        let before = mgr.router.get_propagation_node_app_data();
+        let propagation = mgr.create_propagation_announce_packet().unwrap();
+        let after = mgr.router.get_propagation_node_app_data();
+        for (raw, expected) in [
+            (delivery, vec![expected_delivery]),
+            (propagation, vec![before, after]),
+        ] {
+            let (header, offset) = rns_wire::header::PacketHeader::unpack(&raw).unwrap();
+            let announce = rns_identity::announce::AnnounceData::unpack(
+                &raw[offset..],
+                header.flags.context_flag,
+            )
+            .unwrap();
+            announce.validate(&header.destination_hash).unwrap();
+            let app_data = announce.app_data.clone().unwrap();
+            assert!(expected.contains(&app_data));
+            assert!(!announce.check_stamp(&header.destination_hash, 0.0).stamped);
+        }
     }
 
     #[test]
@@ -11933,10 +12022,11 @@ mod tests {
         );
         assert!(mgr.auto_propagation_check_due(true));
 
+        // The client first asks transport whether it has a path to the node.
         mgr.tick_with_auto_propagation_download_ready(true);
         assert_eq!(
             mgr.propagation_client.as_ref().map(|client| client.state()),
-            Some(lxmf_core::propagation_client::PropagationClientState::LinkEstablishing)
+            Some(lxmf_core::propagation_client::PropagationClientState::PathRequested)
         );
     }
 
