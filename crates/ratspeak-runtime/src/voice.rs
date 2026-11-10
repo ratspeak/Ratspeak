@@ -83,6 +83,8 @@ const VOICE_OUTPUT_GAIN: f32 = 1.85;
 const VOICE_OUTPUT_LIMIT: f32 = 0.98;
 const VOICE_OUTPUT_LIMIT_CURVE: f32 = 0.35;
 const VOICE_INITIAL_PROFILE: Profile = Profile::QualityHigh;
+// LXST allows 5 s to reach ringing; path discovery and a multi-hop LoRa link take longer.
+const VOICE_CONNECT_TIMEOUT: Duration = Duration::from_secs(70);
 const VOICE_CONTACTS_ONLY_NOTICE: &str = "I'm only accepting calls from contacts.";
 const VOICE_REJECTED_CALL_BLACKHOLE_THRESHOLD: u32 = 10;
 const VOICE_REJECTED_CALL_ATTEMPT_WINDOW: Duration = Duration::from_secs(6 * 60 * 60);
@@ -161,6 +163,7 @@ fn coordinated_telephony_service_config() -> TelephonyServiceConfig {
         announce_interval: None,
         startup_announce_retry_interval: None,
         startup_announce_retries: 0,
+        connect_timeout: Some(VOICE_CONNECT_TIMEOUT),
         ..TelephonyServiceConfig::default()
     }
 }
@@ -378,6 +381,7 @@ pub async fn call_identity(state: &Arc<AppState>, remote_identity: [u8; 16]) -> 
         TelephonyControl::Call {
             remote_identity,
             profile: Some(VOICE_INITIAL_PROFILE),
+            mode: None,
             discovery_timeout: Duration::from_secs(15),
         },
     )
@@ -4639,6 +4643,13 @@ mod tests {
         assert_eq!(config.announce_interval, None);
         assert_eq!(config.startup_announce_retry_interval, None);
         assert_eq!(config.startup_announce_retries, 0);
+    }
+
+    #[test]
+    fn outgoing_calls_may_take_the_whole_wait_time_to_ring() {
+        let config = coordinated_telephony_service_config();
+        assert_eq!(config.connect_timeout, Some(VOICE_CONNECT_TIMEOUT));
+        assert_eq!(config.connect_timeout, config.outgoing_call_timeout);
     }
 
     #[test]
