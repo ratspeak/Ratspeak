@@ -142,6 +142,7 @@ mod tests {
         LinkManagerAccountingEvent::ResourceCompletion(ResourceCompletion {
             link_id: [1; 16],
             resource_hash: [hash; 32],
+            last_segment_hash: [hash; 32],
             data,
             metadata: None,
         })
@@ -362,6 +363,7 @@ mod tests {
             LinkManagerAccountingEvent::ResourceCompletion(ResourceCompletion {
                 link_id: [9; 16],
                 resource_hash: [2; 32],
+                last_segment_hash: [2; 32],
                 data: vec![9],
                 metadata: None,
             }),
