@@ -50,7 +50,7 @@ impl LxmfManager {
             .any(|message| message.message_id() == hash)
             || self.opportunistic_in_flight.contains_key(&hash)
             || self.in_flight_propagation.contains_key(&hash)
-            || self.deferred_failures.contains(&hash)
+            || self.deferred_failures.contains_key(&hash)
             || self.resumable.iter().any(|send| send.message_id == hash)
             || self
                 .link_delivery
@@ -288,14 +288,16 @@ impl LxmfManager {
         // A held failure stands once no earlier packet can be proven.
         let settled = self
             .deferred_failures
-            .iter()
+            .keys()
             .filter(|hash| !self.has_live_proof(hash))
             .copied()
             .collect::<Vec<_>>();
         for hash in settled {
-            self.deferred_failures.remove(&hash);
+            let Some(reason) = self.deferred_failures.remove(&hash) else {
+                continue;
+            };
             if !self.ephemeral_outbound.remove(&hash) {
-                results.push((hex::encode(hash), "failed"));
+                self.fail_send(hash, reason, results);
             }
         }
     }
@@ -576,7 +578,11 @@ mod tests {
         let proof = accept(&mut rx);
         mgr.poll_opportunistic_proofs(&mut Vec::new());
         let mut updates = Vec::new();
-        mgr.push_failed_outbound_state(Some(hash), &mut updates);
+        mgr.push_failed_outbound_state(
+            Some(hash),
+            DeliveryFailureReason::AttemptsExhausted,
+            &mut updates,
+        );
         assert!(
             updates.is_empty(),
             "not undelivered while the packet can be proven"
@@ -591,6 +597,13 @@ mod tests {
         mgr.poll_opportunistic_proofs(&mut updates);
         assert_eq!(updates, vec![(hex::encode(hash), "failed")]);
         assert!(mgr.deferred_failures.is_empty());
+        assert!(
+            matches!(
+                mgr.take_failure_reasons().get(&hex::encode(hash)),
+                Some(DeliveryFailureReason::AttemptsExhausted)
+            ),
+            "a held failure keeps the reason it was held with"
+        );
     }
 
     #[test]
@@ -599,7 +612,11 @@ mod tests {
         let proof = accept(&mut rx);
         mgr.poll_opportunistic_proofs(&mut Vec::new());
         let mut updates = Vec::new();
-        mgr.push_failed_outbound_state(Some(hash), &mut updates);
+        mgr.push_failed_outbound_state(
+            Some(hash),
+            DeliveryFailureReason::AttemptsExhausted,
+            &mut updates,
+        );
         proof.send_replace(ReceiptUpdate::Delivered {
             rtt: Duration::from_secs(2),
         });

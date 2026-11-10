@@ -16,7 +16,7 @@ use super::schema::RateDomain;
 /// [`ActivityHealth::new`] returns an [`Arc`] because producers share these
 /// counters. Mutation remains available only through named, saturating methods
 /// so a counter can neither wrap nor be selected dynamically by a string.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct ActivityHealth {
     ingress_full: AtomicU64,
     rate_limited: AtomicU64,
@@ -30,6 +30,31 @@ pub(crate) struct ActivityHealth {
     sampled_observations: [LossObservations; RateDomain::COUNT],
     ingress_full_observations: LossObservations,
     invalid_observations: LossObservations,
+    // One pending wake: the worker sleeps until a loss window opens.
+    window_opened_tx: crossbeam_channel::Sender<()>,
+    window_opened_rx: crossbeam_channel::Receiver<()>,
+}
+
+impl Default for ActivityHealth {
+    fn default() -> Self {
+        let (window_opened_tx, window_opened_rx) = crossbeam_channel::bounded(1);
+        Self {
+            ingress_full: AtomicU64::default(),
+            rate_limited: AtomicU64::default(),
+            oversized_invalid_rejected: AtomicU64::default(),
+            count_limit_evicted_events: AtomicU64::default(),
+            byte_limit_evicted_events: AtomicU64::default(),
+            ipc_failure: AtomicU64::default(),
+            replay_gap: AtomicU64::default(),
+            coalesced_inputs: AtomicU64::default(),
+            worker_recovery: AtomicU64::default(),
+            sampled_observations: Default::default(),
+            ingress_full_observations: LossObservations::default(),
+            invalid_observations: LossObservations::default(),
+            window_opened_tx,
+            window_opened_rx,
+        }
+    }
 }
 
 impl ActivityHealth {
@@ -45,7 +70,18 @@ impl ActivityHealth {
 
     pub(crate) fn increment_ingress_full_at(&self, observed_unix_ms: u64) {
         self.increment_ingress_full();
-        self.ingress_full_observations.note(1, observed_unix_ms);
+        self.wake_if(self.ingress_full_observations.note(1, observed_unix_ms));
+    }
+
+    /// Ready once a loss window opens; the worker flushes it as a marker.
+    pub(crate) fn window_opened(&self) -> &crossbeam_channel::Receiver<()> {
+        &self.window_opened_rx
+    }
+
+    fn wake_if(&self, opened: bool) {
+        if opened {
+            let _ = self.window_opened_tx.try_send(());
+        }
     }
 
     pub(crate) fn add_ingress_full(&self, count: u64) {
@@ -58,7 +94,7 @@ impl ActivityHealth {
 
     pub(crate) fn increment_rate_limited_at(&self, observed_unix_ms: u64, domain: RateDomain) {
         self.increment_rate_limited();
-        self.sampled_observations[domain.index()].note(1, observed_unix_ms);
+        self.wake_if(self.sampled_observations[domain.index()].note(1, observed_unix_ms));
     }
 
     pub(crate) fn add_rate_limited(&self, count: u64) {
@@ -71,7 +107,7 @@ impl ActivityHealth {
 
     pub(crate) fn increment_oversized_invalid_rejected_at(&self, observed_unix_ms: u64) {
         self.increment_oversized_invalid_rejected();
-        self.invalid_observations.note(1, observed_unix_ms);
+        self.wake_if(self.invalid_observations.note(1, observed_unix_ms));
     }
 
     pub(crate) fn add_oversized_invalid_rejected(&self, count: u64) {
@@ -313,28 +349,30 @@ impl Default for LossObservations {
 }
 
 impl LossObservations {
-    fn note(&self, count: u64, observed_unix_ms: u64) {
+    /// Returns whether this observation opened the window.
+    fn note(&self, count: u64, observed_unix_ms: u64) -> bool {
         if count == 0 {
-            return;
+            return false;
         }
         loop {
             let epoch = self.active_epoch.load(Ordering::Acquire);
             let slot = &self.slots[(epoch & 1) as usize];
             if !slot.enter() {
-                return;
+                return false;
             }
             if self.active_epoch.load(Ordering::Acquire) != epoch {
                 slot.readers.fetch_sub(1, Ordering::Release);
                 continue;
             }
 
+            let opened = slot.count.load(Ordering::Relaxed) == 0;
             saturating_atomic_add(&slot.count, count);
             slot.first_unix_ms
                 .fetch_min(observed_unix_ms, Ordering::Relaxed);
             slot.last_unix_ms
                 .fetch_max(observed_unix_ms, Ordering::Relaxed);
             slot.readers.fetch_sub(1, Ordering::Release);
-            return;
+            return opened;
         }
     }
 

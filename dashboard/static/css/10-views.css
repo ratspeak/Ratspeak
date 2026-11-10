@@ -1326,6 +1326,30 @@
 .activity-filter-problems {
     margin-left: auto;
 }
+.activity-filter-message {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    color: var(--accent);
+    background: var(--accent-bg);
+    border-color: var(--accent-border);
+}
+.activity-empty-title {
+    display: block;
+}
+.activity-empty .type-empty-hint {
+    display: block;
+    max-width: 340px;
+    margin: 0 auto;
+}
+.activity-filter-message svg {
+    width: 12px;
+    height: 12px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.5;
+    stroke-linecap: round;
+}
 .activity-filter-problems span {
     font-family: var(--font-mono);
     font-size: 0.9em;
@@ -1441,7 +1465,7 @@
 }
 .activity-event-time {
     font-family: var(--font-mono);
-    font-size: var(--type-id-sm-size);
+    font-size: var(--type-id-size);
     color: var(--text-muted);
     white-space: nowrap;
     flex-shrink: 0;
@@ -2464,6 +2488,9 @@ html[data-text-scale-tier="xlarge"] .settings-detail-header p {
 }
 .relay-card-header strong { overflow-wrap: anywhere; }
 .relay-card-details {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
     font-size: var(--type-hint-size);
     color: var(--text-muted);
     margin-bottom: var(--space-4);
@@ -2500,8 +2527,16 @@ html[data-text-scale-tier="xlarge"] .settings-detail-header p {
 .relay-node-row:last-child { border-bottom: none; }
 .relay-node-row:hover { background: var(--hover-subtle); }
 .relay-node-active { background: rgba(var(--accent-rgb), 0.06); }
-.relay-node-name { flex: 1; font-weight: var(--type-row-title-weight); }
-.relay-node-hops { color: var(--text-muted); font-size: var(--type-row-meta-size); }
+.relay-node-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: var(--type-row-title-weight);
+}
+.relay-node-hops { flex-shrink: 0; color: var(--text-muted); font-size: var(--type-row-meta-size); }
+.relay-node-row > .nr-btn, .relay-node-badge { flex-shrink: 0; }
 .announce-node { color: var(--accent); font-size: var(--type-badge-size); }
 .relay-node-badge {
     display: inline-flex;
@@ -2569,22 +2604,30 @@ html[data-text-scale-tier="xlarge"] .settings-detail-header p {
     font-weight: var(--type-weight-semibold);
     margin-right: 2px;
 }
-.settings-relay-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-height: var(--chip-height);
-    font-size: var(--type-badge-size);
-    font-weight: var(--type-badge-weight);
-    padding: var(--chip-padding-y) var(--space-4);
-    border-radius: var(--radius-pill);
-    background: var(--chip-bg);
-    color: var(--chip-color);
-    white-space: nowrap;
+.relay-card-header .conn-status-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    margin-right: var(--space-3);
+    vertical-align: middle;
+    position: relative;
+    top: -1px;
 }
-.settings-relay-badge.connected {
-    background: rgba(var(--status-online-rgb), 0.12);
-    color: var(--status-online-fg);
+.conn-status-dot.status-checking {
+    background: var(--accent);
+    animation: relay-dot-pulse 1.2s ease-in-out infinite;
+}
+.relay-card-header .conn-status-dot.status-offline {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--text-muted);
+}
+@keyframes relay-dot-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) {
+    .conn-status-dot.status-checking { animation: none; }
+}
+.relay-status-word {
+    color: var(--text-primary);
+    font-weight: var(--type-weight-semibold);
 }
 
 .selector-badge {

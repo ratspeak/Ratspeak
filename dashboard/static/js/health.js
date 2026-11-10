@@ -1799,6 +1799,21 @@ if (networkAnnounceBtn) {
     });
 }
 
+function selectNetworkSubtab(tab) {
+    var bar = document.getElementById('network-subtabs');
+    var main = document.querySelector('.network-main');
+    if (!bar || !main) return;
+    var btn = bar.querySelector('.network-subtab-btn[data-subtab="' + tab + '"]');
+    if (!btn) return;
+    bar.querySelectorAll('.network-subtab-btn').forEach(function(b) {
+        b.classList.remove('active');
+        b.setAttribute('aria-selected', 'false');
+    });
+    btn.classList.add('active');
+    btn.setAttribute('aria-selected', 'true');
+    main.className = main.className.replace(/subtab-\w+/g, '').trim() + ' subtab-' + tab;
+}
+
 function initNetworkSubtabs() {
     var bar = document.getElementById('network-subtabs');
     var main = document.querySelector('.network-main');
@@ -1807,14 +1822,7 @@ function initNetworkSubtabs() {
     bar.addEventListener('click', function(e) {
         var btn = e.target.closest('.network-subtab-btn');
         if (!btn) return;
-        var tab = btn.dataset.subtab;
-        bar.querySelectorAll('.network-subtab-btn').forEach(function(b) {
-            b.classList.remove('active');
-            b.setAttribute('aria-selected', 'false');
-        });
-        btn.classList.add('active');
-        btn.setAttribute('aria-selected', 'true');
-        main.className = main.className.replace(/subtab-\w+/g, '').trim() + ' subtab-' + tab;
+        selectNetworkSubtab(btn.dataset.subtab);
     });
 }
 initNetworkSubtabs();

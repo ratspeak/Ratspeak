@@ -1381,6 +1381,54 @@ pub fn persist_settings(
     (mode, favor)
 }
 
+/// What the Offline Inbox card shows. The message tick sends an update when
+/// it changes, so the card follows automatic checks without polling.
+pub fn card_fingerprint(state: &AppState, network_available: bool) -> serde_json::Value {
+    let (configured, client_state, progress) = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| {
+            lxmf.as_ref().map(|mgr| {
+                let status = mgr.propagation_transfer_status();
+                (
+                    mgr.configured_propagation_node,
+                    status.map(|status| format!("{:?}", status.state)),
+                    status.map(|status| (status.progress * 10.0).floor() as u8),
+                )
+            })
+        })
+        .unwrap_or((None, None, None));
+    // Either may be the card's node (Manual or Auto); the mode lives in the
+    // database, which a per-tick check must not read.
+    let auto_active = state.auto_active_node.read().ok().and_then(|node| *node);
+    let health = |node: Option<[u8; 16]>| {
+        let node = hex::encode(node?);
+        let registry = state.discovered_propagation_nodes.lock().ok()?;
+        let entry = registry.get(&node)?;
+        Some(
+            [
+                "path_status",
+                "last_seen",
+                "last_success",
+                "last_sync_success",
+                "last_deposit_success",
+                "last_failure_reason",
+            ]
+            .map(|key| entry.get(key).cloned().unwrap_or(serde_json::Value::Null)),
+        )
+    };
+    json!([
+        configured.map(hex::encode),
+        auto_active.map(hex::encode),
+        client_state,
+        progress,
+        network_available,
+        health(configured),
+        health(auto_active),
+    ])
+}
+
 pub fn emit_propagation_update(state: &AppState) {
     let status = get_status_payload(state);
     state.emit_to_all("propagation_update", status);
@@ -1479,6 +1527,21 @@ pub fn get_status_payload(state: &AppState) -> serde_json::Value {
             obj.insert("node_hash".to_string(), json!(node));
             obj.insert("propagation_node".to_string(), json!(node));
         }
+        let active_node = obj
+            .get("node_hash")
+            .and_then(|hash| hash.as_str())
+            .and_then(|hash| {
+                state
+                    .discovered_propagation_nodes
+                    .lock()
+                    .ok()
+                    .and_then(|registry| registry.get(hash).cloned())
+            });
+        obj.insert("active_node".to_string(), json!(active_node));
+        obj.insert(
+            "network_available".to_string(),
+            json!(crate::any_interface_online_cached(state)),
+        );
         obj.insert("mode".to_string(), json!(mode.as_str()));
         obj.insert("favor_static".to_string(), json!(favor_static));
         obj.insert("auto_active_node".to_string(), json!(auto_active));
@@ -1512,6 +1575,123 @@ pub fn get_status_payload(state: &AppState) -> serde_json::Value {
         );
     }
     out
+}
+
+/// Record one heard announce in the registry, keeping bundled metadata.
+pub(crate) fn insert_heard_node(
+    registry: &mut std::collections::HashMap<String, serde_json::Value>,
+    destination_hash: [u8; 16],
+    pn: &lxmf_core::handlers::PropagationNodeAnnounceData,
+    app_data: &[u8],
+    hops: Option<u8>,
+    heard_at: f64,
+) {
+    let hash_hex = hex::encode(destination_hash);
+    let existing = registry.get(&hash_hex);
+    let static_meta = static_nodes::node_for(&destination_hash);
+    let preserved_static = existing
+        .and_then(|v| v.get("static").and_then(|s| s.as_bool()))
+        .unwrap_or_else(|| static_meta.is_some());
+    let preserved_region = existing
+        .and_then(|v| v.get("region").cloned())
+        .or_else(|| {
+            static_meta
+                .and_then(|node| node.region.clone())
+                .map(|region| json!(region))
+        })
+        .unwrap_or(serde_json::Value::Null);
+    let preserved_role = existing
+        .and_then(|v| v.get("role").cloned())
+        .or_else(|| {
+            static_meta
+                .and_then(|node| node.role.clone())
+                .map(|role| json!(role))
+        })
+        .unwrap_or(serde_json::Value::Null);
+    let preserved_priority = existing
+        .and_then(|v| v.get("priority").cloned())
+        .or_else(|| static_meta.map(|node| json!(node.priority)))
+        .unwrap_or(serde_json::Value::Null);
+    let preserved_name = existing
+        .and_then(|v| v.get("display_name").and_then(|s| s.as_str()))
+        .map(String::from)
+        .or_else(|| static_meta.map(|node| node.display_name.clone()));
+    let display_name = lxmf_core::handlers::pn_name_from_app_data(app_data)
+        .filter(|s| !s.is_empty())
+        .or(preserved_name)
+        .unwrap_or_else(|| format!("Inbox {}", &hash_hex[..8]));
+
+    let announced = json!({
+        "hash": hash_hex,
+        "hops": hops,
+        "stamp_cost": pn.stamp_cost,
+        "transfer_limit_kb": pn.transfer_limit,
+        "last_seen": heard_at,
+        "node_state": if pn.node_state { "enabled" } else { "disabled" },
+        "static": preserved_static,
+        "region": preserved_region,
+        "role": preserved_role,
+        "priority": preserved_priority,
+        "display_name": display_name,
+    });
+    // An announce refreshes what the node says about itself; what we learned
+    // by using it (checks, deposits, path state) stays.
+    let mut entry = registry
+        .remove(&hash_hex)
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    if let (Some(entry), Some(announced)) = (entry.as_object_mut(), announced.as_object()) {
+        for (key, value) in announced {
+            entry.insert(key.clone(), value.clone());
+        }
+    }
+    registry.insert(hash_hex, entry);
+}
+
+/// Bring back the inbox nodes heard before this launch, within the discovery
+/// window. An entry already listed (a bundled node, or one heard this
+/// session) is kept as it is.
+pub async fn restore_heard_nodes(state: &AppState) {
+    let since = now_f64() - crate::state::PROPAGATION_NODE_TTL_SECS as f64;
+    let heard = match db::spawn_db(state.db.clone(), move |p| {
+        db::load_propagation_nodes(&p, since, crate::state::MAX_DISCOVERED_PROPAGATION_NODES)
+    })
+    .await
+    {
+        Ok(Ok(heard)) => heard,
+        Ok(Err(error)) => {
+            tracing::warn!(%error, "heard Offline Inbox nodes could not be loaded");
+            return;
+        }
+        Err(_) => return,
+    };
+    let mut restored = 0usize;
+    if let Ok(mut registry) = state.discovered_propagation_nodes.lock() {
+        for node in heard {
+            let Some(hash) = hex::decode(&node.dest_hash)
+                .ok()
+                .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+            else {
+                continue;
+            };
+            if registry.contains_key(&node.dest_hash) {
+                continue;
+            }
+            let Some(pn) = lxmf_core::handlers::parse_pn_announce_data(&node.app_data) else {
+                continue;
+            };
+            insert_heard_node(
+                &mut registry,
+                hash,
+                &pn,
+                &node.app_data,
+                node.hops,
+                node.last_seen,
+            );
+            restored += 1;
+        }
+    }
+    tracing::info!(restored, "restored heard Offline Inbox nodes");
 }
 
 /// Seed `discovered_propagation_nodes` from the static bundle so Auto mode

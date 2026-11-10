@@ -44,6 +44,7 @@ use rns_identity::ratchet::ReceivedRatchet;
 use rns_transport::messages::{PathTableRpcEntry, TransportMessage};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::activity::producer::DeliveryFailureReason;
 use crate::db;
 use crate::state::DbPool;
 use ratspeak_core::{LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME, LXMF_PROPAGATION_APP_NAME};
@@ -1397,7 +1398,8 @@ pub struct LxmfManager {
     resumable: Vec<ResumableSend>,
     /// Failed sends whose earlier packets can still be proven; they fail only
     /// once the last receipt expires.
-    deferred_failures: HashSet<[u8; 32]>,
+    deferred_failures: HashMap<[u8; 32], DeliveryFailureReason>,
+    failure_reasons: HashMap<[u8; 32], DeliveryFailureReason>,
 }
 
 /// An outbox send waiting to be queued again.
@@ -2464,7 +2466,8 @@ impl LxmfManager {
             auto_live_fallback: HashSet::new(),
             live_preparation: preparation::LivePreparation::default(),
             resumable: Vec::new(),
-            deferred_failures: HashSet::new(),
+            deferred_failures: HashMap::new(),
+            failure_reasons: HashMap::new(),
         })
     }
 
@@ -3196,7 +3199,7 @@ impl LxmfManager {
         for send in std::mem::take(&mut self.resumable) {
             match send.budget {
                 Some(size) if size > rns_protocol::resource::MAX_RESOURCE_SIZE => {
-                    results.push((hex::encode(send.message_id), "failed"));
+                    self.fail_send(send.message_id, DeliveryFailureReason::TooLarge, results);
                     continue;
                 }
                 Some(_) => {
@@ -3208,7 +3211,13 @@ impl LxmfManager {
             match self.queue_resumed(&send, now) {
                 Resumed::Queued(_) => {}
                 Resumed::Waiting => self.resumable.push(send),
-                Resumed::Failed => results.push((hex::encode(send.message_id), "failed")),
+                Resumed::Failed => {
+                    self.fail_send(
+                        send.message_id,
+                        DeliveryFailureReason::PreparationFailed,
+                        results,
+                    );
+                }
             }
         }
     }
@@ -3757,6 +3766,14 @@ impl LxmfManager {
         identity_id: &str,
     ) -> Vec<Value> {
         db::get_conversation(db_pool, dest_hash, identity_id, 100)
+    }
+
+    pub fn propagation_transfer_status(
+        &self,
+    ) -> Option<lxmf_core::propagation_client::PropagationTransferStatus> {
+        self.propagation_client
+            .as_ref()
+            .map(|client| client.transfer_status())
     }
 
     pub fn get_propagation_status(&self) -> Value {
@@ -5040,20 +5057,40 @@ impl LxmfManager {
     fn push_failed_outbound_state(
         &mut self,
         msg_hash: Option<[u8; 32]>,
+        reason: DeliveryFailureReason,
         results: &mut Vec<(String, &'static str)>,
     ) {
         if let Some(hash) = msg_hash {
             self.clear_auto_live_fallback(&hash);
             // Not undelivered while an earlier packet can still be proven.
             if self.has_live_proof(&hash) {
-                self.deferred_failures.insert(hash);
+                self.deferred_failures.insert(hash, reason);
                 return;
             }
             if self.ephemeral_outbound.remove(&hash) {
                 return;
             }
-            results.push((hex::encode(hash), "failed"));
+            self.fail_send(hash, reason, results);
         }
+    }
+
+    /// Marks a send not delivered, naming why for the Activity log.
+    fn fail_send(
+        &mut self,
+        hash: [u8; 32],
+        reason: DeliveryFailureReason,
+        results: &mut Vec<(String, &'static str)>,
+    ) {
+        self.failure_reasons.insert(hash, reason);
+        results.push((hex::encode(hash), "failed"));
+    }
+
+    /// Why each send failed since the last call, by message id.
+    pub fn take_failure_reasons(&mut self) -> HashMap<String, DeliveryFailureReason> {
+        self.failure_reasons
+            .drain()
+            .map(|(hash, reason)| (hex::encode(hash), reason))
+            .collect()
     }
 
     fn auto_live_fallback_hash(
@@ -5145,7 +5182,11 @@ impl LxmfManager {
         } = input;
         let dest_hex = hex::encode(dest_hash);
         if !self.ensure_link_delivery_manager() {
-            self.push_failed_outbound_state(msg_hash, results);
+            self.push_failed_outbound_state(
+                msg_hash,
+                DeliveryFailureReason::TransportFailed,
+                results,
+            );
             return;
         }
 
@@ -5205,12 +5246,20 @@ impl LxmfManager {
                         &reason,
                         results,
                     ) {
-                        self.push_failed_outbound_state(msg_hash, results);
+                        self.push_failed_outbound_state(
+                            msg_hash,
+                            DeliveryFailureReason::of_link_failure(&reason, false),
+                            results,
+                        );
                     }
                 }
             }
         } else {
-            self.push_failed_outbound_state(msg_hash, results);
+            self.push_failed_outbound_state(
+                msg_hash,
+                DeliveryFailureReason::TransportFailed,
+                results,
+            );
         }
         self.drain_link_delivery_progress_updates();
     }
@@ -5919,7 +5968,7 @@ impl LxmfManager {
                 );
                 self.clear_auto_live_fallback(&hash);
                 if !self.ephemeral_outbound.remove(&hash) {
-                    results.push((hex::encode(hash), "failed"));
+                    self.fail_send(hash, DeliveryFailureReason::QueueRejected, results);
                 }
             }
         }
@@ -5938,7 +5987,7 @@ impl LxmfManager {
         let resumable = self.resumable.len();
         self.resumable.retain(|send| send.message_id != hash);
         cancelled |= self.resumable.len() != resumable;
-        cancelled |= self.deferred_failures.remove(&hash);
+        cancelled |= self.deferred_failures.remove(&hash).is_some();
         cancelled |= self.ephemeral_outbound.remove(&hash);
         cancelled |= self.in_flight_propagation.remove(&hash).is_some();
         self.propagation_envelopes.remove(&hash);
@@ -6015,8 +6064,11 @@ impl LxmfManager {
                         return;
                     }
                     if let Some(prop_hash) = self.in_flight_propagation.remove(&hash) {
-                        self.failed_propagation_deposits.push((prop_hash, reason));
-                        results.push((hex::encode(hash), "failed"));
+                        let failure = DeliveryFailureReason::InboxRejected;
+                        tracing::debug!(%reason, "Offline Inbox node refused a deposit");
+                        self.failed_propagation_deposits
+                            .push((prop_hash, failure.code().to_string()));
+                        self.fail_send(hash, failure, results);
                         return;
                     }
                     let _ = self.router.mark_outbound_rejected(&hash);
@@ -6042,9 +6094,10 @@ impl LxmfManager {
                     }
                     if let Some(prop_hash) = self.in_flight_propagation.remove(&hash) {
                         self.clear_auto_live_fallback(&hash);
+                        let failure = DeliveryFailureReason::of_link_failure(&reason, true);
                         self.failed_propagation_deposits
-                            .push((prop_hash, reason.clone()));
-                        results.push((hex::encode(hash), "failed"));
+                            .push((prop_hash, failure.code().to_string()));
+                        self.fail_send(hash, failure, results);
                         return;
                     }
                     if self.requeue_or_defer_direct_after_link_failure(
@@ -6060,7 +6113,11 @@ impl LxmfManager {
                         return;
                     }
                     self.clear_auto_live_fallback(&hash);
-                    results.push((hex::encode(hash), "failed"));
+                    self.fail_send(
+                        hash,
+                        DeliveryFailureReason::of_link_failure(&reason, false),
+                        results,
+                    );
                 } else {
                     let _ = self.requeue_or_defer_direct_after_link_failure(
                         message,
@@ -6370,7 +6427,12 @@ impl LxmfManager {
                         });
                 }
                 self.propagation_envelopes.remove(&message.message_id());
-                results.push((hex::encode(message.message_id()), "failed"));
+                let reason = if matches!(error, MessageError::TooLarge { .. }) {
+                    DeliveryFailureReason::TooLarge
+                } else {
+                    DeliveryFailureReason::PreparationFailed
+                };
+                self.fail_send(message.message_id(), reason, results);
                 return;
             }
         };
@@ -6396,12 +6458,12 @@ impl LxmfManager {
                         "failed to start propagation link delivery"
                     );
                     if let Some(hash) = msg_hash {
-                        results.push((hex::encode(hash), "failed"));
+                        self.fail_send(hash, DeliveryFailureReason::TransportFailed, results);
                     }
                 }
             }
         } else if let Some(hash) = msg_hash {
-            results.push((hex::encode(hash), "failed"));
+            self.fail_send(hash, DeliveryFailureReason::TransportFailed, results);
         }
     }
 
@@ -6721,7 +6783,11 @@ impl LxmfManager {
                         "live delivery attempt budget exhausted",
                         &mut results,
                     ) {
-                        self.push_failed_outbound_state(msg_hash, &mut results);
+                        self.push_failed_outbound_state(
+                            msg_hash,
+                            DeliveryFailureReason::AttemptsExhausted,
+                            &mut results,
+                        );
                     }
                     continue;
                 }
@@ -6729,7 +6795,11 @@ impl LxmfManager {
                     // An expired message is no longer timely enough to deposit
                     // for later pickup. Do not reinterpret expiry as an
                     // Offline Inbox retry.
-                    self.push_failed_outbound_state(Some(message.message_id()), &mut results);
+                    self.push_failed_outbound_state(
+                        Some(message.message_id()),
+                        DeliveryFailureReason::AttemptsExhausted,
+                        &mut results,
+                    );
                     continue;
                 }
             };
@@ -6893,7 +6963,12 @@ impl LxmfManager {
                             if self.ephemeral_outbound.remove(&hash) {
                                 continue;
                             }
-                            results.push((hex::encode(hash), "failed"));
+                            let reason = if identity_known {
+                                DeliveryFailureReason::AttemptsExhausted
+                            } else {
+                                DeliveryFailureReason::PathUnavailable
+                            };
+                            self.fail_send(hash, reason, &mut results);
                         }
                     }
                 }
@@ -6979,7 +7054,11 @@ impl LxmfManager {
                         reason = "pack_failed",
                         "outbound LXMF: failed to pack opportunistic message"
                     );
-                    self.push_failed_outbound_state(msg_hash, &mut results);
+                    self.push_failed_outbound_state(
+                        msg_hash,
+                        DeliveryFailureReason::PreparationFailed,
+                        &mut results,
+                    );
                     continue;
                 }
             };
@@ -7105,7 +7184,12 @@ impl LxmfManager {
                         );
                     }
                     DirectDeliveryPlan::Fail => {
-                        self.push_failed_outbound_state(msg_hash, &mut results);
+                        let reason = if identity_known {
+                            DeliveryFailureReason::AttemptsExhausted
+                        } else {
+                            DeliveryFailureReason::PathUnavailable
+                        };
+                        self.push_failed_outbound_state(msg_hash, reason, &mut results);
                     }
                 }
                 continue;
@@ -7113,7 +7197,11 @@ impl LxmfManager {
 
             let Some(_) = self.router.transport_tx else {
                 tracing::error!(dest = %crate::short_id(&dest_hex), reason = "transport_unavailable", "transport unavailable; message dropped");
-                self.push_failed_outbound_state(msg_hash, &mut results);
+                self.push_failed_outbound_state(
+                    msg_hash,
+                    DeliveryFailureReason::TransportFailed,
+                    &mut results,
+                );
                 continue;
             };
 
@@ -10226,7 +10314,15 @@ mod tests {
         assert!(!mgr.in_flight_propagation.contains_key(&hash));
         assert!(!mgr.auto_live_fallback.contains(&hash));
         let (_, failed, _, _) = mgr.take_propagation_health();
-        assert_eq!(failed, vec![(relay, "resource rejected".to_string())]);
+        assert_eq!(failed, vec![(relay, "inbox_rejected".to_string())]);
+        assert!(
+            matches!(
+                mgr.take_failure_reasons().get(&hex::encode(hash)),
+                Some(DeliveryFailureReason::InboxRejected)
+            ),
+            "the Offline Inbox node refused it, not the recipient"
+        );
+        assert!(mgr.take_failure_reasons().is_empty(), "taken once");
     }
 
     #[test]

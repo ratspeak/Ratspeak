@@ -143,4 +143,19 @@ assert(source.includes("var proofOutranks = resolvedState === 'delivered' &&"));
 assert(source.includes("showToast('Message to ' + name + ' not delivered', 'toast-action', 4000,"));
 assert(!source.includes('Message timed out. The recipient may be unreachable.'));
 
+// Show in Activity explains undelivered sends, never the user's own cancel.
+vm.runInContext(functionSource('_messageCanShowInActivity'), context);
+context._isCanonicalLxmfMsgId = function(id) { return /^[0-9a-f]{64}$/.test(id); };
+context._messageIsPaper = function() { return false; };
+function canExplain(state, direction) {
+    return context._messageCanShowInActivity({ id: 'a'.repeat(64), state: state, direction: direction || 'outbound' });
+}
+['failed', 'timeout', 'rejected'].forEach(function(state) { assert(canExplain(state), state); });
+['cancelled', 'sent', 'delivered', 'propagated', 'sending'].forEach(function(state) { assert(!canExplain(state), state); });
+assert(!canExplain('failed', 'inbound'));
+var retryAt = source.indexOf("retryBtn.innerHTML = _messageActionIcon('retry')");
+var activityAt = source.indexOf("activityBtn.innerHTML = _messageActionIcon('activity') + '<span>Show in Activity</span>';");
+var replyAt = source.indexOf("replyBtn.innerHTML = _messageActionIcon('reply')");
+assert(retryAt !== -1 && activityAt > retryAt && replyAt > activityAt, 'Show in Activity sits right after Retry');
+
 console.log('LXMF delivery icon tests passed');

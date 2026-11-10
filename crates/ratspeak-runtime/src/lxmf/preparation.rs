@@ -196,7 +196,11 @@ impl LxmfManager {
                 "live destination discovery timed out",
                 &mut results,
             ) {
-                self.push_failed_outbound_state(hash, &mut results);
+                self.push_failed_outbound_state(
+                    hash,
+                    DeliveryFailureReason::PathUnavailable,
+                    &mut results,
+                );
             }
         }
         results

@@ -7231,7 +7231,6 @@ fn settings_machine_states_share_uppercase_outfit_typography() {
     assert!(settings.contains("if (!secs || secs <= 0) return 'OFF';"));
     assert!(settings.contains("{ label: 'OFF', value: '0'"));
     assert!(propagation.contains("? ('Cost ' + cost) : 'OFF'"));
-    assert!(propagation.contains("relayBadge.textContent = 'OFF';"));
     assert!(modals.contains("{ label: 'Always on', value: '0' }"));
 }
 
@@ -9672,7 +9671,11 @@ fn offline_inbox_auto_settings_use_ratspeak_node_preference() {
 
     assert!(propagation_js.contains("args.favorStatic = !!opts.favor_static"));
     assert!(network_commands.contains("favorStatic: Option<bool>"));
-    assert!(propagation_js.contains("Auto selected"));
+    assert!(propagation_js.contains("function inboxCardState(status, nowMs)"));
+    assert!(
+        !settings_html.contains("settings-relay-status"),
+        "the card is the only Offline Inbox status"
+    );
     assert!(propagation_js.contains("if (mode === 'manual')"));
     assert!(propagation_js.contains("Propagation address<br>"));
     assert!(!propagation_js.contains("Connecting..."));

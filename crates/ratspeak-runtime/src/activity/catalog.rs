@@ -2400,27 +2400,70 @@ pub struct LxmfDeliveryFailed {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryFailureReason {
+    AttemptsExhausted,
+    InboxRejected,
     LinkClosed,
+    LinkNotEstablished,
+    NoInterface,
     PathUnavailable,
+    PreparationFailed,
     ProofTimedOut,
     QueueRejected,
     Rejected,
     ResourceFailed,
     RouterUnavailable,
+    TooLarge,
     TransportFailed,
 }
 
 impl DeliveryFailureReason {
-    const fn code(self) -> &'static str {
+    pub const fn code(self) -> &'static str {
         match self {
+            Self::AttemptsExhausted => "attempts_exhausted",
+            Self::InboxRejected => "inbox_rejected",
             Self::LinkClosed => "link_closed",
+            Self::LinkNotEstablished => "link_not_established",
+            Self::NoInterface => "no_interface",
             Self::PathUnavailable => "path_unavailable",
+            Self::PreparationFailed => "preparation_failed",
             Self::ProofTimedOut => "proof_timed_out",
             Self::QueueRejected => "queue_rejected",
             Self::Rejected => "rejected",
             Self::ResourceFailed => "resource_failed",
             Self::RouterUnavailable => "router_unavailable",
+            Self::TooLarge => "too_large",
             Self::TransportFailed => "transport_failed",
+        }
+    }
+
+    /// Classifies a link delivery failure. `deposit` marks a send to an
+    /// Offline Inbox node, whose refusal is the node's, not the recipient's.
+    pub fn of_link_failure(reason: &str, deposit: bool) -> Self {
+        let endpoint = reason
+            .strip_prefix("Link endpoint terminated: ")
+            .or_else(|| {
+                reason
+                    .strip_prefix("Link endpoint send rejected: Terminated(")?
+                    .strip_suffix(')')
+            });
+        match (reason, endpoint) {
+            (_, Some("InterfaceRemoved" | "InterfaceClosed" | "InterfaceOffline")) => {
+                Self::NoInterface
+            }
+            (_, Some(_)) | ("link closed" | "link not found" | "link is not active", None) => {
+                Self::LinkClosed
+            }
+            ("link establishment timeout", None) => Self::LinkNotEstablished,
+            ("resource rejected", None) if deposit => Self::InboxRejected,
+            ("resource rejected" | "delivery failed", None) => Self::ResourceFailed,
+            (
+                "delivery timeout" | "backchannel delivery timeout" | "direct fallback timeout",
+                None,
+            ) => Self::ProofTimedOut,
+            ("resource transfer build failed" | "link packet encryption failed", None) => {
+                Self::PreparationFailed
+            }
+            _ => Self::TransportFailed,
         }
     }
 }
@@ -2938,6 +2981,46 @@ pub(super) fn test_large_error_event(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn link_failures_name_their_cause() {
+        use DeliveryFailureReason::*;
+        let cases = [
+            ("link establishment timeout", false, LinkNotEstablished),
+            ("link closed", false, LinkClosed),
+            ("link is not active", false, LinkClosed),
+            (
+                "Link endpoint terminated: InterfaceOffline",
+                false,
+                NoInterface,
+            ),
+            (
+                "Link endpoint send rejected: Terminated(InterfaceRemoved)",
+                false,
+                NoInterface,
+            ),
+            ("Link endpoint terminated: Unbound", false, LinkClosed),
+            ("resource rejected", true, InboxRejected),
+            ("resource rejected", false, ResourceFailed),
+            ("delivery failed", true, ResourceFailed),
+            ("delivery timeout", false, ProofTimedOut),
+            ("direct fallback timeout", false, ProofTimedOut),
+            ("resource transfer build failed", false, PreparationFailed),
+            (
+                "transport channel is full or closed",
+                false,
+                TransportFailed,
+            ),
+            ("something new", false, TransportFailed),
+        ];
+        for (reason, deposit, expected) in cases {
+            assert_eq!(
+                DeliveryFailureReason::of_link_failure(reason, deposit).code(),
+                expected.code(),
+                "{reason}"
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

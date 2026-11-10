@@ -38,6 +38,7 @@ fn typed_activity_commands_are_unconditionally_registered() {
         "activity_detail",
         "activity_reveal",
         "activity_safe_copy",
+        "activity_message_token",
     ];
     for command in command_names {
         let registration = format!("ratspeak_tauri::commands::activity::{command},");

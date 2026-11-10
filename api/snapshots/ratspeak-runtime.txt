@@ -123,14 +123,23 @@ pub ratspeak_runtime::activity::producer::ChannelSessionTransition::WelcomeRejec
 pub ratspeak_runtime::activity::producer::ChannelSessionTransition::WelcomeValidated
 pub ratspeak_runtime::activity::producer::ChannelSessionTransition::WelcomeValidated::encoded_bytes: u32
 pub enum ratspeak_runtime::activity::producer::DeliveryFailureReason
+pub ratspeak_runtime::activity::producer::DeliveryFailureReason::AttemptsExhausted
+pub ratspeak_runtime::activity::producer::DeliveryFailureReason::InboxRejected
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::LinkClosed
+pub ratspeak_runtime::activity::producer::DeliveryFailureReason::LinkNotEstablished
+pub ratspeak_runtime::activity::producer::DeliveryFailureReason::NoInterface
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::PathUnavailable
+pub ratspeak_runtime::activity::producer::DeliveryFailureReason::PreparationFailed
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::ProofTimedOut
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::QueueRejected
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::Rejected
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::ResourceFailed
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::RouterUnavailable
+pub ratspeak_runtime::activity::producer::DeliveryFailureReason::TooLarge
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::TransportFailed
+impl ratspeak_runtime::activity::producer::DeliveryFailureReason
+pub const fn ratspeak_runtime::activity::producer::DeliveryFailureReason::code(self) -> &'static str
+pub fn ratspeak_runtime::activity::producer::DeliveryFailureReason::of_link_failure(&str, bool) -> Self
 pub enum ratspeak_runtime::activity::producer::HubModerationAction
 pub ratspeak_runtime::activity::producer::HubModerationAction::Ban
 pub ratspeak_runtime::activity::producer::HubModerationAction::Deop
@@ -695,6 +704,9 @@ pub fn ratspeak_runtime::activity::ActivityHealthSnapshot::worker_recovery(&self
 pub struct ratspeak_runtime::activity::ActivityIpcResponse<T>
 impl<T: serde_core::ser::Serialize> serde_core::ser::Serialize for ratspeak_runtime::activity::ActivityIpcResponse<T>
 pub fn ratspeak_runtime::activity::ActivityIpcResponse<T>::serialize<S>(&self, S) -> core::result::Result<<S as serde_core::ser::Serializer>::Ok, <S as serde_core::ser::Serializer>::Error> where S: serde_core::ser::Serializer
+pub struct ratspeak_runtime::activity::ActivityMessageTokenV1
+pub ratspeak_runtime::activity::ActivityMessageTokenV1::capture_session: core::option::Option<alloc::string::String>
+pub ratspeak_runtime::activity::ActivityMessageTokenV1::token: core::option::Option<alloc::string::String>
 pub struct ratspeak_runtime::activity::ActivityRecorder
 impl ratspeak_runtime::activity::ActivityRecorder
 pub fn ratspeak_runtime::activity::ActivityRecorder::capture_state_profile(&self) -> (ratspeak_runtime::activity::ActivityCaptureState, core::option::Option<ratspeak_runtime::activity::CaptureProfile>)
@@ -703,6 +715,7 @@ pub async fn ratspeak_runtime::activity::ActivityRecorder::detail(&self, alloc::
 pub async fn ratspeak_runtime::activity::ActivityRecorder::detail_for_ipc(&self, alloc::string::String, u64) -> core::result::Result<ratspeak_runtime::activity::ActivityIpcResponse<ratspeak_runtime::activity::ActivityDetailResultV1>, ratspeak_runtime::activity::ActivityRecorderError>
 pub async fn ratspeak_runtime::activity::ActivityRecorder::expire_trace_if_due(&self) -> core::result::Result<ratspeak_runtime::activity::ActivityStatusV1, ratspeak_runtime::activity::ActivityRecorderError>
 pub async fn ratspeak_runtime::activity::ActivityRecorder::hard_reset(&self) -> core::result::Result<ratspeak_runtime::activity::ActivityStatusV1, ratspeak_runtime::activity::ActivityRecorderError>
+pub async fn ratspeak_runtime::activity::ActivityRecorder::message_token(&self, [u8; 32]) -> core::result::Result<ratspeak_runtime::activity::ActivityMessageTokenV1, ratspeak_runtime::activity::ActivityRecorderError>
 pub fn ratspeak_runtime::activity::ActivityRecorder::new() -> Self
 pub fn ratspeak_runtime::activity::ActivityRecorder::record_event<F>(&self, F) -> ratspeak_runtime::activity::ActivityRecordOutcome where F: core::ops::function::FnOnce() -> core::result::Result<ratspeak_runtime::activity::producer::ProducerEvent, ratspeak_runtime::activity::ActivityRejectReason>
 pub fn ratspeak_runtime::activity::ActivityRecorder::record_event_fenced<V, F>(&self, V, F) -> ratspeak_runtime::activity::ActivityRecordOutcome where V: core::ops::function::FnOnce() -> bool, F: core::ops::function::FnOnce() -> core::result::Result<ratspeak_runtime::activity::producer::ProducerEvent, ratspeak_runtime::activity::ActivityRejectReason>
@@ -1638,6 +1651,7 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::process_delivery_events(&mut self) -
 pub fn ratspeak_runtime::lxmf::LxmfManager::propagated_deposit_pending(&self) -> bool
 pub fn ratspeak_runtime::lxmf::LxmfManager::propagation_decrypt_context(&self) -> ratspeak_runtime::lxmf::PropagationDecryptContext
 pub fn ratspeak_runtime::lxmf::LxmfManager::propagation_node_ready_for_send(&self, &[u8; 16]) -> bool
+pub fn ratspeak_runtime::lxmf::LxmfManager::propagation_transfer_status(&self) -> core::option::Option<lxmf_core::propagation_client::PropagationTransferStatus>
 pub fn ratspeak_runtime::lxmf::LxmfManager::purge_identity_profile(&std::path::Path, &str, bool) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn ratspeak_runtime::lxmf::LxmfManager::ratchets_dir(&self) -> std::path::PathBuf
 pub fn ratspeak_runtime::lxmf::LxmfManager::recall_identity_hash(&self, &[u8; 16]) -> core::option::Option<[u8; 16]>
@@ -1681,6 +1695,7 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::take_delivery_failure_updates(&mut s
 pub fn ratspeak_runtime::lxmf::LxmfManager::take_delivery_progress_updates(&mut self) -> alloc::vec::Vec<ratspeak_runtime::lxmf::LxmfDeliveryProgressUpdate>
 pub fn ratspeak_runtime::lxmf::LxmfManager::take_downloaded_propagation_messages(&mut self) -> alloc::vec::Vec<lxmf_core::admission::DownloadedPropagationMessage>
 pub fn ratspeak_runtime::lxmf::LxmfManager::take_expired_received_ratchets(&mut self) -> alloc::vec::Vec<alloc::string::String>
+pub fn ratspeak_runtime::lxmf::LxmfManager::take_failure_reasons(&mut self) -> std::collections::hash::map::HashMap<alloc::string::String, ratspeak_runtime::activity::producer::DeliveryFailureReason>
 pub fn ratspeak_runtime::lxmf::LxmfManager::take_propagation_health(&mut self) -> ratspeak_runtime::lxmf::PropagationHealth
 pub fn ratspeak_runtime::lxmf::LxmfManager::tick(&mut self) -> alloc::vec::Vec<(alloc::string::String, &'static str)>
 pub fn ratspeak_runtime::lxmf::LxmfManager::tick_with_auto_propagation_download_ready(&mut self, bool) -> alloc::vec::Vec<(alloc::string::String, &'static str)>
@@ -1924,6 +1939,7 @@ pub ratspeak_runtime::propagation::RelayReadiness::Waiting
 pub async fn ratspeak_runtime::propagation::apply_auto_selection(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, [u8; 16])
 pub async fn ratspeak_runtime::propagation::auto_inbox_download_ready(&alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> bool
 pub fn ratspeak_runtime::propagation::auto_select_node(&ratspeak_runtime::state::AppState) -> core::option::Option<[u8; 16]>
+pub fn ratspeak_runtime::propagation::card_fingerprint(&ratspeak_runtime::state::AppState, bool) -> serde_json::value::Value
 pub async fn ratspeak_runtime::propagation::clear_auto_selection(&alloc::sync::Arc<ratspeak_runtime::state::AppState>)
 pub fn ratspeak_runtime::propagation::emit_propagation_update(&ratspeak_runtime::state::AppState)
 pub async fn ratspeak_runtime::propagation::ensure_relay_ready_for_send(&alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> ratspeak_runtime::propagation::RelayReadiness
@@ -1941,6 +1957,7 @@ pub fn ratspeak_runtime::propagation::read_settings(&ratspeak_runtime::state::Ap
 pub async fn ratspeak_runtime::propagation::reconcile_active_auto_node(&alloc::sync::Arc<ratspeak_runtime::state::AppState>)
 pub async fn ratspeak_runtime::propagation::refresh_paths(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, bool) -> ratspeak_runtime::propagation::RefreshOutcome
 pub async fn ratspeak_runtime::propagation::request_relay_path(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, [u8; 16])
+pub async fn ratspeak_runtime::propagation::restore_heard_nodes(&ratspeak_runtime::state::AppState)
 pub fn ratspeak_runtime::propagation::seed_static_nodes(&ratspeak_runtime::state::AppState)
 pub mod ratspeak_runtime::propagation_recovery
 pub struct ratspeak_runtime::propagation_recovery::DeletedMessages
@@ -2739,6 +2756,7 @@ pub struct ratspeak_runtime::RNodeActivityRuntimeContext
 impl ratspeak_runtime::RNodeActivityRuntimeContext
 pub fn ratspeak_runtime::RNodeActivityRuntimeContext::handle(&self) -> &rns_runtime::reticulum::ReticulumHandle
 pub fn ratspeak_runtime::RNodeActivityRuntimeContext::origin(&self) -> ratspeak_runtime::state::RNodeActivityOrigin
+pub const ratspeak_runtime::ACTIVITY_CAPTURE_SETTING: &str
 pub fn ratspeak_runtime::any_interface_online_cached(&ratspeak_runtime::state::AppState) -> core::option::Option<bool>
 pub fn ratspeak_runtime::apply_lxmf_settings_from_state(&ratspeak_runtime::state::AppState, &mut ratspeak_runtime::lxmf::LxmfManager)
 pub fn ratspeak_runtime::arm_auto_lock(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, &str, &'static str, bool)
@@ -2761,5 +2779,6 @@ pub async fn ratspeak_runtime::send_typed_announce_from_origin(&alloc::sync::Arc
 pub async fn ratspeak_runtime::shutdown_ble_peer_for_exit()
 pub async fn ratspeak_runtime::shutdown_rns_lxmf(&alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> core::result::Result<(), ratspeak_runtime::activity::ActivityRecorderError>
 pub fn ratspeak_runtime::spawn_startup_rnode_activity_monitor(alloc::sync::Arc<ratspeak_runtime::state::AppState>, rns_runtime::reticulum::RNodeRuntimeObserver, ratspeak_runtime::state::RNodeActivityOrigin)
+pub async fn ratspeak_runtime::start_activity_unless_stopped(&ratspeak_runtime::state::AppState)
 pub async fn ratspeak_runtime::start_channel_hub_service(&alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> bool
 pub fn ratspeak_runtime::telephony_hash_for_identity_hex(&str) -> core::option::Option<alloc::string::String>

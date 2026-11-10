@@ -1174,6 +1174,7 @@ pub fn run() {
                 ratspeak_tauri::commands::activity::activity_detail,
                 ratspeak_tauri::commands::activity::activity_reveal,
                 ratspeak_tauri::commands::activity::activity_safe_copy,
+                ratspeak_tauri::commands::activity::activity_message_token,
                 ratspeak_tauri::commands::channels::api_channels,
                 ratspeak_tauri::commands::channels::api_channel_history,
                 ratspeak_tauri::commands::channels::api_channel_participants,

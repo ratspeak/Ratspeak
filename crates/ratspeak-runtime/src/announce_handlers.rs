@@ -8,7 +8,6 @@ use rns_identity::destination::Destination;
 use rns_runtime::lifecycle::ShutdownSignal;
 use rns_runtime::reticulum::{AnnounceSubscription, ReticulumHandle};
 use rns_transport::messages::{AnnounceHandlerEvent, PathTableRpcEntry};
-use serde_json::json;
 
 use crate::db;
 use crate::state::AppState;
@@ -379,12 +378,6 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
         },
     };
 
-    let display_name_from_announce = event
-        .app_data
-        .as_ref()
-        .and_then(|d| lxmf_core::handlers::pn_name_from_app_data(d))
-        .filter(|s| !s.is_empty());
-
     let (identity_changed, ratchet_changed, router_changed) = state
         .lxmf
         .lock()
@@ -426,71 +419,36 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
         }
     }
 
-    let mut entry = json!({
-        "hash": hash_hex,
-        "hops": event.hops,
-        "stamp_cost": pn.stamp_cost,
-        "transfer_limit_kb": pn.transfer_limit,
-        "last_seen": timestamp,
-        "node_state": if pn.node_state { "enabled" } else { "disabled" },
-    });
-
-    let inserted = if let Ok(mut registry) = state.discovered_propagation_nodes.lock() {
-        let key = hash_hex.clone();
-        let existing = registry.get(&key).cloned();
-        let static_meta = crate::static_nodes::node_for(&event.destination_hash);
-
-        if let Some(obj) = entry.as_object_mut() {
-            let preserved_static = existing
-                .as_ref()
-                .and_then(|v| v.get("static").and_then(|s| s.as_bool()))
-                .unwrap_or_else(|| static_meta.is_some());
-            let preserved_region = existing
-                .as_ref()
-                .and_then(|v| v.get("region").cloned())
-                .or_else(|| {
-                    static_meta
-                        .and_then(|node| node.region.clone())
-                        .map(|region| json!(region))
-                })
-                .unwrap_or(serde_json::Value::Null);
-            let preserved_role = existing
-                .as_ref()
-                .and_then(|v| v.get("role").cloned())
-                .or_else(|| {
-                    static_meta
-                        .and_then(|node| node.role.clone())
-                        .map(|role| json!(role))
-                })
-                .unwrap_or(serde_json::Value::Null);
-            let preserved_priority = existing
-                .as_ref()
-                .and_then(|v| v.get("priority").cloned())
-                .or_else(|| static_meta.map(|node| json!(node.priority)))
-                .unwrap_or(serde_json::Value::Null);
-            let preserved_name = existing
-                .as_ref()
-                .and_then(|v| v.get("display_name").and_then(|s| s.as_str()))
-                .map(String::from)
-                .or_else(|| static_meta.map(|node| node.display_name.clone()));
-            obj.insert("static".to_string(), json!(preserved_static));
-            obj.insert("region".to_string(), preserved_region);
-            obj.insert("role".to_string(), preserved_role);
-            obj.insert("priority".to_string(), preserved_priority);
-            let final_name = display_name_from_announce
-                .clone()
-                .or(preserved_name)
-                .unwrap_or_else(|| format!("Inbox {}", &hash_hex[..8.min(hash_hex.len())]));
-            obj.insert("display_name".to_string(), json!(final_name));
-        }
-
-        registry.insert(key, entry);
+    let inserted = if let (Some(app_data), Ok(mut registry)) = (
+        event.app_data.as_deref(),
+        state.discovered_propagation_nodes.lock(),
+    ) {
+        crate::propagation::insert_heard_node(
+            &mut registry,
+            event.destination_hash,
+            &pn,
+            app_data,
+            Some(event.hops),
+            timestamp,
+        );
         true
     } else {
         false
     };
 
     if inserted {
+        if let Some(app_data) = event.app_data.clone() {
+            let heard = db::HeardPropagationNode {
+                dest_hash: hash_hex.clone(),
+                app_data,
+                hops: Some(event.hops),
+                last_seen: timestamp,
+            };
+            let _ = db::spawn_db(state.db.clone(), move |p| {
+                db::save_propagation_node(&p, &heard)
+            })
+            .await;
+        }
         crate::propagation::mark_relay_path_success(state, event.destination_hash);
         state.trim_propagation_nodes();
         crate::propagation::maybe_reselect_on_announce(state).await;
@@ -582,5 +540,164 @@ mod tests {
     fn path_responses_do_not_touch_peer_activity() {
         assert!(!should_touch_peer_activity(&event_with_path_response(true)));
         assert!(should_touch_peer_activity(&event_with_path_response(false)));
+    }
+
+    fn state_on(pool: &db::DbPool) -> Arc<AppState> {
+        let tmp = tempfile::tempdir().unwrap().keep();
+        crate::lxmf::initialize_storage_namespace(&tmp).unwrap();
+        Arc::new(AppState::new(
+            ratspeak_core::config::DashboardConfig::from_env_and_defaults(tmp),
+            pool.clone(),
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        ))
+    }
+
+    fn inbox_app_data(name: &str) -> Vec<u8> {
+        use rmpv::Value;
+        let announce = Value::Array(vec![
+            Value::Boolean(false),
+            Value::from(1_700_000_000),
+            Value::Boolean(true),
+            Value::from(256),
+            Value::from(10_240),
+            Value::Array(vec![Value::from(16), Value::from(3), Value::from(18)]),
+            Value::Map(vec![(
+                Value::from(1),
+                Value::Binary(name.as_bytes().to_vec()),
+            )]),
+        ]);
+        let mut bytes = Vec::new();
+        rmpv::encode::write_value(&mut bytes, &announce).unwrap();
+        bytes
+    }
+
+    #[tokio::test]
+    async fn an_announce_keeps_what_using_the_node_taught_us() {
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(r2d2_sqlite::SqliteConnectionManager::memory())
+            .unwrap();
+        db::init_schema(&pool).unwrap();
+        let state = state_on(&pool);
+        let node = [0x3c; 16];
+        let node_hex = hex::encode(node);
+        let announce = |name: &str, hops| AnnounceHandlerEvent {
+            destination_hash: node,
+            hops,
+            app_data: Some(inbox_app_data(name)),
+            ..event_with_path_response(false)
+        };
+        process_propagation_announce(&state, announce("Old name", 3)).await;
+        crate::propagation::mark_relay_transaction_success(&state, node, "sync_ok");
+        crate::propagation::mark_relay_transaction_success(&state, node, "deposit_ok");
+        let before = state.discovered_propagation_nodes.lock().unwrap()[&node_hex].clone();
+        let before_fingerprint = crate::propagation::card_fingerprint(&state, true);
+
+        process_propagation_announce(&state, announce("New name", 1)).await;
+        let after = state.discovered_propagation_nodes.lock().unwrap()[&node_hex].clone();
+        assert_eq!(after["display_name"], "New name");
+        assert_eq!(after["hops"], 1);
+        for kept in ["last_sync_success", "last_deposit_success"] {
+            assert!(
+                after[kept].as_f64().is_some(),
+                "{kept} survives an announce"
+            );
+            assert_eq!(after[kept], before[kept], "{kept}");
+        }
+        assert!(
+            after["last_success"].as_f64() >= before["last_success"].as_f64(),
+            "an announce shows the node is reachable"
+        );
+
+        *state.auto_active_node.write().unwrap() = Some(node);
+        let status = crate::propagation::get_status_payload(&state);
+        assert_eq!(
+            status["active_node"]["last_sync_success"], after["last_sync_success"],
+            "the card reads the selected node's history from the status"
+        );
+        assert!(status.get("network_available").is_some());
+        assert_ne!(
+            crate::propagation::card_fingerprint(&state, true),
+            before_fingerprint,
+            "a newly heard node changes what the card shows"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_heard_inbox_node_is_listed_again_after_a_restart() {
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(r2d2_sqlite::SqliteConnectionManager::memory())
+            .unwrap();
+        db::init_schema(&pool).unwrap();
+        let node = [0x5a; 16];
+        let node_hex = hex::encode(node);
+        let before = state_on(&pool);
+        process_propagation_announce(
+            &before,
+            AnnounceHandlerEvent {
+                destination_hash: node,
+                hops: 2,
+                app_data: Some(inbox_app_data("Home inbox")),
+                ..event_with_path_response(false)
+            },
+        )
+        .await;
+        let heard = before.discovered_propagation_nodes.lock().unwrap()[&node_hex].clone();
+
+        let stale = [0x6b; 16];
+        let window = crate::state::PROPAGATION_NODE_TTL_SECS as f64;
+        let bundled = crate::static_nodes::load()
+            .first()
+            .map(|node| node.hash)
+            .expect("the app ships bundled inbox nodes");
+        for (hash, last_seen) in [(stale, now_f64() - window - 60.0), (bundled, now_f64())] {
+            db::save_propagation_node(
+                &pool,
+                &db::HeardPropagationNode {
+                    dest_hash: hex::encode(hash),
+                    app_data: inbox_app_data("Elsewhere"),
+                    hops: Some(1),
+                    last_seen,
+                },
+            );
+        }
+
+        let after = state_on(&pool);
+        crate::propagation::seed_static_nodes(&after);
+        crate::propagation::restore_heard_nodes(&after).await;
+        let registry = after.discovered_propagation_nodes.lock().unwrap();
+        let restored = &registry[&node_hex];
+        for field in [
+            "display_name",
+            "hops",
+            "last_seen",
+            "stamp_cost",
+            "transfer_limit_kb",
+        ] {
+            assert_eq!(restored[field], heard[field], "{field}");
+        }
+        assert_eq!(restored["display_name"], "Home inbox");
+        assert!(
+            !registry.contains_key(&hex::encode(stale)),
+            "a node silent past the discovery window stays gone"
+        );
+        assert_ne!(
+            registry[&hex::encode(bundled)]["display_name"],
+            "Elsewhere",
+            "bundled nodes keep their own entry"
+        );
+        drop(registry);
+        assert_eq!(
+            db::load_propagation_nodes(&pool, 0.0, 10)
+                .unwrap()
+                .iter()
+                .map(|node| node.dest_hash.as_str())
+                .filter(|hash| *hash == hex::encode(stale))
+                .count(),
+            0,
+            "the stale row is deleted"
+        );
     }
 }

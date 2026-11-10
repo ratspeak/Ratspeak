@@ -183,6 +183,11 @@ pub ratspeak_db::db::ChannelUnreadSummary::unread_total: u64
 pub struct ratspeak_db::db::ConversationThreadLabels
 impl ratspeak_db::ConversationThreadLabels
 pub fn ratspeak_db::ConversationThreadLabels::label(&self, &str, &str) -> core::option::Option<alloc::string::String>
+pub struct ratspeak_db::db::HeardPropagationNode
+pub ratspeak_db::db::HeardPropagationNode::app_data: alloc::vec::Vec<u8>
+pub ratspeak_db::db::HeardPropagationNode::dest_hash: alloc::string::String
+pub ratspeak_db::db::HeardPropagationNode::hops: core::option::Option<u8>
+pub ratspeak_db::db::HeardPropagationNode::last_seen: f64
 pub struct ratspeak_db::db::HubRoomRow
 pub ratspeak_db::db::HubRoomRow::grants: alloc::vec::Vec<(alloc::string::String, alloc::string::String, f64)>
 pub ratspeak_db::db::HubRoomRow::invite_only: bool
@@ -429,6 +434,7 @@ pub fn ratspeak_db::db::list_saved_channel_hubs(&ratspeak_db::DbPool, &str) -> c
 pub fn ratspeak_db::db::list_saved_channel_rooms(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<alloc::vec::Vec<ratspeak_db::SavedChannelRoom>, alloc::string::String>
 pub fn ratspeak_db::db::list_saved_channel_rooms_for_identity(&ratspeak_db::DbPool, &str) -> core::result::Result<alloc::vec::Vec<ratspeak_db::SavedChannelRoom>, alloc::string::String>
 pub fn ratspeak_db::db::load_game_sessions(&ratspeak_db::DbPool) -> alloc::vec::Vec<lrgp::session::Session>
+pub fn ratspeak_db::db::load_propagation_nodes(&ratspeak_db::DbPool, f64, usize) -> core::result::Result<alloc::vec::Vec<ratspeak_db::HeardPropagationNode>, alloc::string::String>
 pub fn ratspeak_db::db::mark_channel_room_key_required(&ratspeak_db::DbPool, &str, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::mark_channel_room_read(&ratspeak_db::DbPool, &str, &str, &str, &str) -> core::result::Result<ratspeak_db::ChannelRoomReadState, alloc::string::String>
 pub fn ratspeak_db::db::mark_contact_rsnode_device(&ratspeak_db::DbPool, &str, &str) -> bool
@@ -477,6 +483,7 @@ pub fn ratspeak_db::db::save_message(&ratspeak_db::DbPool, &str, &str, &str, &st
 pub fn ratspeak_db::db::save_message_results(&ratspeak_db::DbPool, &str, &str, &serde_json::value::Value) -> bool
 pub fn ratspeak_db::db::save_message_with_audio(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>, &str)
 pub fn ratspeak_db::db::save_outbound_message(&ratspeak_db::DbPool, &ratspeak_db::OutboundMessage<'_>) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::db::save_propagation_node(&ratspeak_db::DbPool, &ratspeak_db::HeardPropagationNode) -> bool
 pub fn ratspeak_db::db::save_reaction(&ratspeak_db::DbPool, &str, &str, &str, &str)
 pub fn ratspeak_db::db::save_rsnode_update(&ratspeak_db::DbPool, &str, &ratspeak_db::RsnodeUpdateRow) -> bool
 pub fn ratspeak_db::db::search_messages(&ratspeak_db::DbPool, &str, &str, i64) -> alloc::vec::Vec<serde_json::value::Value>
@@ -616,6 +623,11 @@ pub ratspeak_db::ChannelUnreadSummary::unread_total: u64
 pub struct ratspeak_db::ConversationThreadLabels
 impl ratspeak_db::ConversationThreadLabels
 pub fn ratspeak_db::ConversationThreadLabels::label(&self, &str, &str) -> core::option::Option<alloc::string::String>
+pub struct ratspeak_db::HeardPropagationNode
+pub ratspeak_db::HeardPropagationNode::app_data: alloc::vec::Vec<u8>
+pub ratspeak_db::HeardPropagationNode::dest_hash: alloc::string::String
+pub ratspeak_db::HeardPropagationNode::hops: core::option::Option<u8>
+pub ratspeak_db::HeardPropagationNode::last_seen: f64
 pub struct ratspeak_db::HubRoomRow
 pub ratspeak_db::HubRoomRow::grants: alloc::vec::Vec<(alloc::string::String, alloc::string::String, f64)>
 pub ratspeak_db::HubRoomRow::invite_only: bool
@@ -862,6 +874,7 @@ pub fn ratspeak_db::list_saved_channel_hubs(&ratspeak_db::DbPool, &str) -> core:
 pub fn ratspeak_db::list_saved_channel_rooms(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<alloc::vec::Vec<ratspeak_db::SavedChannelRoom>, alloc::string::String>
 pub fn ratspeak_db::list_saved_channel_rooms_for_identity(&ratspeak_db::DbPool, &str) -> core::result::Result<alloc::vec::Vec<ratspeak_db::SavedChannelRoom>, alloc::string::String>
 pub fn ratspeak_db::load_game_sessions(&ratspeak_db::DbPool) -> alloc::vec::Vec<lrgp::session::Session>
+pub fn ratspeak_db::load_propagation_nodes(&ratspeak_db::DbPool, f64, usize) -> core::result::Result<alloc::vec::Vec<ratspeak_db::HeardPropagationNode>, alloc::string::String>
 pub fn ratspeak_db::mark_channel_room_key_required(&ratspeak_db::DbPool, &str, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::mark_channel_room_read(&ratspeak_db::DbPool, &str, &str, &str, &str) -> core::result::Result<ratspeak_db::ChannelRoomReadState, alloc::string::String>
 pub fn ratspeak_db::mark_contact_rsnode_device(&ratspeak_db::DbPool, &str, &str) -> bool
@@ -910,6 +923,7 @@ pub fn ratspeak_db::save_message(&ratspeak_db::DbPool, &str, &str, &str, &str, &
 pub fn ratspeak_db::save_message_results(&ratspeak_db::DbPool, &str, &str, &serde_json::value::Value) -> bool
 pub fn ratspeak_db::save_message_with_audio(&ratspeak_db::DbPool, &str, &str, &str, &str, &str, f64, &str, &str, &str, &str, &str, &str, &str, &str, &str, core::option::Option<&str>, core::option::Option<u8>, &str, core::option::Option<u8>, &str)
 pub fn ratspeak_db::save_outbound_message(&ratspeak_db::DbPool, &ratspeak_db::OutboundMessage<'_>) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::save_propagation_node(&ratspeak_db::DbPool, &ratspeak_db::HeardPropagationNode) -> bool
 pub fn ratspeak_db::save_reaction(&ratspeak_db::DbPool, &str, &str, &str, &str)
 pub fn ratspeak_db::save_rsnode_update(&ratspeak_db::DbPool, &str, &ratspeak_db::RsnodeUpdateRow) -> bool
 pub fn ratspeak_db::search_messages(&ratspeak_db::DbPool, &str, &str, i64) -> alloc::vec::Vec<serde_json::value::Value>

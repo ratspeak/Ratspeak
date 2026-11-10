@@ -99,7 +99,9 @@ pub async fn activity_start(state: State<'_, Arc<AppState>>) -> AppResult<Activi
         let _identity_lifecycle = state.identity_switch_lock.lock().await;
         let _activity_control = state.activity_control_lock.lock().await;
         ensure_activity_request_fence(&state, request_fence)?;
-        state.activity.start().await.map_err(map_recorder_error)?
+        let status = state.activity.start().await.map_err(map_recorder_error)?;
+        remember_capture_choice(&state, "on").await;
+        status
     };
     let diagnostics_fence = state.activity_request_fence();
     super::network::emit_ingress_diagnostics_snapshot(state.inner(), diagnostics_fence).await;
@@ -112,7 +114,17 @@ pub async fn activity_stop(state: State<'_, Arc<AppState>>) -> AppResult<Activit
     let _identity_lifecycle = state.identity_switch_lock.lock().await;
     let _activity_control = state.activity_control_lock.lock().await;
     ensure_activity_request_fence(&state, request_fence)?;
-    state.activity.stop().await.map_err(map_recorder_error)
+    let status = state.activity.stop().await.map_err(map_recorder_error)?;
+    remember_capture_choice(&state, "off").await;
+    Ok(status)
+}
+
+/// Capture restarts with each runtime session unless the user stopped it.
+async fn remember_capture_choice(state: &AppState, choice: &'static str) {
+    let _ = crate::db::spawn_db(state.db.clone(), move |p| {
+        crate::db::set_setting(&p, ratspeak_runtime::ACTIVITY_CAPTURE_SETTING, choice)
+    })
+    .await;
 }
 
 #[tauri::command]
@@ -122,7 +134,9 @@ pub async fn activity_resume(state: State<'_, Arc<AppState>>) -> AppResult<Activ
         let _identity_lifecycle = state.identity_switch_lock.lock().await;
         let _activity_control = state.activity_control_lock.lock().await;
         ensure_activity_request_fence(&state, request_fence)?;
-        state.activity.resume().await.map_err(map_recorder_error)?
+        let status = state.activity.resume().await.map_err(map_recorder_error)?;
+        remember_capture_choice(&state, "on").await;
+        status
     };
     let diagnostics_fence = state.activity_request_fence();
     super::network::emit_ingress_diagnostics_snapshot(state.inner(), diagnostics_fence).await;
@@ -161,6 +175,30 @@ pub async fn activity_replay(
     state
         .activity
         .replay_for_ipc(args.capture_session, after, args.max_events, args.max_bytes)
+        .await
+        .map_err(map_recorder_error)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityMessageTokenArgs {
+    pub msg_id: String,
+}
+
+/// The current capture's pseudonym for a message, so Activity can show just
+/// its events. Nothing is revealed: the caller already has the message id.
+#[tauri::command]
+pub async fn activity_message_token(
+    state: State<'_, Arc<AppState>>,
+    args: ActivityMessageTokenArgs,
+) -> AppResult<ratspeak_runtime::activity::ActivityMessageTokenV1> {
+    let message_id: [u8; 32] = hex::decode(args.msg_id.trim())
+        .ok()
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| AppError::bad_request("msg_id must be 64 hex characters"))?;
+    state
+        .activity
+        .message_token(message_id)
         .await
         .map_err(map_recorder_error)
 }

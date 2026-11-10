@@ -32,6 +32,117 @@ function propagationNodePriority(node) {
     return isNaN(parsed) ? 1000 : parsed;
 }
 
+var INBOX_IN_FLIGHT_STATES = ['LinkEstablishing', 'LinkEstablished', 'ListRequested',
+    'GetRequested', 'Receiving', 'PurgeRequested', 'AwaitingAdmission'];
+// Three missed automatic checks (every 5 minutes) and "Working" becomes "Last checked".
+var INBOX_WORKING_WINDOW_SECS = 900;
+var INBOX_CHECK_OPTIMISTIC_MS = 15000;
+var INBOX_CLOCK_MS = 30000;
+var INBOX_REASON_TEXT = {
+    path_unavailable: 'No route found',
+    active_relay_path_missing: 'No route found',
+    path_probe_timeout: 'No route found',
+    link_not_established: "Couldn't connect",
+    'link establishment timeout': "Couldn't connect",
+    link_closed: 'Connection dropped',
+    'link closed': 'Connection dropped',
+    proof_timed_out: 'No confirmation',
+    'delivery timeout': 'No confirmation',
+    'direct fallback timeout': 'No confirmation',
+    inbox_rejected: 'Refused your message',
+    'resource rejected': 'Refused your message',
+    'propagation node rejected stamp': 'Refused your message',
+    transfer_failed: 'Sending stopped partway',
+    resource_failed: 'Sending stopped partway',
+    too_large: 'Over the size limit',
+    no_interface: 'No network connection',
+    sync_failed: 'Check failed',
+    sync_failure_threshold: 'Checks keep failing'
+};
+var inboxCheckRequestedAt = 0;
+var inboxClock = null;
+
+function inboxTime(ts) {
+    var date = new Date(ts * 1000);
+    var iso = isNaN(date.getTime()) ? '' : date.toISOString();
+    return '<time datetime="' + escapeHtml(iso) + '" title="' + escapeHtml(isNaN(date.getTime()) ? '' : date.toLocaleString()) + '">' +
+        escapeHtml(formatLastHeard(ts)) + '</time>';
+}
+
+/** The Offline Inbox card's state, first match wins (issue 79 spec A1). */
+function inboxCardState(status, nowMs) {
+    var node = status.active_node || null;
+    var cs = status.client_state;
+    var offline = status.network_available === false ||
+        (status.network_available == null && typeof _anyInterfaceOnline !== 'undefined' && _anyInterfaceOnline === false);
+    var stored = node && node.last_deposit_success ? 'Stored your last message ' + inboxTime(node.last_deposit_success) : '';
+    var worked = node && node.last_success ? 'Last worked ' + inboxTime(node.last_success) : '';
+    var word = function(text) { return '<span class="relay-status-word">' + text + '</span>'; };
+    if (offline) {
+        return { dot: 'status-offline', line1: word('Offline') + ' · Checks resume when you reconnect', line2: '', busy: false };
+    }
+    var progress = Number(status.transfer_progress);
+    if (cs === 'Receiving' && progress > 0 && progress < 1) {
+        var percent = Math.min(99, Math.max(1, Math.round(progress * 100)));
+        return { dot: 'status-checking', line1: word('Receiving messages') + ' · ' + percent + '%', line2: '', busy: true };
+    }
+    if (INBOX_IN_FLIGHT_STATES.indexOf(cs) !== -1 || nowMs - inboxCheckRequestedAt < INBOX_CHECK_OPTIMISTIC_MS) {
+        return { dot: 'status-checking', line1: word('Checking now…'), line2: '', busy: true };
+    }
+    if (!node || (!(node.last_seen > 0) && !node.last_success)) {
+        return { dot: 'status-unknown', line1: word('Not heard on the network yet'), line2: '', busy: false };
+    }
+    if (node.last_failure_reason === 'sync_partial') {
+        return { dot: 'status-stale', line1: word('Last check incomplete'), line2: worked, busy: false };
+    }
+    if (node.last_failure_reason || node.path_status === 'failed' || node.path_status === 'missing') {
+        var reason = INBOX_REASON_TEXT[node.last_failure_reason];
+        return {
+            dot: 'status-unreachable',
+            line1: word('Not working') + (reason ? ' · ' + escapeHtml(reason) : ''),
+            line2: worked,
+            busy: false
+        };
+    }
+    if (node.last_sync_success) {
+        if (nowMs / 1000 - node.last_sync_success <= INBOX_WORKING_WINDOW_SECS) {
+            return { dot: 'status-reachable', line1: word('Working') + ' · Checked ' + inboxTime(node.last_sync_success), line2: stored, busy: false };
+        }
+        return { dot: 'status-stale', line1: word('Last checked') + ' ' + inboxTime(node.last_sync_success), line2: stored, busy: false };
+    }
+    return { dot: 'status-unknown', line1: word('Not checked yet'), line2: stored, busy: false };
+}
+
+function inboxStatusLines(state) {
+    return '<div>' + state.line1 + '</div>' + (state.line2 ? '<div>' + state.line2 + '</div>' : '');
+}
+
+function inboxStatusHtml(state) {
+    return '<div class="relay-card-details" id="inbox-status-lines">' + inboxStatusLines(state) + '</div>';
+}
+
+function inboxDot(state) {
+    return '<span class="conn-status-dot ' + state.dot + '" id="inbox-status-dot" aria-hidden="true"></span>';
+}
+
+function inboxPanelVisible() {
+    var panel = document.getElementById('panel-settings-offline-inbox');
+    return !!panel && panel.offsetParent !== null && !document.hidden;
+}
+
+// Relative times age, so re-render while the card is on screen, and only then.
+function keepInboxClock() {
+    if (inboxClock || !inboxPanelVisible()) return;
+    inboxClock = setInterval(function() {
+        if (!inboxPanelVisible()) {
+            clearInterval(inboxClock);
+            inboxClock = null;
+            return;
+        }
+        refreshInboxCard();
+    }, INBOX_CLOCK_MS);
+}
+
 function renderPropagationStatus(targetId) {
     var container = document.getElementById(targetId || 'settings-propagation-status');
     if (!container) return;
@@ -41,8 +152,6 @@ function renderPropagationStatus(targetId) {
     var nodeHash = propagationStatus.propagation_node || null;
     var autoActive = propagationStatus.auto_active_node || null;
     var selectedNodeHash = mode === 'auto' ? autoActive : nodeHash;
-    var msgCount = propagationStatus.message_count || 0;
-    var isConnected = propagationStatus.connected || false;
     var awaiting = !!propagationStatus.awaiting_discovery;
 
     var html = '';
@@ -62,9 +171,9 @@ function renderPropagationStatus(targetId) {
             'Offline Inbox is disabled. An active sync is canceled, and no new syncs will start.' +
         '</div>';
     } else if (mode === 'auto') {
-        html += renderAutoBody(autoActive, isConnected, msgCount, favorStatic, awaiting);
+        html += renderAutoBody(autoActive, favorStatic, awaiting);
     } else if (mode === 'manual') {
-        html += renderManualBody(nodeHash, isConnected, msgCount);
+        html += renderManualBody(nodeHash);
     }
 
     if (mode === 'manual') {
@@ -75,8 +184,63 @@ function renderPropagationStatus(targetId) {
     html += renderHostingSettings();
     html += renderStampSettings();
 
+    // A redraw must not take what the user is doing: typed text, open
+    // sections, or focus.
+    var input = document.getElementById('prop-node-input');
+    var typed = input && input.value !== (nodeHash || '') ? input.value : null;
+    var focused = document.activeElement && container.contains(document.activeElement)
+        ? document.activeElement.id : '';
+    var openDetails = [];
+    container.querySelectorAll('details[open] > summary').forEach(function(summary) {
+        openDetails.push(summary.textContent);
+    });
+
     container.innerHTML = html;
+    lastInboxRenderKey = inboxRenderKey(propagationStatus);
     wireUpHandlers(container, mode);
+
+    container.querySelectorAll('details > summary').forEach(function(summary) {
+        if (openDetails.indexOf(summary.textContent) !== -1) summary.parentElement.open = true;
+    });
+    var nextInput = document.getElementById('prop-node-input');
+    if (nextInput && typed !== null) nextInput.value = typed;
+    var nextFocus = focused ? document.getElementById(focused) : null;
+    if (nextFocus && typeof nextFocus.focus === 'function') {
+        try { nextFocus.focus({ preventScroll: true }); } catch (_) { nextFocus.focus(); }
+    }
+    keepInboxClock();
+}
+
+// Fields only the selected card shows; a change in any other field redraws
+// the whole panel.
+var INBOX_CARD_FIELDS = ['client_state', 'sync_state', 'connected', 'transfer_progress',
+    'transfer_size', 'transfer_result', 'active_node', 'network_available'];
+var lastInboxRenderKey = null;
+
+function inboxRenderKey(status) {
+    var rest = {};
+    Object.keys(status || {}).sort().forEach(function(key) {
+        if (INBOX_CARD_FIELDS.indexOf(key) === -1) rest[key] = status[key];
+    });
+    return JSON.stringify(rest);
+}
+
+/** Updates just the card's dot, status lines, and Check Now; false when the card isn't drawn. */
+function refreshInboxCard() {
+    var dot = document.getElementById('inbox-status-dot');
+    var lines = document.getElementById('inbox-status-lines');
+    if (!dot || !lines) return false;
+    var state = inboxCardState(propagationStatus, Date.now());
+    dot.className = 'conn-status-dot ' + state.dot;
+    lines.innerHTML = inboxStatusLines(state);
+    var check = document.getElementById('prop-sync-btn');
+    if (check) check.disabled = state.busy;
+    return true;
+}
+
+function updateInboxStatus() {
+    if (lastInboxRenderKey === inboxRenderKey(propagationStatus) && refreshInboxCard()) return;
+    renderPropagationStatus();
 }
 
 function modeBtnHtml(value, label, active) {
@@ -86,7 +250,7 @@ function modeBtnHtml(value, label, active) {
         '</button>';
 }
 
-function renderAutoBody(autoActive, isConnected, msgCount, favorStatic, awaiting) {
+function renderAutoBody(autoActive, favorStatic, awaiting) {
     var html = '';
     html += '<label class="settings-row" style="border-bottom:none;cursor:pointer;">' +
         '<div class="settings-row-info">' +
@@ -102,22 +266,17 @@ function renderAutoBody(autoActive, isConnected, msgCount, favorStatic, awaiting
         var activeLabel = activeNode && activeNode.static
             ? 'Using Ratspeak inbox'
             : (favorStatic ? 'Using fallback inbox' : 'Using inbox');
-        var statusDot = isConnected
-            ? '<span class="text-status-online">●</span>'
-            : '<span class="text-muted-color">○</span>';
+        var autoState = inboxCardState(propagationStatus, Date.now());
         html += '<div class="relay-card relay-card-active">' +
             '<div class="relay-card-header">' +
-                statusDot + ' <strong>' + escapeHtml(activeLabel) + ': ' + escapeHtml(nodeName) + '</strong>' +
+                inboxDot(autoState) + '<strong>' + escapeHtml(activeLabel) + ': ' + escapeHtml(nodeName) + '</strong>' +
             '</div>' +
-            '<div class="relay-card-details">' +
-                '<span>' + msgCount + ' message' + (msgCount !== 1 ? 's' : '') + ' stored</span>' +
-                ' · <span>Auto</span>' +
-            '</div>' +
+            inboxStatusHtml(autoState) +
             '<div class="inline-hint-sm" style="overflow-wrap:anywhere;margin-top:6px;">' +
                 'Propagation address<br>' + escapeHtml(autoActive) +
             '</div>' +
             '<div class="relay-card-actions">' +
-                '<button class="nr-btn nr-btn-sm" id="prop-sync-btn">Check Now</button>' +
+                '<button class="nr-btn nr-btn-sm" id="prop-sync-btn"' + (autoState.busy ? ' disabled' : '') + '>Check Now</button>' +
             '</div>' +
         '</div>';
     } else if (awaiting) {
@@ -134,23 +293,18 @@ function renderAutoBody(autoActive, isConnected, msgCount, favorStatic, awaiting
     return html;
 }
 
-function renderManualBody(nodeHash, isConnected, msgCount) {
+function renderManualBody(nodeHash) {
     var html = '';
     if (nodeHash) {
         var nodeName = findNodeName(nodeHash);
-        var statusDot = isConnected
-            ? '<span class="text-status-online">●</span>'
-            : '<span class="text-muted-color">○</span>';
+        var manualState = inboxCardState(propagationStatus, Date.now());
         html += '<div class="relay-card relay-card-active">' +
             '<div class="relay-card-header">' +
-                statusDot + ' <strong>' + escapeHtml(nodeName) + '</strong>' +
+                inboxDot(manualState) + '<strong>' + escapeHtml(nodeName) + '</strong>' +
             '</div>' +
-            '<div class="relay-card-details">' +
-                '<span>' + msgCount + ' message' + (msgCount !== 1 ? 's' : '') + ' stored</span>' +
-                ' · <span>Manual</span>' +
-            '</div>' +
+            inboxStatusHtml(manualState) +
             '<div class="relay-card-actions">' +
-                '<button class="nr-btn nr-btn-sm" id="prop-sync-btn">Check Now</button>' +
+                '<button class="nr-btn nr-btn-sm" id="prop-sync-btn"' + (manualState.busy ? ' disabled' : '') + '>Check Now</button>' +
                 '<button class="nr-btn nr-btn-sm nr-btn-muted" id="prop-clear-btn">Disconnect</button>' +
             '</div>' +
         '</div>';
@@ -221,7 +375,8 @@ function renderDiscoveredList(mode, favorStatic, activeHash) {
         } else {
             hopLabel = node.hops + ' hop' + (node.hops > 1 ? 's' : '');
         }
-        var nameHtml = escapeHtml(node.display_name || ('Inbox ' + (node.hash || '').substring(0, 8)));
+        var name = node.display_name || ('Inbox ' + (node.hash || '').substring(0, 8));
+        var nameHtml = escapeHtml(name);
         if (node.static) {
             nameHtml = '<span class="relay-static-badge" title="Bundled Ratspeak inbox node">★</span> ' + nameHtml;
         }
@@ -236,7 +391,7 @@ function renderDiscoveredList(mode, favorStatic, activeHash) {
         }
         html += '<div class="relay-node-row' + (isActive ? ' relay-node-active' : '') +
             '" data-hash="' + escapeHtml(node.hash) + '">' +
-            '<span class="relay-node-name">' + nameHtml + '</span>' +
+            '<span class="relay-node-name" title="' + escapeHtml(name) + '">' + nameHtml + '</span>' +
             '<span class="relay-node-hops">' + hopLabel + '</span>' +
             actionHtml +
         '</div>';
@@ -666,15 +821,10 @@ function clearPropagationNode() {
 }
 
 function syncPropagationMailbox() {
-    var btn = document.getElementById('prop-sync-btn');
-    if (btn) {
-        btn.disabled = true;
-        btn.textContent = 'Checking...';
-        setTimeout(function() {
-            btn.disabled = false;
-            btn.textContent = 'Check Now';
-        }, 5000);
-    }
+    inboxCheckRequestedAt = Date.now();
+    refreshInboxCard();
+    // Clears the optimistic Checking state if no update arrives.
+    setTimeout(refreshInboxCard, INBOX_CHECK_OPTIMISTIC_MS + 50);
     RS.invoke('sync_propagation').catch(function() {});
 }
 
@@ -710,27 +860,21 @@ function refreshRelayNodes() {
 
 RS.listen('propagation_update', function(data) {
     propagationStatus = data || propagationStatus;
+    inboxCheckRequestedAt = 0;
     refreshInFlight = false;
     clearRelayRefreshWatchdog();
-    renderPropagationStatus();
-    var relayBadge = document.getElementById('settings-relay-status');
-    if (relayBadge) {
-        var modeLabel = propagationStatus.mode || 'auto';
-        if (propagationStatus.mode === 'off') {
-            relayBadge.textContent = 'OFF';
-            relayBadge.className = 'settings-relay-badge';
-        } else if (propagationStatus.connected) {
-            relayBadge.textContent = (modeLabel === 'auto' ? 'Auto: ' : '') + 'Ready';
-            relayBadge.className = 'settings-relay-badge connected';
-        } else if (propagationStatus.auto_active_node ||
-            (propagationStatus.mode === 'manual' && propagationStatus.propagation_node)) {
-            relayBadge.textContent = modeLabel === 'auto' ? 'Auto selected' : 'Selected';
-            relayBadge.className = 'settings-relay-badge';
-        } else {
-            relayBadge.textContent = 'Finding inbox';
-            relayBadge.className = 'settings-relay-badge';
-        }
-    }
+    updateInboxStatus();
+});
+
+document.addEventListener('click', function(event) {
+    var item = event.target && event.target.closest
+        ? event.target.closest('[data-settings-panel="panel-settings-offline-inbox"]')
+        : null;
+    if (item) setTimeout(renderPropagationStatus, 0);
+});
+
+document.addEventListener('visibilitychange', function() {
+    if (!document.hidden && inboxPanelVisible()) renderPropagationStatus();
 });
 
 RS.listen('propagation_refresh_started', function(data) {
@@ -748,6 +892,7 @@ RS.listen('propagation_error', function(data) {
 });
 
 RS.listen('propagation_sync_result', function(data) {
+    if (!(data && data.started)) inboxCheckRequestedAt = 0;
     if (data && (data.success || data.ok)) {
         if (data.started) {
             return;
@@ -761,11 +906,7 @@ RS.listen('propagation_sync_result', function(data) {
     } else {
         showToast('Offline Inbox check failed: ' + ((data && (data.error || data.message)) || 'Unknown'), 'toast-error', 4000);
     }
-    var btn = document.getElementById('prop-sync-btn');
-    if (btn) {
-        btn.disabled = false;
-        btn.textContent = 'Check Now';
-    }
+    refreshInboxCard();
 });
 
 RS.invoke('api_propagation').then(function(data) {

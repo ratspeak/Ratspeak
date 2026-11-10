@@ -8,7 +8,7 @@ use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-pub(crate) const SCHEMA_VERSION: i64 = 50;
+pub(crate) const SCHEMA_VERSION: i64 = 51;
 
 const VOICE_FORMAT_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS conversation_voice_formats (
@@ -109,6 +109,17 @@ WHEN NEW.state IN ('delivered', 'propagated', 'rejected')
 BEGIN
     DELETE FROM lxmf_outbox WHERE identity_id = NEW.identity_id AND message_id = NEW.id;
 END;
+"#;
+
+// Offline Inbox nodes heard on the network, so the list survives a restart.
+// Rows older than the discovery window are dropped when the list is loaded.
+const PROPAGATION_NODES_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS propagation_nodes (
+    dest_hash TEXT PRIMARY KEY,
+    app_data  BLOB NOT NULL,
+    hops      INTEGER,
+    last_seen REAL NOT NULL
+);
 "#;
 
 const IDENTITY_SELECT_COLUMNS: &str = "hash,
@@ -293,6 +304,7 @@ pub fn init_schema(pool: &DbPool) -> Result<(), Box<dyn std::error::Error + Send
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.execute_batch(SCHEMA_SQL)?;
     tx.execute_batch(OUTBOX_SCHEMA_SQL)?;
+    tx.execute_batch(PROPAGATION_NODES_SCHEMA_SQL)?;
     tx.execute_batch(crate::admission::SCHEMA_SQL)?;
     tx.execute_batch(VOICE_FORMAT_SCHEMA_SQL)?;
     tx.execute_batch(CONVERSATION_THREADS_SCHEMA_SQL)?;
@@ -2136,6 +2148,15 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 51 {
+        migration_step(conn, 51, |conn| {
+            conn.execute_batch(PROPAGATION_NODES_SCHEMA_SQL)?;
+            conn.execute_batch("UPDATE schema_version SET version = 51;")?;
+            tracing::info!("Migrated to schema version 51 (heard Offline Inbox nodes)");
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -2396,6 +2417,7 @@ pub const RESET_TABLES: &[&str] = &[
     "message_results",
     "rsnode_updates",
     "lxmf_outbox",
+    "propagation_nodes",
     "messages",
     "contacts",
     "identities",
@@ -9056,6 +9078,74 @@ pub fn touch_identity_last_heard(pool: &DbPool, dest_hash: &str, timestamp: f64)
     .unwrap_or(false)
 }
 
+/// The last announce heard from an Offline Inbox node.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HeardPropagationNode {
+    pub dest_hash: String,
+    pub app_data: Vec<u8>,
+    pub hops: Option<u8>,
+    pub last_seen: f64,
+}
+
+/// Keep the newest announce per node; an older one never replaces it.
+pub fn save_propagation_node(pool: &DbPool, node: &HeardPropagationNode) -> bool {
+    let Ok(conn) = pool.get() else {
+        return false;
+    };
+    conn.execute(
+        "INSERT INTO propagation_nodes(dest_hash, app_data, hops, last_seen)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(dest_hash) DO UPDATE SET
+             app_data = excluded.app_data,
+             hops = excluded.hops,
+             last_seen = excluded.last_seen
+         WHERE excluded.last_seen >= propagation_nodes.last_seen",
+        params![node.dest_hash, node.app_data, node.hops, node.last_seen],
+    )
+    .is_ok()
+}
+
+/// Drops nodes last heard before `since` and all but the `limit` newest, then
+/// returns what is left, newest first.
+pub fn load_propagation_nodes(
+    pool: &DbPool,
+    since: f64,
+    limit: usize,
+) -> Result<Vec<HeardPropagationNode>, String> {
+    let mut conn = pool.get().map_err(|e| format!("pool: {e}"))?;
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let load = |conn: &mut Connection| -> Result<Vec<HeardPropagationNode>, rusqlite::Error> {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute(
+            "DELETE FROM propagation_nodes WHERE last_seen < ?1",
+            params![since],
+        )?;
+        tx.execute(
+            "DELETE FROM propagation_nodes WHERE dest_hash NOT IN (
+                 SELECT dest_hash FROM propagation_nodes ORDER BY last_seen DESC LIMIT ?1
+             )",
+            params![limit],
+        )?;
+        let nodes = tx
+            .prepare(
+                "SELECT dest_hash, app_data, hops, last_seen FROM propagation_nodes
+                 ORDER BY last_seen DESC",
+            )?
+            .query_map([], |row| {
+                Ok(HeardPropagationNode {
+                    dest_hash: row.get(0)?,
+                    app_data: row.get(1)?,
+                    hops: row.get(2)?,
+                    last_seen: row.get(3)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        tx.commit()?;
+        Ok(nodes)
+    };
+    load(&mut conn).map_err(|e| e.to_string())
+}
+
 pub fn get_identity_activity_first_seen(pool: &DbPool, dest_hash: &str) -> Option<f64> {
     let conn = pool.get().ok()?;
     conn.query_row(
@@ -13017,6 +13107,70 @@ mod migration_tests {
         assert_eq!(
             messages[0]["retryable"], false,
             "nothing stored to send again"
+        );
+    }
+
+    #[test]
+    fn migration_51_adds_heard_propagation_nodes_to_a_50_database() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        pool.get()
+            .unwrap()
+            .execute_batch(
+                "DROP TABLE propagation_nodes;
+                 UPDATE schema_version SET version = 50;",
+            )
+            .unwrap();
+
+        init_schema(&pool).unwrap();
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+        assert!(save_propagation_node(&pool, &heard("aa", 1.0)));
+        assert_eq!(load_propagation_nodes(&pool, 0.0, 10).unwrap().len(), 1);
+    }
+
+    fn heard(hash: &str, last_seen: f64) -> HeardPropagationNode {
+        HeardPropagationNode {
+            dest_hash: hash.to_string(),
+            app_data: last_seen.to_be_bytes().to_vec(),
+            hops: Some(2),
+            last_seen,
+        }
+    }
+
+    #[test]
+    fn heard_propagation_nodes_keep_the_newest_announce() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        assert!(save_propagation_node(&pool, &heard("aa", 100.0)));
+        save_propagation_node(&pool, &heard("aa", 50.0));
+        assert_eq!(
+            load_propagation_nodes(&pool, 0.0, 10).unwrap(),
+            vec![heard("aa", 100.0)],
+            "a delayed older announce never replaces a newer one"
+        );
+
+        let newer = HeardPropagationNode {
+            hops: Some(1),
+            ..heard("aa", 200.0)
+        };
+        save_propagation_node(&pool, &newer);
+        assert_eq!(load_propagation_nodes(&pool, 0.0, 10).unwrap(), vec![newer]);
+    }
+
+    #[test]
+    fn loading_heard_propagation_nodes_drops_stale_and_surplus_rows() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        for (hash, last_seen) in [("old", 10.0), ("a", 100.0), ("b", 300.0), ("c", 200.0)] {
+            save_propagation_node(&pool, &heard(hash, last_seen));
+        }
+
+        let kept = load_propagation_nodes(&pool, 50.0, 2).unwrap();
+        assert_eq!(kept, vec![heard("b", 300.0), heard("c", 200.0)]);
+        assert_eq!(
+            load_propagation_nodes(&pool, 0.0, 10).unwrap(),
+            kept,
+            "dropped rows are deleted, not just skipped"
         );
     }
 

@@ -42,6 +42,7 @@ pub use schema::{
     IdentifierKind, MAX_ATTRIBUTES, MAX_ENCODED_EVENT_BYTES, MAX_STRING_FIELD_BYTES,
     SafeCopyEventV1,
 };
+pub use worker::ActivityMessageTokenV1;
 
 #[cfg(test)]
 mod boundary_tests {

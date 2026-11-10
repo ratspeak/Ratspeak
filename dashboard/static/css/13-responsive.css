@@ -104,6 +104,13 @@
         gap: var(--space-2);
         padding: var(--space-3) var(--space-4);
     }
+    .activity-filter-bar.has-message-filter {
+        flex-direction: row;
+        align-items: center;
+    }
+    .activity-filter-bar.has-message-filter .activity-result-count {
+        align-self: center;
+    }
     .activity-filters {
         flex-wrap: nowrap;
         overflow-x: auto;
@@ -3277,8 +3284,7 @@
     .contacts-row-status,
     .games-session-time,
     .activity-event-time,
-    .activity-event-meta,
-    .settings-relay-badge {
+    .activity-event-meta {
         font-size: var(--mobile-list-meta-size);
         line-height: 1.3;
     }

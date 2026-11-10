@@ -23,14 +23,16 @@ use super::replay::{
 };
 use super::schema::{ActivityAttributeKey, ActivitySeverity, CaptureProfile, CaptureScope};
 use super::worker::{
-    BarrierAck, EventQueryRequest, IngressDraft, IngressItem, OrderedBarrier, OrderedBarrierKind,
-    QueryCommand, ReplayRequest, UrgentCommand, WorkerShared, spawn_worker,
+    ActivityMessageTokenV1, BarrierAck, EventQueryRequest, IngressDraft, IngressItem,
+    OrderedBarrier, OrderedBarrierKind, QueryCommand, ReplayRequest, UrgentCommand, WorkerShared,
+    spawn_worker,
 };
 
 const URGENT_CAPACITY: usize = 16;
 const QUERY_CAPACITY: usize = 16;
 const LIFECYCLE_TIMEOUT: Duration = Duration::from_secs(5);
-const MOBILE_DEFAULT_TRACE_DURATION: Duration = Duration::from_secs(10 * 60);
+// Trace is detailed and ends on its own unless asked to run until stopped.
+const DEFAULT_TRACE_DURATION: Duration = Duration::from_secs(10 * 60);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActivityRecordOutcome {
@@ -585,6 +587,22 @@ impl ActivityRecorder {
         .await
     }
 
+    /// The current capture's pseudonym for a message, for filtering to it.
+    pub async fn message_token(
+        &self,
+        message_id: [u8; 32],
+    ) -> Result<ActivityMessageTokenV1, ActivityRecorderError> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        self.send_query(
+            QueryCommand::MessageToken {
+                message_id,
+                reply: reply_tx,
+            },
+            reply_rx,
+        )
+        .await
+    }
+
     pub async fn safe_copy(
         &self,
         capture_session: String,
@@ -868,8 +886,7 @@ fn trace_deadline(
     let duration = match requested {
         Some(TraceCaptureDuration::UntilStopped) => None,
         Some(TraceCaptureDuration::Limited(duration)) => Some(duration),
-        None => cfg!(any(target_os = "android", target_os = "ios"))
-            .then_some(MOBILE_DEFAULT_TRACE_DURATION),
+        None => Some(DEFAULT_TRACE_DURATION),
     };
     duration
         .map(|duration| {
@@ -1894,6 +1911,153 @@ mod tests {
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].events().len(), 1);
         assert_eq!(batches[0].events()[0].kind(), "diagnostics.capture_started");
+        recorder.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_recorded_message_can_be_found_by_its_id() {
+        let sink = Arc::new(RecordingSink::default());
+        let recorder = ActivityRecorder::with_batch_sink(sink.clone());
+        let started = recorder.start().await.unwrap();
+        let message_id = [0x5c; 32];
+        assert_eq!(
+            recorder.record_event(|| {
+                Ok(producer::lxmf_delivery_state_changed(
+                    producer::LxmfDeliveryStateChanged {
+                        message: producer::MessageId::from_hex(&hex::encode(message_id))?,
+                        state: producer::LxmfDeliveryState::Failed,
+                        method: None,
+                        rtt_ms: None,
+                        failure_reason: Some(producer::DeliveryFailureReason::LinkNotEstablished),
+                    },
+                ))
+            }),
+            ActivityRecordOutcome::Accepted
+        );
+        wait_until(|| {
+            sink.batches()
+                .iter()
+                .flat_map(|batch| batch.events())
+                .any(|event| event.kind() == "lxmf.delivery.failed")
+        })
+        .await;
+        let event = sink
+            .batches()
+            .iter()
+            .flat_map(|batch| batch.events().iter().cloned())
+            .find(|event| event.kind() == "lxmf.delivery.failed")
+            .unwrap();
+        let event = serde_json::to_value(event).unwrap();
+        let attribute = |key: &str| {
+            event["attributes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|attribute| attribute["key"] == key)
+                .map(|attribute| attribute["value"].clone())
+                .unwrap()
+        };
+        assert_eq!(attribute("reason")["value"], "link_not_established");
+
+        let found = recorder.message_token(message_id).await.unwrap();
+        assert_eq!(found.capture_session.as_deref(), started.capture_session());
+        let shown = attribute("message")["value"]["pseudonym"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            found.token.as_deref().unwrap().starts_with(&shown),
+            "the feed's pseudonym is a prefix of the token"
+        );
+
+        // Asked before a message appears, the token still finds it later.
+        let later = [0x5d; 32];
+        let token = recorder.message_token(later).await.unwrap().token.unwrap();
+        assert_eq!(
+            recorder.record_event(|| {
+                Ok(producer::lxmf_delivery_state_changed(
+                    producer::LxmfDeliveryStateChanged {
+                        message: producer::MessageId::from_hex(&hex::encode(later))?,
+                        state: producer::LxmfDeliveryState::Failed,
+                        method: None,
+                        rtt_ms: None,
+                        failure_reason: None,
+                    },
+                ))
+            }),
+            ActivityRecordOutcome::Accepted
+        );
+        wait_until(|| {
+            sink.batches()
+                .iter()
+                .flat_map(|batch| batch.events())
+                .filter(|event| event.kind() == "lxmf.delivery.failed")
+                .count()
+                == 2
+        })
+        .await;
+        let later_shown = sink
+            .batches()
+            .iter()
+            .flat_map(|batch| batch.events().iter().cloned())
+            .filter(|event| event.kind() == "lxmf.delivery.failed")
+            .map(|event| serde_json::to_value(event).unwrap())
+            .filter_map(|event| {
+                event["attributes"]
+                    .as_array()?
+                    .iter()
+                    .find(|attribute| attribute["key"] == "message")
+                    .and_then(|attribute| attribute["value"]["value"]["pseudonym"].as_str())
+                    .map(str::to_string)
+            })
+            .find(|pseudonym| pseudonym != &shown)
+            .unwrap();
+        assert!(token.starts_with(&later_shown));
+        recorder.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn trace_ends_after_ten_minutes_unless_asked_otherwise() {
+        let recorder = ActivityRecorder::new();
+        recorder.start().await.unwrap();
+        let status = recorder
+            .set_profile(CaptureProfile::Trace, None)
+            .await
+            .unwrap();
+        let Some(ActivityTraceStateV1::Limited { remaining_ms }) = status.trace() else {
+            panic!("Trace is time-limited on every platform");
+        };
+        assert!(
+            (590_000..=600_000).contains(&remaining_ms),
+            "{remaining_ms}"
+        );
+        recorder.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_loss_with_nothing_after_it_still_reaches_the_feed() {
+        let sink = Arc::new(RecordingSink::default());
+        let recorder = ActivityRecorder::with_batch_sink(sink.clone());
+        recorder.start().await.unwrap();
+        wait_until(|| !sink.batches().is_empty()).await;
+
+        recorder
+            .inner
+            .shared
+            .health
+            .increment_rate_limited_at(1_000, RateDomain::Network);
+        tokio::time::timeout(Duration::from_millis(500), async {
+            while !sink
+                .batches()
+                .iter()
+                .flat_map(|batch| batch.events())
+                .any(|event| event.kind() == "diagnostics.sampled")
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("an opened loss window wakes the worker without more input");
         recorder.shutdown().await.unwrap();
     }
 

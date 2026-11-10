@@ -941,9 +941,10 @@ test('pending controls are tokened, disabled/aria-busy, roll back with status re
     stopGate.resolve(stopped);
     await stop;
     assert.strictEqual(ctx.activityCaptureState, 'stopped');
-    assert.strictEqual(ctx.activityEvents.length, 1, 'Pause retains visible rows');
+    assert.strictEqual(ctx.activityEvents.length, 1, 'Stop retains visible rows');
     assert.strictEqual(ui.ids['activity-active'].style.display, '');
-    assert.strictEqual(ui.ids['activity-capture-btn'].textContent, 'Resume');
+    assert.strictEqual(ui.ids['activity-capture-btn'].textContent, 'Start');
+    assert.strictEqual(ui.ids['activity-capture-btn'].attributes['aria-label'], 'Start Activity');
     assert.strictEqual(ui.ids['activity-capture-btn'].disabled, false);
     assert.strictEqual(ui.ids['activity-capture-btn'].attributes['aria-busy'], undefined);
     assert(ui.ids['activity-capture-btn'].focusCount > 0);
@@ -963,7 +964,7 @@ test('pending controls are tokened, disabled/aria-busy, roll back with status re
     assert(ui.resyncs.indexOf('control_status_reconciled') !== -1);
 });
 
-test('Activity title shows status only for live and paused sessions', function() {
+test('Activity title shows status only for live and stopped sessions', function() {
     var ui = loadUiHarness();
     var ctx = ui.context;
     var statusElement = ui.ids['activity-status'];
@@ -980,7 +981,73 @@ test('Activity title shows status only for live and paused sessions', function()
 
     ctx.applyActivityStatus(status(SESSION_A, 'stopped', '1', '1'));
     assert.strictEqual(statusElement.hidden, false);
-    assert.strictEqual(statusLabel.textContent, 'Paused');
+    assert.strictEqual(statusLabel.textContent, 'Stopped');
+});
+
+test('the off gate waits for the backend, since capture is on by default', function() {
+    var ui = loadUiHarness();
+    var ctx = ui.context;
+    ctx.activityStatus = null;
+    ctx.activityCaptureState = 'off';
+    ctx.updateActivityUI();
+    assert.strictEqual(ui.ids['activity-privacy-gate'].style.display, 'none', 'no gate flash at launch');
+    assert.strictEqual(ui.ids['activity-active'].style.display, '');
+
+    ctx.applyActivityStatus(status(null, 'off', null, null));
+    assert.strictEqual(ui.ids['activity-privacy-gate'].style.display, '', 'a stopped log shows the gate');
+    assert.strictEqual(ui.ids['activity-active'].style.display, 'none');
+});
+
+function messageEvent(session, sequence, kind, token, reason) {
+    var row = event(session, sequence, kind);
+    row.area = 'messages';
+    row.outcome = 'failed';
+    row.attributes = [{ key: 'message', value: { type: 'identifier', value: { kind: 'message', pseudonym: token, ordinal: 1 } } }];
+    if (reason) row.attributes.push({ key: 'reason', value: { type: 'code', value: reason } });
+    return row;
+}
+
+test('delivery reasons read as plain words, only on message events', function() {
+    var ctx = loadUiHarness().context;
+    var failed = messageEvent(SESSION_A, '1', 'lxmf.delivery.failed', 'aaa', 'path_unavailable');
+    ctx.activityEvents = [failed];
+    ctx.renderActivityFeed();
+    assert(ctx.document.getElementById('activity-feed').innerHTML.includes('<span data-reason>No route found</span>'));
+    assert(ctx.activityEventDetails(failed).includes('<span>No route found</span>'), 'details show text, not code');
+    var reason = { key: 'reason', value: { type: 'code', value: 'rejected' } };
+    assert.strictEqual(ctx.activityFormatAttributeValue(reason, { kind: 'lxmf.delivery.rejected' }), 'Refused by the recipient');
+    assert.strictEqual(ctx.activityFormatAttributeValue(reason, { kind: 'lxst.call.ended' }), 'rejected', 'calls keep their own wording');
+    var inbox = { key: 'reason', value: { type: 'code', value: 'resource_failed' } };
+    assert.strictEqual(ctx.activityFormatAttributeValue(inbox, { kind: 'lxmf.propagation.failed' }), 'Sending stopped partway');
+});
+
+test('Show in Activity filters to one message and explains an empty result', function() {
+    var ctx = loadUiHarness().context;
+    var feed = ctx.document.getElementById('activity-feed');
+    var mine = messageEvent(SESSION_A, '1', 'lxmf.delivery.failed', 'mine', 'link_closed');
+    var other = messageEvent(SESSION_A, '2', 'lxmf.delivery.failed', 'other', 'link_closed');
+    var oldSession = messageEvent(SESSION_B, '3', 'lxmf.delivery.failed', 'mine', 'link_closed');
+    ctx.activityEvents = [mine, other, oldSession];
+    ctx.activityMessageFilter = { msgId: 'f'.repeat(64), session: SESSION_A, token: 'mine0123456789abcdef', retryable: true };
+    assert.deepStrictEqual(ctx.activityEvents.filter(ctx.activityEventMatches).map(function(e) { return e.sequence; }), ['1']);
+
+    ctx.renderActivityFilters();
+    var chips = ctx.document.getElementById('activity-filters').innerHTML;
+    assert(chips.includes('aria-label="Clear filter: This message"'));
+    assert(!chips.includes('data-area='), 'area chips step aside while a message is shown');
+
+    ctx.activityEvents = [other];
+    ctx.renderActivityFeed();
+    assert(feed.innerHTML.includes('Nothing recorded for this message'));
+    assert(feed.innerHTML.includes('Retry the message to record a new attempt.'));
+    ctx.activityMessageFilter.retryable = false;
+    ctx.renderActivityFeed();
+    assert(!feed.innerHTML.includes('Retry the message'), 'rejected messages are not offered a retry');
+
+    ctx.clearActivityMessageFilter(false);
+    assert.strictEqual(ctx.activityMessageFilter, null);
+    ctx.renderActivityFilters();
+    assert(ctx.document.getElementById('activity-filters').innerHTML.includes('data-area="all"'));
 });
 
 test('Clear waits for acknowledgement, clears only on success, and failure retains rows', async function() {

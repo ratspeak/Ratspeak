@@ -1058,6 +1058,31 @@ pub struct ActivityReset {
     status: activity::ActivityStatusV1,
 }
 
+/// The user's Activity choice; Normal capture runs until they stop it.
+pub const ACTIVITY_CAPTURE_SETTING: &str = "activity_capture";
+
+/// Starts Normal capture for a new runtime session unless the user stopped
+/// Activity. A shutdown resets capture, so every session starts it again.
+pub async fn start_activity_unless_stopped(state: &AppState) {
+    let stopped = db::spawn_db(state.db.clone(), |p| {
+        db::get_setting(&p, ACTIVITY_CAPTURE_SETTING)
+    })
+    .await
+    .ok()
+    .flatten()
+    .is_some_and(|choice| choice == "off");
+    if stopped {
+        return;
+    }
+    let _activity_control = state.activity_control_lock.lock().await;
+    if state.activity.status().state() == activity::ActivityCaptureState::Off {
+        match state.activity.start().await {
+            Ok(_) => tracing::info!("Activity capture started"),
+            Err(error) => tracing::warn!(?error, "Activity capture did not start"),
+        }
+    }
+}
+
 /// The first step of a shutdown and the only one that can be refused, which
 /// leaves the runtime as it was. An activation resets before it starts its
 /// session, so a runtime never outlives the session it ran in.
@@ -1590,7 +1615,9 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
         .write()
         .unwrap_or_else(|e| e.into_inner())
         .error = None;
+    start_activity_unless_stopped(&state).await;
     propagation::seed_static_nodes(&state);
+    propagation::restore_heard_nodes(&state).await;
 
     let ratspeak_dir = data_dir.join(".ratspeak");
     let has_identity = has_identity_material(&ratspeak_dir);
@@ -2666,6 +2693,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
             tokio::spawn(async move {
                 let mut interval = tokio::time::interval(Duration::from_millis(500));
                 let mut save_counter: u64 = 0;
+                let mut inbox_card = serde_json::Value::Null;
                 let mut timeout_check_counter: u64 = 0;
                 let mut next_auto_inbox_ready_check_at = 0.0;
                 let mut download_coordinator = inbound_admission::DownloadCoordinator::default();
@@ -2751,6 +2779,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
+                                std::collections::HashMap::new(),
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
@@ -2803,6 +2832,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                         }
                         let delivery_progress = mgr.take_delivery_progress_updates();
                         let delivery_failures = mgr.take_delivery_failure_updates();
+                        let failure_reasons = mgr.take_failure_reasons();
                         let downloaded = mgr.take_downloaded_propagation_messages();
                         let (completed_deposits, failed_deposits, completed_syncs, failed_syncs) =
                             mgr.take_propagation_health();
@@ -2811,6 +2841,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                             results,
                             delivery_progress,
                             delivery_failures,
+                            failure_reasons,
                             downloaded,
                             completed_deposits,
                             failed_deposits,
@@ -2825,6 +2856,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                         results,
                         delivery_progress,
                         delivery_failures,
+                        failure_reasons,
                         downloaded_propagation_messages,
                         completed_propagation_deposits,
                         failed_propagation_deposits,
@@ -2843,6 +2875,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
+                                std::collections::HashMap::new(),
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
@@ -2940,6 +2973,13 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 reason = "offline",
                                 "propagation sync failed while offline; not penalizing relay"
                             );
+                        }
+                    }
+                    if !delivery_only {
+                        let card = propagation::card_fingerprint(&tick_state, network_available);
+                        if card != inbox_card {
+                            inbox_card = card;
+                            propagation::emit_propagation_update(&tick_state);
                         }
                     }
                     if propagation_deposit_terminal {
@@ -3125,7 +3165,9 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                                 Some(producer::DeliveryFailureReason::Rejected)
                                             }
                                             producer::LxmfDeliveryState::Failed => Some(
-                                                producer::DeliveryFailureReason::TransportFailed,
+                                                failure_reasons.get(msg_id).copied().unwrap_or(
+                                                    producer::DeliveryFailureReason::TransportFailed,
+                                                ),
                                             ),
                                             _ => None,
                                         },
@@ -9746,6 +9788,61 @@ mod transport_startup_tests {
 
         assert!(rns_config::transport_mode_enabled(&config_dir));
         std::fs::remove_dir_all(root).ok();
+    }
+}
+
+#[cfg(test)]
+mod activity_default_tests {
+    use super::*;
+    use activity::ActivityCaptureState;
+
+    fn state() -> Arc<AppState> {
+        let tmp = tempfile::tempdir().unwrap().keep();
+        lxmf::initialize_storage_namespace(&tmp).unwrap();
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(r2d2_sqlite::SqliteConnectionManager::memory())
+            .unwrap();
+        db::init_schema(&pool).unwrap();
+        Arc::new(AppState::new(
+            ratspeak_core::config::DashboardConfig::from_env_and_defaults(tmp),
+            pool,
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        ))
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn activity_runs_by_default_and_again_after_a_runtime_reset() {
+        let state = state();
+        start_activity_unless_stopped(&state).await;
+        assert_eq!(
+            state.activity.status().state(),
+            ActivityCaptureState::Capturing
+        );
+        let profile = state.activity.status().profile();
+        assert!(
+            matches!(profile, Some(activity::CaptureProfile::Normal)),
+            "the default is Normal, never Trace"
+        );
+
+        let _session_ended = reset_activity_for_shutdown(&state).await.unwrap();
+        assert_eq!(state.activity.status().state(), ActivityCaptureState::Off);
+        start_activity_unless_stopped(&state).await;
+        assert_eq!(
+            state.activity.status().state(),
+            ActivityCaptureState::Capturing
+        );
+        state.activity.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_stopped_activity_log_stays_stopped() {
+        let state = state();
+        db::set_setting(&state.db, ACTIVITY_CAPTURE_SETTING, "off");
+        start_activity_unless_stopped(&state).await;
+        assert_eq!(state.activity.status().state(), ActivityCaptureState::Off);
+        state.activity.shutdown().await.unwrap();
     }
 }
 

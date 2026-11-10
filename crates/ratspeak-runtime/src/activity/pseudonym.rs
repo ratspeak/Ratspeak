@@ -275,6 +275,21 @@ impl CapturePrivacy {
     }
 
     fn assign(&mut self, domain: PseudonymDomain, canonical_value: &[u8]) -> AssignedPseudonym {
+        let digest = self.digest(domain, canonical_value);
+        self.assign_digest(domain, digest)
+    }
+
+    /// A message's full keyed digest in this session. Every pseudonym the
+    /// session shows for that message is a prefix of it, before or after the
+    /// message first appears, and nothing is assigned or retained.
+    pub(crate) fn message_digest(&self, message_id: &[u8]) -> String {
+        hex::encode(self.digest(
+            PseudonymDomain::Protocol(IdentifierKind::Message),
+            message_id,
+        ))
+    }
+
+    fn digest(&self, domain: PseudonymDomain, canonical_value: &[u8]) -> [u8; 32] {
         let expected_len = PSEUDONYM_CONTEXT.len() + 10 + canonical_value.len();
         let mut input = Zeroizing::new(Vec::with_capacity(expected_len));
         input.extend_from_slice(PSEUDONYM_CONTEXT);
@@ -283,8 +298,7 @@ impl CapturePrivacy {
         input.extend_from_slice(&(canonical_value.len() as u64).to_be_bytes());
         input.extend_from_slice(canonical_value);
         debug_assert_eq!(input.len(), expected_len);
-        let digest = rns_crypto::hmac::hmac_sha256(self.key.as_slice(), &input);
-        self.assign_digest(domain, digest)
+        rns_crypto::hmac::hmac_sha256(self.key.as_slice(), &input)
     }
 
     fn assign_digest(&mut self, domain: PseudonymDomain, digest: [u8; 32]) -> AssignedPseudonym {

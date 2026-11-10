@@ -45,6 +45,8 @@ pub struct ratspeak_tauri::commands::activity::ActivityLimitedTraceArgs
 pub ratspeak_tauri::commands::activity::ActivityLimitedTraceArgs::seconds: alloc::string::String
 pub struct ratspeak_tauri::commands::activity::ActivityLimitedTraceEnvelope
 pub ratspeak_tauri::commands::activity::ActivityLimitedTraceEnvelope::limited: ratspeak_tauri::commands::activity::ActivityLimitedTraceArgs
+pub struct ratspeak_tauri::commands::activity::ActivityMessageTokenArgs
+pub ratspeak_tauri::commands::activity::ActivityMessageTokenArgs::msg_id: alloc::string::String
 pub struct ratspeak_tauri::commands::activity::ActivityReplayArgs
 pub ratspeak_tauri::commands::activity::ActivityReplayArgs::after: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::activity::ActivityReplayArgs::capture_session: alloc::string::String
@@ -59,6 +61,7 @@ pub ratspeak_tauri::commands::activity::ActivitySetProfileArgs::duration: core::
 pub ratspeak_tauri::commands::activity::ActivitySetProfileArgs::profile: alloc::string::String
 pub async fn ratspeak_tauri::commands::activity::activity_clear(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<ratspeak_runtime::activity::replay::ActivityStatusV1>
 pub async fn ratspeak_tauri::commands::activity::activity_detail(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::activity::ActivityEventArgs) -> ratspeak_tauri::error::AppResult<ratspeak_runtime::activity::query::ActivityIpcResponse<ratspeak_runtime::activity::query::ActivityDetailResultV1>>
+pub async fn ratspeak_tauri::commands::activity::activity_message_token(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::activity::ActivityMessageTokenArgs) -> ratspeak_tauri::error::AppResult<ratspeak_runtime::activity::worker::ActivityMessageTokenV1>
 pub async fn ratspeak_tauri::commands::activity::activity_replay(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::activity::ActivityReplayArgs) -> ratspeak_tauri::error::AppResult<ratspeak_runtime::activity::query::ActivityIpcResponse<ratspeak_runtime::activity::replay::ActivityReplayResultV1>>
 pub async fn ratspeak_tauri::commands::activity::activity_resume(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<ratspeak_runtime::activity::replay::ActivityStatusV1>
 pub async fn ratspeak_tauri::commands::activity::activity_reveal(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::activity::ActivityRevealArgs) -> ratspeak_tauri::error::AppResult<ratspeak_runtime::activity::query::ActivityIpcResponse<ratspeak_runtime::activity::query::ActivityRevealResultV1>>

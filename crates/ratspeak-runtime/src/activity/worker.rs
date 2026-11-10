@@ -30,8 +30,8 @@ use super::schema::{
     ActivityAttributeKey, CaptureProfile, CaptureScope, MAX_ENCODED_EVENT_BYTES, RateDomain,
 };
 
-const WORKER_TICK: Duration = Duration::from_millis(10);
 const MAX_INGRESS_BURST_BEFORE_SERVICE: usize = 16;
+const BATCH_LATENCY: Duration = Duration::from_millis(ACTIVITY_BATCH_MAX_LATENCY_MS);
 
 pub(super) struct IngressDraft {
     pub(super) generation: u64,
@@ -122,6 +122,18 @@ pub(super) enum QueryCommand {
         request: EventQueryRequest,
         reply: oneshot::Sender<Result<ActivitySafeCopyResultV1, ActivityRecorderError>>,
     },
+    MessageToken {
+        message_id: [u8; 32],
+        reply: oneshot::Sender<Result<ActivityMessageTokenV1, ActivityRecorderError>>,
+    },
+}
+
+/// Finds a message's events in the current capture: each shown pseudonym
+/// for it is a prefix of `token`. Both are `None` while capture is off.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ActivityMessageTokenV1 {
+    pub capture_session: Option<String>,
+    pub token: Option<String>,
 }
 
 pub(super) struct WorkerShared {
@@ -329,6 +341,9 @@ fn reject_query(query: QueryCommand, error: ActivityRecorderError) {
         QueryCommand::SafeCopy { reply, .. } => {
             let _ = reply.send(Err(error));
         }
+        QueryCommand::MessageToken { reply, .. } => {
+            let _ = reply.send(Err(error));
+        }
     }
 }
 
@@ -343,7 +358,8 @@ struct WorkerCore {
     ingress_rx: Receiver<IngressItem>,
     urgent_rx: Receiver<UrgentCommand>,
     query_rx: Receiver<QueryCommand>,
-    tick_rx: Receiver<Instant>,
+    // When opened loss windows are flushed as health markers.
+    health_due: Option<Instant>,
     session: Option<SessionCore>,
     worker_epoch: u64,
     recovery_marker_pending: bool,
@@ -366,7 +382,7 @@ impl WorkerCore {
             ingress_rx,
             urgent_rx,
             query_rx,
-            tick_rx: crossbeam_channel::tick(WORKER_TICK),
+            health_due: None,
             session: None,
             worker_epoch,
             recovery_marker_pending,
@@ -393,7 +409,10 @@ impl WorkerCore {
                     self.handle_query(query);
                     serviced = true;
                 }
-                if self.tick_rx.try_recv().is_ok() {
+                if self
+                    .next_deadline()
+                    .is_some_and(|due| due <= Instant::now())
+                {
                     self.on_tick();
                     serviced = true;
                 }
@@ -403,9 +422,12 @@ impl WorkerCore {
                 }
             }
 
-            // Only a capturing session has tick work; an idle worker must not wake.
-            let tick_rx = if self.is_capturing() {
-                self.tick_rx.clone()
+            // Wake only for pending work: an idle worker sleeps, capturing or not.
+            let due = self
+                .next_deadline()
+                .map_or_else(crossbeam_channel::never, crossbeam_channel::at);
+            let window_opened = if self.is_capturing() {
+                self.shared.health.window_opened().clone()
             } else {
                 crossbeam_channel::never()
             };
@@ -432,12 +454,32 @@ impl WorkerCore {
                     },
                     Err(_) => return WorkerExit::Disconnected,
                 },
-                recv(tick_rx) -> _ => {
+                recv(window_opened) -> _ => {
+                    self.health_due
+                        .get_or_insert_with(|| Instant::now() + BATCH_LATENCY);
+                },
+                recv(due) -> _ => {
                     self.on_tick();
                     ingress_burst = 0;
                 },
             }
         }
+    }
+
+    /// The earliest pending flush of a capturing session, if any.
+    fn next_deadline(&self) -> Option<Instant> {
+        let session = self.session.as_ref()?;
+        if session.state != ActivityCaptureState::Capturing {
+            return None;
+        }
+        [
+            session.coalescer_since.map(|since| since + BATCH_LATENCY),
+            session.batch_started.map(|since| since + BATCH_LATENCY),
+            self.health_due,
+        ]
+        .into_iter()
+        .flatten()
+        .min()
     }
 
     fn is_capturing(&self) -> bool {
@@ -811,6 +853,14 @@ impl WorkerCore {
                 let result = self.safe_copy(&request);
                 let _ = reply.send(result);
             }
+            QueryCommand::MessageToken { message_id, reply } => {
+                let session = self.session.as_ref();
+                let _ = reply.send(Ok(ActivityMessageTokenV1 {
+                    capture_session: session
+                        .map(|session| session.privacy.capture_session().to_string()),
+                    token: session.map(|session| session.privacy.message_digest(&message_id)),
+                }));
+            }
         }
     }
 
@@ -961,6 +1011,9 @@ impl WorkerCore {
         });
         if coalescer_due {
             let _ = session.flush_coalescer(&self.shared, self.sink.as_ref());
+        }
+        if self.health_due.is_some_and(|due| due <= now_instant) {
+            self.health_due = None;
         }
         session.flush_health_markers(now, &self.shared, self.sink.as_ref());
         session.flush_batch_if_full(&self.shared, self.sink.as_ref());

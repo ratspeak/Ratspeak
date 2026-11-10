@@ -1892,6 +1892,13 @@ function _messageCanRetry(msg) {
         _isCanonicalLxmfMsgId(msg.id) && !_messageIsPaper(msg);
 }
 
+// Activity explains a send that ended undelivered; cancelling explains itself.
+function _messageCanShowInActivity(msg) {
+    return !!msg && msg.direction === 'outbound' &&
+        ['failed', 'timeout', 'rejected'].indexOf(msg.state) !== -1 &&
+        _isCanonicalLxmfMsgId(msg.id) && !_messageIsPaper(msg);
+}
+
 var LXMF_SEND_METHOD_ICONS = {
     auto: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/></svg>',
     opportunistic: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
@@ -5664,6 +5671,9 @@ function _messageActionIcon(name) {
     if (name === 'retry') {
         return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/></svg>';
     }
+    if (name === 'activity') {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>';
+    }
     if (name === 'qr') {
         return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg>';
     }
@@ -6346,6 +6356,23 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
             _openRetryMethodPopover(msgData);
         });
         actions.appendChild(retryBtn);
+    }
+
+    if (_messageCanShowInActivity(msgData) && typeof showMessageInActivity === 'function') {
+        var activityBtn = document.createElement('button');
+        activityBtn.className = 'msg-ctx-btn msg-ctx-activity';
+        activityBtn.type = 'button';
+        activityBtn.setAttribute('data-message-action', 'show-activity');
+        activityBtn.innerHTML = _messageActionIcon('activity') + '<span>Show in Activity</span>';
+        _bindMessageFocusPreservingActivation(activityBtn, function(e) {
+            var focusChip = _messageActivationExpectsFocus(e);
+            _dismissContextMenu({ restoreFocus: false });
+            showMessageInActivity(msgData.id, {
+                retryable: _messageCanRetry(msgData),
+                focusChip: focusChip
+            });
+        });
+        actions.appendChild(activityBtn);
     }
 
     var replyBtn = document.createElement('button');
