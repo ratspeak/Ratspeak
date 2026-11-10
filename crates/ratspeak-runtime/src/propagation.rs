@@ -1616,7 +1616,14 @@ pub(crate) fn insert_heard_node(
         .and_then(|v| v.get("display_name").and_then(|s| s.as_str()))
         .map(String::from)
         .or_else(|| static_meta.map(|node| node.display_name.clone()));
+    // The crate returns announced names as sent; filter them for display here.
     let display_name = lxmf_core::handlers::pn_name_from_app_data(app_data)
+        .map(|name| {
+            lxmf_core::presentation::sanitize_name(
+                &name,
+                lxmf_core::presentation::MAX_ADVERTISED_NAME_CHARS,
+            )
+        })
         .filter(|s| !s.is_empty())
         .or(preserved_name)
         .unwrap_or_else(|| format!("Inbox {}", &hash_hex[..8]));
