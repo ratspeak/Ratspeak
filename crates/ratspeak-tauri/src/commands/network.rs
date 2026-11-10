@@ -474,7 +474,7 @@ pub async fn api_path_query(
                         "hops": entry.hops,
                         "interface": entry.interface,
                         "expires": entry.expires,
-                        "via": entry.via.map(hex::encode),
+                        "via": entry.via.filter(|via| *via != entry.hash).map(hex::encode),
                     }));
                 }
             }

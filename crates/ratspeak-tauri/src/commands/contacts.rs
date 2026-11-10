@@ -359,7 +359,10 @@ pub async fn block_contact(
                 },
             )
             .await;
-            blackholed = matches!(resp, Some(TransportQueryResponse::Ok));
+            blackholed = matches!(
+                resp,
+                Some(TransportQueryResponse::OptBoolResult(Some(true) | None))
+            );
             if blackholed {
                 // Clear any leftover pending row from a prior attempt.
                 let dest_c = dest_hash.clone();

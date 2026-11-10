@@ -157,8 +157,9 @@ pub(crate) fn install_get_handler(
                 let (response, _) = action.into_response_with_served_count_bounded(limit);
                 if lease.is_current() && !responder.is_cancelled() {
                     drop(
-                        responder
-                            .respond(rns_runtime::link_manager::RequestOutcome::Reply(response)),
+                        responder.respond(rns_runtime::link_manager::RequestOutcome::ReplyValue(
+                            response,
+                        )),
                     );
                 }
             });

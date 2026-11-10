@@ -3886,6 +3886,7 @@ fn link_connect_error(error: LinkSessionError) -> ConnectAttemptError {
         | LinkSessionError::PayloadTooLarge { .. }
         | LinkSessionError::RequestRequiresResource { .. }
         | LinkSessionError::RequestResourceFailed(_)
+        | LinkSessionError::ResponseRejected { .. }
         | LinkSessionError::TooManyPendingRequests => {
             activity::ChannelSessionFailureReason::SendFailed
         }

@@ -675,7 +675,8 @@ async fn blackhole_voice_identity(
             }
         )
         .await,
-        Some(TransportQueryResponse::Ok)
+        // `None` means the identity was already blackholed.
+        Some(TransportQueryResponse::OptBoolResult(Some(true) | None))
     );
     if blackholed {
         state.emit_to_all(

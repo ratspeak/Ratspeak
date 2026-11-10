@@ -1252,7 +1252,7 @@ fn a_block_its_runtime_could_not_take_waits_as_a_pending_network_block() {
                 let (query, answer) = next_query(&mut queries).await;
                 assert!(matches!(query, TransportQuery::BlackholeIdentity { .. }));
                 if stopped == "before the list" {
-                    let _ = answer.send(TransportQueryResponse::Ok);
+                    let _ = answer.send(TransportQueryResponse::OptBoolResult(Some(true)));
                     let (query, _unanswered) = next_query(&mut queries).await;
                     assert!(matches!(query, TransportQuery::GetBlackholedIdentities));
                 }
@@ -1329,7 +1329,7 @@ fn an_unblock_whose_runtime_restarted_lifts_through_the_live_one() {
                     }
                     TransportQuery::UnblackholeIdentity { hash } => {
                         lifted.push(hash);
-                        TransportQueryResponse::BoolResult(hash == [0x42; 16])
+                        TransportQueryResponse::OptBoolResult((hash == [0x42; 16]).then_some(true))
                     }
                     _ => TransportQueryResponse::BlackholeList(Vec::new()),
                 };
@@ -1418,7 +1418,7 @@ fn an_unblock_overtaken_by_a_switch_lifts_its_network_block_later() {
                     }
                     TransportQuery::UnblackholeIdentity { hash } => {
                         lifted.push(hash);
-                        TransportQueryResponse::BoolResult(hash == [0x42; 16])
+                        TransportQueryResponse::OptBoolResult((hash == [0x42; 16]).then_some(true))
                     }
                     _ => TransportQueryResponse::BlackholeList(Vec::new()),
                 };
@@ -1567,7 +1567,7 @@ fn a_block_made_before_an_unblock_retries_its_lift_is_not_undone() {
                     }
                     TransportQuery::UnblackholeIdentity { hash } => {
                         lifted.push(hash);
-                        TransportQueryResponse::BoolResult(true)
+                        TransportQueryResponse::OptBoolResult(Some(true))
                     }
                     _ => TransportQueryResponse::BlackholeList(Vec::new()),
                 };
@@ -1643,7 +1643,7 @@ fn a_block_made_while_pending_lifts_apply_is_not_undone() {
                     }
                     TransportQuery::UnblackholeIdentity { hash } => {
                         lifted.push(hash);
-                        TransportQueryResponse::BoolResult(true)
+                        TransportQueryResponse::OptBoolResult(Some(true))
                     }
                     _ => TransportQueryResponse::BlackholeList(Vec::new()),
                 };

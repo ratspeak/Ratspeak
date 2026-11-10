@@ -103,7 +103,10 @@ pub async fn lift_network_block(
     input: [u8; 16],
 ) -> Option<bool> {
     let lifted = |response: &Option<TransportQueryResponse>| {
-        matches!(response, Some(TransportQueryResponse::BoolResult(true)))
+        matches!(
+            response,
+            Some(TransportQueryResponse::OptBoolResult(Some(true)))
+        )
     };
     let by_identity = match resolve_contact_identity_hash(state, transport, dest_hex, input).await {
         Some(hash) => {
@@ -219,7 +222,10 @@ pub async fn escalate_pending_if_present(
             row.reason_label.clone(),
         )
         .await;
-        if !matches!(resp, Some(TransportQueryResponse::Ok)) {
+        if !matches!(
+            resp,
+            Some(TransportQueryResponse::OptBoolResult(Some(true) | None))
+        ) {
             tracing::warn!(
                 dest = %crate::short_id(&row.dest_hash),
                 identity_id = %crate::short_id(&row.identity_id),
@@ -301,7 +307,7 @@ mod tests {
             while let Some(message) = rx.recv().await {
                 if let TransportMessage::Rpc { response_tx, .. } = message {
                     count += 1;
-                    let _ = response_tx.send(TransportQueryResponse::Ok);
+                    let _ = response_tx.send(TransportQueryResponse::OptBoolResult(Some(true)));
                 }
             }
             count

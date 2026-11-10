@@ -159,7 +159,7 @@ fn admit_with_owner(
             .query_control_result(TransportQuery::DropPath { dest })
             .await
         {
-            Ok(TransportQueryResponse::Ok) => {}
+            Ok(TransportQueryResponse::BoolResult(_)) => {}
             Ok(_) => return Err("shared_recovery_unexpected_response"),
             Err(ControlError::RpcAuth) => return Err("shared_recovery_authentication"),
             Err(ControlError::UnsupportedBySharedInstance) => {
@@ -421,6 +421,9 @@ mod tests {
             via: None,
             hops: 1,
             expires: 1000.0,
+            value: None,
+            used: 0.0,
+            lr_cost: None,
             interface: "inert owner route".into(),
             interface_id: 1,
             interface_mode: rns_transport::constants::InterfaceMode::Full,

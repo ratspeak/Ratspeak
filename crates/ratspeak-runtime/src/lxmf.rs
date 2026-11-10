@@ -5390,7 +5390,7 @@ impl LxmfManager {
                 hops = entry.hops,
                 path_age_secs = now - entry.timestamp,
                 path_expires_in_secs = entry.expires - now,
-                has_next_hop = entry.via.is_some(),
+                has_next_hop = entry.via.is_some_and(|via| via != entry.hash),
                 "outbound LXMF: starting Direct delivery via Link"
             );
         } else {
@@ -7617,6 +7617,9 @@ mod tests {
             via: None,
             hops: 1,
             expires: now + 600.,
+            value: None,
+            used: 0.0,
+            lr_cost: None,
             interface: "relay fixture".into(),
             interface_id: 1,
             interface_mode: rns_transport::constants::InterfaceMode::Full,
@@ -8190,20 +8193,18 @@ mod tests {
         reaction.extend_from_slice(&[0xcc, 0x00, 0xc4, 0x20]);
         reaction.extend_from_slice(&[0x22; 32]);
         reaction.extend_from_slice(&[0x01, 0xa1, b'x']);
-        let message = manager
-            .create_final_message_with_custom_fields(
-                &destination,
-                "fallback",
-                "",
-                DeliveryMethod::Propagated,
-                &[(lxmf_core::constants::FIELD_REACTION, reaction)],
-            )
-            .unwrap();
-        assert_eq!(
-            decode_ratspeak_chat_extension_checked(&message),
-            Err(SuppressionReason::Malformed)
+        // LXMF refuses colliding map keys in a field, as Python's unpack does.
+        assert!(
+            manager
+                .create_final_message_with_custom_fields(
+                    &destination,
+                    "fallback",
+                    "",
+                    DeliveryMethod::Propagated,
+                    &[(lxmf_core::constants::FIELD_REACTION, reaction)],
+                )
+                .is_none()
         );
-        assert_eq!(decode_ratspeak_chat_extension(&message), None);
 
         let payload = encode_msgpack_value(&rmpv::Value::Map(vec![
             ("kind".into(), "reply".into()),
@@ -10464,6 +10465,9 @@ mod tests {
             via: None,
             hops: 1,
             expires: now + 60.0,
+            value: None,
+            used: 0.0,
+            lr_cost: None,
             interface: "Local Network".to_string(),
             interface_id: 7,
             interface_mode: rns_transport::constants::InterfaceMode::Full,
@@ -10530,6 +10534,9 @@ mod tests {
             via: None,
             hops: 1,
             expires: now + 60.0,
+            value: None,
+            used: 0.0,
+            lr_cost: None,
             interface: "test".to_string(),
             interface_id: 1,
             interface_mode: rns_transport::constants::InterfaceMode::Full,
@@ -10595,6 +10602,9 @@ mod tests {
             via: None,
             hops: 2,
             expires: now + 60.0,
+            value: None,
+            used: 0.0,
+            lr_cost: None,
             interface: "test".to_string(),
             interface_id: 1,
             interface_mode: rns_transport::constants::InterfaceMode::Full,
@@ -10681,6 +10691,9 @@ mod tests {
             via: None,
             hops: 2,
             expires: now + 60.0,
+            value: None,
+            used: 0.0,
+            lr_cost: None,
             interface: "test".to_string(),
             interface_id: 1,
             interface_mode: rns_transport::constants::InterfaceMode::Full,
@@ -10750,6 +10763,9 @@ mod tests {
             via: None,
             hops: 2,
             expires: now + 60.0,
+            value: None,
+            used: 0.0,
+            lr_cost: None,
             interface: "test".to_string(),
             interface_id: 1,
             interface_mode: rns_transport::constants::InterfaceMode::Full,
@@ -10908,6 +10924,9 @@ mod tests {
             via: None,
             hops: 2,
             expires: now + 60.0,
+            value: None,
+            used: 0.0,
+            lr_cost: None,
             interface: "test".to_string(),
             interface_id: 1,
             interface_mode: rns_transport::constants::InterfaceMode::Full,
@@ -10985,6 +11004,9 @@ mod tests {
             via: None,
             hops: 1,
             expires: now + 60.0,
+            value: None,
+            used: 0.0,
+            lr_cost: None,
             interface: "test".to_string(),
             interface_id: 1,
             interface_mode: rns_transport::constants::InterfaceMode::Full,
@@ -11107,6 +11129,9 @@ mod tests {
             via: None,
             hops: 1,
             expires: now + 60.0,
+            value: None,
+            used: 0.0,
+            lr_cost: None,
             interface: "test".to_string(),
             interface_id: 1,
             interface_mode: rns_transport::constants::InterfaceMode::Full,
@@ -11453,6 +11478,9 @@ mod tests {
             via: None,
             hops: 2,
             expires: now + 60.0,
+            value: None,
+            used: 0.0,
+            lr_cost: None,
             interface: "test".to_string(),
             interface_id: 1,
             interface_mode: rns_transport::constants::InterfaceMode::Full,

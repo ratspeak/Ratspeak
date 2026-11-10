@@ -214,7 +214,7 @@ pub fn path_table_ui_snapshot(
         .map(|e| {
             json!({
                 "hash": hex::encode(e.hash),
-                "via": e.via.map(hex::encode),
+                "via": e.via.filter(|via| *via != e.hash).map(hex::encode),
                 "hops": e.hops,
                 "expires": e.expires,
                 "timestamp": e.timestamp,
@@ -233,7 +233,7 @@ pub fn path_table_stats_snapshot(
         path_index.insert(
             hex::encode(entry.hash),
             json!({
-                "via": entry.via.map(hex::encode),
+                "via": entry.via.filter(|via| *via != entry.hash).map(hex::encode),
                 "hops": entry.hops,
                 "expires": entry.expires,
                 "timestamp": entry.timestamp,
@@ -260,6 +260,9 @@ mod tests {
             via: None,
             hops: 1,
             expires: timestamp + 60.0,
+            value: None,
+            used: 0.0,
+            lr_cost: None,
             interface: "test".to_string(),
             interface_id: 1,
             interface_mode: rns_transport::constants::InterfaceMode::Full,
