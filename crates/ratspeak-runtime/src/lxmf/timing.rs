@@ -236,10 +236,7 @@ mod tests {
             .create_final_message(&hex::encode(dest), "slow Link", "", DeliveryMethod::Direct)
             .unwrap();
         let hash = message.message_id();
-        let results = mgr.execute_encrypted_actions(vec![OutboundAction::DeliverDirect {
-            message,
-            dest_hash: dest,
-        }]);
+        let results = mgr.queue_and_plan(message);
         assert!(results.iter().any(|(_, step)| *step == "link_establishing"));
         tokio::time::sleep(Duration::from_secs(13)).await;
         mgr.tick();

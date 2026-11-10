@@ -220,7 +220,15 @@ impl LxmfManager {
                                     .as_secs_f64();
                                 pending.retry_at =
                                     now + retry_window.unwrap_or_default().as_secs_f64();
-                                pending.message.next_delivery_attempt = pending.retry_at;
+                                let retry_at = pending.retry_at;
+                                if let Some(queued) = self
+                                    .router
+                                    .pending_outbound
+                                    .iter_mut()
+                                    .find(|queued| &queued.message_id() == hash)
+                                {
+                                    queued.next_delivery_attempt = retry_at;
+                                }
                             }
                         }
                         Err(oneshot::error::TryRecvError::Empty) => {}
@@ -243,7 +251,14 @@ impl LxmfManager {
                         .unwrap_or_default()
                         .as_secs_f64();
                     pending.retry_at = now;
-                    pending.message.next_delivery_attempt = now;
+                    if let Some(queued) = self
+                        .router
+                        .pending_outbound
+                        .iter_mut()
+                        .find(|queued| &queued.message_id() == hash)
+                    {
+                        queued.next_delivery_attempt = now;
+                    }
                 }
                 // A concluded receipt can no longer prove delivery, but its
                 // exact failed-route identity remains useful to the next
@@ -271,15 +286,12 @@ impl LxmfManager {
             {
                 continue;
             }
-            if let Some(mut pending) = self.opportunistic_in_flight.remove(&hash) {
-                pending.message.delivery_attempts =
-                    pending.message.delivery_attempts.saturating_sub(1);
-                pending.message.next_delivery_attempt = SystemTime::now()
+            if self.opportunistic_in_flight.remove(&hash).is_some() {
+                let now = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap_or_default()
-                    .as_secs_f64()
-                    + 0.5;
-                self.queue_router_message(pending.message, "packet interface admission");
+                    .as_secs_f64();
+                self.refund_opportunistic_attempt(&hash, now);
                 results.push((hex::encode(hash), "routing"));
             }
         }
@@ -498,6 +510,7 @@ mod tests {
         mgr.known_identities
             .insert(hex::encode(dest), Identity::new().get_public_key());
         mgr.router.set_stamp_cost(dest, 0.0);
+        crate::lxmf::tests::known_route(&mut mgr, dest);
         let (tx, rx) = mpsc::channel(64);
         mgr.router.set_transport(tx);
         let message = mgr
@@ -534,7 +547,7 @@ mod tests {
         let proof = accept(&mut rx);
         mgr.poll_opportunistic_proofs(&mut Vec::new());
         let mut updates = Vec::new();
-        mgr.retry_due_opportunistic_deliveries(f64::MAX, &mut updates);
+        mgr.retry_due_opportunistic_deliveries(f64::MAX);
         assert!(mgr.opportunistic_in_flight.is_empty());
         assert!(mgr.has_bounded_protocol_wait(&hex::encode(hash)));
         assert_eq!(mgr.router.pending_outbound.len(), 1);
@@ -685,9 +698,6 @@ mod tests {
         assert!(mgr.opportunistic_in_flight[&hash].retry_at <= now);
         assert_eq!(mgr.last_failed_packet(hash), Some(packet_hash));
         assert!(!mgr.has_bounded_protocol_wait(&hex::encode(hash)));
-        assert_eq!(
-            mgr.opportunistic_in_flight[&hash].message.delivery_attempts,
-            1
-        );
+        assert_eq!(mgr.router.pending_outbound[0].delivery_attempts, 1);
     }
 }

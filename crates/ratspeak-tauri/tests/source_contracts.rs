@@ -9707,7 +9707,7 @@ fn lxmf_tick_runs_blocking_work_off_async_runtime() {
     assert!(runtime.contains("lxmf tick worker failed; skipping this tick"));
     assert!(lxmf.contains("OutboundAction::Failed(message) =>"));
     assert!(lxmf.contains("try_auto_propagation_fallback("));
-    assert!(lxmf.contains("OutboundAction::Expired(message) =>"));
+    assert!(lxmf.contains("fn fail_expired_outbound("));
     assert!(lxmf.contains("Do not reinterpret expiry as an"));
     assert!(lxmf.contains("attempt_exhausted_outbound_surfaces_failed_state"));
     assert!(lxmf.contains("expired_auto_live_send_does_not_fall_back_to_offline_inbox"));

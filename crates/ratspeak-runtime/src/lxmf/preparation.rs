@@ -270,11 +270,7 @@ mod tests {
             assert_eq!(mgr.router.pending_outbound[0].delivery_attempts, 0);
             assert!(
                 mgr.router
-                    .process_outbound_with_direct(|_, _| DirectDeliveryPlanInput {
-                        identity_known: false,
-                        route: None,
-                        reusable_link: DirectReusableLinkState::None
-                    })
+                    .process_outbound_with_inputs(&OutboundInputs::default(), now + seconds as f64)
                     .is_empty()
             );
             assert!(mgr.live_preparation.discovery.contains_key(&hash));
