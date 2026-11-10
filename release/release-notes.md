@@ -12,8 +12,8 @@
 - Messages fall back to your Offline Inbox more reliably on slow links.
 - Offline Inbox nodes you've heard stay listed after a restart.
 - The Offline Inbox card shows whether your inbox is working and when it last checked.
-- Activity is on by default and names why a message wasn't delivered. Trace stops after 10 minutes.
-- On busy networks with thousands of peers, Ratspeak no longer reprocesses them every few seconds.
+- Activity is on by default and names why a message wasn't delivered. Trace switches back to Normal after 10 minutes.
+- Ratspeak runs more smoothly on busy networks.
 - A message that fails in another chat shows a notice, and deleting a chat stops its pending sends.
 - Ratspeak fits screens down to 640×480.
 - The YubiKey wizard names firmware older than 5.7.0 instead of saying no key was found.
