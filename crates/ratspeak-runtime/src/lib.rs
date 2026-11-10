@@ -6107,6 +6107,11 @@ async fn poll_stats_loop(
     // Announces already applied to the LXMF caches, by received timestamp.
     let mut processed_announces: std::collections::HashMap<[u8; 16], f64> =
         std::collections::HashMap::new();
+    // Announces already applied to the peer list and history: the transport's
+    // whole cache, never the capped history, or every announce past the cap
+    // reads as new on every poll.
+    let mut applied_announces: std::collections::HashMap<[u8; 16], f64> =
+        std::collections::HashMap::new();
     let mut processed_generation = None;
     // A backgrounded mobile poll skips the UI emit; resume must not wait out the cooldown.
     let mut stats_emit_skipped = false;
@@ -6341,6 +6346,7 @@ async fn poll_stats_loop(
                 // Aspect-agnostic: crypto cache, announce_history, contact-name refresh.
                 if processed_generation != Some(poll_generation) {
                     processed_announces.clear();
+                    applied_announces.clear();
                     processed_generation = Some(poll_generation);
                 }
                 if let Ok(mut lxmf) = state.lxmf.lock()
@@ -6348,9 +6354,8 @@ async fn poll_stats_loop(
                 {
                     for a in &announces {
                         let dest_hex = hex::encode(a.dest_hash);
-                        let unchanged = processed_announces
-                            .get(&a.dest_hash)
-                            .is_some_and(|seen| a.timestamp <= seen + 0.001);
+                        let unchanged =
+                            !announce_is_newer(&processed_announces, &a.dest_hash, a.timestamp);
                         if unchanged
                             && (a.public_key.is_none()
                                 || mgr.known_identities.contains_key(&dest_hex))
@@ -6437,13 +6442,8 @@ async fn poll_stats_loop(
                             .app_data
                             .as_deref()
                             .and_then(crate::lxmf::ratspeak_status_from_app_data);
-                        let previous_timestamp = history
-                            .get(&hash_hex)
-                            .and_then(|existing| existing.get("timestamp"))
-                            .and_then(|ts| ts.as_f64());
-                        let announce_timestamp_changed = previous_timestamp
-                            .map(|prev| a.timestamp > prev + 0.001)
-                            .unwrap_or(true);
+                        let announce_timestamp_changed =
+                            announce_is_newer(&applied_announces, &a.dest_hash, a.timestamp);
                         let is_new = if let Ok(mut seen) = state.seen_announce_hashes.lock() {
                             seen.insert(hash_hex.clone())
                         } else {
@@ -6522,7 +6522,7 @@ async fn poll_stats_loop(
                             }
                             existing["timestamp"] = json!(a.timestamp);
                             existing["hops"] = json!(a.hops);
-                        } else {
+                        } else if announce_timestamp_changed {
                             if history.len() >= ANNOUNCE_HISTORY_CAP {
                                 history.shift_remove_index(0);
                             }
@@ -6564,6 +6564,10 @@ async fn poll_stats_loop(
                     while history.len() > ANNOUNCE_HISTORY_CAP {
                         history.shift_remove_index(0);
                     }
+                    applied_announces = announces
+                        .iter()
+                        .map(|a| (a.dest_hash, a.timestamp))
+                        .collect();
                 }
                 if !delivery_trigger_hashes.is_empty() {
                     delivery_trigger_hashes.sort();
@@ -7359,6 +7363,17 @@ async fn touch_peer_last_heard(
 
 // Three wire shapes: UTF-8 string, msgpack BIN/STR (NomadNet),
 // msgpack fixarray(1)[bin8(name)] (rsdeck/ratcom).
+/// Whether an announce's `timestamp` is newer than the one applied for `dest`.
+fn announce_is_newer(
+    applied: &std::collections::HashMap<[u8; 16], f64>,
+    dest: &[u8; 16],
+    timestamp: f64,
+) -> bool {
+    applied
+        .get(dest)
+        .is_none_or(|seen| timestamp > seen + 0.001)
+}
+
 pub(crate) fn extract_display_name(data: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(data) {
         return s.to_string();
@@ -7896,6 +7911,31 @@ async fn try_handle_inbound_lrgp(
     );
 
     Some(outcome)
+}
+
+#[cfg(test)]
+mod announce_ingest_tests {
+    use super::*;
+
+    #[test]
+    fn announces_past_the_history_cap_are_not_new_again() {
+        let applied: std::collections::HashMap<[u8; 16], f64> = (0..(ANNOUNCE_HISTORY_CAP + 1000)
+            as u32)
+            .map(|n| {
+                let mut dest = [0u8; 16];
+                dest[..4].copy_from_slice(&n.to_be_bytes());
+                (dest, 100.0)
+            })
+            .collect();
+        assert!(
+            applied
+                .keys()
+                .all(|dest| !announce_is_newer(&applied, dest, 100.0))
+        );
+        let first = *applied.keys().next().unwrap();
+        assert!(announce_is_newer(&applied, &first, 101.0));
+        assert!(announce_is_newer(&applied, &[0xff; 16], 1.0));
+    }
 }
 
 #[cfg(test)]
