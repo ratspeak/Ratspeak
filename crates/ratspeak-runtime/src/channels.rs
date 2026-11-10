@@ -3458,6 +3458,9 @@ async fn connect_to_hub(input: ConnectToHubInput) -> Result<ConnectedSession, Co
             track_phy_stats: false,
             proof_strategy: rns_identity::destination::ProofStrategy::ProveAll,
             resource_dir: None,
+            inbound_reassembly_limit: Some(
+                rns_protocol::resource::DEFAULT_INBOUND_REASSEMBLY_LIMIT,
+            ),
         },
     )
     .await
