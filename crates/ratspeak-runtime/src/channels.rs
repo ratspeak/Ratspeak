@@ -3456,6 +3456,7 @@ async fn connect_to_hub(input: ConnectToHubInput) -> Result<ConnectedSession, Co
             client_label: "ratspeak.channels".into(),
             identify: true,
             track_phy_stats: false,
+            proof_strategy: rns_identity::destination::ProofStrategy::ProveAll,
         },
     )
     .await
@@ -8489,10 +8490,7 @@ mod tests {
             proof_header.flags.packet_type,
             rns_wire::flags::PacketType::Proof
         );
-        assert_eq!(
-            proof_header.context,
-            rns_wire::context::PacketContext::LinkProof
-        );
+        assert_eq!(proof_header.context, rns_wire::context::PacketContext::None);
         responder
             .validate_peer_packet_proof(&welcome_packet_hash, &welcome_proof.raw[proof_offset..])
             .expect("RRC client packet proof must use the LINKREQUEST transient signer");
@@ -8887,11 +8885,7 @@ mod tests {
         forged_rejection.room = Some(room.into());
         forged_rejection.body = Some(Value::Text(BAD_ROOM_KEY_ERROR.into()));
         send_server_envelope(&second_delivery, &mut second_responder, &forged_rejection).await;
-        next_outbound_with_context(
-            &mut transport_rx,
-            rns_wire::context::PacketContext::LinkProof,
-        )
-        .await;
+        next_outbound_with_context(&mut transport_rx, rns_wire::context::PacketContext::None).await;
         tokio::time::sleep(Duration::from_millis(25)).await;
         assert!(
             manager
@@ -10148,7 +10142,7 @@ mod tests {
                 delivery_tx,
                 responder.link_id,
                 rns_wire::flags::PacketType::Proof,
-                rns_wire::context::PacketContext::LinkProof,
+                rns_wire::context::PacketContext::None,
                 &proof,
             )
             .await;
