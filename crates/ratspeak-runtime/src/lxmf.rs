@@ -4530,7 +4530,14 @@ impl LxmfManager {
 
         let raw = self
             .delivery_ratchets
-            .create_announce(&self.identity, &app_data_bytes, wall_now, cache_now, kind)
+            .create_announce(
+                &self.identity,
+                &app_data_bytes,
+                wall_now,
+                cache_now,
+                kind,
+                None,
+            )
             .map_err(|error| match error {
                 DeliveryRatchetError::Coalesced => CoordinatedDeliveryAnnounceError::Coalesced,
                 error => CoordinatedDeliveryAnnounceError::Failed(error.to_string()),
