@@ -60,6 +60,25 @@ mod preparation;
 mod recovery;
 mod timing;
 const DIRECT_BACKCHANNEL_IDENTIFY_GRACE: Duration = Duration::from_secs(3);
+/// Highest stamp cost Ratspeak will generate a stamp for, recipient or
+/// propagation node; the same ceiling the settings allow for our own costs.
+pub const MAX_STAMP_COST: f64 = 32.0;
+/// How long one stamp search may run before its message fails.
+pub const STAMP_GENERATION_DEADLINE: Duration = Duration::from_secs(60 * 60);
+
+fn stamp_cost_affordable(cost: f64) -> bool {
+    cost <= MAX_STAMP_COST
+}
+
+fn bounded_stamp_control(
+    cancel: Arc<std::sync::atomic::AtomicBool>,
+) -> lxmf_core::stamper::StampControl {
+    lxmf_core::stamper::StampControl {
+        cancel,
+        deadline: Some(Instant::now() + STAMP_GENERATION_DEADLINE),
+        ..lxmf_core::stamper::StampControl::default()
+    }
+}
 type DirectInboundResourceAcceptHandler =
     Arc<dyn Fn([u8; 16], &rns_protocol::resource_adv::ResourceAdvertisement) -> bool + Send + Sync>;
 type DirectInboundResourceConcludedHandler = Arc<dyn Fn([u8; 16], [u8; 32]) + Send + Sync>;
@@ -166,7 +185,7 @@ fn renderer_from_encoded(mut encoded: &[u8]) -> Option<u8> {
 
 pub fn get_ratspeak_announce_app_data(
     display_name: Option<&str>,
-    stamp_cost: Option<u8>,
+    stamp_cost: Option<f64>,
     status: Option<&str>,
     announce_ratspeak_usage: bool,
 ) -> Vec<u8> {
@@ -180,10 +199,12 @@ pub fn get_ratspeak_announce_app_data(
         Some(name) => Value::Binary(name.as_bytes().to_vec()),
         None => Value::Nil,
     };
-    let cost_val = match stamp_cost {
-        Some(cost) if cost > 0 && cost < 255 => Value::from(cost as u64),
-        _ => Value::Nil,
-    };
+    // Slot 1 carries the whole-number ceiling as LXMF does; slot 3 is the extension.
+    let cost_val = stamp_cost
+        .filter(|cost| *cost > 0.0 && *cost < lxmf_core::stamper::STAMP_COST_CAP)
+        .and_then(|cost| lxmf_core::stamper::quantize_cost(cost).ok())
+        .filter(|cost| *cost != 0.0)
+        .map_or(Value::Nil, |cost| Value::from(cost.ceil() as u64));
     let features = Value::Array(vec![Value::from(
         lxmf_core::constants::SF_COMPRESSION as u64,
     )]);
@@ -1279,7 +1300,7 @@ enum PreparedPropagation {
 }
 struct PendingPropagationEnvelope {
     binding: [u8; 32],
-    cost: u8,
+    cost: f64,
     result: oneshot::Receiver<Result<PropagationEnvelope, MessageError>>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -1400,6 +1421,8 @@ pub struct LxmfManager {
     /// once the last receipt expires.
     deferred_failures: HashMap<[u8; 32], DeliveryFailureReason>,
     failure_reasons: HashMap<[u8; 32], DeliveryFailureReason>,
+    /// The router's running recipient stamp search and when Ratspeak first saw it.
+    active_stamp_search: Option<([u8; 32], Instant)>,
 }
 
 /// An outbox send waiting to be queued again.
@@ -2468,6 +2491,7 @@ impl LxmfManager {
             resumable: Vec::new(),
             deferred_failures: HashMap::new(),
             failure_reasons: HashMap::new(),
+            active_stamp_search: None,
         })
     }
 
@@ -3014,7 +3038,7 @@ impl LxmfManager {
         let method = msg.method;
         let message_id = msg.message_id();
         let resend = crate::outbox::OutboxMessage::of(&msg).encode();
-        self.router.submit_signed(msg).ok()?;
+        self.submit_signed(msg).ok()?;
         let source = self.lxmf_hash.clone();
         let persisted = self.persist_outbound(
             db_pool,
@@ -3263,7 +3287,7 @@ impl LxmfManager {
         self.preempt_opportunistic_path(&mut msg);
         let auto_fallback = Self::auto_live_fallback_hash(&msg, send.preference);
         let method = msg.method;
-        if self.router.submit_signed(msg).is_err() {
+        if self.submit_signed(msg).is_err() {
             return Resumed::Failed;
         }
         self.deferred_failures.remove(&send.message_id);
@@ -3292,7 +3316,7 @@ impl LxmfManager {
         }
         self.ephemeral_outbound.insert(msg.message_id());
         self.preempt_opportunistic_path(&mut msg);
-        self.router.submit_signed(msg).is_ok()
+        self.submit_signed(msg).is_ok()
     }
 
     /// FIELD_FILE_ATTACHMENTS 0x05 = msgpack `[[filename, bytes]]`.
@@ -3443,7 +3467,7 @@ impl LxmfManager {
             }),
         )
         .encode();
-        if self.router.submit_signed(msg).is_err() {
+        if self.submit_signed(msg).is_err() {
             let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
             return Err(LxmfSubmissionFailure::PreparationFailed);
         }
@@ -3603,7 +3627,7 @@ impl LxmfManager {
             }),
         )
         .encode();
-        if self.router.submit_signed(msg).is_err() {
+        if self.submit_signed(msg).is_err() {
             let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
             return Err(LxmfSubmissionFailure::PreparationFailed);
         }
@@ -3742,7 +3766,7 @@ impl LxmfManager {
 
         self.preempt_opportunistic_path(&mut msg);
         let auto_fallback = Self::auto_live_fallback_hash(&msg, preference);
-        self.router.submit_signed(msg).ok()?;
+        self.submit_signed(msg).ok()?;
         self.auto_live_fallback.extend(auto_fallback);
         let msg_id_short: String = msg_id.chars().take(8).collect();
         tracing::info!(
@@ -4375,7 +4399,7 @@ impl LxmfManager {
 
         self.preempt_opportunistic_path(&mut msg);
         let auto_fallback = Self::auto_live_fallback_hash(&msg, request.preference);
-        if self.router.submit_signed(msg).is_err() {
+        if self.submit_signed(msg).is_err() {
             return false;
         }
         self.auto_live_fallback.extend(auto_fallback);
@@ -5075,6 +5099,57 @@ impl LxmfManager {
     }
 
     /// Marks a send not delivered, naming why for the Activity log.
+    /// Queue a signed message with the router, refusing a proof-of-work cost
+    /// above [`MAX_STAMP_COST`].
+    fn submit_signed(&mut self, msg: SignedLxMessage) -> Result<(), MessageError> {
+        if msg.outbound_ticket().is_none()
+            && let Some(cost) = msg.stamp_cost()
+            && !stamp_cost_affordable(cost)
+        {
+            tracing::warn!(
+                dest = %crate::short_id(&hex::encode(msg.destination_hash())),
+                cost,
+                max_cost = MAX_STAMP_COST,
+                "recipient stamp cost is above the limit; message not queued"
+            );
+            return Err(MessageError::PackFailed(format!(
+                "recipient stamp cost {cost} is above the limit of {MAX_STAMP_COST}"
+            )));
+        }
+        self.router.submit_signed(msg)
+    }
+
+    /// Cancel the router's recipient stamp search once it has run past
+    /// [`STAMP_GENERATION_DEADLINE`], failing its message.
+    fn expire_stamp_search(&mut self, now: Instant, results: &mut Vec<(String, &'static str)>) {
+        let Some(active) = self
+            .router
+            .active_deferred_stamp
+            .as_ref()
+            .map(|job| job.message_hash)
+        else {
+            self.active_stamp_search = None;
+            return;
+        };
+        let started = match self.active_stamp_search {
+            Some((hash, started)) if hash == active => started,
+            _ => {
+                self.active_stamp_search = Some((active, now));
+                now
+            }
+        };
+        if now.duration_since(started) < STAMP_GENERATION_DEADLINE {
+            return;
+        }
+        tracing::warn!(
+            msg_id = %crate::short_id(&hex::encode(active)),
+            "recipient stamp generation ran past its deadline; message failed"
+        );
+        self.active_stamp_search = None;
+        self.cancel_outbound_message(&hex::encode(active));
+        self.fail_send(active, DeliveryFailureReason::PreparationFailed, results);
+    }
+
     fn fail_send(
         &mut self,
         hash: [u8; 32],
@@ -5695,6 +5770,7 @@ impl LxmfManager {
         self.drain_backchannel_events(&mut results);
         self.queue_resumable(now, &mut results);
         self.router.process_deferred_stamps();
+        self.expire_stamp_search(Instant::now(), &mut results);
         results.extend(self.prepare_live_outbound(now, Instant::now()));
         let known_identities = self
             .known_identities
@@ -6304,12 +6380,18 @@ impl LxmfManager {
         }
         if let Some(envelope) = self.propagation_envelopes.get_mut(&id)
             && envelope.matches(message, &binding)
-            && envelope.stamp_value() >= u32::from(prepared.policy.stamp_cost)
+            && envelope.meets(prepared.policy.stamp_cost)
         {
             return match envelope.pack_for(prepared, now) {
                 Ok(bytes) => PreparedPropagation::Ready(bytes),
                 Err(e) => PreparedPropagation::Failed(e),
             };
+        }
+        if !stamp_cost_affordable(prepared.policy.stamp_cost) {
+            return PreparedPropagation::Failed(MessageError::PackFailed(format!(
+                "propagation node stamp cost {} is above the limit of {MAX_STAMP_COST}",
+                prepared.policy.stamp_cost
+            )));
         }
         let Ok(permit) = propagation_preparation_slots().try_acquire_owned() else {
             return PreparedPropagation::Pending;
@@ -6322,7 +6404,7 @@ impl LxmfManager {
         let cost = prepared.policy.stamp_cost;
         let (tx, result) = oneshot::channel();
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let worker_cancel = cancel.clone();
+        let worker_ctl = bounded_stamp_control(cancel.clone());
         self.propagation_preparation_tasks
             .retain(|task| !task.is_finished());
         self.propagation_preparation_tasks
@@ -6342,12 +6424,12 @@ impl LxmfManager {
                                     .encrypt(plaintext, ratchet.as_ref())
                                     .map_err(|e| MessageError::PackFailed(e.to_string()))
                             },
-                            &worker_cancel,
+                            &worker_ctl,
                         )?,
                     };
                     // This is the only potentially expensive path; policy is checked
                     // again on the manager before dispatch.
-                    envelope.pack_for_cancellable(prepared, now, &worker_cancel)?;
+                    envelope.pack_for_cancellable(prepared, now, &worker_ctl)?;
                     Ok(envelope)
                 })();
                 let _ = tx.send(outcome);
@@ -7600,9 +7682,9 @@ mod tests {
             true,
             limit as u64,
             limit as u64,
-            cost,
-            0,
-            0,
+            f64::from(cost),
+            0.0,
+            0.0,
         );
         assert!(mgr.update_lxmf_announce_app_data(
             node,
@@ -7656,7 +7738,7 @@ mod tests {
         mgr.known_identities
             .insert(hex::encode(node), relay.get_public_key());
         ready_relay_policy(mgr, node, 0, 256);
-        mgr.router.set_stamp_cost(node, 0);
+        mgr.router.set_stamp_cost(node, 0.0);
         mgr.propagation_transfer_limits_kb.insert(node, 256);
         mgr.router.set_outbound_propagation_node(Some(node));
         mgr.configured_propagation_node = Some(node);
@@ -7973,14 +8055,14 @@ mod tests {
 
     #[test]
     fn ratspeak_announce_extension_is_optional_and_parseable() {
-        let legacy = get_ratspeak_announce_app_data(Some("Alice"), Some(8), Some("Away"), false);
+        let legacy = get_ratspeak_announce_app_data(Some("Alice"), Some(8.0), Some("Away"), false);
         assert!(ratspeak_capability_services_from_app_data(&legacy).is_empty());
         assert_eq!(ratspeak_status_from_app_data(&legacy), None);
         let (name, cost) = lxmf_core::handlers::parse_announce_app_data(&legacy).unwrap();
         assert_eq!(name.as_deref(), Some("Alice"));
-        assert_eq!(cost, Some(8));
+        assert_eq!(cost, Some(8.0));
 
-        let extended = get_ratspeak_announce_app_data(Some("Alice"), Some(8), Some("Away"), true);
+        let extended = get_ratspeak_announce_app_data(Some("Alice"), Some(8.0), Some("Away"), true);
         let services = ratspeak_capability_services_from_app_data(&extended);
         assert!(services.contains(&db::PEER_SERVICE_RATSPEAK_CLIENT));
         assert!(services.contains(&db::PEER_SERVICE_RATSPEAK_GAMES));
@@ -7991,7 +8073,7 @@ mod tests {
         );
         let (name, cost) = lxmf_core::handlers::parse_announce_app_data(&extended).unwrap();
         assert_eq!(name.as_deref(), Some("Alice"));
-        assert_eq!(cost, Some(8));
+        assert_eq!(cost, Some(8.0));
         assert!(lxmf_core::handlers::compression_support_from_app_data(
             &extended
         ));
@@ -7999,9 +8081,9 @@ mod tests {
 
     #[test]
     fn ratspeak_announce_status_distinguishes_absent_from_cleared() {
-        let cleared = get_ratspeak_announce_app_data(Some("Alice"), Some(8), Some(""), true);
+        let cleared = get_ratspeak_announce_app_data(Some("Alice"), Some(8.0), Some(""), true);
         assert_eq!(ratspeak_status_from_app_data(&cleared).as_deref(), Some(""));
-        let legacy = lxmf_core::handlers::get_announce_app_data(Some("Alice"), Some(8));
+        let legacy = lxmf_core::handlers::get_announce_app_data(Some("Alice"), Some(8.0));
         assert_eq!(ratspeak_status_from_app_data(&legacy), None);
     }
 
@@ -10868,7 +10950,7 @@ mod tests {
         mgr.known_identities
             .insert(node_hex, relay.get_public_key());
         ready_relay_policy(&mut mgr, node, 0, 256);
-        mgr.router.set_stamp_cost(node, 0);
+        mgr.router.set_stamp_cost(node, 0.0);
         mgr.propagation_transfer_limits_kb.insert(node, 256);
         mgr.router.set_outbound_propagation_node(Some(node));
         mgr.configured_propagation_node = Some(node);
@@ -10908,7 +10990,7 @@ mod tests {
             .insert(dest_hex.clone(), remote.get_public_key());
         mgr.known_identities
             .insert(node_hex, relay.get_public_key());
-        mgr.router.set_stamp_cost(node, 0);
+        mgr.router.set_stamp_cost(node, 0.0);
         mgr.propagation_transfer_limits_kb.insert(node, 256);
         mgr.router.set_outbound_propagation_node(Some(node));
         mgr.configured_propagation_node = Some(node);
@@ -10989,7 +11071,7 @@ mod tests {
             .insert(dest_hex.clone(), remote.get_public_key());
         mgr.known_identities
             .insert(node_hex, relay.get_public_key());
-        mgr.router.set_stamp_cost(node, 0);
+        mgr.router.set_stamp_cost(node, 0.0);
         mgr.router.set_outbound_propagation_node(Some(node));
         mgr.configured_propagation_node = Some(node);
         mgr.client_propagation_enabled = true;
@@ -11114,7 +11196,7 @@ mod tests {
             .insert(dest_hex.clone(), remote.get_public_key());
         mgr.known_identities
             .insert(node_hex, relay.get_public_key());
-        mgr.router.set_stamp_cost(node, 0);
+        mgr.router.set_stamp_cost(node, 0.0);
         mgr.router.set_outbound_propagation_node(Some(node));
         mgr.configured_propagation_node = Some(node);
         mgr.client_propagation_enabled = true;
@@ -12005,11 +12087,11 @@ mod tests {
     }
 
     /// The recipient stamp inputs of a golden case on a message being drafted.
-    fn golden_stamp(golden: &Value, case: &Value) -> (Option<[u8; 16]>, Option<u8>) {
+    fn golden_stamp(golden: &Value, case: &Value) -> (Option<[u8; 16]>, Option<f64>) {
         match case["stamp"].as_str().unwrap() {
             "none" => (None, None),
             "ticket" => (Some([0x5A; 16]), None),
-            "proof_of_work" => (None, Some(golden["stamp_cost"].as_u64().unwrap() as u8)),
+            "proof_of_work" => (None, Some(golden["stamp_cost"].as_f64().unwrap())),
             other => panic!("unknown stamp {other}"),
         }
     }
@@ -12020,8 +12102,8 @@ mod tests {
         for (outbound_ticket, stamp_cost) in [
             (None, None),
             (ticket, None),
-            (None, Some(0)),
-            (ticket, Some(8)),
+            (None, Some(0.0)),
+            (ticket, Some(8.0)),
         ] {
             let mut draft = LxMessageDraft::new(
                 [0x11; 16],
@@ -12386,7 +12468,7 @@ mod tests {
                 .set_audio_field(lxmf_core::constants::AM_OPUS_OGG, &vec![0; audio_len])
                 .unwrap();
             // A recipient that asks for a proof-of-work stamp.
-            message.stamp_cost = Some(8);
+            message.stamp_cost = Some(8.0);
             message
                 .sign(&rns_crypto::ed25519::Ed25519PrivateKey::from_bytes(
                     &[7; 32],
@@ -12452,6 +12534,86 @@ mod tests {
         assert!(db::get_conversation(&pool, &dest, &identity_id, 100).is_empty());
     }
 
+    fn manager_with_stamped_peer(cost: f64) -> (LxmfManager, String) {
+        let mut mgr = test_manager();
+        let dest = [0xDE; 16];
+        let dest_hex = hex::encode(dest);
+        mgr.known_identities
+            .insert(dest_hex.clone(), Identity::new().get_public_key());
+        mgr.router.set_stamp_cost(dest, cost);
+        mgr.router.ticket_store.replace_legacy(Vec::new());
+        (mgr, dest_hex)
+    }
+
+    #[tokio::test]
+    async fn recipient_stamp_cost_above_the_limit_is_refused_before_any_work() {
+        let (mut mgr, dest_hex) = manager_with_stamped_peer(MAX_STAMP_COST + 1.0 / 256.0);
+        let message = mgr
+            .create_message(
+                &dest_hex,
+                "too expensive",
+                "",
+                DeliveryMethod::Opportunistic,
+            )
+            .unwrap();
+        assert!(mgr.submit_signed(message).is_err());
+        assert!(mgr.router.pending_deferred_stamps.is_empty());
+        assert!(mgr.router.active_deferred_stamp.is_none());
+    }
+
+    #[tokio::test]
+    async fn recipient_stamp_search_past_its_deadline_fails_the_message() {
+        let (mut mgr, dest_hex) = manager_with_stamped_peer(MAX_STAMP_COST);
+        let message = mgr
+            .create_message(&dest_hex, "slow stamp", "", DeliveryMethod::Opportunistic)
+            .unwrap();
+        let id = message.message_id();
+        mgr.submit_signed(message).unwrap();
+        mgr.router.process_deferred_stamps();
+        assert!(mgr.router.active_deferred_stamp.is_some());
+
+        let started = Instant::now();
+        let mut results = Vec::new();
+        mgr.expire_stamp_search(started, &mut results);
+        mgr.expire_stamp_search(started + STAMP_GENERATION_DEADLINE / 2, &mut results);
+        assert!(results.is_empty());
+        mgr.expire_stamp_search(started + STAMP_GENERATION_DEADLINE, &mut results);
+        assert_eq!(results, vec![(hex::encode(id), "failed")]);
+        assert!(mgr.router.active_deferred_stamp.is_none());
+        assert!(mgr.router.pending_deferred_stamps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn propagation_stamp_cost_above_the_limit_fails_without_a_worker() {
+        let mut mgr = test_manager();
+        let destination_hash = [0x41; 16];
+        let relay_hash = [0x42; 16];
+        mgr.known_identities.insert(
+            hex::encode(destination_hash),
+            Identity::new().get_public_key(),
+        );
+        mgr.known_identities
+            .insert(hex::encode(relay_hash), Identity::new().get_public_key());
+        let (tx, _rx) = mpsc::channel(16);
+        mgr.router.set_transport(tx);
+        ready_relay_policy(&mut mgr, relay_hash, MAX_STAMP_COST as u8 + 1, 256);
+        let message = mgr
+            .create_final_message(
+                &hex::encode(destination_hash),
+                "relay asks too much",
+                "",
+                DeliveryMethod::Propagated,
+            )
+            .unwrap();
+        mgr.router.set_outbound_propagation_node(Some(relay_hash));
+        let message_id = hex::encode(message.message_id());
+        let mut results = Vec::new();
+        mgr.start_propagation_delivery(message, relay_hash, &mut results);
+        assert_eq!(results, vec![(message_id, "failed")]);
+        assert!(mgr.pending_propagation_envelopes.is_empty());
+        assert!(mgr.propagation_preparation_tasks.is_empty());
+    }
+
     #[tokio::test]
     async fn tick_drains_deferred_stamps_before_outbound_delivery() {
         let mut mgr = test_manager();
@@ -12460,7 +12622,7 @@ mod tests {
         let remote = Identity::new();
         mgr.known_identities
             .insert(dest_hex.clone(), remote.get_public_key());
-        mgr.router.set_stamp_cost(dest, 1);
+        mgr.router.set_stamp_cost(dest, 1.0);
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
         mgr.router.set_transport(tx);
@@ -12546,13 +12708,13 @@ mod tests {
         let propagation_dest = [0x22; 16];
         let unrelated_dest = [0x33; 16];
 
-        let delivery_data = lxmf_core::handlers::get_announce_app_data(Some("peer"), Some(7));
+        let delivery_data = lxmf_core::handlers::get_announce_app_data(Some("peer"), Some(7.0));
         assert!(mgr.update_lxmf_announce_app_data(
             delivery_dest,
             rns_identity::name_hash::name_hash("lxmf.delivery"),
             Some(&delivery_data),
         ));
-        assert_eq!(mgr.router.get_stamp_cost(&delivery_dest), Some(7));
+        assert_eq!(mgr.router.get_stamp_cost(&delivery_dest), Some(7.0));
         assert!(!mgr.update_lxmf_announce_app_data(
             delivery_dest,
             rns_identity::name_hash::name_hash("lxmf.delivery"),
@@ -12560,14 +12722,14 @@ mod tests {
         ));
 
         let pn_data =
-            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 1024, 1024, 23, 3, 0);
+            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 1024, 1024, 23.0, 3.0, 0.0);
         let pn_app_data = lxmf_core::handlers::get_propagation_node_app_data(&pn_data);
         assert!(mgr.update_lxmf_announce_app_data(
             propagation_dest,
             rns_identity::name_hash::name_hash("lxmf.propagation"),
             Some(&pn_app_data),
         ));
-        assert_eq!(mgr.router.get_stamp_cost(&propagation_dest), Some(23));
+        assert_eq!(mgr.router.get_stamp_cost(&propagation_dest), Some(23.0));
         assert_eq!(
             mgr.propagation_transfer_limits_kb.get(&propagation_dest),
             Some(&1024)
@@ -12580,7 +12742,7 @@ mod tests {
         ));
 
         let smaller_pn_data =
-            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 1, 1, 23, 3, 0);
+            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 1, 1, 23.0, 3.0, 0.0);
         assert!(mgr.update_lxmf_announce_app_data(
             propagation_dest,
             rns_identity::name_hash::name_hash("lxmf.propagation"),
@@ -12616,7 +12778,8 @@ mod tests {
         let (tx, _rx) = mpsc::channel(16);
         mgr.router.set_transport(tx);
         ready_relay_policy(&mut mgr, relay_hash, 0, 0);
-        let announce = lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 0, 0, 0, 0, 0);
+        let announce =
+            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 0, 0, 0.0, 0.0, 0.0);
         assert!(mgr.update_lxmf_announce_app_data(
             relay_hash,
             rns_identity::name_hash::name_hash("lxmf.propagation"),
@@ -12706,7 +12869,7 @@ mod tests {
         let propagation_node = [0x66; 16];
         let remote = Identity::new();
 
-        mgr.router.set_stamp_cost(propagation_node, 19);
+        mgr.router.set_stamp_cost(propagation_node, 19.0);
         mgr.known_identities
             .insert(hex::encode(propagation_node), remote.get_public_key());
         mgr.propagation_transfer_limits_kb
@@ -12715,13 +12878,16 @@ mod tests {
         drop(mgr);
 
         let mut restored = LxmfManager::load_or_create(&tmp, Some(&identity_hash), None).unwrap();
-        assert_eq!(restored.router.get_stamp_cost(&propagation_node), Some(19));
+        assert_eq!(
+            restored.router.get_stamp_cost(&propagation_node),
+            Some(19.0)
+        );
         assert!(
             !restored.propagation_node_ready_for_send(&propagation_node),
             "restart must wait for a fresh transfer-limit announce instead of bypassing admission"
         );
         let announce =
-            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 256, 10240, 19, 0, 0);
+            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 256, 10240, 19.0, 0.0, 0.0);
         assert!(restored.update_lxmf_announce_app_data(
             propagation_node,
             rns_identity::name_hash::name_hash("lxmf.propagation"),
@@ -12812,7 +12978,7 @@ mod tests {
         mgr.known_identities
             .insert(prop_hex, prop_identity.get_public_key());
         ready_relay_policy(&mut mgr, propagation_node, 19, 256);
-        mgr.router.set_stamp_cost(propagation_node, 19);
+        mgr.router.set_stamp_cost(propagation_node, 19.0);
         mgr.propagation_transfer_limits_kb
             .insert(propagation_node, 256);
         mgr.router
@@ -13604,12 +13770,12 @@ mod tests {
         let mut mgr = test_manager();
         let dest = "ac".repeat(16);
         let dest_bytes: [u8; 16] = hex::decode(&dest).unwrap().try_into().unwrap();
-        mgr.router.set_stamp_cost(dest_bytes, 1);
+        mgr.router.set_stamp_cost(dest_bytes, 1.0);
         let id = send_for_resume(&mut mgr, &pool, &dest, DeliveryPreference::Direct);
         assert!(mgr.router.pending_deferred_stamps.contains_key(&id));
 
         let mut mgr = restarted(mgr, &pool);
-        mgr.router.set_stamp_cost(dest_bytes, 1);
+        mgr.router.set_stamp_cost(dest_bytes, 1.0);
         let mut results = Vec::new();
         mgr.queue_resumable(unix_now(), &mut results);
         assert!(results.is_empty(), "{results:?}");

@@ -516,7 +516,7 @@ pub fn apply_lxmf_settings_from_state(state: &AppState, mgr: &mut lxmf::LxmfMana
         .required_stamp_cost
         .load(std::sync::atomic::Ordering::Relaxed);
     mgr.router.config.stamp_cost = if enforce && stamp_cost > 0 {
-        Some(stamp_cost)
+        Some(f64::from(stamp_cost))
     } else {
         None
     };
@@ -528,8 +528,10 @@ pub fn apply_lxmf_settings_from_state(state: &AppState, mgr: &mut lxmf::LxmfMana
         .propagation_node_stamp_cost
         .load(std::sync::atomic::Ordering::Relaxed);
     mgr.router.set_propagation_enabled(hosting);
-    mgr.router
-        .set_stamp_requirements(pn_cost, lxmf_core::constants::PROPAGATION_COST_FLEX);
+    mgr.router.set_stamp_requirements(
+        f64::from(pn_cost),
+        lxmf_core::constants::PROPAGATION_COST_FLEX,
+    );
 }
 
 /// Path responses must advertise the same live node policy as our ordinary
@@ -577,7 +579,7 @@ fn accept_hosted_propagation_deposit(
 ) -> Option<bool> {
     let (_transient_id, lxmf_data, stamp_value, stamp_data) =
         lxmf_core::stamper::validate_pn_stamp(entry, node.min_stamp_cost())?;
-    Some(node.accept_stamped_propagated_blob(&lxmf_data, &stamp_data, stamp_value as u8))
+    Some(node.accept_stamped_propagated_blob(&lxmf_data, &stamp_data, stamp_value))
 }
 
 fn short_id(s: &str) -> &str {
@@ -2122,9 +2124,11 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                     };
 
                     let prop_node_config = lxmf_core::propagation_node::PropagationNodeConfig {
-                        min_stamp_cost: state
-                            .propagation_node_stamp_cost
-                            .load(std::sync::atomic::Ordering::Relaxed),
+                        min_stamp_cost: f64::from(
+                            state
+                                .propagation_node_stamp_cost
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                        ),
                         ..lxmf_core::propagation_node::PropagationNodeConfig::default()
                     };
 
@@ -5115,6 +5119,7 @@ fn inbound_stamp_allowed(
     if required_cost == 0 {
         return true;
     }
+    let required_cost = f64::from(required_cost);
     let stamp_ok = match (
         msg.recipient_stamp().map(|stamp| stamp.as_bytes()),
         Some(msg.message_id()),
@@ -8386,11 +8391,11 @@ mod inbound_pipeline_tests {
             }
             let response = metadata(&request.raw, &destination);
             assert_eq!(response.node_state, hosting && ready && !static_only);
-            assert_eq!(response.stamp_cost, cost);
+            assert_eq!(response.stamp_cost, f64::from(cost));
             assert_eq!(response.transfer_limit, limit as u64);
             assert_eq!(response.sync_limit, (limit * 2) as u64);
             assert_eq!(
-                response.metadata.get(&0),
+                response.metadata.get(&lxmf_core::constants::PN_META_NAME),
                 Some(&format!("current node {index}").into_bytes())
             );
             assert_eq!(response.node_state, broadcast.node_state);
@@ -8445,17 +8450,18 @@ mod inbound_pipeline_tests {
         let mut blob = destination.to_vec();
         blob.extend(recipient.encrypt(&plaintext, None).unwrap());
         let transient_id = rns_crypto::sha::full_hash(&blob);
-        let stamp = lxmf_core::stamper::generate_stamp_limited(
+        let (stamp, _) = lxmf_core::stamper::generate_stamp(
             &transient_id,
-            1,
+            1.0,
             lxmf_core::constants::STAMP_WORKBLOCK_EXPAND_ROUNDS_PN,
-            1024,
+            &lxmf_core::stamper::StampControl::default(),
         )
-        .expect("bounded real low-cost propagation stamp");
+        .unwrap()
+        .expect("real low-cost propagation stamp");
         let mut entry = blob.clone();
         entry.extend(stamp);
         let config = PropagationNodeConfig {
-            min_stamp_cost: 1,
+            min_stamp_cost: 1.0,
             ..Default::default()
         };
         let mut node = PropagationNode::with_storage(
@@ -8523,14 +8529,16 @@ mod inbound_pipeline_tests {
             );
         }
 
-        let stamp_value = lxmf_core::stamper::validate_pn_stamp(&entry, 0).unwrap().2;
-        assert!(stamp_value < 255);
-        node.set_min_stamp_cost(stamp_value as u8 + 1);
+        let stamp_value = lxmf_core::stamper::validate_pn_stamp(&entry, 0.0)
+            .unwrap()
+            .2;
+        assert!(stamp_value < lxmf_core::stamper::STAMP_COST_CAP);
+        node.set_min_stamp_cost(stamp_value + 1.0 / 256.0);
         assert_eq!(accept_hosted_propagation_deposit(&mut node, &entry), None);
         let mut limited = PropagationNode::with_storage(
             PropagationNodeConfig {
                 max_message_size: blob.len(),
-                min_stamp_cost: 1,
+                min_stamp_cost: 1.0,
                 ..Default::default()
             },
             [0xA2; 16],

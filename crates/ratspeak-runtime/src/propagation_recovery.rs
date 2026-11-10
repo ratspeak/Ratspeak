@@ -43,7 +43,7 @@ pub async fn recover_host(
                 let config=lxmf_core::propagation_node::PropagationNodeConfig::default();
                 Some(import_trusted_recovery_manifest(&guard,&manifest,digest,RecoveryPolicy {
                     maximum_store_bytes:config.max_storage, maximum_message_bytes:config.max_message_size,
-                    minimum_stamp_cost:cost,
+                    minimum_stamp_cost:f64::from(cost),
                 })?)
             } else {None};
             Ok::<_,std::io::Error>(json!({

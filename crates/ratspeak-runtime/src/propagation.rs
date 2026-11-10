@@ -141,7 +141,7 @@ fn node_state_is_usable(value: &serde_json::Value) -> bool {
 }
 
 fn relay_metadata_is_usable(value: &serde_json::Value) -> bool {
-    value.get("stamp_cost").and_then(|v| v.as_u64()).is_some()
+    value.get("stamp_cost").and_then(|v| v.as_f64()).is_some()
 }
 
 fn relay_path_state_allows_selection(value: &serde_json::Value, now: f64) -> bool {
@@ -1501,7 +1501,8 @@ pub fn get_status_payload(state: &AppState) -> serde_json::Value {
                 slot.as_ref().and_then(|node| {
                     node.lock()
                         .ok()
-                        .map(|node| (node.message_count(), node.min_stamp_cost()))
+                        // Set from the whole-number setting, so the ceiling is exact.
+                        .map(|node| (node.message_count(), node.min_stamp_cost().ceil() as u8))
                 })
             })
             .unwrap_or_else(fallback);
@@ -2259,10 +2260,10 @@ mod tests {
             .insert(node_hex, remote.get_public_key());
         assert!(!mgr.propagation_node_ready_for_send(&node));
 
-        mgr.router.set_stamp_cost(node, 0);
+        mgr.router.set_stamp_cost(node, 0.0);
         assert!(!mgr.propagation_node_ready_for_send(&node));
         let announce =
-            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 256, 10240, 0, 0, 0);
+            lxmf_core::handlers::PropagationNodeAnnounceData::new(true, 256, 10240, 0.0, 0.0, 0.0);
         assert!(mgr.update_lxmf_announce_app_data(
             node,
             rns_identity::name_hash::name_hash(ratspeak_core::LXMF_PROPAGATION_APP_NAME),

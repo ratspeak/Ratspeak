@@ -497,7 +497,7 @@ mod tests {
         let dest = [0xDD; 16];
         mgr.known_identities
             .insert(hex::encode(dest), Identity::new().get_public_key());
-        mgr.router.set_stamp_cost(dest, 0);
+        mgr.router.set_stamp_cost(dest, 0.0);
         let (tx, rx) = mpsc::channel(64);
         mgr.router.set_transport(tx);
         let message = mgr

@@ -93,7 +93,7 @@ pub async fn set_propagation_hosting(
         && let Some(node) = slot.as_ref()
         && let Ok(mut node) = node.lock()
     {
-        node.set_min_stamp_cost(cost);
+        node.set_min_stamp_cost(f64::from(cost));
     }
 
     state.bump_announce_content_revision();

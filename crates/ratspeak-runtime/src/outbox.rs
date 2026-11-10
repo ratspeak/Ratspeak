@@ -335,7 +335,7 @@ mod tests {
                 draft.set_field(*id, bytes.clone()).unwrap();
             }
         }
-        draft.stamp_cost = Some(8);
+        draft.stamp_cost = Some(8.0);
         (draft.sign(&key).unwrap(), key)
     }
 

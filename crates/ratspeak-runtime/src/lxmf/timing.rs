@@ -206,7 +206,7 @@ mod tests {
             .as_secs_f64();
         mgr.known_identities
             .insert(hex::encode(dest), Identity::new().get_public_key());
-        mgr.router.set_stamp_cost(dest, 0);
+        mgr.router.set_stamp_cost(dest, 0.0);
         mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
             hash: dest,
             timestamp: now,

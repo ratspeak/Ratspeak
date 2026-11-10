@@ -9389,7 +9389,7 @@ fn path_resolution_diagnostics_are_not_duplicate_or_stale() {
 
     let lxmf = read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("lxmf");
     assert!(!lxmf.contains("pub async fn resolve_destination"));
-    assert!(lxmf.contains("self.router.submit_signed(msg).ok()?;"));
+    assert!(lxmf.contains("self.submit_signed(msg).ok()?;"));
 
     let messaging = read_source(root.join("crates/ratspeak-tauri/src/commands/messaging.rs"))
         .expect("messaging commands");

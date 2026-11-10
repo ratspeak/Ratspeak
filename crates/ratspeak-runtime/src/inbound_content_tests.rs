@@ -534,9 +534,11 @@ async fn a_stamped_message_stays_with_its_receiver_across_a_switch() {
     .unwrap();
     let (stamp, _) = lxmf_core::stamper::generate_stamp(
         &signed.message_id(),
-        1,
+        1.0,
         lxmf_core::constants::STAMP_WORKBLOCK_EXPAND_ROUNDS,
+        &lxmf_core::stamper::StampControl::default(),
     )
+    .unwrap()
     .unwrap();
     let wire = signed
         .finalize(Some(lxmf_core::message::RecipientStamp::ProofOfWork(stamp)))
