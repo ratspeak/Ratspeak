@@ -56,6 +56,7 @@ pub const AUDIO_MESSAGE_FILE_NAME: &str = "Voice message.opus";
 pub const COMPACT_AUDIO_FILE_NAME: &str = "Voice message.c2raw";
 const AUTO_PROPAGATION_CHECK_INTERVAL_SECS: f64 = 5.0 * 60.0;
 const BACKCHANNEL_COMMAND_BUFFER: usize = 64;
+mod link_stamps;
 mod packet_delivery;
 mod preparation;
 mod recovery;
@@ -1440,6 +1441,7 @@ pub struct LxmfManager {
     ready_propagation: HashMap<[u8; 32], Vec<u8>>,
     /// Medium view used by the last outbound pass.
     outbound_medium: MediumSnapshot,
+    link_keys: link_stamps::LinkKeySearches,
 }
 
 /// An outbox send waiting to be queued again.
@@ -2521,6 +2523,7 @@ impl LxmfManager {
             active_stamp_search: None,
             ready_propagation: HashMap::new(),
             outbound_medium: MediumSnapshot::default(),
+            link_keys: link_stamps::LinkKeySearches::default(),
         })
     }
 
@@ -5322,6 +5325,18 @@ impl LxmfManager {
             return;
         }
 
+        if self.opens_direct_link(dest_hash) && !self.prepare_delivery_link_keys(dest_hash) {
+            if let Some(message_id) = msg_hash {
+                self.link_keys.defer(
+                    dest_hash,
+                    link_stamps::DeferredStart::Direct { message_id, hops },
+                );
+                if !is_ephemeral {
+                    results.push((hex::encode(message_id), "link_establishing"));
+                }
+            }
+            return;
+        }
         self.log_direct_route_state(dest_hash, now);
         let timing = self.link_timing(dest_hash);
         if let Some(ref mut ld) = self.link_delivery {
@@ -5785,6 +5800,7 @@ impl LxmfManager {
         self.queue_resumable(now, &mut results);
         self.router.process_deferred_stamps();
         self.expire_stamp_search(Instant::now(), &mut results);
+        self.poll_link_key_searches(now, &mut results);
         results.extend(self.prepare_live_outbound(now, Instant::now()));
         self.fail_expired_outbound(now, &mut results);
         results.extend(self.run_router_outbound(now));
@@ -5802,15 +5818,24 @@ impl LxmfManager {
 
         results.extend(self.process_delivery_events());
 
+        let sync_keys_ready = self.prepare_sync_link_keys();
         if let Some(ref mut ps) = self.propagation_sync {
             ps.drain_events(&self.known_identities);
-            ps.tick();
+            if sync_keys_ready {
+                ps.tick();
+            }
         }
 
         let mut downloaded = Vec::new();
+        let download_keys_ready = self
+            .router
+            .outbound_propagation_node
+            .is_none_or(|node| self.prepare_download_link_keys(node));
         if let Some(ref mut client) = self.propagation_client {
             client.drain_events(&self.known_identities);
-            client.tick();
+            if download_keys_ready {
+                client.tick();
+            }
             let transfer_status = client.transfer_status();
             let terminal_state = if matches!(
                 transfer_status.state,
@@ -6030,6 +6055,7 @@ impl LxmfManager {
         };
 
         let mut cancelled = false;
+        self.link_keys.cancel_message(&hash);
         self.clear_auto_live_fallback(&hash);
         let resumable = self.resumable.len();
         self.resumable.retain(|send| send.message_id != hash);
@@ -6767,7 +6793,11 @@ impl LxmfManager {
             if message.method == DeliveryMethod::Direct {
                 inputs.direct_links.insert(
                     destination,
-                    self.direct_link_state_for_planning(destination),
+                    if self.link_keys.searching(&destination) {
+                        DirectReusableLinkState::Pending
+                    } else {
+                        self.direct_link_state_for_planning(destination)
+                    },
                 );
             }
         }
@@ -6786,6 +6816,9 @@ impl LxmfManager {
                     }
                 })
                 .unwrap_or(DirectReusableLinkState::None);
+            if self.link_keys.searching(&node) {
+                inputs.propagation_link = DirectReusableLinkState::Pending;
+            }
         }
         for target in targets {
             if self.known_identities.contains_key(&hex::encode(target)) {
@@ -7119,6 +7152,17 @@ impl LxmfManager {
             LinkDeliveryPlan::StartLink { hops } => hops,
             LinkDeliveryPlan::UseLink => self.delivery_link_hops(prop_hash),
         };
+        if self.opens_propagation_link(prop_hash) && !self.prepare_delivery_link_keys(prop_hash) {
+            self.link_keys.defer(
+                prop_hash,
+                link_stamps::DeferredStart::Propagated {
+                    message_id: hash,
+                    hops,
+                    packed,
+                },
+            );
+            return;
+        }
         let started = self.link_delivery.as_mut().map(|ld| {
             ld.start_packed_delivery_with_timing(message, prop_hash, hops, packed, false, timing)
                 .is_ok()
