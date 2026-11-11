@@ -213,6 +213,8 @@ fn execute(node: &Arc<Mutex<PropagationNode>>, data: &Bytes) -> Outcome {
                 continue;
             }
             PropagationAdmission::Pending(waiter) => return Outcome::Pending(waiter),
+            // Processed before and no longer stored: accepted, nothing written.
+            PropagationAdmission::AlreadyProcessed => continue,
             PropagationAdmission::Rejected => return Outcome::Unavailable,
         };
         let tid = plan.transient_id();

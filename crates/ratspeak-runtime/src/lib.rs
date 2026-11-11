@@ -2301,8 +2301,9 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                         .ok()
                         .and_then(|owner| {
                             let kb = owner.as_ref()?.router.config.propagation_limit_kb;
+                            // A float cast saturates; NaN and negative limits become 0.
                             Some(
-                                kb.saturating_mul(lxmf_core::constants::BYTES_PER_KILOBYTE)
+                                ((kb * lxmf_core::constants::BYTES_PER_KILOBYTE as f64) as usize)
                                     .min(64 * 1024 * 1024),
                             )
                         })
@@ -8369,8 +8370,8 @@ mod inbound_pipeline_tests {
                 let mut owner = state.lxmf.lock().unwrap();
                 let owner = owner.as_mut().unwrap();
                 apply_lxmf_settings_from_state(&state, owner);
-                owner.router.config.propagation_limit_kb = limit;
-                owner.router.config.sync_limit_kb = limit * 2;
+                owner.router.config.propagation_limit_kb = limit as f64;
+                owner.router.config.sync_limit_kb = (limit * 2) as f64;
                 owner.router.config.ext.from_static_only = static_only;
                 owner.router.config.ext.name = Some(format!("current node {index}"));
                 owner.create_propagation_announce_packet().unwrap()
