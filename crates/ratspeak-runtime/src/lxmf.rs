@@ -5841,6 +5841,7 @@ impl LxmfManager {
                 transfer_status.state,
                 lxmf_core::propagation_client::PropagationClientState::Complete
                     | lxmf_core::propagation_client::PropagationClientState::Partial
+                    | lxmf_core::propagation_client::PropagationClientState::NoPath
                     | lxmf_core::propagation_client::PropagationClientState::Failed
             ) {
                 Some(transfer_status.state)
@@ -5859,6 +5860,10 @@ impl LxmfManager {
                     Some(lxmf_core::propagation_client::PropagationClientState::Failed) => {
                         self.failed_propagation_syncs
                             .push((node, "sync_failed".to_string()));
+                    }
+                    Some(lxmf_core::propagation_client::PropagationClientState::NoPath) => {
+                        self.failed_propagation_syncs
+                            .push((node, "sync_no_path".to_string()));
                     }
                     _ => {}
                 }
@@ -12071,6 +12076,52 @@ mod tests {
         assert_eq!(
             mgr.propagation_client.as_ref().map(|client| client.state()),
             Some(lxmf_core::propagation_client::PropagationClientState::PathRequested)
+        );
+    }
+
+    #[test]
+    fn propagation_path_timeout_ends_the_sync_and_frees_the_client() {
+        use rns_transport::messages::{TransportQuery, TransportQueryResponse};
+        let mut mgr = test_manager();
+        let node = [0x56; 16];
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(64);
+        mgr.router.set_transport(tx);
+        mgr.client_propagation_enabled = true;
+        mgr.configured_propagation_node = Some(node);
+        mgr.activate_client_propagation_node(node);
+        mgr.install_download_state(
+            SuppressionLedger::default(),
+            AdmissionEpochs::default(),
+            Vec::new(),
+        );
+        assert!(mgr.propagation_client.as_mut().unwrap().start_download());
+        // Python waits max(PR_PATH_TIMEOUT, path_request_wait) = 10 s for the path.
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut ended = false;
+        while Instant::now() < deadline {
+            while let Ok(message) = rx.try_recv() {
+                if let TransportMessage::Rpc { query, response_tx } = message {
+                    let reply = match query {
+                        TransportQuery::GetInterfaceStats => {
+                            TransportQueryResponse::InterfaceStats(Vec::new())
+                        }
+                        _ => TransportQueryResponse::BoolResult(false),
+                    };
+                    let _ = response_tx.send(reply);
+                }
+            }
+            mgr.tick_with_auto_propagation_download_ready(false);
+            if !mgr.failed_propagation_syncs.is_empty() {
+                ended = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(ended, "a path timeout must end the sync");
+        assert_eq!(mgr.failed_propagation_syncs[0].0, node);
+        assert_eq!(
+            mgr.propagation_client.as_ref().map(|client| client.state()),
+            Some(lxmf_core::propagation_client::PropagationClientState::Idle)
         );
     }
 

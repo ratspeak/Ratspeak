@@ -1063,9 +1063,12 @@ pub async fn sync_propagation(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         .ok()
         .and_then(|lxmf| {
             lxmf.as_ref().and_then(|mgr| {
-                mgr.propagation_client
-                    .as_ref()
-                    .map(|client| client.state() == PropagationClientState::Failed)
+                mgr.propagation_client.as_ref().map(|client| {
+                    matches!(
+                        client.state(),
+                        PropagationClientState::Failed | PropagationClientState::NoPath
+                    )
+                })
             })
         })
         .unwrap_or(false);
@@ -1085,6 +1088,7 @@ pub async fn sync_propagation(state: State<'_, Arc<AppState>>) -> AppResult<Valu
                     PropagationClientState::Idle
                         | PropagationClientState::Complete
                         | PropagationClientState::Partial
+                        | PropagationClientState::NoPath
                         | PropagationClientState::Failed
                 ) {
                     let started = relay_ready && client.start_download();

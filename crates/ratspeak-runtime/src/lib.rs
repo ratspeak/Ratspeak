@@ -6365,9 +6365,16 @@ async fn poll_stats_loop(
                 _ => 0,
             };
 
-            if let Some(rns_transport::messages::TransportQueryResponse::Announces(announces)) =
+            if let Some(rns_transport::messages::TransportQueryResponse::Announces(mut announces)) =
                 announce_result
             {
+                let local_identity = state
+                    .lxmf
+                    .lock()
+                    .ok()
+                    .and_then(|lxmf| lxmf.as_ref().map(|mgr| mgr.identity.hash));
+                // Transport remembers this node's own announces; they are not peers.
+                announces.retain(|a| !is_own_announce(a, local_identity));
                 let announce_activity_ready = state
                     .announce_activity_baselined
                     .load(std::sync::atomic::Ordering::Relaxed);
@@ -7399,6 +7406,17 @@ async fn touch_peer_last_heard(
         .await;
 }
 
+fn is_own_announce(
+    announce: &rns_transport::messages::AnnounceRpcEntry,
+    local_identity: Option<[u8; 16]>,
+) -> bool {
+    local_identity.is_some_and(|local| {
+        announce
+            .public_key
+            .is_some_and(|key| rns_crypto::sha::truncated_hash(&key) == local)
+    })
+}
+
 // Three wire shapes: UTF-8 string, msgpack BIN/STR (NomadNet),
 // msgpack fixarray(1)[bin8(name)] (rsdeck/ratcom).
 /// Whether an announce's `timestamp` is newer than the one applied for `dest`.
@@ -7973,6 +7991,31 @@ mod announce_ingest_tests {
         let first = *applied.keys().next().unwrap();
         assert!(announce_is_newer(&applied, &first, 101.0));
         assert!(announce_is_newer(&applied, &[0xff; 16], 1.0));
+    }
+
+    #[test]
+    fn own_announces_are_not_ingested_as_peers() {
+        let local = rns_identity::identity::Identity::new();
+        let remote = rns_identity::identity::Identity::new();
+        let entry = |public_key: Option<[u8; 64]>| rns_transport::messages::AnnounceRpcEntry {
+            dest_hash: [0x11; 16],
+            hops: 1,
+            app_data: None,
+            timestamp: 1.0,
+            public_key,
+            ratchet: None,
+            name_hash: [0; 10],
+            is_path_response: false,
+            retained: false,
+        };
+        let own = entry(Some(local.get_public_key()));
+        assert!(is_own_announce(&own, Some(local.hash)));
+        assert!(!is_own_announce(&own, None));
+        assert!(!is_own_announce(
+            &entry(Some(remote.get_public_key())),
+            Some(local.hash)
+        ));
+        assert!(!is_own_announce(&entry(None), Some(local.hash)));
     }
 }
 
