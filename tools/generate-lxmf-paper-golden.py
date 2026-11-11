@@ -16,12 +16,13 @@ import argparse
 import json
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "crates" / "ratspeak-runtime" / "testdata" / "lxmf-paper-golden.json"
-RETICULUM = ("1.5.5", "7f2b3b9b524c9386316379af1313b43a5e4f7a5d")
-LXMF_RELEASE = ("1.2.0", "c3ff2d6dc2f256daab896dadc044dd5a913ecbb7")
+RETICULUM = ("1.6.0", "cb1260891d1b6da8f6e9b21542c4f0cc0725cac4")
+LXMF_RELEASE = ("1.3.0", "a0793f66777cc7d36ea8cb317fed8d2db90adc72")
 TIMESTAMP = 1700000000.0
 TITLE = "Field note"
 CONTENT = "Meet at the north gate at dawn. Bring the spare radio."
@@ -59,6 +60,12 @@ def main() -> None:
     if RNS.__version__ != RETICULUM[0] or LXMF.__version__ != LXMF_RELEASE[0]:
         sys.exit(f"imported RNS {RNS.__version__} and LXMF {LXMF.__version__}")
     RNS.loglevel = RNS.LOG_CRITICAL
+    # RNS 1.6.0 looks up the recipient's ratchet through a running instance.
+    config = tempfile.TemporaryDirectory()
+    Path(config.name, "config").write_text(
+        "[reticulum]\n  share_instance = No\n  enable_transport = No\n\n[interfaces]\n"
+    )
+    RNS.Reticulum(configdir=config.name, loglevel=RNS.LOG_CRITICAL)
 
     def delivery(seed: int) -> tuple[RNS.Identity, RNS.Destination]:
         identity = RNS.Identity(create_keys=False)

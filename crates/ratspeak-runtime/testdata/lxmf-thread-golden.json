@@ -1,12 +1,12 @@
 {
   "source": "LXMF LXMessage.pack(), fields {FIELD_THREAD: 32-byte thread ID}",
   "reticulum": {
-    "version": "1.5.5",
-    "commit": "7f2b3b9b524c9386316379af1313b43a5e4f7a5d"
+    "version": "1.6.0",
+    "commit": "cb1260891d1b6da8f6e9b21542c4f0cc0725cac4"
   },
   "lxmf": {
-    "version": "1.2.0",
-    "commit": "c3ff2d6dc2f256daab896dadc044dd5a913ecbb7"
+    "version": "1.3.0",
+    "commit": "a0793f66777cc7d36ea8cb317fed8d2db90adc72"
   },
   "timestamp": 1700000000.0,
   "content": "Day 2 avoids the east gully",

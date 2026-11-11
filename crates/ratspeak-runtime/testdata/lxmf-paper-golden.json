@@ -1,12 +1,12 @@
 {
   "source": "LXMF LXMessage.as_uri(), desired_method PAPER",
   "reticulum": {
-    "version": "1.5.5",
-    "commit": "7f2b3b9b524c9386316379af1313b43a5e4f7a5d"
+    "version": "1.6.0",
+    "commit": "cb1260891d1b6da8f6e9b21542c4f0cc0725cac4"
   },
   "lxmf": {
-    "version": "1.2.0",
-    "commit": "c3ff2d6dc2f256daab896dadc044dd5a913ecbb7"
+    "version": "1.3.0",
+    "commit": "a0793f66777cc7d36ea8cb317fed8d2db90adc72"
   },
   "timestamp": 1700000000.0,
   "title": "Field note",
@@ -16,5 +16,5 @@
   "source_hash": "a8ca03e60789eaab72d067062a6b5ed8",
   "source_public_key": "c306fb0ef2bf8b7f93bad98155fa37daec74db0c4cbeda6c6f1dba9d36558252bc7cbcb5636375fa1d82434d466724d92377f53b980695dd49d26d0ce12205a5",
   "message_id": "fd4f13c1ed369257fac65ffc82672d9d1acddc223ccdd4ae6d9e44911394476a",
-  "uri": "lxm://kGXGpwNEzdOehWmdNJAfuC8WT2iRYSeTRIrP3AmmgveH1x8dYkLYQ-ej1mCyutYOcj2pTAEsRCTKdMlxrka2wpyUrxWfJ4psR7AhhoV-6Uu3_iIa1jrt4pKMIGWmxtouTd3ZP6gDhqEsGreBnWXiVUFsFEhDNzUoXPB5XquzVAzw5-jldea_7kAyta93SvZlR6y7towHWacFDdteZpy1bCz9rVczX9wkWYKucGjr-zTBT7h2utwwWpyPvRJVB_buv50T7pJJj7Of5AnSwW6dw3vDSYOL6so8K8jz0zZS6-6o-ulM3xlwDMUVTuHkuKqrY_KOANQUoax4SzWcAu9fUQ"
+  "uri": "lxm://kGXGpwNEzdOehWmdNJAfuI5eJl8NIr7tOHYvQ-Q4_C6TQpy5rY1v6JdxV46K39JOnzKeqmjMXsDPdShfMZvQOUJgRkXNtgHPLCLdhR-RwbBcJD9_Kqq-4qGkqipJrmxGBukwRnOTczjiOc2pNXq7oJJJlVv6bHIXVTp27QP8Y2p83Tao3rdEn22JE7ZjPwB4kvoDWbCkAu48K_em4J4ue9FrV-lKZw1GhAeHNzQ7IiYhd3KiQAUDPal0gMQC-Vjm5cSaWRi7YE-m4ncbmreqf9RtsnpmxbmDzHoVuppPEMbyXKf-57pwg9Dg3rhbxwtFBlKIs-oolIE1Z-OUYKYkmw"
 }

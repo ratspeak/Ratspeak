@@ -25,8 +25,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "crates" / "ratspeak-runtime" / "testdata" / "lxmf-opportunistic-golden.json"
-RETICULUM = ("1.5.5", "7f2b3b9b524c9386316379af1313b43a5e4f7a5d")
-LXMF_RELEASE = ("1.2.0", "c3ff2d6dc2f256daab896dadc044dd5a913ecbb7")
+RETICULUM = ("1.6.0", "cb1260891d1b6da8f6e9b21542c4f0cc0725cac4")
+LXMF_RELEASE = ("1.3.0", "a0793f66777cc7d36ea8cb317fed8d2db90adc72")
 TIMESTAMP = 1700000000.0
 TICKET = bytes([0x5A]) * 16
 STAMP_COST = 1
