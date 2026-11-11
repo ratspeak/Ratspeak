@@ -1367,6 +1367,8 @@ pub struct LxmfManager {
     route_snapshot_started: Instant,
     path_recovery_refresh_needed: bool,
     delivery_timing: timing::DeliveryTimingCache,
+    /// Python `Reticulum.link_mtu_discovery()` of the instance links go through.
+    link_mtu_discovery: bool,
     /// Held so identity-switch can re-register with the transport actor.
     pub delivery_tx:
         Option<tokio::sync::mpsc::Sender<rns_transport::link_messages::DestinationEvent>>,
@@ -2463,6 +2465,7 @@ impl LxmfManager {
             route_snapshot_started: Instant::now(),
             path_recovery_refresh_needed: false,
             delivery_timing: timing::DeliveryTimingCache::default(),
+            link_mtu_discovery: rns_runtime::link_stamp::link_mtu_discovery(),
             delivery_tx: None,
             link_delivery: None,
             endpoint_dispatch: None,
@@ -4137,6 +4140,7 @@ impl LxmfManager {
                 Some(self.identity.get_public_key()),
                 self.identity.get_signing_key(),
             );
+            client.set_link_request_stamper(self.link_owner_stamper());
             client.set_propagation_node(dest);
             client.set_delivery_limit(self.delivery_limit_kb);
             if let Some(state) = self.download_state.as_ref().filter(|s| s.node == dest) {
@@ -5112,7 +5116,9 @@ impl LxmfManager {
             Some(self.identity.get_public_key()),
             self.identity.get_signing_key(),
         ));
+        let stamper = self.link_owner_stamper();
         if let Some(ref mut link_delivery) = self.link_delivery {
+            link_delivery.set_link_request_stamper(stamper);
             if let Some(handle) = &self.endpoint_dispatch {
                 link_delivery.set_link_endpoint_dispatch_handle(handle.clone());
             }
@@ -5339,8 +5345,10 @@ impl LxmfManager {
         }
         self.log_direct_route_state(dest_hash, now);
         let timing = self.link_timing(dest_hash);
+        let hardware_mtu = self.next_hop_hardware_mtu(dest_hash);
         if let Some(ref mut ld) = self.link_delivery {
             let attempts = message.delivery_attempts;
+            ld.provide_next_hop_hardware_mtu(dest_hash, hardware_mtu);
             match ld.start_delivery_with_report_and_timing(message, dest_hash, hops, timing) {
                 Ok(report) => {
                     let step = direct_link_start_step(report.kind);
@@ -5964,6 +5972,7 @@ impl LxmfManager {
             transport_tx,
             self.lxmf_dest_hash,
         );
+        task.set_link_request_stamper(self.link_owner_stamper());
         task.set_node(node_dest_hash);
         self.propagation_sync = Some(task);
         tracing::info!(
@@ -7168,7 +7177,9 @@ impl LxmfManager {
             );
             return;
         }
+        let hardware_mtu = self.next_hop_hardware_mtu(prop_hash);
         let started = self.link_delivery.as_mut().map(|ld| {
+            ld.provide_next_hop_hardware_mtu(prop_hash, hardware_mtu);
             ld.start_packed_delivery_with_timing(message, prop_hash, hops, packed, false, timing)
                 .is_ok()
         });

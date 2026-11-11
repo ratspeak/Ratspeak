@@ -2,6 +2,7 @@
 use super::*;
 use lxmf_core::link_delivery::LinkEstablishmentTiming;
 use rns_runtime::reticulum::ReticulumHandle;
+use rns_transport::messages::{TransportQuery, TransportQueryResponse};
 
 const MAX_OBSERVATIONS: usize = 256;
 const MAX_QUERIES: usize = 8;
@@ -17,20 +18,46 @@ pub(super) struct DeliveryTimingCache {
 struct Observation {
     route: Option<([u8; 16], u8, String)>,
     started: Instant,
-    reply: Option<oneshot::Receiver<Option<Duration>>>,
+    reply: Option<oneshot::Receiver<(Option<Duration>, Option<u32>)>>,
     timeout: Option<Duration>,
+    /// `Transport.next_hop_interface_hw_mtu` from this process's own Transport,
+    /// which Link.py:392-397@1.6.0 reads for every request.
+    hardware_mtu: Option<u32>,
 }
 
 impl LxmfManager {
-    pub(crate) fn set_delivery_timing_owner(&mut self, owner: ReticulumHandle) {
+    /// Route Link timing, next-hop MTU and recovery queries through `owner`,
+    /// and follow its `link_mtu_discovery`.
+    pub fn set_delivery_timing_owner(&mut self, owner: ReticulumHandle) {
         self.set_link_endpoint_dispatch_handle(owner.link_endpoint_dispatch_handle());
         self.shared_recovery_owner = (owner.instance_mode
             == rns_runtime::reticulum::InstanceMode::Client)
             .then(|| owner.clone());
+        self.link_mtu_discovery = owner.link_mtu_discovery();
         self.delivery_timing = DeliveryTimingCache {
             owner: Some(owner),
             observations: HashMap::new(),
         };
+        let stamper = self.link_owner_stamper();
+        if let Some(ld) = self.link_delivery.as_mut() {
+            ld.set_link_request_stamper(stamper.clone());
+        }
+        if let Some(client) = self.propagation_client.as_mut() {
+            client.set_link_request_stamper(stamper.clone());
+        }
+        if let Some(sync) = self.propagation_sync.as_mut() {
+            sync.set_link_request_stamper(stamper);
+        }
+    }
+
+    /// The owners' stamper: keys come from the off-tick search, so it only
+    /// carries `link_mtu_discovery`.
+    pub(super) fn link_owner_stamper(&self) -> rns_link::stamp::LinkRequestStamper {
+        let mut stamper = rns_link::stamp::LinkRequestStamper::without_recall(
+            rns_link::stamp::LinkStampPolicy::default(),
+        );
+        stamper.link_mtu_discovery = self.link_mtu_discovery;
+        stamper
     }
 
     fn timing_route(&self, dest: [u8; 16]) -> Option<([u8; 16], u8, String)> {
@@ -59,8 +86,9 @@ impl LxmfManager {
         if let Some(entry) = observations.get_mut(&dest) {
             if let Some(reply) = &mut entry.reply {
                 match reply.try_recv() {
-                    Ok(timeout) => {
+                    Ok((timeout, hardware_mtu)) => {
                         entry.timeout = timeout;
+                        entry.hardware_mtu = hardware_mtu;
                         entry.reply = None;
                     }
                     Err(oneshot::error::TryRecvError::Empty)
@@ -89,8 +117,22 @@ impl LxmfManager {
         runtime.spawn(async move {
             tokio::select! {
                 _ = tx.closed() => {}
-                result = tokio::time::timeout(QUERY_DEADLINE, owner.first_hop_timeout(dest)) => {
-                    let _ = tx.send(result.ok().and_then(Result::ok));
+                (timeout, mtu) = async {
+                    tokio::join!(
+                        tokio::time::timeout(QUERY_DEADLINE, owner.first_hop_timeout(dest)),
+                        tokio::time::timeout(
+                            QUERY_DEADLINE,
+                            owner.query_transport(TransportQuery::GetNextHopHardwareMtu { dest }),
+                        ),
+                    )
+                } => {
+                    let mtu = match mtu {
+                        Ok(Some(TransportQueryResponse::IntResult(mtu))) => {
+                            u32::try_from(mtu).ok().filter(|mtu| *mtu != 0)
+                        }
+                        _ => None,
+                    };
+                    let _ = tx.send((timeout.ok().and_then(Result::ok), mtu));
                 }
             }
         });
@@ -101,6 +143,7 @@ impl LxmfManager {
                 started: Instant::now(),
                 reply: Some(rx),
                 timeout: None,
+                hardware_mtu: None,
             },
         );
         false
@@ -140,13 +183,23 @@ impl LxmfManager {
         }
     }
 
-    pub(super) fn link_timing(&self, dest: [u8; 16]) -> LinkEstablishmentTiming {
+    fn current_observation(&self, dest: [u8; 16]) -> Option<&Observation> {
         self.delivery_timing
             .observations
             .get(&dest)
             .filter(|entry| {
                 entry.started.elapsed() < OBSERVATION_TTL && entry.route == self.timing_route(dest)
             })
+    }
+
+    /// The next-hop hardware MTU the next Link to `dest` may signal.
+    pub(super) fn next_hop_hardware_mtu(&self, dest: [u8; 16]) -> Option<u32> {
+        self.current_observation(dest)
+            .and_then(|entry| entry.hardware_mtu)
+    }
+
+    pub(super) fn link_timing(&self, dest: [u8; 16]) -> LinkEstablishmentTiming {
+        self.current_observation(dest)
             .and_then(|entry| entry.timeout)
             .map(LinkEstablishmentTiming::from_first_hop_timeout)
             .unwrap_or_default()
@@ -182,6 +235,7 @@ mod tests {
                 started: Instant::now(),
                 reply: None,
                 timeout: Some(Duration::from_secs(46)),
+                hardware_mtu: None,
             },
         );
         assert_eq!(
@@ -228,6 +282,7 @@ mod tests {
                 started: Instant::now(),
                 reply: None,
                 timeout: Some(Duration::from_secs(46)),
+                hardware_mtu: None,
             },
         );
         let (tx, _rx) = mpsc::channel(64);
