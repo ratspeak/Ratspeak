@@ -10051,17 +10051,25 @@ mod tests {
                 .await
                 .expect("transport message timed out")
                 .expect("transport channel closed");
-            // The test transport knows no announced link cost.
-            if let TransportMessage::Rpc {
-                query: rns_transport::messages::TransportQuery::RecallLinkCost { .. },
-                response_tx,
-            } = message
-            {
-                let _ = response_tx
-                    .send(rns_transport::messages::TransportQueryResponse::FloatResult(None));
-                continue;
+            // The test transport knows no announced link cost and no next-hop MTU.
+            match message {
+                TransportMessage::Rpc {
+                    query: rns_transport::messages::TransportQuery::RecallLinkCost { .. },
+                    response_tx,
+                } => {
+                    let _ = response_tx
+                        .send(rns_transport::messages::TransportQueryResponse::FloatResult(None));
+                }
+                TransportMessage::Rpc {
+                    query: rns_transport::messages::TransportQuery::GetNextHopHardwareMtu { .. },
+                    response_tx,
+                } => {
+                    let _ = response_tx.send(
+                        rns_transport::messages::TransportQueryResponse::IntResult(-1),
+                    );
+                }
+                message => return message,
             }
-            return message;
         }
     }
 
