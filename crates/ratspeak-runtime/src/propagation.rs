@@ -1633,7 +1633,7 @@ pub(crate) fn insert_heard_node(
         "hash": hash_hex,
         "hops": hops,
         "stamp_cost": pn.stamp_cost,
-        "transfer_limit_kb": pn.transfer_limit,
+        "transfer_limit_kb": pn.transfer_limit.as_f64() as u64,
         "last_seen": heard_at,
         "node_state": if pn.node_state { "enabled" } else { "disabled" },
         "static": preserved_static,

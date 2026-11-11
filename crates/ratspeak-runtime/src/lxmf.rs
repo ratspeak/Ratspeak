@@ -5528,13 +5528,14 @@ impl LxmfManager {
         if name_hash == rns_identity::name_hash::name_hash(LXMF_PROPAGATION_APP_NAME) {
             if let Some(pn) = lxmf_core::handlers::parse_pn_announce_data(app_data) {
                 self.router.set_stamp_cost(dest_hash, pn.stamp_cost);
+                // Whole kilobytes, as upstream's handler reads it (Handlers.py:59-62).
                 self.propagation_transfer_limits_kb
-                    .insert(dest_hash, pn.transfer_limit);
+                    .insert(dest_hash, pn.transfer_limit.as_f64() as u64);
                 self.propagation_node_policies.insert(
                     dest_hash,
                     AdvertisedNodePolicy {
                         stamp_cost: pn.stamp_cost,
-                        transfer_limit_kb: pn.transfer_limit as f64,
+                        transfer_limit_kb: pn.transfer_limit.as_f64(),
                         recorded_at: SystemTime::now()
                             .duration_since(UNIX_EPOCH)
                             .unwrap_or_default()

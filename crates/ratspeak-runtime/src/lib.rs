@@ -8468,8 +8468,8 @@ mod inbound_pipeline_tests {
             let response = metadata(&request.raw, &destination);
             assert_eq!(response.node_state, hosting && ready && !static_only);
             assert_eq!(response.stamp_cost, f64::from(cost));
-            assert_eq!(response.transfer_limit, limit as u64);
-            assert_eq!(response.sync_limit, (limit * 2) as u64);
+            assert_eq!(response.transfer_limit.as_f64(), limit as f64);
+            assert_eq!(response.sync_limit.as_f64(), (limit * 2) as f64);
             assert_eq!(
                 response.metadata.get(&lxmf_core::constants::PN_META_NAME),
                 Some(&format!("current node {index}").into_bytes())
