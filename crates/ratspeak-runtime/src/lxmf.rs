@@ -6044,20 +6044,11 @@ impl LxmfManager {
         true
     }
 
-    /// The router schedules the next attempt; a receipt that concluded early
-    /// makes it due at once.
+    /// The router alone schedules the next attempt (LXMRouter.schedule_attempt);
+    /// an expired receipt only ends the in-flight record.
     fn retry_due_opportunistic_deliveries(&mut self, now: f64) {
-        let due = self
-            .opportunistic_in_flight
-            .iter()
-            .filter_map(|(hash, pending)| (pending.retry_at <= now).then_some(*hash))
-            .collect::<Vec<_>>();
-        for hash in due {
-            self.opportunistic_in_flight.remove(&hash);
-            self.with_router_message(&hash, |queued| {
-                queued.next_delivery_attempt = queued.next_delivery_attempt.min(now);
-            });
-        }
+        self.opportunistic_in_flight
+            .retain(|_, pending| pending.retry_at > now);
     }
 
     pub fn cancel_outbound_message(&mut self, msg_id: &str) -> bool {
@@ -7326,8 +7317,6 @@ impl LxmfManager {
         let retry_at = now + self.packet_retry_window(dest_hash).as_secs_f64();
         match self.dispatch_opportunistic_packet(&message, raw, destination_public_key) {
             Ok(packet_hash) => {
-                // The next attempt waits for the packet receipt, not just the retry wait.
-                self.with_router_message(&hash, |queued| queued.next_delivery_attempt = retry_at);
                 self.opportunistic_in_flight.insert(
                     hash,
                     PendingOpportunisticDelivery {

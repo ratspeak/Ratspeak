@@ -220,15 +220,6 @@ impl LxmfManager {
                                     .as_secs_f64();
                                 pending.retry_at =
                                     now + retry_window.unwrap_or_default().as_secs_f64();
-                                let retry_at = pending.retry_at;
-                                if let Some(queued) = self
-                                    .router
-                                    .pending_outbound
-                                    .iter_mut()
-                                    .find(|queued| &queued.message_id() == hash)
-                                {
-                                    queued.next_delivery_attempt = retry_at;
-                                }
                             }
                         }
                         Err(oneshot::error::TryRecvError::Empty) => {}
@@ -251,14 +242,6 @@ impl LxmfManager {
                         .unwrap_or_default()
                         .as_secs_f64();
                     pending.retry_at = now;
-                    if let Some(queued) = self
-                        .router
-                        .pending_outbound
-                        .iter_mut()
-                        .find(|queued| &queued.message_id() == hash)
-                    {
-                        queued.next_delivery_attempt = now;
-                    }
                 }
                 // A concluded receipt can no longer prove delivery, but its
                 // exact failed-route identity remains useful to the next
@@ -570,6 +553,36 @@ mod tests {
     }
 
     #[test]
+    fn an_opportunistic_retry_follows_the_router_schedule_while_the_receipt_is_open() {
+        let (mut mgr, hash, mut rx) = packet();
+        let sent_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let first = accept(&mut rx);
+        mgr.poll_opportunistic_proofs(&mut Vec::new());
+        // LXMRouter.schedule_attempt: the next try is DELIVERY_RETRY_WAIT away,
+        // whatever the packet receipt's own timeout.
+        let next = mgr.router.pending_outbound[0].next_delivery_attempt;
+        assert!(
+            next <= sent_at + DELIVERY_RETRY_WAIT as f64 + 1.0,
+            "next attempt in {}s",
+            next - sent_at
+        );
+        mgr.router.pending_outbound[0].next_delivery_attempt = 0.0;
+        mgr.tick();
+        let _second = accept(&mut rx);
+        assert_eq!(mgr.router.pending_outbound[0].delivery_attempts, 2);
+        first.send_replace(ReceiptUpdate::Delivered {
+            rtt: Duration::from_secs(1),
+        });
+        let mut updates = Vec::new();
+        mgr.poll_opportunistic_proofs(&mut updates);
+        assert_eq!(updates, vec![(hex::encode(hash), "delivered")]);
+        assert!(mgr.router.pending_outbound.is_empty());
+    }
+
+    #[test]
     fn a_cancelled_messages_sent_copy_still_proves_delivery() {
         let (mut mgr, hash, mut rx) = packet();
         let proof = accept(&mut rx);
@@ -684,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn culled_receipt_retries_promptly_without_losing_exact_failed_route_owner() {
+    fn culled_receipt_ends_the_in_flight_record_and_keeps_the_failed_route_owner() {
         let (mut mgr, hash, mut rx) = packet();
         let proof = accept(&mut rx);
         mgr.poll_opportunistic_proofs(&mut Vec::new());

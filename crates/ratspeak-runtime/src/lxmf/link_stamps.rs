@@ -223,6 +223,23 @@ impl LxmfManager {
         }
     }
 
+    fn still_linking(&self, node: [u8; 16], start: &DeferredStart) -> bool {
+        match start {
+            DeferredStart::Download => {
+                self.router.outbound_propagation_node == Some(node)
+                    && self.propagation_client.as_ref().is_some_and(|client| {
+                        client.state()
+                            == lxmf_core::propagation_client::PropagationClientState::PathRequested
+                    })
+            }
+            DeferredStart::Sync => self.propagation_sync.as_ref().is_some_and(|sync| {
+                sync.state == lxmf_core::propagation_sync::SyncTaskState::PathRequested
+                    && sync.node_dest_hash() == Some(node)
+            }),
+            DeferredStart::Direct { .. } | DeferredStart::Propagated { .. } => true,
+        }
+    }
+
     /// Open the Links whose keys were found; a failed search closes its
     /// never-activated Link as Python's `__stamp_failed` does.
     pub(super) fn poll_link_key_searches(
@@ -251,9 +268,11 @@ impl LxmfManager {
             };
             let Some(message_id) = start.message_id() else {
                 match keys {
-                    Some(keys) => {
+                    // Keys belong to the Link being opened; nobody is opening it any more.
+                    Some(keys) if self.still_linking(dest, &start) => {
                         self.link_keys.ready.insert(dest, keys);
                     }
+                    Some(_) => {}
                     None if matches!(start, DeferredStart::Sync) => {
                         tracing::info!(
                             node = %crate::short_id(&hex::encode(dest)),
@@ -321,5 +340,34 @@ impl LxmfManager {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lxmf::tests::test_manager;
+
+    #[test]
+    fn keys_found_after_the_client_stopped_linking_are_dropped() {
+        let mut mgr = test_manager();
+        for (node, start) in [
+            ([1; 16], DeferredStart::Download),
+            ([2; 16], DeferredStart::Sync),
+        ] {
+            let (reply_tx, reply) = oneshot::channel();
+            assert!(reply_tx.send(Ok(EphemeralKeys::generate())).is_ok());
+            mgr.link_keys.pending.insert(
+                node,
+                Search {
+                    start: Some(start),
+                    reply,
+                    _cancel: CancelOnDrop(Arc::new(AtomicBool::new(false))),
+                },
+            );
+        }
+        mgr.poll_link_key_searches(0.0, &mut Vec::new());
+        assert!(mgr.link_keys.pending.is_empty());
+        assert!(mgr.link_keys.ready.is_empty());
     }
 }

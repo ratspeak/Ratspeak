@@ -400,6 +400,8 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
             })
         })
         .unwrap_or((false, false, false));
+    // Link requests to the node recall the link cost this announce carries.
+    refresh_lxmf_route_cache_and_lookup_iface(state, event.destination_hash).await;
     if identity_changed || ratchet_changed || router_changed {
         let ratchet_hashes = if ratchet_changed {
             vec![hash_hex.clone()]
