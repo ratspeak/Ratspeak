@@ -1752,6 +1752,7 @@ fn all_rnode_creation_paths_use_transport_specific_startup_policy() {
     assert_option_calls(&runtime_rs, "reticulum::init_with_policy", 1, ble_option);
     let configured_startup = rust_call_blocks(&runtime_rs, "reticulum::init_with_policy");
     assert!(configured_startup[0].contains("InitOptions::default()"));
+    assert!(configured_startup[0].contains("keep_starting_after_interface_failure: true"));
     assert!(configured_startup[0].contains("policy"));
     assert!(
         runtime_rs.contains("RNodeStartupOptions::default().with_persisted_bluetooth_enabled()")

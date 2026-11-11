@@ -73,7 +73,11 @@ impl RnsManager {
             socket_dir,
             shutdown.clone(),
             is_foreground,
-            InitOptions::default(),
+            // One failed interface is shown as a warning; the others still start.
+            InitOptions {
+                keep_starting_after_interface_failure: true,
+                ..InitOptions::default()
+            },
             ble_rnode_startup_options(),
             policy,
         )
