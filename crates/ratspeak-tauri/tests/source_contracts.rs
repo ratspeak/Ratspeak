@@ -7060,6 +7060,41 @@ fn settings_information_architecture_groups_one_off_settings() {
     assert!(network_panel.contains(r#"<span class="settings-row-label">Auto-Announce</span>"#));
     assert!(!network_panel.contains("Auto-Lock"));
 
+    // Discovery is a group of the Network panel, after its rows, with dependent rows hidden until it is on.
+    let discovery = network_panel
+        .split(r#"id="discovery-settings-body""#)
+        .nth(1)
+        .expect("discovery settings group");
+    assert!(
+        network_panel.find(r#"id="auto-announce-select""#)
+            < network_panel.find(r#"id="discovery-settings-body""#)
+    );
+    assert!(discovery.contains(
+        r#"<h3 class="settings-panel-section-title" id="discovery-settings-heading">Discovery</h3>"#
+    ));
+    assert!(discovery.contains("Changes here restart the network for a moment."));
+    assert!(discovery.contains(
+        r#"<span class="settings-row-label" id="ns-discover-label">Discover Connections</span>"#
+    ));
+    for label in ["Join Automatically", "Accept From", "Trusted Publishers"] {
+        assert!(
+            discovery.contains(&format!(
+                r#"<span class="settings-row-label">{label}</span>"#
+            )),
+            "{label}"
+        );
+    }
+    assert!(discovery.contains(
+        r#"class="selector-badge settings-state-value" id="ns-autojoin-select" type="button">OFF</button>"#
+    ));
+    // Another app's Reticulum service owns discovery; the group is hidden with the connection sections.
+    assert!(views_css.contains(".network-external .discovery-settings { display: none; }"));
+    assert!(discovery.contains(r#"id="ns-autojoin-row" hidden"#));
+    assert!(discovery.contains(r#"id="ns-accept-row" hidden"#));
+    assert!(discovery.contains(r#"id="ns-trusted-row" hidden"#));
+    assert!(!index.contains(r#"id="panel-settings-discovery""#));
+    assert!(views_css.contains(".settings-row[hidden] { display: none; }"));
+
     assert!(
         settings_js
             .contains("var _notifRow = document.getElementById('settings-row-notifications');")
@@ -10705,6 +10740,128 @@ fn the_app_hardens_its_process_first() {
         body.starts_with("ratspeak_tauri::process::harden();"),
         "{body}"
     );
+}
+
+/// Discovery goes through the network settings commands: its keys are written
+/// before each start, a change is one restart, and the list has one limit.
+#[test]
+fn discovery_settings_use_the_network_settings_commands() {
+    let root = repo_root();
+    let read = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+    let index = read("dashboard/index.html");
+    let ns = read("dashboard/static/js/network_settings.js");
+    let health = read("dashboard/static/js/health.js");
+    let shell = read("src-tauri/src/lib.rs");
+    let commands = read("crates/ratspeak-tauri/src/commands/network_settings.rs");
+    let gate = read("crates/ratspeak-tauri/src/invoke_gate.rs");
+
+    assert!(index.contains(r#"<script src="/static/js/network_settings.js"#));
+    for command in [
+        "api_network_settings",
+        "set_network_settings",
+        "api_restart_impact",
+        "api_discovered_interfaces",
+        "connect_discovered_interface",
+        "keep_joined_interface",
+    ] {
+        assert!(ns.contains(&format!("'{command}'")), "{command}");
+        assert!(
+            shell.contains(&format!(
+                "ratspeak_tauri::commands::network_settings::{command},"
+            )),
+            "{command} is not registered"
+        );
+        assert!(
+            commands.contains(&format!("pub async fn {command}(")),
+            "{command}"
+        );
+        // The active identity's network: no answer while none is active or it is locked.
+        for list in ["IDENTITY_FREE", "LOCK_FREE"] {
+            assert!(
+                !gate_list(&gate, list).contains(&command),
+                "{list}: {command}"
+            );
+        }
+    }
+    assert!(ns.contains("title: 'Restart the network?'"));
+    assert!(ns.contains("toast('Network restarted'"));
+    assert!(ns.contains("value.textContent = 'Restarting…';"));
+    assert!(index.contains(r#"id="conn-section-discovered" hidden"#));
+    assert!(ns.contains("Published servers and radios appear here"));
+    // Restart consequences and the current choice.
+    assert!(ns.contains("connected devices will disconnect for a moment."));
+    assert!(ns.contains("c.selected = parseInt(c.value, 10) === s.autojoin"));
+    assert_eq!(ns.matches("placeholder: 'Paste an address'").count(), 1);
+    assert!(health.contains("RS.discovery.keep(ifaceName)"));
+
+    // A change reaches its consumer: saved, written into the config, then one restart.
+    let set = rust_function_block(&commands, "set_network_settings");
+    assert!(set.contains("network_ownership::require_local_interfaces(&state)"));
+    let saved = set.find("store(&state, &next)").expect("save");
+    let written = set
+        .find("write_config(&state, &next)")
+        .expect("config write");
+    let restarted = set.find("restart(&state).await").expect("restart");
+    assert!(saved < written && written < restarted);
+    assert_eq!(set.matches("restart(&state).await").count(), 1);
+    // A failure leaves the previous settings in the store and the config.
+    assert_eq!(set.matches("store(&state, &previous).await").count(), 2);
+    assert!(set.contains("write_config(&state, &previous)"));
+    assert!(
+        rust_function_block(&commands, "restart").contains("ratspeak_runtime::restart_rns_lxmf(")
+    );
+    let runtime = read("crates/ratspeak-runtime/src/lib.rs");
+    assert!(
+        rust_function_block(&runtime, "init_rns_lxmf_inner")
+            .contains("rns_config::apply_network_settings(&config_dir, &state.network_settings())")
+    );
+    let rns_config = read("crates/ratspeak-runtime/src/rns_config.rs");
+    let keys = rust_function_block(&rns_config, "network_settings_keys");
+    for key in [
+        "discover_interfaces",
+        "autoconnect_discovered_interfaces",
+        "interface_discovery_sources",
+    ] {
+        assert!(keys.contains(&format!("\"{key}\"")), "{key}");
+    }
+    for other in ["blackhole_sources", "respond_to_probes", "discoverable"] {
+        assert!(!keys.contains(other), "{other} is not a discovery key");
+    }
+    // Upstream defaults: a fresh install has discovery and joining off.
+    let state = read("crates/ratspeak-runtime/src/state.rs");
+    assert!(state.contains(
+        "crate::db::get_setting(&db, NETWORK_SETTINGS_KEY)\n            .and_then(|v| serde_json::from_str(&v).ok())\n            .unwrap_or_default();"
+    ));
+    let types = read("crates/ratspeak-core/src/types.rs");
+    assert!(types.contains(
+        "#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]\npub struct NetworkSettings {"
+    ));
+
+    // One named limit, applied where the list is made for the UI, after one row per server.
+    assert!(commands.contains("pub const DISCOVERED_LIST_LIMIT: usize = 100;"));
+    assert!(
+        rust_function_block(&commands, "api_discovered_interfaces")
+            .contains("entries: listed(&records, &live, &saved, DISCOVERED_LIST_LIMIT),")
+    );
+    // Joined is read from how the trusted crate names the Backbone client it auto-connects.
+    assert!(commands.contains("== rns_interface::backbone::BackboneClientConfig::new("));
+    let backbone = read("../rsReticulum/crates/rns-interface/src/backbone.rs");
+    assert!(backbone.contains(
+        r#"InterfaceIdentity::new(&python_name, &config.name, "BackboneClientInterface")"#
+    ));
+    let reticulum = read("../rsReticulum/crates/rns-runtime/src/reticulum.rs");
+    let spawned = rust_function_block(&reticulum, "spawn_discovered_backbone_client");
+    assert!(
+        spawned.contains("rns_interface::backbone::BackboneClientConfig::new(name, host, port)")
+    );
+
+    let listed = rust_function_block(&commands, "listed");
+    let deduplicated = listed
+        .find("entries.retain(|e| seen.insert(")
+        .expect("one row per server");
+    let limited = listed.find("limit.saturating_sub(held)").expect("limit");
+    assert!(deduplicated < limited);
+    assert!(listed.contains("e.joined || e.added"));
 }
 
 /// Keys leave only through the exports that ask for the identity's PIN or a

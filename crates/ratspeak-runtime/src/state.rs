@@ -601,6 +601,9 @@ impl LxmfPanicRecovery {
     }
 }
 
+/// SQLite key for the discovery settings, JSON.
+pub const NETWORK_SETTINGS_KEY: &str = "network_settings.v1";
+
 /// Uses `std::sync::{Mutex, RwLock}`, not tokio variants. Critical sections
 /// must finish before `.await` or run in `spawn_blocking`
 /// (`clippy::await_holding_lock` enforces this).
@@ -797,6 +800,8 @@ pub struct AppState {
     /// If true, this identity announces and serves its `lxmf.propagation` node.
     pub propagation_node_hosting_enabled: AtomicBool,
     pub propagation_node_stamp_cost: AtomicU8,
+    /// Interface discovery; written into the Reticulum config before each start.
+    pub network_settings: RwLock<ratspeak_core::types::NetworkSettings>,
     /// Unix milliseconds when this identity last queued its LXMF delivery
     /// announce. Used to decide if a newly seen peer might not know our name.
     pub last_lxmf_delivery_announce_at_ms: AtomicU64,
@@ -948,6 +953,9 @@ impl AppState {
             crate::db::get_setting(&db, "android_ble_rnode_auto_resume")
                 .is_none_or(|value| value != "false");
 
+        let initial_network_settings = crate::db::get_setting(&db, NETWORK_SETTINGS_KEY)
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_default();
         let initial_enforce_stamps = crate::db::get_setting(&db, "enforce_stamps")
             .and_then(|v| v.parse::<u8>().ok())
             .map(|v| v != 0)
@@ -1076,6 +1084,7 @@ impl AppState {
             required_stamp_cost: AtomicU8::new(initial_required_stamp_cost),
             propagation_node_hosting_enabled: AtomicBool::new(initial_prop_node_hosting),
             propagation_node_stamp_cost: AtomicU8::new(initial_prop_node_stamp_cost),
+            network_settings: RwLock::new(initial_network_settings),
             last_lxmf_delivery_announce_at_ms: AtomicU64::new(0),
             last_opportunistic_announce_at: Mutex::new(None),
             opportunistic_announce_inflight: Mutex::new(HashSet::new()),
@@ -1397,6 +1406,13 @@ impl AppState {
         self.propagation_node_hosting_enabled
             .load(Ordering::Relaxed)
             && self.propagation_host_ready()
+    }
+
+    pub fn network_settings(&self) -> ratspeak_core::types::NetworkSettings {
+        self.network_settings
+            .read()
+            .map(|s| s.clone())
+            .unwrap_or_default()
     }
 
     pub fn current_identity_session_generation(&self) -> u64 {

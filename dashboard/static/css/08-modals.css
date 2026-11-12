@@ -1416,6 +1416,15 @@
     border-color: var(--accent-border);
     background: var(--accent-bg);
 }
+.rs-dialog-choice.is-selected {
+    border-color: var(--accent-border);
+}
+.rs-dialog-choice-check {
+    margin-left: auto;
+    display: inline-flex;
+    flex-shrink: 0;
+    color: var(--accent);
+}
 .rs-dialog-choice:hover {
     background: var(--hover-subtle);
 }

@@ -2481,6 +2481,84 @@ fn transport_mode_update(content: &str, enable: bool) -> Zeroizing<String> {
     join_config_lines(lines)
 }
 
+/// Writes the `[reticulum]` discovery keys; true when the file changed.
+pub fn apply_network_settings(
+    config_dir: &Path,
+    settings: &ratspeak_core::types::NetworkSettings,
+) -> std::io::Result<bool> {
+    let previous = read_config(config_dir);
+    let content = previous
+        .clone()
+        .unwrap_or_else(|| ratspeak_default_config(config_dir));
+    let updated = reticulum_keys_update(&content, &network_settings_keys(settings));
+    if previous.as_deref() == Some(&*updated) {
+        return Ok(false);
+    }
+    write_config_if_unchanged(
+        config_dir,
+        previous.as_deref().map(String::as_str),
+        &updated,
+    )
+    .map(|_| true)
+}
+
+fn network_settings_keys(
+    s: &ratspeak_core::types::NetworkSettings,
+) -> Vec<(&'static str, Option<String>)> {
+    // Defaults are left out, so an untouched config stays as upstream writes it.
+    let list = |v: &[String]| (!v.is_empty()).then(|| v.join(", "));
+    // Trusting no one accepts no one; upstream reads an empty list as everyone.
+    let discover = s.discover && !(s.trusted_only && s.trusted_publishers.is_empty());
+    vec![
+        ("discover_interfaces", discover.then(|| "yes".to_string())),
+        (
+            "autoconnect_discovered_interfaces",
+            (discover && s.autojoin > 0).then(|| s.autojoin.to_string()),
+        ),
+        (
+            "interface_discovery_sources",
+            if s.trusted_only {
+                list(&s.trusted_publishers)
+            } else {
+                None
+            },
+        ),
+    ]
+}
+
+/// Sets or removes (`None`) keys in `[reticulum]`, keeping every other line.
+fn reticulum_keys_update(content: &str, keys: &[(&str, Option<String>)]) -> Zeroizing<String> {
+    let mut lines = content
+        .lines()
+        .map(|line| Zeroizing::new(line.to_string()))
+        .collect::<Vec<_>>();
+    if reticulum_section_bounds(&lines).is_none() {
+        lines.insert(0, Zeroizing::new(String::new()));
+        lines.insert(0, Zeroizing::new("[reticulum]".to_string()));
+    }
+    for (key, value) in keys {
+        let (start, end) = reticulum_section_bounds(&lines).expect("section exists");
+        let at = ((start + 1)..end)
+            .find(|idx| parse_ini_key_value(&lines[*idx]).is_some_and(|(k, _)| k == *key));
+        match (at, value) {
+            (Some(idx), Some(v)) => lines[idx] = replace_key_line(&lines[idx], key, v),
+            (Some(idx), None) => {
+                lines.remove(idx);
+            }
+            (None, Some(v)) => {
+                // Before the section's trailing blank lines.
+                let mut insert = end;
+                while insert > start + 1 && lines[insert - 1].trim().is_empty() {
+                    insert -= 1;
+                }
+                lines.insert(insert, Zeroizing::new(format!("{key} = {v}")));
+            }
+            (None, None) => {}
+        }
+    }
+    join_config_lines(lines)
+}
+
 pub fn transport_mode_enabled(config_dir: &Path) -> bool {
     read_config(config_dir)
         .and_then(|content| transport_enabled_from_config(&content))
@@ -2608,6 +2686,86 @@ mod tests {
                 .contains("enable_transport")
         );
         assert!(transport_mode_enabled(&dir));
+    }
+
+    #[test]
+    fn network_settings_own_their_reticulum_keys_and_nothing_else() {
+        use ratspeak_core::types::NetworkSettings;
+        let dir = temp_config_dir();
+        let base = "[reticulum]\nenable_transport = False\nshare_instance = No\n\n[logging]\nloglevel = 4\n\n[interfaces]\n";
+        std::fs::write(dir.join("config"), base).unwrap();
+        let on = NetworkSettings {
+            discover: true,
+            autojoin: 3,
+            trusted_only: true,
+            trusted_publishers: vec!["a".repeat(32), "b".repeat(32)],
+            ..NetworkSettings::default()
+        };
+        assert!(apply_network_settings(&dir, &on).unwrap());
+        let text = read_config(&dir).unwrap();
+        let cfg = rns_runtime::config::Config::parse(&text).unwrap();
+        let rc = rns_runtime::reticulum::ReticulumConfig::try_from_config(&cfg).unwrap();
+        assert!(rc.discover_interfaces, "{}", text.as_str());
+        assert_eq!(rc.autoconnect_discovered_interfaces, 3);
+        assert_eq!(rc.interface_discovery_sources.len(), 2);
+        assert!(
+            text.contains("enable_transport = False\nshare_instance = No\n")
+                && text.contains("[logging]\nloglevel = 4")
+        );
+        assert!(
+            !apply_network_settings(&dir, &on).unwrap(),
+            "unchanged settings leave the file alone"
+        );
+
+        // Joining needs discovery; with it off neither key is written.
+        let listening_off = NetworkSettings {
+            discover: false,
+            ..on.clone()
+        };
+        apply_network_settings(&dir, &listening_off).unwrap();
+        let text = read_config(&dir).unwrap();
+        assert!(
+            !text.contains("discover_interfaces") && !text.contains("autoconnect"),
+            "{}",
+            text.as_str()
+        );
+
+        // Trusting no one turns discovery off rather than accepting everyone.
+        let nobody = NetworkSettings {
+            trusted_publishers: vec![],
+            ..on.clone()
+        };
+        apply_network_settings(&dir, &nobody).unwrap();
+        let text = read_config(&dir).unwrap();
+        assert!(
+            !text.contains("discover_interfaces") && !text.contains("interface_discovery_sources"),
+            "{}",
+            text.as_str()
+        );
+
+        apply_network_settings(&dir, &NetworkSettings::default()).unwrap();
+        assert_eq!(
+            read_config(&dir).unwrap().as_str(),
+            base,
+            "defaults leave the file as it was"
+        );
+    }
+
+    #[test]
+    fn network_settings_start_a_config_that_has_no_reticulum_section() {
+        use ratspeak_core::types::NetworkSettings;
+        let dir = temp_config_dir();
+        std::fs::write(dir.join("config"), "[interfaces]\n").unwrap();
+        let on = NetworkSettings {
+            discover: true,
+            autojoin: 1,
+            ..NetworkSettings::default()
+        };
+        assert!(apply_network_settings(&dir, &on).unwrap());
+        assert_eq!(
+            read_config(&dir).unwrap().as_str(),
+            "[reticulum]\ndiscover_interfaces = yes\nautoconnect_discovered_interfaces = 1\n\n[interfaces]\n"
+        );
     }
 
     #[test]

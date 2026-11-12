@@ -5469,3 +5469,84 @@ body.setup-active .main-content {
     align-self: stretch; /* in the centered reveal card, match the grid/button width */
 }
 .recovery-warn strong { color: var(--status-error-fg); }
+
+/* Discovery: the settings group and the Network view's Discovered group. */
+.settings-row[hidden] { display: none; }
+.discovery-settings { padding-top: var(--space-6); }
+.network-external .discovery-settings { display: none; }
+.settings-panel-caption {
+    margin: var(--space-2) 0;
+    font-size: var(--type-hint-size);
+    color: var(--text-muted);
+    line-height: var(--type-leading-copy);
+}
+.discovery-settings.is-restarting .settings-row { opacity: var(--opacity-disabled); pointer-events: none; }
+.discovery-settings.is-restarting .settings-row.is-committing { opacity: 1; }
+.settings-row .is-pending-value { color: var(--text-muted); }
+.settings-row.is-last-visible { border-bottom: none; }
+
+.conn-section-discovered .conn-section-icon { background: rgba(var(--status-info-rgb), 0.12); }
+.conn-section-discovered .conn-section-icon svg { stroke: var(--status-info-fg); }
+.conn-iface-dot.discovered-available { background: var(--text-muted); }
+.conn-iface-dot.discovered-unknown {
+    background: linear-gradient(90deg, var(--text-muted) 50%, transparent 50%);
+    box-shadow: inset 0 0 0 1.5px var(--text-muted);
+}
+.conn-iface-dot.discovered-stale {
+    background: transparent;
+    box-shadow: inset 0 0 0 1.5px var(--text-muted);
+}
+.conn-iface-dot.discovered-available.up,
+.conn-iface-dot.discovered-unknown.up,
+.conn-iface-dot.discovered-stale.up { background: var(--status-online); box-shadow: none; }
+.conn-iface-meta {
+    font-size: var(--type-row-meta-size);
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.conn-iface-meta .conn-iface-sep,
+.conn-iface-meta .conn-iface-heard { color: var(--text-muted); }
+.conn-show-older {
+    display: block;
+    width: 100%;
+    padding: var(--space-4) var(--space-7) var(--space-4) 56px;
+    border: 0;
+    border-top: 1px solid var(--border-row);
+    background: none;
+    color: var(--accent);
+    font: inherit;
+    font-size: var(--type-row-meta-size);
+    text-align: left;
+    cursor: pointer;
+}
+.conn-show-older:hover { background: var(--surface-row-hover); }
+.conn-show-older[hidden] { display: none; }
+@media (max-width: 768px) {
+    /* A phone row is narrow: when it was heard takes its own line instead of being cut. */
+    .conn-iface-meta { font-size: var(--mobile-list-detail-size); white-space: normal; }
+    .conn-iface-meta .conn-iface-sep { display: none; }
+    .conn-iface-meta .conn-iface-heard { display: block; }
+    .conn-show-older { min-height: 44px; font-size: var(--mobile-list-detail-size); }
+}
+
+.hash-list-sheet .hash-list { margin: 0 0 var(--space-5); padding: 0; list-style: none; }
+.hash-list-sheet .hash-list li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-3) 0;
+    border-bottom: 1px solid var(--border-row);
+}
+.hash-list-sheet .hash-list code {
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: var(--type-id-sm-size);
+    color: var(--text-primary);
+    overflow-wrap: anywhere;
+}
+.hash-list-sheet .hash-list-empty { color: var(--text-muted); font-size: var(--type-hint-size); padding: var(--space-3) 0 var(--space-5); }
+.hash-list-sheet .hash-list-add { display: flex; gap: var(--space-4); }
+.hash-list-sheet .hash-list-add input { flex: 1; min-width: 0; font-family: var(--font-mono); }

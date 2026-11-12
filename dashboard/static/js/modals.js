@@ -18,7 +18,7 @@ function interfaceSheetIconTypeForInterface(ifaceType) {
     if (ifaceType === 'auto' || ifaceType === 'local') return 'local';
     if (ifaceType === 'ble_peer' || ifaceType === 'ble') return 'ble';
     if (ifaceType === 'tcp_server') return 'host';
-    if (ifaceType === 'backbone_client' || ifaceType === 'backbone_server') return 'backbone';
+    if (ifaceType === 'backbone_client' || ifaceType === 'backbone_server' || ifaceType === 'joined') return 'backbone';
     if (ifaceType === 'tcp_client' || ifaceType === 'tcp') return 'tcp';
     return '';
 }
@@ -1270,10 +1270,28 @@ function rnodeWizardNext() {
         }
     }
 
+    // A discovered radio's published settings, from "Use these radio settings".
+    if (_rnodePrefill && !_rnodeEditContext) {
+        var pre = _rnodePrefill;
+        _rnodePrefill = null;
+        var preTx = pre.tx || 17;
+        _rnodeApplyRadioControls(
+            _rnodeRegionForFrequency(pre.freq),
+            _rnodePresetForParams(pre.bw, pre.sf, pre.cr, preTx),
+            pre.freq, pre.bw, pre.sf, pre.cr, preTx, true
+        );
+    }
+
     // Bonding happens implicitly during add_lora_interface; OS pair dialog
     // pops mid-connect (Linux uses ble_rnode_passkey_prompt instead).
     step1.style.display = 'none';
     step2.style.display = '';
+}
+
+var _rnodePrefill = null;
+function openRnodeModalWithSettings(settings) {
+    _rnodePrefill = settings || null;
+    openRnodeModal('ble');
 }
 
 function rnodeWizardBack() {

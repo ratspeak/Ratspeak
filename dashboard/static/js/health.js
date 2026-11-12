@@ -203,6 +203,11 @@ function sharedInterfaceLabel(role) {
     return '';
 }
 
+// A live interface Join automatically made; the Discovered list names them.
+function isJoinedInterfaceName(name) {
+    return !!(window.RS && RS.discovery && RS.discovery.isJoined(name));
+}
+
 function friendlyInterfaceName(name, typeName, role) {
     var alias = getInterfaceAlias(name);
     if (alias) return alias;
@@ -279,10 +284,17 @@ var ICON_RADIO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 var ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
 var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
 var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
+var ICON_KEEP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
 var ICON_INFO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>';
 
 function buildIfaceActionItems(ifaceType, ifaceName) {
     var items = [];
+    if (ifaceType === 'joined') {
+        items.push({ label: 'Keep', icon: ICON_KEEP, onSelect: function() {
+            if (RS.discovery) RS.discovery.keep(ifaceName);
+        } });
+        return items;
+    }
     var record = getConfiguredInterfaceRecord(ifaceName);
     var supportsPause = !!(record && record.iface && ifaceType !== 'ble_peer');
     var paused = supportsPause && !isInterfaceConfigEnabled(record.iface);
@@ -983,6 +995,7 @@ function classifyInterface(iface) {
     var typeName = iface.type || '';
     var role = iface.role || 'normal';
     if (role === 'shared_instance_peer' || role === 'shared_server' || role === 'local_client') return null;
+    if (isJoinedInterfaceName(iface.name)) return 'tcp';
     // RNode is always LoRa, regardless of transport (BLE, USB serial).
     // The Bluetooth section is reserved for Bluetooth Peer peering only.
     if (typeName.indexOf('RNode') >= 0) return 'lora';
@@ -1370,8 +1383,10 @@ function _renderConnectionsFromCache() {
         if (lastStats && lastStats.interface_stats && lastStats.interface_stats.interfaces) {
             interfaceStatsWithoutAutoPeerDoubleCount(lastStats.interface_stats.interfaces).forEach(function(li) {
                 if (!isUserFacingInterface(li)) return;
+                var joined = isJoinedInterfaceName(li.name);
                 var configMatch = null;
-                Object.keys(configByName).forEach(function(cn) {
+                // A joined connection is no saved one, whatever saved name its own contains.
+                if (!joined) Object.keys(configByName).forEach(function(cn) {
                     if (_statsNameMatchesConfig(li.name, cn)) configMatch = configByName[cn];
                 });
                 if (configMatch && configMatch.iface && configMatch.iface.name) {
@@ -1383,7 +1398,7 @@ function _renderConnectionsFromCache() {
                     section = interfaceSectionForConfigType(configMatch.ifaceType) || configMatch.ifaceType;
                 }
                 if (!section) return;
-                var ifaceType = configMatch ? configMatch.ifaceType : section;
+                var ifaceType = configMatch ? configMatch.ifaceType : (joined ? 'joined' : section);
                 var paused = !!(configMatch && configMatch.iface && !isInterfaceConfigEnabled(configMatch.iface));
                 var renderIface = configMatch && configMatch.iface
                     ? Object.assign({}, configMatch.iface, { role: li.role || configMatch.iface.role, type: li.type || configMatch.iface.type })
@@ -1534,6 +1549,9 @@ function _renderConnectionsFromCache() {
                 var groupSuffix = '';
                 if (sectionKey === 'local' && iface.group_id && iface.group_id !== 'reticulum') {
                     groupSuffix = ' <span class="conn-iface-group">(' + escapeHtml(iface.group_id) + ')</span>';
+                }
+                if (ifaceType === 'joined') {
+                    groupSuffix = ' <span class="conn-iface-group">\u00b7 Backbone \u00b7 joined automatically</span>';
                 }
 
                 html += '<div class="conn-iface-row' + (paused ? ' is-paused' : '') + '" data-iface-name="' + escapeHtml(name) + '" data-iface-type="' + escapeHtml(ifaceType) + '" role="button" tabindex="0">' +
@@ -1689,9 +1707,12 @@ function toggleConnSection(headerEl) {
 // Header has a nested + button so can't be a real <button>;
 // role="button" + tabindex + this keydown handler is the WCAG alternative.
 function handleConnSectionKey(e) {
+    // Delegated from the document; keys on the header's own buttons stay theirs.
+    var header = e.target && e.target.closest ? e.target.closest('.conn-section-header') : null;
+    if (!header || e.target !== header) return;
     if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
         e.preventDefault();
-        toggleConnSection(e.currentTarget);
+        toggleConnSection(header);
     }
 }
 

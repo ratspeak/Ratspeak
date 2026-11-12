@@ -528,6 +528,11 @@ function rsChoice(opts) {
             btn.className = 'rs-dialog-choice' + (choice.danger ? ' rs-dialog-danger' : '');
             if (choice.recommended) btn.classList.add('is-recommended');
             btn.disabled = !!choice.disabled;
+            // The value in effect now: checked, and where focus starts.
+            if (choice.selected) {
+                btn.classList.add('is-selected');
+                btn.setAttribute('aria-current', 'true');
+            }
 
             if (choice.icon) {
                 var icon = document.createElement('span');
@@ -558,6 +563,13 @@ function rsChoice(opts) {
                 text.appendChild(hint);
             }
             btn.appendChild(text);
+            if (choice.selected) {
+                var check = document.createElement('span');
+                check.className = 'rs-dialog-choice-check';
+                check.setAttribute('aria-hidden', 'true');
+                check.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+                btn.appendChild(check);
+            }
             if (choice.meta) {
                 var meta = document.createElement('span');
                 meta.className = 'rs-dialog-choice-meta';
@@ -600,7 +612,8 @@ function rsChoice(opts) {
 
         built.present();
 
-        var firstBtn = choicesWrap.querySelector('.is-recommended:not(:disabled)') ||
+        var firstBtn = choicesWrap.querySelector('.is-selected:not(:disabled)') ||
+            choicesWrap.querySelector('.is-recommended:not(:disabled)') ||
             choicesWrap.querySelector('button:not(:disabled)');
         if (firstBtn) firstBtn.focus();
     });

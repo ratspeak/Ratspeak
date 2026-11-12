@@ -2692,15 +2692,15 @@ impl InterfaceIfacSettings {
 }
 
 #[derive(Deserialize, Default)]
-struct InterfaceIfacCommandFields {
+pub(crate) struct InterfaceIfacCommandFields {
     #[serde(default)]
-    ifac_enabled: Option<bool>,
+    pub(crate) ifac_enabled: Option<bool>,
     #[serde(default)]
-    ifac_network_name: Option<String>,
+    pub(crate) ifac_network_name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_ifac_passphrase")]
-    ifac_passphrase: Option<Zeroizing<String>>,
+    pub(crate) ifac_passphrase: Option<Zeroizing<String>>,
     #[serde(default)]
-    ifac_size: Option<usize>,
+    pub(crate) ifac_size: Option<usize>,
 }
 
 fn deserialize_ifac_passphrase<'de, D: serde::Deserializer<'de>>(
@@ -7374,7 +7374,7 @@ pub struct TcpConnectionArgs {
     #[serde(default = "default_tcp_name")]
     pub name: String,
     #[serde(flatten)]
-    ifac: InterfaceIfacCommandFields,
+    pub(crate) ifac: InterfaceIfacCommandFields,
 }
 
 fn default_tcp_name() -> String {
@@ -8044,7 +8044,7 @@ pub struct BackboneConnectionArgs {
     #[serde(default)]
     pub i2p_tunneled: bool,
     #[serde(flatten)]
-    ifac: InterfaceIfacCommandFields,
+    pub(crate) ifac: InterfaceIfacCommandFields,
 }
 
 #[tauri::command]

@@ -133,12 +133,43 @@ pub fn ratspeak_core::radio::rnode_catalog() -> ratspeak_core::radio::RnodeCatal
 pub fn ratspeak_core::radio::rnode_preset(&str) -> core::option::Option<&'static ratspeak_core::radio::RnodePreset>
 pub fn ratspeak_core::radio::rnode_region(&str) -> core::option::Option<&'static ratspeak_core::radio::RnodeRegion>
 pub mod ratspeak_core::types
+pub struct ratspeak_core::types::DiscoveredEntry
+pub ratspeak_core::types::DiscoveredEntry::added: bool
+pub ratspeak_core::types::DiscoveredEntry::address: core::option::Option<alloc::string::String>
+pub ratspeak_core::types::DiscoveredEntry::bandwidth: core::option::Option<u64>
+pub ratspeak_core::types::DiscoveredEntry::coding_rate: core::option::Option<u8>
+pub ratspeak_core::types::DiscoveredEntry::connectable: bool
+pub ratspeak_core::types::DiscoveredEntry::frequency: core::option::Option<u64>
+pub ratspeak_core::types::DiscoveredEntry::hops: u8
+pub ratspeak_core::types::DiscoveredEntry::id: alloc::string::String
+pub ratspeak_core::types::DiscoveredEntry::joined: bool
+pub ratspeak_core::types::DiscoveredEntry::joined_interface: core::option::Option<alloc::string::String>
+pub ratspeak_core::types::DiscoveredEntry::kind: alloc::string::String
+pub ratspeak_core::types::DiscoveredEntry::last_heard: u64
+pub ratspeak_core::types::DiscoveredEntry::latitude: core::option::Option<f64>
+pub ratspeak_core::types::DiscoveredEntry::longitude: core::option::Option<f64>
+pub ratspeak_core::types::DiscoveredEntry::name: alloc::string::String
+pub ratspeak_core::types::DiscoveredEntry::port: core::option::Option<u16>
+pub ratspeak_core::types::DiscoveredEntry::private_network: bool
+pub ratspeak_core::types::DiscoveredEntry::publisher: alloc::string::String
+pub ratspeak_core::types::DiscoveredEntry::spreading_factor: core::option::Option<u8>
+pub ratspeak_core::types::DiscoveredEntry::status: alloc::string::String
+pub ratspeak_core::types::DiscoveredEntry::transport: bool
+pub struct ratspeak_core::types::DiscoveredInterfaces
+pub ratspeak_core::types::DiscoveredInterfaces::enabled: bool
+pub ratspeak_core::types::DiscoveredInterfaces::entries: alloc::vec::Vec<ratspeak_core::types::DiscoveredEntry>
 pub struct ratspeak_core::types::LrgpMsgMeta
 pub ratspeak_core::types::LrgpMsgMeta::app_id: alloc::string::String
 pub ratspeak_core::types::LrgpMsgMeta::contact_hash: alloc::string::String
 pub ratspeak_core::types::LrgpMsgMeta::identity_id: alloc::string::String
 pub ratspeak_core::types::LrgpMsgMeta::sent_at: f64
 pub ratspeak_core::types::LrgpMsgMeta::session_id: alloc::string::String
+pub struct ratspeak_core::types::NetworkSettings
+pub ratspeak_core::types::NetworkSettings::autojoin: u8
+pub ratspeak_core::types::NetworkSettings::discover: bool
+pub ratspeak_core::types::NetworkSettings::other: serde_json::map::Map<alloc::string::String, serde_json::value::Value>
+pub ratspeak_core::types::NetworkSettings::trusted_only: bool
+pub ratspeak_core::types::NetworkSettings::trusted_publishers: alloc::vec::Vec<alloc::string::String>
 pub struct ratspeak_core::types::PeerRow
 pub ratspeak_core::types::PeerRow::display_name: alloc::string::String
 pub ratspeak_core::types::PeerRow::first_seen: core::option::Option<f64>

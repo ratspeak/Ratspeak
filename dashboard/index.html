@@ -935,6 +935,18 @@
                             </div>
                             <div class="conn-section-body" id="conn-body-host"></div>
                         </div>
+                        <div class="conn-section conn-section-discovered collapsed" data-iface-type="discovered" id="conn-section-discovered" hidden>
+                            <div class="conn-section-header" role="button" tabindex="0" aria-expanded="false">
+                                <div class="conn-section-icon"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg></div>
+                                <span class="conn-section-label">Discovered</span>
+                                <span class="conn-section-count" id="conn-count-discovered">0</span>
+                                <svg class="conn-section-chevron" viewBox="0 0 24 24" width="16" height="16"><polyline points="6 9 12 15 18 9"/></svg>
+                            </div>
+                            <div class="conn-section-body" id="conn-body-discovered">
+                                <div class="conn-iface-list" id="conn-list-discovered"></div>
+                                <button type="button" class="conn-show-older" id="conn-discovered-older" hidden>Show older</button>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="network-activity" id="network-activity">
@@ -1628,6 +1640,41 @@
                                 </div>
                                 <button class="selector-badge" id="auto-announce-select">30 min</button>
                             </div>
+                            <section class="discovery-settings" id="discovery-settings-body" aria-labelledby="discovery-settings-heading">
+                                <h3 class="settings-panel-section-title" id="discovery-settings-heading">Discovery</h3>
+                                <p class="settings-panel-caption">Changes here restart the network for a moment.</p>
+                                <div class="settings-row" id="ns-discover-row">
+                                    <div class="settings-row-info">
+                                        <span class="settings-row-label" id="ns-discover-label">Discover Connections</span>
+                                        <span class="settings-row-desc" id="ns-discover-desc">List servers and radios that others publish, in Network › Discovered.</span>
+                                    </div>
+                                    <label class="prop-toggle">
+                                        <input type="checkbox" id="ns-discover-toggle" aria-labelledby="ns-discover-label" aria-describedby="ns-discover-desc">
+                                        <span class="prop-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="settings-row" id="ns-autojoin-row" hidden>
+                                    <div class="settings-row-info">
+                                        <span class="settings-row-label">Join Automatically</span>
+                                        <span class="settings-row-desc">Connect to discovered Backbone servers and keep this many online. Their operators can see your IP address.</span>
+                                    </div>
+                                    <button class="selector-badge settings-state-value" id="ns-autojoin-select" type="button">OFF</button>
+                                </div>
+                                <div class="settings-row" id="ns-accept-row" hidden>
+                                    <div class="settings-row-info">
+                                        <span class="settings-row-label">Accept From</span>
+                                        <span class="settings-row-desc">Anyone, or only publishers you trust.</span>
+                                    </div>
+                                    <button class="selector-badge" id="ns-accept-select" type="button">Anyone</button>
+                                </div>
+                                <div class="settings-row" id="ns-trusted-row" hidden>
+                                    <div class="settings-row-info">
+                                        <span class="settings-row-label">Trusted Publishers</span>
+                                        <span class="settings-row-desc" id="ns-trusted-desc">Only their connections are listed and joined.</span>
+                                    </div>
+                                    <button class="selector-badge selector-badge-no-caret" id="ns-trusted-btn" type="button">None</button>
+                                </div>
+                            </section>
                         </div>
                     </div>
 
@@ -2199,6 +2246,7 @@
 <script src="/static/js/propagation.js?v=ui-20260924-4"></script>
 <script src="/static/js/settings.js?v=ui-20260924-4"></script>
     <script src="/static/js/network_ownership.js?v=ui-20260924-4"></script>
+<script src="/static/js/network_settings.js?v=ui-20260924-4"></script>
 <script src="/static/js/identity.js?v=ui-20260924-4"></script>
 <script src="/static/js/confetti.js?v=ui-20260924-4"></script>
 <script src="/static/js/game_registry.js?v=ui-20260924-4"></script>

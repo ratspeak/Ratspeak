@@ -661,6 +661,14 @@ pub async fn ratspeak_tauri::commands::network_ownership::export_shared_access(t
 pub async fn ratspeak_tauri::commands::network_ownership::import_shared_access(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::network_ownership::set_network_ownership(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_runtime::network_ownership::NetworkRequest) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::network_ownership::test_shared_instance(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_runtime::network_ownership::NetworkRequest) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub mod ratspeak_tauri::commands::network_settings
+pub const ratspeak_tauri::commands::network_settings::DISCOVERED_LIST_LIMIT: usize
+pub async fn ratspeak_tauri::commands::network_settings::api_discovered_interfaces(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<ratspeak_core::types::DiscoveredInterfaces>
+pub async fn ratspeak_tauri::commands::network_settings::api_network_settings(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<ratspeak_core::types::NetworkSettings>
+pub async fn ratspeak_tauri::commands::network_settings::api_restart_impact(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::network_settings::connect_discovered_interface(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::network_settings::keep_joined_interface(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::network_settings::set_network_settings(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_core::types::NetworkSettings) -> ratspeak_tauri::error::AppResult<ratspeak_core::types::NetworkSettings>
 pub mod ratspeak_tauri::commands::paper
 pub use ratspeak_tauri::commands::paper::normalize_paper_uri
 pub async fn ratspeak_tauri::commands::paper::add_paper_message(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
