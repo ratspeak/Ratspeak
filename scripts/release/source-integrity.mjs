@@ -381,14 +381,14 @@ export function verifyProductSurfaces(set) {
   expectEqual(tauri.bundle?.android?.versionCode, androidBuild, "Android versionCode");
   expectEqual(tauri.bundle?.iOS?.bundleVersion, iosBuild, "Tauri iOS bundle version");
   expectEqual(
-    tauri.bundle?.resources?.["../third_party/opus-rs-0.1.29-COPYING"],
-    "third-party/opus-rs-0.1.29-COPYING.txt",
+    tauri.bundle?.resources?.["../third_party/opus-rs-0.1.42-COPYING"],
+    "third-party/opus-rs-0.1.42-COPYING.txt",
     "Tauri bundled opus-rs notice path",
   );
   expectEqual(
-    sha256(join(repoRoot, "third_party/opus-rs-0.1.29-COPYING")),
+    sha256(join(repoRoot, "third_party/opus-rs-0.1.42-COPYING")),
     "67c6f0a4bac3019fb08948838d7203bf661a629416f69057081c6f39db5e96a5",
-    "preserved opus-rs 0.1.29 notice",
+    "preserved opus-rs 0.1.42 notice",
   );
 
   const project = readUtf8(join(repoRoot, "src-tauri/gen/apple/project.yml"));

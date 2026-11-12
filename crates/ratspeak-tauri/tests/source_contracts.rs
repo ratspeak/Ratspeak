@@ -6528,8 +6528,8 @@ fn settings_version_display_uses_package_version_api() {
         "Tauri CLI 2.12 defaults iOS to 15.0; keep it equal to project.yml"
     );
     assert_eq!(
-        tauri_conf_json["bundle"]["resources"]["../third_party/opus-rs-0.1.29-COPYING"],
-        "third-party/opus-rs-0.1.29-COPYING.txt"
+        tauri_conf_json["bundle"]["resources"]["../third_party/opus-rs-0.1.42-COPYING"],
+        "third-party/opus-rs-0.1.42-COPYING.txt"
     );
 
     let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))

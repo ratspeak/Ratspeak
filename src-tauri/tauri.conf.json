@@ -19,7 +19,7 @@
       "../LICENSE": "LICENSE",
       "../NOTICE": "NOTICE",
       "../third_party/btleplug/LICENSE.md": "third-party/btleplug/LICENSE.md",
-      "../third_party/opus-rs-0.1.29-COPYING": "third-party/opus-rs-0.1.29-COPYING.txt",
+      "../third_party/opus-rs-0.1.42-COPYING": "third-party/opus-rs-0.1.42-COPYING.txt",
       "../third_party/lxst-codec2/NOTICE": "third-party/lxst-codec2/NOTICE",
       "../third_party/lxst-codec2/licenses/LGPL-2.1.txt": "third-party/lxst-codec2/licenses/LGPL-2.1.txt",
       "../third_party/lxst-codec2/licenses/KISS-FFT-BSD-3-Clause.txt": "third-party/lxst-codec2/licenses/KISS-FFT-BSD-3-Clause.txt",
