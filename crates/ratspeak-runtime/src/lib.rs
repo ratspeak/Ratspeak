@@ -5192,8 +5192,8 @@ fn inbound_stamp_allowed(
 
 /// Blackholed-source drop gate: inbound LXMs whose source resolves to a
 /// blackholed identity are dropped before any processing
-/// (LXMRouter.py:1739-1741 at 1.0.1). Fail-open like Python's recall-gated
-/// check (LXMessage.py:803-805): unknown sources, a missing transport, and
+/// (LXMRouter.py at 1.0.1). Fail-open like Python's recall-gated
+/// check (LXMessage.py): unknown sources, a missing transport, and
 /// query failures all pass.
 async fn inbound_source_blackholed(
     source_identity: Option<[u8; 16]>,
@@ -9111,7 +9111,7 @@ mod inbound_pipeline_tests {
         msg.pack().unwrap()
     }
 
-    /// Blackholed-source gate (LXMRouter.py:1739-1741): a resolvable source
+    /// Blackholed-source gate (LXMRouter.py): a resolvable source
     /// with a blackholed identity is dropped; the same peer delivers once the
     /// transport says not-blackholed.
     #[tokio::test]
@@ -9149,7 +9149,7 @@ mod inbound_pipeline_tests {
     }
 
     /// Unknown sources pass the gate without a transport query, mirroring
-    /// Python's recall-gated check (LXMessage.py:803-805).
+    /// Python's recall-gated check (LXMessage.py).
     #[tokio::test]
     async fn unknown_source_passes_blackhole_gate() {
         let (state, _emitter) = pipeline_state();

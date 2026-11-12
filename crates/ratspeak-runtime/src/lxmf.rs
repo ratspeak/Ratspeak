@@ -5413,7 +5413,7 @@ impl LxmfManager {
 
     /// Python `handle_outbound` pre-emptively requests an unknown path for
     /// Opportunistic messages and defers the first attempt by
-    /// `PATH_REQUEST_WAIT` (LXMRouter.py:1675-1679). No-op when a path is
+    /// `PATH_REQUEST_WAIT` (LXMRouter.py). No-op when a path is
     /// already known or the method is not Opportunistic.
     fn preempt_opportunistic_path(&mut self, msg: &mut impl OutboundMessageView) {
         if msg.method != DeliveryMethod::Opportunistic {
@@ -5528,7 +5528,7 @@ impl LxmfManager {
         if name_hash == rns_identity::name_hash::name_hash(LXMF_PROPAGATION_APP_NAME) {
             if let Some(pn) = lxmf_core::handlers::parse_pn_announce_data(app_data) {
                 self.router.set_stamp_cost(dest_hash, pn.stamp_cost);
-                // Whole kilobytes, as upstream's handler reads it (Handlers.py:59-62).
+                // Whole kilobytes, as upstream's handler reads it (Handlers.py).
                 self.propagation_transfer_limits_kb
                     .insert(dest_hash, pn.transfer_limit.as_f64() as u64);
                 self.propagation_node_policies.insert(
@@ -5612,7 +5612,7 @@ impl LxmfManager {
     }
 
     /// Resolve a destination hash to its identity hash via learned announce
-    /// keys — the equivalent of `RNS.Identity.recall` (LXMessage.py:776).
+    /// keys — the equivalent of `RNS.Identity.recall` (LXMessage.py).
     pub fn recall_identity_hash(&self, dest_hash: &[u8; 16]) -> Option<[u8; 16]> {
         self.known_identities
             .get(&hex::encode(dest_hash))
@@ -7115,7 +7115,7 @@ impl LxmfManager {
 
     fn defer_propagation_delivery(&mut self, hash: &[u8; 32], request_hash: [u8; 16], now: f64) {
         // Waiting on propagation-node path/identity/stamp — Python defers
-        // PATH_REQUEST_WAIT after the path request (LXMRouter.py:2726).
+        // PATH_REQUEST_WAIT after the path request (LXMRouter.py).
         self.with_router_message(hash, |message| {
             message.last_delivery_attempt = now;
             message.next_delivery_attempt = now + PATH_REQUEST_WAIT as f64;
@@ -10670,7 +10670,7 @@ mod tests {
     }
 
     /// D3: Python increments before Link creation, but only opens a new Link
-    /// while delivery_attempts < MAX_DELIVERY_ATTEMPTS (LXMRouter.py:2655-2669).
+    /// while delivery_attempts < MAX_DELIVERY_ATTEMPTS (LXMRouter.py).
     /// At the post-increment boundary, Rust must not emit one extra LinkRequest.
     #[test]
     fn direct_delivery_at_attempt_boundary_does_not_start_extra_link() {
@@ -11477,7 +11477,7 @@ mod tests {
     }
 
     /// D2: Python `handle_outbound` pre-emptively requests an unknown path for
-    /// Opportunistic messages and defers PATH_REQUEST_WAIT (LXMRouter.py:1675).
+    /// Opportunistic messages and defers PATH_REQUEST_WAIT (LXMRouter.py).
     #[test]
     fn opportunistic_preempt_requests_path_and_defers() {
         let mut mgr = test_manager();
@@ -11535,7 +11535,7 @@ mod tests {
         assert_eq!(direct.next_delivery_attempt, 0.0);
     }
 
-    /// D2: opportunistic pathless escalation (LXMRouter.py:2566-2592). With no
+    /// D2: opportunistic pathless escalation (LXMRouter.py). With no
     /// path and delivery_attempts >= MAX_PATHLESS_TRIES, the dispatch branch
     /// requests a path (no drop), defers PATH_REQUEST_WAIT, and re-queues as
     /// "routing" instead of flooding another pathless packet.
@@ -11599,7 +11599,7 @@ mod tests {
 
     /// D2 Branch 2: after the first pathless deferral, a newly known path still
     /// causes Python to drop and rediscover once before resuming best-effort
-    /// opportunistic sends (LXMRouter.py:2574-2583).
+    /// opportunistic sends (LXMRouter.py).
     #[test]
     fn opportunistic_rediscovery_without_attempt_owner_only_requests_and_defers() {
         let mut mgr = test_manager();

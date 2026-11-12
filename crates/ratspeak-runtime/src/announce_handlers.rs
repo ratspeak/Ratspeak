@@ -345,7 +345,7 @@ async fn process_lxst_telephony_announce(state: &Arc<AppState>, event: AnnounceH
 }
 
 /// `lxmf.propagation` per-event processing. Drop on parse failure
-/// (matches Python `LXMF.py:214`); preserve static badge + region when
+/// (matches Python `LXMF.py`); preserve static badge + region when
 /// upgrading an existing static-bundle entry.
 async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHandlerEvent) {
     use std::sync::atomic::Ordering;

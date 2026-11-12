@@ -21,7 +21,7 @@ struct Observation {
     reply: Option<oneshot::Receiver<(Option<Duration>, Option<u32>)>>,
     timeout: Option<Duration>,
     /// `Transport.next_hop_interface_hw_mtu` from this process's own Transport,
-    /// which Link.py:392-397@1.6.0 reads for every request.
+    /// which Link.py reads for every request.
     hardware_mtu: Option<u32>,
 }
 

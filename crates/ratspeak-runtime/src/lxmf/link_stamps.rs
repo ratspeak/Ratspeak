@@ -1,5 +1,5 @@
 //! Link request stamps for Ratspeak's own LXMF Links, searched off the tick
-//! as Python grinds deferred keys on a thread (RNS/Link.py:310-382@1.6.0).
+//! as Python grinds deferred keys on a thread (RNS/Link.py).
 use super::*;
 use lxmf_core::router::LinkDeliveryPlan;
 use rns_link::handshake::EphemeralKeys;
