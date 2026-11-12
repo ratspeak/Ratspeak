@@ -1433,6 +1433,8 @@ pub struct LxmfManager {
     live_preparation: preparation::LivePreparation,
     /// Outbox sends from the last run or a Retry, queued by the tick.
     resumable: Vec<ResumableSend>,
+    /// Ids of outbox records the resume could not read; the tick fails them.
+    unreadable_outbox: Vec<String>,
     /// Failed sends whose earlier packets can still be proven; they fail only
     /// once the last receipt expires.
     deferred_failures: HashMap<[u8; 32], DeliveryFailureReason>,
@@ -1462,7 +1464,10 @@ struct ResumableSend {
 
 enum Resumed {
     Queued(DeliveryMethod),
-    Waiting,
+    /// No Offline Inbox node yet; the send stays resumable.
+    AwaitingInbox,
+    /// No Offline Inbox node to send through.
+    NoInbox,
     Failed,
 }
 
@@ -2521,6 +2526,7 @@ impl LxmfManager {
             auto_live_fallback: HashSet::new(),
             live_preparation: preparation::LivePreparation::default(),
             resumable: Vec::new(),
+            unreadable_outbox: Vec::new(),
             deferred_failures: HashMap::new(),
             failure_reasons: HashMap::new(),
             active_stamp_search: None,
@@ -3133,9 +3139,10 @@ impl LxmfManager {
     }
 
     /// Take this identity's unfinished sends from the outbox; the tick queues
-    /// them again. Returns the ids of records that cannot be read.
-    pub fn resume_outbox(&mut self, rows: Vec<db::OutboxRow>, db_pool: &DbPool) -> Vec<String> {
-        let mut unreadable = Vec::new();
+    /// them again and fails those whose record cannot be read. Returns how
+    /// many records cannot be read.
+    pub fn resume_outbox(&mut self, rows: Vec<db::OutboxRow>, db_pool: &DbPool) -> usize {
+        let before = self.unreadable_outbox.len();
         for row in rows {
             let preference = DeliveryPreference::parse(Some(&row.preference));
             match self.resumable_send(&row, preference, db_pool) {
@@ -3144,10 +3151,10 @@ impl LxmfManager {
                         (send.profile == DeliveryProfile::Attachment).then(|| send.message.size());
                     self.resumable.push(send);
                 }
-                None => unreadable.push(row.message_id),
+                None => self.unreadable_outbox.push(row.message_id),
             }
         }
-        unreadable
+        self.unreadable_outbox.len() - before
     }
 
     /// The size an outbox record rebuilds to, for transfer budgets; `None`
@@ -3247,7 +3254,7 @@ impl LxmfManager {
                 }
                 Ok(method)
             }
-            Resumed::Waiting | Resumed::Failed => {
+            Resumed::AwaitingInbox | Resumed::NoInbox | Resumed::Failed => {
                 db::update_message_state(db_pool, &row.message_id, identity_id, &previous, None);
                 Err("This message couldn't be queued. Try another method.")
             }
@@ -3255,6 +3262,15 @@ impl LxmfManager {
     }
 
     fn queue_resumable(&mut self, now: f64, results: &mut Vec<(String, &'static str)>) {
+        for id in std::mem::take(&mut self.unreadable_outbox) {
+            match hex::decode(&id).ok().and_then(|id| id.try_into().ok()) {
+                Some(hash) => {
+                    self.fail_send(hash, DeliveryFailureReason::PreparationFailed, results)
+                }
+                // A reason is keyed by a message hash; this id is not one.
+                None => results.push((id, "failed")),
+            }
+        }
         for send in std::mem::take(&mut self.resumable) {
             match send.budget {
                 Some(size) if size > rns_protocol::resource::MAX_RESOURCE_SIZE => {
@@ -3269,7 +3285,10 @@ impl LxmfManager {
             }
             match self.queue_resumed(&send, now) {
                 Resumed::Queued(_) => {}
-                Resumed::Waiting => self.resumable.push(send),
+                Resumed::AwaitingInbox => self.resumable.push(send),
+                Resumed::NoInbox => {
+                    self.fail_send(send.message_id, self.missing_inbox_reason(), results);
+                }
                 Resumed::Failed => {
                     self.fail_send(
                         send.message_id,
@@ -3281,6 +3300,15 @@ impl LxmfManager {
         }
     }
 
+    /// Why a send that needs the Offline Inbox has no node to go through.
+    fn missing_inbox_reason(&self) -> DeliveryFailureReason {
+        if self.client_propagation_enabled {
+            DeliveryFailureReason::InboxUnreachable
+        } else {
+            DeliveryFailureReason::InboxOff
+        }
+    }
+
     /// Sign the stored parts again and queue the message as a send would. An
     /// Offline Inbox send waits a while for its relay; a rebuilt message that
     /// is not the one stored fails rather than go out.
@@ -3289,9 +3317,9 @@ impl LxmfManager {
         let method = self.delivery_method_for(&dest_hex, send.preference, send.profile);
         if method == DeliveryMethod::Propagated && self.router.outbound_propagation_node.is_none() {
             return if self.client_propagation_enabled && now - send.since < RESUME_RELAY_WAIT_SECS {
-                Resumed::Waiting
+                Resumed::AwaitingInbox
             } else {
-                Resumed::Failed
+                Resumed::NoInbox
             };
         }
         let Ok(mut draft) = send.message.draft(method, &self.files_dir()) else {
@@ -5152,7 +5180,6 @@ impl LxmfManager {
         }
     }
 
-    /// Marks a send not delivered, naming why for the Activity log.
     /// Queue a signed message with the router, refusing a proof-of-work cost
     /// above [`MAX_STAMP_COST`].
     fn submit_signed(&mut self, msg: SignedLxMessage) -> Result<(), MessageError> {
@@ -5204,6 +5231,7 @@ impl LxmfManager {
         self.fail_send(active, DeliveryFailureReason::PreparationFailed, results);
     }
 
+    /// Marks a send not delivered, naming why for the Activity log.
     fn fail_send(
         &mut self,
         hash: [u8; 32],
@@ -5367,7 +5395,8 @@ impl LxmfManager {
                     }
                 }
                 Err(err) => {
-                    let reason = err.error.to_string();
+                    let error = err.error;
+                    let reason = error.to_string();
                     let failed_message = *err.message;
                     tracing::warn!(
                         dest = %crate::short_id(&dest_hex),
@@ -5395,7 +5424,7 @@ impl LxmfManager {
                     ) {
                         self.push_failed_outbound_state(
                             msg_hash,
-                            DeliveryFailureReason::of_link_failure(&reason, false),
+                            DeliveryFailureReason::of_link_start(error),
                             results,
                         );
                     }
@@ -6720,17 +6749,21 @@ impl LxmfManager {
                 OutboundAction::Failed(message) => {
                     let msg_hash = Some(message.message_id());
                     let dest_hash = message.destination_hash();
+                    // The router fails a Propagated message with no node before any attempt.
+                    let reason = if message.method == DeliveryMethod::Propagated
+                        && self.router.outbound_propagation_node.is_none()
+                    {
+                        self.missing_inbox_reason()
+                    } else {
+                        DeliveryFailureReason::AttemptsExhausted
+                    };
                     if !self.try_auto_propagation_fallback(
                         message,
                         dest_hash,
                         "live delivery attempt budget exhausted",
                         &mut results,
                     ) {
-                        self.push_failed_outbound_state(
-                            msg_hash,
-                            DeliveryFailureReason::AttemptsExhausted,
-                            &mut results,
-                        );
+                        self.push_failed_outbound_state(msg_hash, reason, &mut results);
                     }
                 }
                 OutboundAction::RequestPath {
@@ -6895,11 +6928,7 @@ impl LxmfManager {
             // for later pickup. Do not reinterpret expiry as an
             // Offline Inbox retry.
             self.router.mark_outbound_failed(&hash);
-            self.push_failed_outbound_state(
-                Some(hash),
-                DeliveryFailureReason::AttemptsExhausted,
-                results,
-            );
+            self.push_failed_outbound_state(Some(hash), DeliveryFailureReason::Expired, results);
         }
     }
 
@@ -7164,22 +7193,31 @@ impl LxmfManager {
             return;
         }
         let hardware_mtu = self.next_hop_hardware_mtu(prop_hash);
-        let started = self.link_delivery.as_mut().map(|ld| {
-            ld.provide_next_hop_hardware_mtu(prop_hash, hardware_mtu);
-            ld.start_packed_delivery_with_timing(message, prop_hash, hops, packed, false, timing)
-                .is_ok()
-        });
-        if started == Some(true) {
-            self.in_flight_propagation.insert(hash, prop_hash);
-            results.push((hex::encode(hash), "propagating"));
-        } else {
-            tracing::warn!(
-                reason = "link_start_failed",
-                prop = %crate::short_id(&hex::encode(prop_hash)),
-                "failed to start propagation link delivery"
-            );
-            self.router.mark_outbound_failed(&hash);
-            self.fail_send(hash, DeliveryFailureReason::TransportFailed, results);
+        let failure = match self.link_delivery.as_mut() {
+            Some(ld) => {
+                ld.provide_next_hop_hardware_mtu(prop_hash, hardware_mtu);
+                ld.start_packed_delivery_with_timing(
+                    message, prop_hash, hops, packed, false, timing,
+                )
+                .err()
+                .map(|failure| DeliveryFailureReason::of_link_start(failure.error))
+            }
+            None => Some(DeliveryFailureReason::TransportFailed),
+        };
+        match failure {
+            None => {
+                self.in_flight_propagation.insert(hash, prop_hash);
+                results.push((hex::encode(hash), "propagating"));
+            }
+            Some(reason) => {
+                tracing::warn!(
+                    reason = "link_start_failed",
+                    prop = %crate::short_id(&hex::encode(prop_hash)),
+                    "failed to start propagation link delivery"
+                );
+                self.router.mark_outbound_failed(&hash);
+                self.fail_send(hash, reason, results);
+            }
         }
     }
 
@@ -13252,6 +13290,93 @@ mod tests {
         assert!(!mgr.auto_live_fallback.contains(&message_id));
     }
 
+    #[test]
+    fn expiry_and_a_deselected_inbox_are_not_out_of_retries() {
+        let mut mgr = test_manager();
+        let dest = [0x8B; 16];
+        let dest_hex = hex::encode(dest);
+
+        let mut draft = LxMessageDraft::new(
+            dest,
+            mgr.lxmf_dest_hash,
+            "",
+            "expired",
+            DeliveryMethod::Direct,
+        )
+        .unwrap();
+        draft.set_timestamp(0.0).unwrap();
+        let expired = draft
+            .sign(&mgr.identity.get_signing_key().unwrap())
+            .unwrap()
+            .finalize(None)
+            .unwrap();
+        let id = expired.message_id();
+        mgr.router.try_send(expired).unwrap();
+        assert_eq!(mgr.tick(), [(hex::encode(id), "failed")]);
+        assert_eq!(failure_code(&mut mgr, id), Some("expired"));
+
+        for (inbox_on, code) in [(true, "inbox_unreachable"), (false, "inbox_off")] {
+            mgr.router.set_outbound_propagation_node(Some([0x8C; 16]));
+            let message = mgr
+                .create_final_message(&dest_hex, code, "", DeliveryMethod::Propagated)
+                .expect("message created");
+            let id = message.message_id();
+            mgr.router.try_send(message).unwrap();
+            mgr.router.set_outbound_propagation_node(None);
+            mgr.client_propagation_enabled = inbox_on;
+            assert_eq!(mgr.tick(), [(hex::encode(id), "failed")]);
+            assert_eq!(failure_code(&mut mgr, id), Some(code));
+        }
+
+        let mut spent = mgr
+            .create_final_message(&dest_hex, "out of attempts", "", DeliveryMethod::Direct)
+            .expect("message created");
+        let id = spent.message_id();
+        spent.delivery_attempts = u32::MAX;
+        mgr.router.try_send(spent).unwrap();
+        assert_eq!(mgr.tick(), [(hex::encode(id), "failed")]);
+        assert_eq!(failure_code(&mut mgr, id), Some("attempts_exhausted"));
+    }
+
+    #[tokio::test]
+    async fn a_link_refused_at_its_start_fails_by_the_start_error() {
+        let mut mgr = test_manager();
+        let dest = [0x8D; 16];
+        let node = [0x8E; 16];
+        let dest_hex = hex::encode(dest);
+        // A closed transport refuses every Link start.
+        drop(ready_auto_propagation_fallback(&mut mgr, dest, node));
+
+        let direct = mgr
+            .create_final_message(&dest_hex, "direct", "", DeliveryMethod::Direct)
+            .expect("message created");
+        let id = direct.message_id();
+        let mut results = Vec::new();
+        mgr.start_direct_link_delivery_with_results(
+            DirectLinkDeliveryStartInput {
+                message: direct,
+                dest_hash: dest,
+                hops: 1,
+                now: unix_now(),
+                msg_hash: Some(id),
+                is_ephemeral: false,
+            },
+            &mut results,
+        );
+        assert_eq!(results, [(hex::encode(id), "failed")]);
+        assert_eq!(failure_code(&mut mgr, id), Some("link_interrupted"));
+
+        let deposit = mgr
+            .create_final_message(&dest_hex, "deposit", "", DeliveryMethod::Propagated)
+            .expect("message created");
+        let id = deposit.message_id();
+        mgr.router.try_send(deposit).unwrap();
+        let results = finish_pending_propagation(&mut mgr, Vec::new()).await;
+        assert_eq!(results, [(hex::encode(id), "failed")]);
+        assert_eq!(failure_code(&mut mgr, id), Some("link_interrupted"));
+        assert!(!mgr.in_flight_propagation.contains_key(&id));
+    }
+
     fn renderer_test_message(field: Option<lxmf_core::message::FieldValue>) -> LxMessage {
         let mut draft =
             LxMessageDraft::new([3; 16], [4; 16], "", "**hi**", DeliveryMethod::Direct).unwrap();
@@ -13884,8 +14009,14 @@ mod tests {
     fn restarted(mgr: LxmfManager, pool: &DbPool) -> LxmfManager {
         let mut mgr = reloaded(mgr);
         let rows = db::outbox_rows(pool, &mgr.identity_hash).unwrap();
-        assert!(mgr.resume_outbox(rows, pool).is_empty());
+        assert_eq!(mgr.resume_outbox(rows, pool), 0);
         mgr
+    }
+
+    fn failure_code(mgr: &mut LxmfManager, id: [u8; 32]) -> Option<&'static str> {
+        mgr.take_failure_reasons()
+            .get(&hex::encode(id))
+            .map(|reason| reason.code())
     }
 
     fn unix_now() -> f64 {
@@ -13957,22 +14088,44 @@ mod tests {
         let mut mgr = reloaded(mgr);
         let mut rows = db::outbox_rows(&pool, &mgr.identity_hash).unwrap();
         rows[0].message_id = "ee".repeat(32);
-        assert!(mgr.resume_outbox(rows, &pool).is_empty());
+        assert_eq!(mgr.resume_outbox(rows, &pool), 0);
         let mut results = Vec::new();
         mgr.queue_resumable(unix_now(), &mut results);
         assert_eq!(results, [("ee".repeat(32), "failed")]);
+        assert_eq!(
+            failure_code(&mut mgr, [0xee; 32]),
+            Some("preparation_failed")
+        );
         assert!(mgr.router.pending_outbound.is_empty());
+    }
 
-        let unreadable = db::OutboxRow {
-            message_id: "ff".repeat(32),
+    #[test]
+    fn the_tick_fails_an_outbox_record_it_cannot_read() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        let unreadable = |message_id: String| db::OutboxRow {
+            message_id,
             preference: "auto".into(),
             profile: "message".into(),
             message: b"not a record".to_vec(),
         };
+        let rows = vec![unreadable("ff".repeat(32)), unreadable("not an id".into())];
+        assert_eq!(mgr.resume_outbox(rows, &pool), 2);
+        assert!(mgr.resumable.is_empty());
+
+        let results = mgr.tick();
         assert_eq!(
-            mgr.resume_outbox(vec![unreadable], &pool),
-            ["ff".repeat(32)]
+            results,
+            [
+                ("ff".repeat(32), "failed"),
+                ("not an id".to_string(), "failed")
+            ]
         );
+        assert_eq!(
+            failure_code(&mut mgr, [0xff; 32]),
+            Some("preparation_failed")
+        );
+        assert!(mgr.tick().is_empty(), "failed once");
     }
 
     #[test]
@@ -14009,6 +14162,34 @@ mod tests {
         mgr.client_propagation_enabled = true;
         mgr.queue_resumable(unix_now() + RESUME_RELAY_WAIT_SECS + 1.0, &mut results);
         assert_eq!(results, [(hex::encode(id), "failed")], "not forever");
+    }
+
+    #[test]
+    fn a_resumed_inbox_send_without_a_node_is_not_a_preparation_failure() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        mgr.router.set_outbound_propagation_node(Some([0x42; 16]));
+        let id = send_for_resume(
+            &mut mgr,
+            &pool,
+            &"a9".repeat(16),
+            DeliveryPreference::Propagated,
+        );
+        let failed = [(hex::encode(id), "failed")];
+
+        let mut mgr = restarted(mgr, &pool);
+        mgr.client_propagation_enabled = true;
+        let mut results = Vec::new();
+        mgr.queue_resumable(unix_now() + RESUME_RELAY_WAIT_SECS + 1.0, &mut results);
+        assert_eq!(results, failed);
+        assert_eq!(failure_code(&mut mgr, id), Some("inbox_unreachable"));
+
+        let mut mgr = restarted(mgr, &pool);
+        mgr.client_propagation_enabled = false;
+        let mut results = Vec::new();
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert_eq!(results, failed, "no wait with the Offline Inbox off");
+        assert_eq!(failure_code(&mut mgr, id), Some("inbox_off"));
     }
 
     #[test]

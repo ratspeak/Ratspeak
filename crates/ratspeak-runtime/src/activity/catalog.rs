@@ -11,6 +11,8 @@
 
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use lxmf_core::link_delivery::{LinkDeliveryStartError, is_retryable_link_delivery_failure};
+
 use super::classified::{
     ActivityDraft, ActivityRejectReason, ClassifiedEndpoint, CoalescingPolicy, CorrelationId,
     ExactValue, NavigationAction,
@@ -2401,8 +2403,12 @@ pub struct LxmfDeliveryFailed {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryFailureReason {
     AttemptsExhausted,
+    Expired,
+    InboxOff,
     InboxRejected,
+    InboxUnreachable,
     LinkClosed,
+    LinkInterrupted,
     LinkNotEstablished,
     NoInterface,
     PathUnavailable,
@@ -2414,14 +2420,19 @@ pub enum DeliveryFailureReason {
     RouterUnavailable,
     TooLarge,
     TransportFailed,
+    WaitExpired,
 }
 
 impl DeliveryFailureReason {
     pub const fn code(self) -> &'static str {
         match self {
             Self::AttemptsExhausted => "attempts_exhausted",
+            Self::Expired => "expired",
+            Self::InboxOff => "inbox_off",
             Self::InboxRejected => "inbox_rejected",
+            Self::InboxUnreachable => "inbox_unreachable",
             Self::LinkClosed => "link_closed",
+            Self::LinkInterrupted => "link_interrupted",
             Self::LinkNotEstablished => "link_not_established",
             Self::NoInterface => "no_interface",
             Self::PathUnavailable => "path_unavailable",
@@ -2433,6 +2444,32 @@ impl DeliveryFailureReason {
             Self::RouterUnavailable => "router_unavailable",
             Self::TooLarge => "too_large",
             Self::TransportFailed => "transport_failed",
+            Self::WaitExpired => "wait_expired",
+        }
+    }
+
+    /// Whether the cause is the network's, so the same message can go again later.
+    pub const fn can_wait(self) -> bool {
+        match self {
+            Self::AttemptsExhausted
+            | Self::InboxUnreachable
+            | Self::LinkClosed
+            | Self::LinkInterrupted
+            | Self::LinkNotEstablished
+            | Self::NoInterface
+            | Self::PathUnavailable
+            | Self::ProofTimedOut => true,
+            Self::Expired
+            | Self::InboxOff
+            | Self::InboxRejected
+            | Self::PreparationFailed
+            | Self::QueueRejected
+            | Self::Rejected
+            | Self::ResourceFailed
+            | Self::RouterUnavailable
+            | Self::TooLarge
+            | Self::TransportFailed
+            | Self::WaitExpired => false,
         }
     }
 
@@ -2446,7 +2483,7 @@ impl DeliveryFailureReason {
                     .strip_prefix("Link endpoint send rejected: Terminated(")?
                     .strip_suffix(')')
             });
-        match (reason, endpoint) {
+        let name = match (reason, endpoint) {
             (_, Some("InterfaceRemoved" | "InterfaceClosed" | "InterfaceOffline")) => {
                 Self::NoInterface
             }
@@ -2464,6 +2501,26 @@ impl DeliveryFailureReason {
                 Self::PreparationFailed
             }
             _ => Self::TransportFailed,
+        };
+        // rsLXMF's retry list alone says whether a link failure is the network's.
+        let retryable = is_retryable_link_delivery_failure(reason);
+        if name.can_wait() == retryable {
+            name
+        } else if retryable {
+            Self::LinkInterrupted
+        } else {
+            Self::TransportFailed
+        }
+    }
+
+    /// Classifies a link that could not be started.
+    pub const fn of_link_start(error: LinkDeliveryStartError) -> Self {
+        match error {
+            LinkDeliveryStartError::TransportFull | LinkDeliveryStartError::TransportClosed => {
+                Self::LinkInterrupted
+            }
+            LinkDeliveryStartError::InvalidTiming => Self::TransportFailed,
+            LinkDeliveryStartError::StampFailure => Self::PreparationFailed,
         }
     }
 }
@@ -3003,10 +3060,16 @@ mod tests {
             ("resource rejected", false, ResourceFailed),
             ("delivery failed", true, ResourceFailed),
             ("delivery timeout", false, ProofTimedOut),
-            ("direct fallback timeout", false, ProofTimedOut),
+            ("direct fallback timeout", false, TransportFailed),
             ("resource transfer build failed", false, PreparationFailed),
             (
                 "transport channel is full or closed",
+                false,
+                LinkInterrupted,
+            ),
+            ("resource proof timed out", true, LinkInterrupted),
+            (
+                "Link endpoint terminated: untrusted invented reason",
                 false,
                 TransportFailed,
             ),
@@ -3022,6 +3085,135 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn every_reason_says_whether_it_can_wait() {
+        use DeliveryFailureReason::*;
+        let table = [
+            (AttemptsExhausted, true),
+            (Expired, false),
+            (InboxOff, false),
+            (InboxRejected, false),
+            (InboxUnreachable, true),
+            (LinkClosed, true),
+            (LinkInterrupted, true),
+            (LinkNotEstablished, true),
+            (NoInterface, true),
+            (PathUnavailable, true),
+            (PreparationFailed, false),
+            (ProofTimedOut, true),
+            (QueueRejected, false),
+            (Rejected, false),
+            (ResourceFailed, false),
+            (RouterUnavailable, false),
+            (TooLarge, false),
+            (TransportFailed, false),
+            (WaitExpired, false),
+        ];
+        for (reason, waits) in table {
+            assert_eq!(reason.can_wait(), waits, "{}", reason.code());
+        }
+        let codes = table
+            .iter()
+            .map(|(reason, _)| reason.code())
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(codes.len(), table.len(), "one code per reason");
+    }
+
+    #[test]
+    fn a_link_failure_waits_exactly_when_rslxmf_would_retry_it() {
+        // Every string rsLXMF's retry list and its tests name, and the ones only named here.
+        let reasons = [
+            "Link endpoint terminated: Unbound",
+            "Link endpoint terminated: InterfaceRemoved",
+            "Link endpoint terminated: InterfaceClosed",
+            "Link endpoint terminated: InterfaceOffline",
+            "Link endpoint terminated: InterfaceNotOutbound",
+            "Link endpoint terminated: EgressQueueExhausted",
+            "Link endpoint terminated: TransportShutdown",
+            "Link endpoint terminated: untrusted invented reason",
+            "Link endpoint send rejected: Terminated(Unbound)",
+            "Link endpoint send rejected: Terminated(InterfaceRemoved)",
+            "Link endpoint send rejected: Terminated(InterfaceClosed)",
+            "Link endpoint send rejected: Terminated(InterfaceOffline)",
+            "Link endpoint send rejected: Terminated(InterfaceNotOutbound)",
+            "Link endpoint send rejected: Terminated(EgressQueueExhausted)",
+            "Link endpoint send rejected: Terminated(TransportShutdown)",
+            "Link endpoint send rejected: Terminated(invented)",
+            "Link endpoint send rejected: NotBound",
+            "Link endpoint send rejected: DroppedBackpressure",
+            "Link endpoint send rejected: InvalidPacket",
+            "Link endpoint send rejected: RoleMismatch",
+            "Link endpoint admission timeout",
+            "Link endpoint binding failed",
+            "Link endpoint send result channel closed",
+            "link establishment timeout",
+            "link closed",
+            "link not found",
+            "link is not active",
+            "link session keys are unavailable",
+            "link packet encryption failed",
+            "transport full",
+            "transport closed",
+            "transport channel closed",
+            "transport staging queue full",
+            "transport channel is full or closed",
+            "backchannel send command timeout",
+            "backchannel send command closed",
+            "backchannel delivery timeout",
+            "delivery timeout",
+            "delivery failed",
+            "direct fallback timeout",
+            "resource advertisement timed out",
+            "resource part requests timed out",
+            "resource proof timed out",
+            "resource transfer timed out",
+            "resource cancelled",
+            "resource rejected",
+            "resource transfer cancelled",
+            "resource transfer build failed",
+            "resource transfer could not be started",
+            "cancelled by user",
+            "invalid link establishment timing",
+            "link request stamp generation failed",
+            "something new",
+        ];
+        let mut retryable = 0;
+        for reason in reasons {
+            let retry = is_retryable_link_delivery_failure(reason);
+            retryable += usize::from(retry);
+            for deposit in [false, true] {
+                assert_eq!(
+                    DeliveryFailureReason::of_link_failure(reason, deposit).can_wait(),
+                    retry,
+                    "{reason}"
+                );
+            }
+        }
+        assert!(
+            retryable > 0 && retryable < reasons.len(),
+            "both classes are exercised"
+        );
+    }
+
+    #[test]
+    fn a_link_that_cannot_start_names_its_cause() {
+        use DeliveryFailureReason::*;
+        for (error, expected) in [
+            (LinkDeliveryStartError::TransportFull, LinkInterrupted),
+            (LinkDeliveryStartError::TransportClosed, LinkInterrupted),
+            (LinkDeliveryStartError::InvalidTiming, TransportFailed),
+            (LinkDeliveryStartError::StampFailure, PreparationFailed),
+        ] {
+            let reason = DeliveryFailureReason::of_link_start(error);
+            assert_eq!(reason.code(), expected.code(), "{error}");
+            assert_eq!(
+                reason.can_wait(),
+                is_retryable_link_delivery_failure(&error.to_string()),
+                "{error}"
+            );
+        }
+    }
 
     #[test]
     fn endpoints_are_validated_before_they_can_enter_a_catalog_input() {

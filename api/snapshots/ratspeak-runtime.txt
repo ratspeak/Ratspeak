@@ -124,8 +124,12 @@ pub ratspeak_runtime::activity::producer::ChannelSessionTransition::WelcomeValid
 pub ratspeak_runtime::activity::producer::ChannelSessionTransition::WelcomeValidated::encoded_bytes: u32
 pub enum ratspeak_runtime::activity::producer::DeliveryFailureReason
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::AttemptsExhausted
+pub ratspeak_runtime::activity::producer::DeliveryFailureReason::Expired
+pub ratspeak_runtime::activity::producer::DeliveryFailureReason::InboxOff
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::InboxRejected
+pub ratspeak_runtime::activity::producer::DeliveryFailureReason::InboxUnreachable
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::LinkClosed
+pub ratspeak_runtime::activity::producer::DeliveryFailureReason::LinkInterrupted
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::LinkNotEstablished
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::NoInterface
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::PathUnavailable
@@ -137,9 +141,12 @@ pub ratspeak_runtime::activity::producer::DeliveryFailureReason::ResourceFailed
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::RouterUnavailable
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::TooLarge
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::TransportFailed
+pub ratspeak_runtime::activity::producer::DeliveryFailureReason::WaitExpired
 impl ratspeak_runtime::activity::producer::DeliveryFailureReason
+pub const fn ratspeak_runtime::activity::producer::DeliveryFailureReason::can_wait(self) -> bool
 pub const fn ratspeak_runtime::activity::producer::DeliveryFailureReason::code(self) -> &'static str
 pub fn ratspeak_runtime::activity::producer::DeliveryFailureReason::of_link_failure(&str, bool) -> Self
+pub const fn ratspeak_runtime::activity::producer::DeliveryFailureReason::of_link_start(lxmf_core::link_delivery::LinkDeliveryStartError) -> Self
 pub enum ratspeak_runtime::activity::producer::HubModerationAction
 pub ratspeak_runtime::activity::producer::HubModerationAction::Ban
 pub ratspeak_runtime::activity::producer::HubModerationAction::Deop
@@ -1670,7 +1677,7 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::replace_route_hops_from_path_table(&
 pub fn ratspeak_runtime::lxmf::LxmfManager::request_all_paths(&self, &ratspeak_db::db::DbPool, &str) -> usize
 pub fn ratspeak_runtime::lxmf::LxmfManager::requeue_expired_received_ratchets(&mut self, alloc::vec::Vec<alloc::string::String>)
 pub fn ratspeak_runtime::lxmf::LxmfManager::restore_known_identities(&mut self, &[(alloc::string::String, [u8; 64])]) -> usize
-pub fn ratspeak_runtime::lxmf::LxmfManager::resume_outbox(&mut self, alloc::vec::Vec<ratspeak_db::db::OutboxRow>, &ratspeak_db::db::DbPool) -> alloc::vec::Vec<alloc::string::String>
+pub fn ratspeak_runtime::lxmf::LxmfManager::resume_outbox(&mut self, alloc::vec::Vec<ratspeak_db::db::OutboxRow>, &ratspeak_db::db::DbPool) -> usize
 pub fn ratspeak_runtime::lxmf::LxmfManager::resumes_awaiting_budget(&self) -> usize
 pub fn ratspeak_runtime::lxmf::LxmfManager::retry_outbound(&mut self, &ratspeak_db::db::DbPool, &str, &ratspeak_db::db::OutboxRow, ratspeak_runtime::lxmf::DeliveryPreference) -> core::result::Result<lxmf_core::constants::DeliveryMethod, &'static str>
 pub fn ratspeak_runtime::lxmf::LxmfManager::save_attachment(&self, &str, &[u8]) -> core::io::error::Result<alloc::string::String>

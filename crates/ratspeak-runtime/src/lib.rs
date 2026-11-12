@@ -6832,8 +6832,8 @@ fn admit_resumes_within_budget(state: &Arc<AppState>, mgr: &mut lxmf::LxmfManage
     );
 }
 
-/// Queue the outbox's unfinished sends again (the tick sends them); a record
-/// that cannot be read fails its message.
+/// Queue the outbox's unfinished sends again; the tick sends them, and fails
+/// the message of a record that cannot be read.
 async fn resume_outbox(state: &Arc<AppState>, mgr: lxmf::LxmfManager) -> lxmf::LxmfManager {
     let identity_id = mgr.identity_hash.clone();
     let rows =
@@ -6856,20 +6856,7 @@ async fn resume_outbox(state: &Arc<AppState>, mgr: lxmf::LxmfManager) -> lxmf::L
     })
     .await
     .expect("outbox resume task panicked");
-    tracing::info!(
-        resumed = total - unreadable.len(),
-        unreadable = unreadable.len(),
-        "outbox resumed"
-    );
-    if !unreadable.is_empty() {
-        let identity_id = mgr.identity_hash.clone();
-        let _ = db::spawn_db(state.db.clone(), move |p| {
-            for message_id in &unreadable {
-                db::update_message_state(&p, message_id, &identity_id, "failed", None);
-            }
-        })
-        .await;
-    }
+    tracing::info!(resumed = total - unreadable, unreadable, "outbox resumed");
     mgr
 }
 
@@ -10112,7 +10099,7 @@ mod outbox_budget_tests {
         drop(mgr);
         let mut mgr = lxmf::LxmfManager::load_or_create(&root, Some(&identity_id), None).unwrap();
         let rows = db::outbox_rows(&state.db, &identity_id).unwrap();
-        assert!(mgr.resume_outbox(rows, &state.db).is_empty());
+        assert_eq!(mgr.resume_outbox(rows, &state.db), 0);
         assert_eq!(mgr.resumes_awaiting_budget(), 2);
 
         admit_resumes_within_budget(&state, &mut mgr);
@@ -10134,6 +10121,53 @@ mod outbox_budget_tests {
         assert!(
             state.release_attachment_delivery_lease(&second),
             "it holds its own lease"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unreadable_outbox_record_fails_with_an_event() {
+        let (state, mut mgr) = state_and_manager();
+        let identity_id = mgr.identity_hash.clone();
+        let dest = "d2".repeat(16);
+        let msg_id = mgr
+            .send_message_with_preference_report(lxmf::MessageSendRequest {
+                dest_hash_hex: &dest,
+                content: "its record is damaged",
+                title: "",
+                db_pool: &state.db,
+                identity_id: &identity_id,
+                preference: lxmf::DeliveryPreference::Direct,
+                profile: lxmf::DeliveryProfile::Message,
+                renderer: None,
+                thread: "",
+            })
+            .unwrap()
+            .message_id;
+        state
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE lxmf_outbox SET message = x'00' WHERE message_id = ?1",
+                rusqlite::params![msg_id],
+            )
+            .unwrap();
+        let root = mgr.data_dir.parent().unwrap().to_path_buf();
+        drop(mgr);
+        let mgr = lxmf::LxmfManager::load_or_create(&root, Some(&identity_id), None).unwrap();
+
+        let mut mgr = resume_outbox(&state, mgr).await;
+        assert_eq!(
+            db::get_conversation(&state.db, &dest, &identity_id, 10)[0]["state"],
+            "sending",
+            "the resume writes nothing; the tick's step is the event"
+        );
+        assert_eq!(mgr.tick(), [(msg_id.clone(), "failed")]);
+        assert_eq!(
+            mgr.take_failure_reasons()
+                .get(&msg_id)
+                .map(|reason| reason.code()),
+            Some("preparation_failed")
         );
     }
 }
