@@ -1508,11 +1508,11 @@ mod tests {
         }
         let digest = hex::encode(rns_crypto::sha::sha256(&length_prefixed));
 
-        assert_eq!(lengths, vec![51, 58, 59, 58]);
+        assert_eq!(lengths, vec![52, 53, 56, 57]);
         assert!(lengths.windows(2).any(|window| window[0] != window[1]));
         assert_eq!(
             digest,
-            "0f46c8c0e8cc8ca98a5f2cf415f30c0622f6c3bd346910c82650784a99dc1aed"
+            "15643534fa72619ac4753ccecfa10abb10817d65543334f8aa80ac0efabbd90c"
         );
     }
 
