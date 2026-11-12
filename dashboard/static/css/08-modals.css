@@ -45,6 +45,7 @@
         height: fit-content;
         max-height: calc(90vh - var(--sat) - var(--sab));
         background: var(--surface-dialog);
+        --peer-presence-ring: var(--surface-dialog);
         border: 1px solid var(--border-surface);
         border-radius: var(--radius-2xl);
         box-shadow: var(--shadow-modal);
@@ -2029,8 +2030,6 @@
     height: 56px;
     border-radius: var(--radius-full);
     background: var(--surface-elevation-3);
-    position: relative;
-    overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -2039,21 +2038,9 @@
     width: 100%;
     height: 100%;
     display: block;
+    border-radius: inherit;
+    clip-path: circle(50% at 50% 50%);
 }
-.about-hero-avatar::after {
-    content: '';
-    position: absolute;
-    right: -2px;
-    bottom: -2px;
-    width: 14px;
-    height: 14px;
-    border-radius: var(--radius-full);
-    background: transparent;
-    border: 2px solid var(--surface-elevation-1);
-    box-sizing: content-box;
-}
-.about-hero-avatar.online::after { background: var(--status-online); }
-.about-hero-avatar.stale::after  { background: var(--status-warning); }
 
 .about-hero-name {
     font-size: var(--text-lg);
@@ -2093,37 +2080,6 @@
     word-break: break-word;
 }
 .about-row-value-muted { color: var(--text-muted); }
-
-.about-status-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-2);
-    padding: var(--space-1) var(--space-4);
-    border-radius: var(--radius-pill);
-    font-size: var(--type-row-meta-size);
-    font-weight: var(--type-weight-semibold);
-    line-height: var(--type-leading-tight);
-}
-.about-status-chip .dot {
-    margin-right: 0;
-    width: 7px;
-    height: 7px;
-}
-.about-status-chip-green {
-    background: var(--status-online-bg);
-    color: var(--status-online-fg);
-    border: 1px solid var(--status-online-border);
-}
-.about-status-chip-warning {
-    background: var(--status-warning-bg);
-    color: var(--status-warning-fg);
-    border: 1px solid var(--status-warning-border);
-}
-.about-status-chip-muted {
-    background: var(--surface-elevation-3);
-    color: var(--text-muted);
-    border: 1px solid var(--border-light);
-}
 
 .about-messages-link {
     color: var(--accent);

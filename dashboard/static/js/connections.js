@@ -599,13 +599,12 @@ function showConnectionDetailSheet(hash, options) {
     if (!contact) return;
 
     var name = contact.display_name && contact.display_name !== contact.hash ? contact.display_name : '';
-    var avatarHtml = (typeof identityAvatar === 'function') ? identityAvatar(contact.hash, 64) : '';
     var saved = typeof _lookupContactRecord === 'function' ? _lookupContactRecord(contact.hash) : null;
     var progressive = !!options.progressive;
 
     var html = '<div class="conn-detail-sheet-content">' +
         '<div class="conn-detail-sheet-identity">' +
-            '<div class="conn-detail-sheet-avatar">' + avatarHtml + '</div>' +
+            peerAvatarHtml('conn-detail-sheet-avatar', contact.hash, 64, contact) +
             '<div class="conn-detail-sheet-title">' +
                 peerNameHtml('conn-detail-sheet-name', name ? ratspeakDisplayNameHtml(name, contact) : '') +
                 '<div class="conn-detail-sheet-hash">' + escapeHtml(contact.hash) + '</div>' +

@@ -3306,9 +3306,9 @@ function showContactDetailSheet(hash) {
             '<button class="contact-detail-edit-btn" id="cd-edit-name-btn" title="Edit display name" aria-label="Edit display name">' +
                 '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>' +
             '</button>' +
-            '<div class="contact-detail-avatar">' + identityAvatar(hash, 64) + '</div>' +
+            peerAvatarHtml('contact-detail-avatar', hash, 64, peer) +
             peerNameHtml('contact-detail-name', name ? ratspeakDisplayNameHtml(name, contact || hash) : '') +
-            '<div class="contact-detail-hash-row">' + peerAddressButtonHtml(hash) + peerStatusChipHtml(peer) + '</div>' +
+            '<div class="contact-detail-hash-row">' + peerAddressButtonHtml(hash) + '</div>' +
             peerActionPairHtml('contact-detail-actions contact-detail-primary-actions entity-action-grid', 'cd', hash) +
             '<div class="contact-detail-fields">' + peerDetailsHtml('cd-detail-rows', peer, { trust: contact ? contact.trust : '' }) + '</div>' +
             '<div class="contact-detail-action-rows">' + peerActionRowsHtml(!!contact) + '</div>' +
@@ -6865,8 +6865,6 @@ function showContactAbout(hash) {
     var nameInfo = _conversationNameInfo(hash, null, false);
     var name = nameInfo.isHash ? '' : nameInfo.name;
     var contact = _lookupContactRecord(hash);
-    var status = reach ? reach.status : 'unknown';
-    var avatarStateClass = (status === 'reachable' || status === 'direct') ? 'online' : (status === 'stale' ? 'stale' : '');
     var profileStatus = reach && typeof ratspeakProfileStatusText === 'function'
         ? ratspeakProfileStatusText(reach)
         : (reach && ratspeakSupportsFeatures(reach) && reach.profile_status ? reach.profile_status : '');
@@ -6878,10 +6876,9 @@ function showContactAbout(hash) {
     var body = modal.querySelector('.bottom-sheet-body');
 
     var html = '<div class="about-hero">' +
-        '<div class="about-hero-avatar ' + avatarStateClass + '">' + identityAvatar(hash, 56) + '</div>' +
+        peerAvatarHtml('about-hero-avatar', hash, 56, reach) +
         peerNameHtml('about-hero-name', escapeHtml(name)) +
         peerAddressButtonHtml(hash) +
-        peerStatusChipHtml(reach) +
     '</div>';
 
     html += '<div class="about-section">';

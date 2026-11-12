@@ -459,8 +459,6 @@
     width: 64px;
     height: 64px;
     border-radius: var(--radius-full);
-    overflow: hidden;
-    clip-path: circle(50% at 50% 50%);
 }
 .peers-detail-avatar svg,
 .peers-detail-avatar img,
@@ -505,6 +503,22 @@
 
 /* Shared by the Peers panel, the About sheet, the contact sheet, and the mobile peer sheet. */
 .peer-name-placeholder { color: var(--text-muted); }
+
+/* Presence dot, centred on the avatar's edge at its lower right. The avatar image clips itself. */
+.peer-avatar { position: relative; }
+.peer-presence {
+    position: absolute;
+    right: 14.6%;
+    bottom: 14.6%;
+    width: 14px;
+    height: 14px;
+    transform: translate(50%, 50%);
+    border-radius: var(--radius-full);
+    background: var(--status-warning);
+    box-shadow: 0 0 0 3px var(--peer-presence-ring, var(--surface-panel));
+}
+.peer-presence--online { background: var(--status-online); }
+.peer-presence--never { background: var(--status-error); }
 .peer-hash {
     display: inline-flex;
     align-items: center;
@@ -4970,9 +4984,7 @@ body.setup-active .main-content {
     height: 64px;
     margin: var(--space-4) auto 0;
     border-radius: var(--radius-full);
-    overflow: hidden;
     line-height: 0;
-    clip-path: circle(50% at 50% 50%);
 }
 .contact-detail-avatar svg,
 .contact-detail-avatar img,
@@ -5019,29 +5031,60 @@ body.setup-active .main-content {
 
 .entity-action-grid .entity-action-btn {
     width: 100%;
-    min-height: 48px;
-    padding: var(--space-4) var(--space-5);
+    min-height: 36px;
+    padding: var(--space-2) var(--space-5);
     display: inline-flex;
     align-items: center;
     justify-content: center;
     gap: var(--space-3);
     white-space: nowrap;
+    box-shadow: none;
+}
+
+.entity-action-grid .entity-action-btn::after {
+    content: none;
+}
+
+.entity-action-grid .entity-action-btn:hover {
+    transform: none;
+    box-shadow: none;
+}
+
+/* Secondary: a hairline. */
+.entity-action-grid .nr-btn.entity-action-btn {
+    --button-bg-current: transparent;
+    --button-bg-hover-current: var(--hover-light);
+    --button-border-current: var(--border);
+    --button-border-hover-current: var(--border-surface-strong);
+    --button-color-current: var(--text-primary);
+    font-weight: var(--type-weight-medium);
+}
+
+/* Primary (Call, or the only action): accent tint, no solid fill. */
+.entity-action-grid .nr-btn.entity-action-call,
+.entity-action-grid .nr-btn.entity-action-btn:only-child {
+    --button-bg-current: var(--accent-bg-strong);
+    --button-bg-hover-current: var(--accent-a20);
+    --button-border-current: transparent;
+    --button-border-hover-current: transparent;
+    --button-color-current: var(--accent);
+    font-weight: var(--type-weight-semibold);
 }
 
 .entity-action-grid .entity-action-btn svg {
-    width: 17px;
-    height: 17px;
+    width: 16px;
+    height: 16px;
     flex-shrink: 0;
+}
+
+.entity-action-grid .nr-btn.entity-action-btn:not(.entity-action-call):not(:only-child) svg {
+    color: var(--text-muted);
 }
 
 .entity-action-grid .entity-action-btn span {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-}
-
-.entity-action-call:not(.is-hangup) {
-    box-shadow: 0 6px 18px rgba(var(--accent-rgb), 0.18);
 }
 
 .view-grid-dashboard {

@@ -7452,7 +7452,10 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
         .find("function expandConnectionDetailSheet")
         .expect("connection detail sheet renderer end");
     let sheet_source = &sheet_tail[..sheet_end];
-    assert!(sheet_source.contains("identityAvatar(contact.hash, 64)"));
+    assert!(
+        sheet_source
+            .contains("peerAvatarHtml('conn-detail-sheet-avatar', contact.hash, 64, contact)")
+    );
     assert!(sheet_source.contains("conn-detail-sheet-identity"));
     assert!(sheet_source.contains("conn-detail-sheet-header-actions"));
     assert!(sheet_source.contains("peerActionRowsHtml(contact.is_contact)"));
@@ -7496,7 +7499,9 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
     assert!(responsive_css.contains("overflow-x: hidden;"));
     assert!(responsive_css.contains("grid-template-areas: \"avatar title actions\";"));
     assert!(responsive_css.contains("grid-template-columns: 64px minmax(0, 1fr) auto;"));
-    assert!(responsive_css.contains("min-height: 60px;"));
+    assert!(responsive_css.contains(
+        ".conn-detail-sheet-primary-actions .entity-action-btn {\n    min-height: 44px;"
+    ));
     assert!(responsive_css.contains(".conn-detail-sheet-expand-hint {\n    appearance: none;"));
     assert!(!responsive_css.contains("margin-top: auto;"));
     assert!(responsive_css.contains(

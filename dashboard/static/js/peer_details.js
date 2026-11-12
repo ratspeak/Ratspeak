@@ -33,13 +33,23 @@ function peerAddressButtonHtml(hash) {
         escapeHtml(hash) + '</button>';
 }
 
-function peerStatusChipHtml(peer) {
+// Green: heard recently. Red: never heard and no path. Orange: everything else.
+function peerPresenceTone(peer) {
     var status = peer ? peer.status : 'unknown';
-    var tone = (status === 'reachable' || status === 'direct') ? 'green' : (status === 'stale' ? 'warning' : 'muted');
-    var dot = tone === 'green' ? 'green' : (tone === 'warning' ? 'orange' : 'gray');
-    return '<span class="about-status-chip about-status-chip-' + tone + '">' +
-        '<span class="dot ' + dot + '"></span>' + escapeHtml((peer && peer.activity_label) || 'Never seen') +
-    '</span>';
+    if (status === 'reachable' || status === 'direct') return 'online';
+    if (!peer || (!peer.last_seen && !peer.in_path)) return 'never';
+    return 'away';
+}
+
+// The avatar with its presence dot; className keeps each panel's own size and spacing.
+function peerAvatarHtml(className, hash, size, peer) {
+    var tone = peerPresenceTone(peer);
+    var label = tone === 'never' ? 'Never heard' : ((peer && peer.activity_label) || 'Not heard recently');
+    return '<div class="' + className + ' peer-avatar">' +
+        (typeof identityAvatar === 'function' ? identityAvatar(hash, size) : '') +
+        '<span class="peer-presence peer-presence--' + tone + '" role="img" aria-label="' + escapeHtml(label) +
+            '" title="' + escapeHtml(label) + '"></span>' +
+    '</div>';
 }
 
 function _peerIsRelayed(peer) {

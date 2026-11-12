@@ -511,17 +511,15 @@ function renderPeersDetailPanel(hash) {
     if (!peer) { hidePeersDetail(); return; }
 
     var hasName = peer.display_name && peer.display_name !== '' && peer.display_name !== peer.hash;
-    var av = (typeof identityAvatar === 'function') ? identityAvatar(hash, 64) : '';
     var trust = '';
     if (peer.is_contact && _peersContactCache) {
         _peersContactCache.forEach(function(ct) { if (ct.dest_hash === hash || ct.hash === hash) trust = ct.trust || ''; });
     }
 
     var html = '<div class="peers-detail-header">' +
-        '<div class="peers-detail-avatar">' + av + '</div>' +
+        peerAvatarHtml('peers-detail-avatar', hash, 64, peer) +
         peerNameHtml('peers-detail-name', hasName ? ratspeakDisplayNameHtml(peer.display_name, peer) : '') +
         peerAddressButtonHtml(hash) +
-        peerStatusChipHtml(peer) +
     '</div>' +
     peerActionPairHtml('peers-detail-actions entity-action-grid', 'peers-detail', hash) +
     peerDetailsHtml('peers-detail-rows', peer, { trust: trust }) +

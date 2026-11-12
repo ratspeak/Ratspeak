@@ -1929,6 +1929,9 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .channel-member-detail-actions {
     margin-top: var(--space-6);
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-4);
 }
 
 .channel-member-profile-sheet .bottom-sheet-body {

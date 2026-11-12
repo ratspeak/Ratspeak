@@ -640,6 +640,7 @@
     .nr-btn-sm { min-height: 40px; padding: 6px 14px; font-size: var(--text-sm); }
     .nr-btn-lg { min-height: 48px; padding: 10px 24px; }
     .danger-btn { min-height: 44px; padding: 8px 16px; font-size: var(--text-base); }
+    .entity-action-grid .entity-action-btn { min-height: 44px; }
 
     .nr-btn:hover, .danger-btn:hover, .conn-card:hover,
     .interface-card:hover { transform: none; box-shadow: none; }
@@ -1479,6 +1480,7 @@
         left: 0;
         right: 0;
         background: var(--surface-sheet);
+        --peer-presence-ring: var(--surface-sheet);
         backdrop-filter: blur(20px) saturate(1.2);
         -webkit-backdrop-filter: blur(20px) saturate(1.2);
         border-radius: var(--radius-3xl) var(--radius-3xl) 0 0;
@@ -1694,14 +1696,14 @@
     width: 100%;
     max-width: 100%;
     min-width: 0;
+    padding-bottom: var(--space-5);
+    border-bottom: 1px solid var(--divider);
 }
 .conn-detail-sheet-avatar {
     grid-area: avatar;
     width: 64px;
     height: 64px;
     border-radius: var(--radius-full);
-    overflow: hidden;
-    clip-path: circle(50% at 50% 50%);
     flex-shrink: 0;
 }
 .conn-detail-sheet-avatar svg,
@@ -1824,7 +1826,7 @@
     padding-inline: var(--space-3);
 }
 .conn-detail-sheet-primary-actions .entity-action-btn {
-    min-height: 60px;
+    min-height: 44px;
 }
 .conn-detail-sheet-primary-actions .entity-action-btn:only-child {
     grid-column: 1 / -1;
