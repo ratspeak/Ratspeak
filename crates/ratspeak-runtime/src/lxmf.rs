@@ -5846,17 +5846,10 @@ impl LxmfManager {
                 client.tick();
             }
             let transfer_status = client.transfer_status();
-            let terminal_state = if matches!(
-                transfer_status.state,
-                lxmf_core::propagation_client::PropagationClientState::Complete
-                    | lxmf_core::propagation_client::PropagationClientState::Partial
-                    | lxmf_core::propagation_client::PropagationClientState::NoPath
-                    | lxmf_core::propagation_client::PropagationClientState::Failed
-            ) {
-                Some(transfer_status.state)
-            } else {
-                None
-            };
+            let terminal_state = transfer_status
+                .state
+                .is_terminal()
+                .then_some(transfer_status.state);
             if let Some(node) = self.router.outbound_propagation_node {
                 match terminal_state {
                     Some(lxmf_core::propagation_client::PropagationClientState::Complete) => {
@@ -5866,15 +5859,16 @@ impl LxmfManager {
                         self.failed_propagation_syncs
                             .push((node, "sync_partial".to_string()));
                     }
-                    Some(lxmf_core::propagation_client::PropagationClientState::Failed) => {
-                        self.failed_propagation_syncs
-                            .push((node, "sync_failed".to_string()));
-                    }
                     Some(lxmf_core::propagation_client::PropagationClientState::NoPath) => {
                         self.failed_propagation_syncs
                             .push((node, "sync_no_path".to_string()));
                     }
-                    _ => {}
+                    // A lost Link, a refused identity and every other failure state.
+                    Some(_) => {
+                        self.failed_propagation_syncs
+                            .push((node, "sync_failed".to_string()));
+                    }
+                    None => {}
                 }
             }
             downloaded = client.take_downloaded_messages();
@@ -12120,6 +12114,59 @@ mod tests {
         }
         assert!(ended, "a path timeout must end the sync");
         assert_eq!(mgr.failed_propagation_syncs[0].0, node);
+        assert_eq!(
+            mgr.propagation_client.as_ref().map(|client| client.state()),
+            Some(lxmf_core::propagation_client::PropagationClientState::Idle)
+        );
+    }
+
+    #[test]
+    fn propagation_link_loss_is_a_failed_sync_and_frees_the_client() {
+        use rns_transport::messages::{TransportQuery, TransportQueryResponse};
+        let mut mgr = test_manager();
+        let node = [0x57; 16];
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(64);
+        mgr.router.set_transport(tx);
+        mgr.client_propagation_enabled = true;
+        mgr.configured_propagation_node = Some(node);
+        mgr.activate_client_propagation_node(node);
+        mgr.install_download_state(
+            SuppressionLedger::default(),
+            AdmissionEpochs::default(),
+            Vec::new(),
+        );
+        mgr.known_identities
+            .insert(hex::encode(node), Identity::new().get_public_key());
+        assert!(mgr.propagation_client.as_mut().unwrap().start_download());
+        // The path is there; the node never answers the link request.
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let mut link_requested = false;
+        while Instant::now() < deadline && mgr.failed_propagation_syncs.is_empty() {
+            while let Ok(message) = rx.try_recv() {
+                match message {
+                    TransportMessage::Rpc { query, response_tx } => {
+                        let _ = response_tx.send(match query {
+                            TransportQuery::GetInterfaceStats => {
+                                TransportQueryResponse::InterfaceStats(Vec::new())
+                            }
+                            TransportQuery::GetNextHopHardwareMtu { .. } => {
+                                TransportQueryResponse::IntResult(-1)
+                            }
+                            _ => TransportQueryResponse::BoolResult(true),
+                        });
+                    }
+                    TransportMessage::SendLinkRequest { .. } => link_requested = true,
+                    _ => {}
+                }
+            }
+            mgr.tick_with_auto_propagation_download_ready(false);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        assert!(link_requested, "the sync reached the link request");
+        assert_eq!(
+            mgr.failed_propagation_syncs,
+            vec![(node, "sync_failed".to_string())]
+        );
         assert_eq!(
             mgr.propagation_client.as_ref().map(|client| client.state()),
             Some(lxmf_core::propagation_client::PropagationClientState::Idle)
