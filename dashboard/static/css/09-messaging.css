@@ -1284,6 +1284,8 @@ body.image-viewer-open {
 .msg-state-sending svg { stroke: var(--text-muted); animation: pulse-flow 2s ease-in-out infinite; }
 /* Propagation node accepted the message; recipient may not have pulled it yet. */
 .msg-state-propagated svg { stroke: var(--text-muted); }
+/* Waiting rests: the clock moves, the hourglass does not. */
+.msg-state-waiting svg { stroke: var(--text-muted); }
 .msg-state-failed svg { stroke: var(--status-error-fg); }
 .msg-state-rejected svg { stroke: var(--status-error-fg); }
 .msg-state-cancelled svg { stroke: var(--text-muted); }

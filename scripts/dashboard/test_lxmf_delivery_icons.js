@@ -139,6 +139,8 @@ var handlers = {};
 var events = {
     RS: { listen: function(event, handler) { handlers[event] = handler; } },
     lxmfConversation: [],
+    lxmfConversations: [],
+    _renderConversationsFromCache: function() {},
     _pendingLxmfCancelByClientId: {},
     _flushPendingLxmfCancel: function() {},
     _cacheActiveConversation: function() {},
@@ -148,7 +150,8 @@ var events = {
 };
 vm.createContext(events);
 vm.runInContext(source.slice(0, source.indexOf('var lxmfIdentity')), events);
-vm.runInContext(listenerSource('lxmf_step') + listenerSource('lxmf_delivery_progress'), events);
+vm.runInContext(functionSource('_messageStateAfterStep') + functionSource('_applyStepToConversationList') +
+    listenerSource('lxmf_step') + listenerSource('lxmf_delivery_progress'), events);
 function after(event, from, step) {
     events.lxmfConversation = [{ id: 'm', direction: 'outbound', state: from }];
     handlers[event]({ msg_id: 'm', step: step });
@@ -223,4 +226,284 @@ var activityAt = source.indexOf("activityBtn.innerHTML = _messageActionIcon('act
 var replyAt = source.indexOf("replyBtn.innerHTML = _messageActionIcon('reply')");
 assert(retryAt !== -1 && activityAt > retryAt && replyAt > activityAt, 'Show in Activity sits right after Retry');
 
-console.log('LXMF delivery icon tests passed');
+// ---------------------------------------------------------------------------
+// Waiting: a message Ratspeak keeps trying to send.
+// ---------------------------------------------------------------------------
+var WAITING_LABEL = 'Waiting to send. Ratspeak keeps trying for up to 24 hours.';
+var HOURGLASS = '<path d="M3.5 2.5h9M3.5 13.5h9M5 2.5V5l3 3-3 3v2.5M11 2.5V5L8 8l3 3v2.5"/>';
+
+// The mark: an hourglass, named on hover and to a screen reader, never the clock, no words.
+var waitingIcon = icon('waiting', 'opportunistic');
+assert(waitingIcon.includes('class="msg-state-icon msg-state-waiting"'));
+assert(waitingIcon.includes('aria-label="' + WAITING_LABEL + '"') && waitingIcon.includes('title="' + WAITING_LABEL + '"'));
+assert(waitingIcon.includes(HOURGLASS), 'waiting is the hourglass');
+assert(!waitingIcon.includes('msg-state-sending') && !waitingIcon.includes('<circle'), 'waiting is not the sending clock');
+assert(!waitingIcon.includes('msg-state-label'), 'the bubble carries no words for waiting');
+assert(/\.msg-state-waiting svg\s*\{\s*stroke:\s*var\(--text-muted\);\s*\}/.test(css),
+    'the hourglass is muted and still: one declaration, no animation');
+
+// Not on its way and not settled: the time shows, nothing offers Cancel, and it cannot be selected.
+context._messageIsPaper = function(msg) { return !!msg && msg.state === 'paper'; };
+context._isCanonicalLxmfMsgId = function(value) { return /^[a-f0-9]{64}$/i.test(String(value || '')); };
+['_messageInlineCancelHtml', '_messageHasTransferPayload', '_messageCanCancelTransfer', '_messageSelectable',
+    '_messageIsWaiting'].forEach(function(name) { vm.runInContext(functionSource(name), context); });
+var waitingMsg = { id: id, direction: 'outbound', state: 'waiting', delivery_method: 'direct', image: { stored_name: 'i' } };
+assert.strictEqual(context._isTerminalMessageState('waiting'), false, 'a late proof or outcome still replaces waiting');
+assert.strictEqual(context._isInFlightStep('waiting'), false);
+assert.strictEqual(context._messageCanCancelSend(waitingMsg), false);
+assert.strictEqual(context._messageInlineCancelHtml(waitingMsg), '', 'no inline Cancel on a waiting message');
+assert.strictEqual(context._messageCanCancelTransfer(waitingMsg), false, 'no cancel overlay on a waiting image');
+assert(source.includes("(canCancelSend ? _messageInlineCancelHtml(msg) : '<span class=\"msg-time\">' + time + '</span>')"),
+    'a message that cannot be cancelled shows its time');
+assert.strictEqual(context._messageSelectable(waitingMsg), false, 'a waiting message is stopped, not deleted');
+assert.strictEqual(context._messageSelectable({ id: id, direction: 'outbound', state: 'failed' }), true);
+assert(!context._messageCanRetry(waitingMsg), 'waiting has no retry');
+assert(canExplain('waiting'), 'Activity explains why a message waits');
+assert(context._messageIsWaiting(waitingMsg));
+['sending', 'sent', 'failed', 'cancelled', 'delivered'].forEach(function(state) {
+    assert(!context._messageIsWaiting({ id: id, direction: 'outbound', state: state }), state);
+});
+assert(!context._messageIsWaiting({ id: id, direction: 'inbound', state: 'waiting' }));
+assert(!context._messageIsWaiting({ id: 'out_1', direction: 'outbound', state: 'waiting' }));
+
+// A `waiting` step parks a message on its way and never one that settled.
+ON_ITS_WAY.concat(PROGRESS).forEach(function(from) {
+    assert.strictEqual(after('lxmf_step', from, 'waiting'), 'waiting', from + ' parks');
+});
+SETTLED.forEach(function(from) {
+    assert.strictEqual(after('lxmf_step', from, 'waiting'), from, from + ' is never parked');
+    assert.strictEqual(after('lxmf_step', from, 'sending'), from, from + ' is never woken');
+});
+assert.strictEqual(after('lxmf_delivery_progress', 'sending', 'waiting'), 'sending', 'transfer progress never parks a message');
+// It leaves only by the `sending` of a new attempt, or by an outcome.
+assert.strictEqual(after('lxmf_step', 'waiting', 'sending'), 'sending');
+ON_ITS_WAY.concat(PROGRESS).filter(function(from) { return from !== 'sending'; }).forEach(function(from) {
+    assert.strictEqual(after('lxmf_step', from, 'sending'), from, 'sending moves only a waiting message, not ' + from);
+});
+MOVES.forEach(function(step) {
+    assert.strictEqual(after('lxmf_step', 'waiting', step), 'waiting', 'a stale ' + step + ' step leaves waiting');
+    assert.strictEqual(after('lxmf_delivery_progress', 'waiting', step), 'waiting', 'stale ' + step + ' progress leaves waiting');
+});
+['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout'].forEach(function(step) {
+    assert.strictEqual(after('lxmf_step', 'waiting', step), step, step + ' replaces waiting');
+});
+assert.strictEqual(after('lxmf_step', 'waiting', 'error'), 'failed');
+// Parking drops the progress of the attempt that ended, and takes the server's id.
+events.lxmfConversation = [{ id: 'out_1', direction: 'outbound', state: 'sending_via_link', delivery_progress: 0.4,
+    delivery_link_id: 'link', delivery_representation: 'resource' }];
+handlers.lxmf_step({ step: 'waiting', msg_id: id, client_msg_id: 'out_1', method: 'direct' });
+assert.deepStrictEqual(Object.assign({}, events.lxmfConversation[0]),
+    { id: id, direction: 'outbound', state: 'waiting', delivery_method: 'direct' });
+
+// The conversation list follows the step for a chat's last message, and only that message.
+var listRenders = 0;
+events._renderConversationsFromCache = function() { listRenders++; };
+var lastRow = { hash: 'peer', last_direction: 'outbound', last_msg_id: 'm2', last_state: 'sending' };
+var inboundRow = { hash: 'other', last_direction: 'inbound', last_msg_id: 'm9', last_state: null };
+events.lxmfConversations = [inboundRow, lastRow];
+events.lxmfConversation = [];
+function listStep(msgId, step, extra) {
+    handlers.lxmf_step(Object.assign({ msg_id: msgId, step: step }, extra || {}));
+    return lastRow.last_state;
+}
+assert.strictEqual(listStep('m2', 'waiting'), 'waiting');
+assert.strictEqual(listRenders, 1, 'the list is drawn again when its mark changes');
+assert.strictEqual(listStep('m2', 'waiting'), 'waiting');
+assert.strictEqual(listRenders, 1, 'and not when nothing changed');
+assert.strictEqual(listStep('m1', 'failed', { destination: 'peer' }), 'waiting', 'an older message in the same chat is not the row');
+assert.strictEqual(listStep('m2', 'routing'), 'waiting');
+assert.strictEqual(listStep('m2', 'sending', { wake: 'wake_user' }), 'sending');
+assert.strictEqual(listStep('m2', 'sent'), 'sent');
+assert.strictEqual(listStep('m2', 'delivered'), 'delivered');
+assert.strictEqual(listStep('m2', 'waiting'), 'delivered', 'the row keeps a bubble\'s precedence');
+assert.strictEqual(listStep('m2', 'failed'), 'delivered');
+assert.strictEqual(listRenders, 4);
+handlers.lxmf_step({ msg_id: 'm9', step: 'waiting' });
+assert.strictEqual(inboundRow.last_state, null, 'a received message has no delivery mark');
+events.lxmfConversations = [];
+
+// The list draws the same mark as the bubble, before the preview.
+var listContainer = { innerHTML: '', _convSwipeAttached: true, querySelectorAll: function() { return []; } };
+var list = {
+    document: { getElementById: function() { return listContainer; } },
+    lxmfActiveContact: null,
+    _ghostConversationHash: null,
+    _messageProgressPercent: function() { return null; },
+    _mergeOptimisticConversation: function(rows) { return rows; },
+    _canonicalConversationHash: function(hash) { return hash; },
+    _conversationNameInfo: function(hash, name) { return { name: name, isHash: false }; },
+    _conversationListPreview: function(row) { return row.last_message; },
+    formatConvTime: function() { return 'now'; },
+    identityAvatar: function() { return ''; },
+    _peerInfo: function() { return null; },
+    escapeHtml: function(value) { return String(value); },
+    ratspeakDisplayNameHtml: function(name) { return name; },
+    _refreshRenderedConversationPresence: function() {}
+};
+vm.createContext(list);
+vm.runInContext(functionSource('_messageStateIconHtml') + functionSource('_renderConversationsFromCache'), list);
+list._renderConversationsFromCache([
+    { hash: 'a', display_name: 'Mara', last_message: 'Back by six', last_direction: 'outbound', last_state: 'waiting', last_msg_id: 'm2' },
+    { hash: 'b', display_name: 'Ivy', last_message: 'Bring the charger', last_direction: 'inbound', last_state: null, last_msg_id: 'm9' },
+    { hash: 'c', display_name: 'Tess', last_message: 'Saturday?', last_direction: 'outbound', last_state: 'rejected', last_msg_id: 'm4' }
+]);
+var listRows = listContainer.innerHTML.split('<div role="button"').slice(1);
+assert.strictEqual(listRows.length, 3);
+assert(listRows[0].includes('msg-state-waiting') && listRows[0].includes(HOURGLASS) &&
+    listRows[0].indexOf('msg-state-waiting') < listRows[0].indexOf('You: Back by six'), 'the hourglass sits before the preview');
+assert(!listRows[0].includes('Waiting to send</') && !listRows[0].includes('conv-unread-badge'), 'no status words and no badge');
+assert(!listRows[1].includes('msg-state-icon'), 'a chat that ends on a received message shows no mark');
+assert(listRows[2].includes('msg-state-rejected') && !listRows[2].includes('msg-state-label'),
+    'the list shows a mark, never a word');
+assert(icon('rejected', 'direct').includes('<span class="msg-state-label">Rejected</span>'), 'the bubble keeps its word');
+
+// The notice: 24 hours is named when that is why; turning the setting off says nothing.
+var noticeToasts = [];
+var opened = [];
+var notice = {
+    _canonicalConversationHash: function(hash) { return hash || ''; },
+    _lxmfAttentionForeground: function() { return true; },
+    _isConversationActivelyVisible: function() { return false; },
+    _conversationNameInfo: function() { return { name: 'Mara' }; },
+    _hashFallbackName: function(hash) { return hash; },
+    lxmfActiveThread: '',
+    openConversationWith: function(hash) { opened.push(hash); },
+    showToast: function(text, kind, ms, action) { noticeToasts.push([text, kind]); if (action) action(); }
+};
+vm.createContext(notice);
+vm.runInContext(functionSource('_noticeUndeliveredMessage'), notice);
+notice._noticeUndeliveredMessage('peer', 'wait_expired');
+notice._noticeUndeliveredMessage('peer', 'path_unavailable');
+notice._noticeUndeliveredMessage('peer');
+notice._noticeUndeliveredMessage('peer', 'keep_trying_off');
+notice._noticeUndeliveredMessage('', 'keep_trying_off');
+assert.deepStrictEqual(noticeToasts, [
+    ['Message to Mara not delivered after 24 hours', 'toast-action'],
+    ['Message to Mara not delivered', 'toast-action'],
+    ['Message to Mara not delivered', 'toast-action']
+]);
+assert.deepStrictEqual(opened, ['peer', 'peer', 'peer'], 'tapping the notice opens the chat');
+var noticed = [];
+events._noticeUndeliveredMessage = function(destination, reason) { noticed.push([destination, reason]); };
+events.lxmfConversation = [{ id: 'm', direction: 'outbound', state: 'waiting' }];
+handlers.lxmf_step({ msg_id: 'm', step: 'failed', reason: 'wait_expired', destination: 'peer' });
+handlers.lxmf_step({ msg_id: 'm', step: 'waiting', destination: 'peer' });
+assert.strictEqual(events.lxmfConversation[0].state, 'failed', 'the expired message shows Not delivered');
+assert.deepStrictEqual(noticed, [['peer', 'wait_expired']], 'the step hands its reason to the notice; waiting itself is silent');
+
+// The menu on a waiting message: Try now, Stop trying, Show in Activity, then the usual rows. No caption.
+function FakeElement(tag) {
+    this.tagName = tag;
+    this.children = [];
+    this.attrs = {};
+    this.className = '';
+    this.innerHTML = '';
+    this.style = { setProperty: function() {} };
+    this.classList = { add: function() {}, remove: function() {} };
+}
+FakeElement.prototype.setAttribute = function(name, value) { this.attrs[name] = value; };
+FakeElement.prototype.appendChild = function(child) { this.children.push(child); return child; };
+FakeElement.prototype.addEventListener = function() {};
+FakeElement.prototype.querySelector = function() { return null; };
+FakeElement.prototype.querySelectorAll = function() { return []; };
+var menuCalls = [];
+var menuToasts = [];
+var menuConfirms = 0;
+var cancelReply = { cancelled: true, row_marked_stopped: true };
+var menuBody = new FakeElement('body');
+var menuContext = {
+    lxmfConversation: [],
+    lxmfActiveContact: 'peer',
+    _msgSelection: null,
+    _activeContextMenu: null,
+    document: { body: menuBody, activeElement: null, getElementById: function() { return null; },
+        createElement: function(tag) { return new FakeElement(tag); } },
+    window: { addEventListener: function() {} },
+    RS: { invoke: function(command, args) { menuCalls.push([command, JSON.parse(JSON.stringify(args))]); return Promise.resolve(cancelReply); } },
+    rsConfirm: function() { menuConfirms++; return Promise.resolve(true); },
+    showToast: function(text, kind) { menuToasts.push([text, kind]); },
+    showMessageInActivity: function() {},
+    _dismissContextMenu: function() { return true; },
+    _shouldPreserveLxmfComposerKeyboard: function() { return false; },
+    _messageActionShouldPreserveComposer: function() { return false; },
+    _restoreLxmfComposerKeyboard: function() {},
+    _preventMessageActionFocusSteal: function() {},
+    _hasOwnReaction: function() { return false; },
+    _bindMessageFocusPreservingActivation: function(element, handler) { element.activate = handler; },
+    _messageSelectionActive: function() { return false; },
+    _messageCopyText: function() { return 'text'; },
+    _messageMediaContextAction: function() { return null; },
+    _canonicalConversationHash: function(hash) { return hash; },
+    _layoutMessageActionPanels: function() {},
+    _cacheActiveConversation: function() {},
+    renderConversation: function() {}
+};
+vm.createContext(menuContext);
+vm.runInContext(source.slice(0, source.indexOf('var lxmfIdentity')), menuContext);
+['_isCanonicalLxmfMsgId', '_messageDeliveryMethod', '_messageIsPaper', '_messageCanCancelSend', '_messageCanRetry',
+    '_messageCanShowInActivity', '_messageIsWaiting', '_messageSelectable', '_messageActionIcon',
+    '_prepareMessageActionTarget', '_findLxmfMessageById', '_markLxmfMessageCancelled', '_invokeLxmfCancel',
+    '_showLxmfStopResult', '_tryWaitingLxmfMessage', '_stopWaitingLxmfMessage', '_showMsgContextMenu']
+    .forEach(function(name) { vm.runInContext(functionSource(name), menuContext); });
+function openMenu(msg) {
+    var bubble = new FakeElement('div');
+    bubble.querySelector = function(selector) { return selector === '.lxmf-msg-content' ? {} : null; };
+    menuContext._showMsgContextMenu(msg, 0, 0, bubble, null);
+    var panel = menuBody.children[menuBody.children.length - 1].children[1];
+    return {
+        panel: panel,
+        actions: panel.children.map(function(child) { return child.attrs['data-message-action']; }),
+        labels: panel.children.map(function(child) { return (/<span>([^<]*)<\/span>/.exec(child.innerHTML) || [])[1]; }),
+        button: function(action) {
+            return panel.children.filter(function(child) { return child.attrs['data-message-action'] === action; })[0];
+        }
+    };
+}
+function sentMessage(state) { return { id: id, direction: 'outbound', state: state, delivery_method: 'opportunistic' }; }
+var waitingMenu = openMenu(sentMessage('waiting'));
+assert.deepStrictEqual(waitingMenu.actions, ['try-now', 'stop-trying', 'show-activity', 'reply', 'copy-message']);
+assert.deepStrictEqual(waitingMenu.labels, ['Try now', 'Stop trying', 'Show in Activity', 'Reply', 'Copy']);
+assert(waitingMenu.panel.children.every(function(child) { return child.tagName === 'button'; }),
+    'the menu holds buttons only: no caption row');
+assert.strictEqual(waitingMenu.button('try-now').className, 'msg-ctx-btn msg-ctx-try-now');
+assert.strictEqual(waitingMenu.button('stop-trying').className, 'msg-ctx-btn msg-ctx-stop-trying');
+assert(waitingMenu.button('stop-trying').innerHTML.includes('<path d="M18 6 6 18M6 6l12 12"/>'));
+assert.deepStrictEqual(openMenu(sentMessage('failed')).actions, ['retry', 'show-activity', 'reply', 'select', 'copy-message'],
+    'an ended message keeps Retry and gains nothing');
+assert.deepStrictEqual(openMenu(sentMessage('sending')).actions, ['reply', 'copy-message']);
+assert.deepStrictEqual(openMenu(sentMessage('delivered')).actions, ['reply', 'select', 'copy-message']);
+
+(async function() {
+    // Try now asks the runtime and leaves the bubble to the attempt's own step.
+    var waiting = sentMessage('waiting');
+    menuContext.lxmfConversation = [waiting];
+    openMenu(waiting).button('try-now').activate();
+    await Promise.resolve();
+    assert.deepStrictEqual(menuCalls, [['try_waiting_now', { args: { msg_id: id } }]]);
+    assert.strictEqual(waiting.state, 'waiting');
+    assert.deepStrictEqual(menuToasts, [], 'Try now says nothing');
+
+    // Stop trying is the existing cancel, with no confirmation, and ends as Cancelled.
+    menuCalls.length = 0;
+    openMenu(waiting).button('stop-trying').activate();
+    for (var turn = 0; turn < 4; turn++) await Promise.resolve();
+    assert.deepStrictEqual(menuCalls, [['cancel_lxmf_message', { args: { msg_id: id } }]]);
+    assert.strictEqual(menuConfirms, 0, 'Stop trying asks nothing');
+    assert.strictEqual(waiting.state, 'cancelled');
+    assert(context._messageCanRetry(waiting), 'and Retry is offered again');
+    assert.deepStrictEqual(menuToasts, [['No live send remained. The local message was cancelled, but a copy may still arrive.', 'toast-info']],
+        'the existing stop toasts apply');
+
+    // A refusal leaves the message waiting and says why.
+    menuToasts.length = 0;
+    waiting.state = 'waiting';
+    menuContext.RS.invoke = function() { return Promise.reject(new Error('Messaging is not ready')); };
+    openMenu(waiting).button('try-now').activate();
+    openMenu(waiting).button('stop-trying').activate();
+    for (turn = 0; turn < 4; turn++) await Promise.resolve();
+    assert.strictEqual(waiting.state, 'waiting');
+    assert.deepStrictEqual(menuToasts, [['Messaging is not ready', 'toast-error'],
+        ['Could not stop sending: Messaging is not ready', 'toast-error']]);
+
+    console.log('LXMF delivery icon tests passed');
+})().catch(function(error) { console.error(error); process.exit(1); });

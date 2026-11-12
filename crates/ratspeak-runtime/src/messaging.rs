@@ -80,7 +80,9 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
                         m.direction,
                         substr(m.title, 1, 60),
                         m.renderer,
-                        m.thread
+                        m.thread,
+                        m.state,
+                        m.id
                  FROM messages m
                  WHERE m.identity_id = ?1
                    AND m.rowid IN (
@@ -159,11 +161,23 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
                     .flatten()
                     .and_then(|renderer| u8::try_from(renderer).ok()),
                 row.get::<_, String>(7).unwrap_or_default(),
+                row.get::<_, String>(8).unwrap_or_default(),
+                row.get::<_, String>(9).unwrap_or_default(),
             ))
         }) {
             for r in rows.flatten() {
-                let (source, destination, content, timestamp, direction, title, renderer, thread) =
-                    r;
+                let (
+                    source,
+                    destination,
+                    content,
+                    timestamp,
+                    direction,
+                    title,
+                    renderer,
+                    thread,
+                    last_state,
+                    last_msg_id,
+                ) = r;
                 let preview: String = message_display_text(&title, &content)
                     .chars()
                     .take(60)
@@ -209,6 +223,9 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
                             "last_message": preview,
                             "preview_renderer": renderer,
                             "last_direction": direction,
+                            // The list marks delivery only for a message this side sent.
+                            "last_state": (direction == "outbound").then_some(last_state),
+                            "last_msg_id": last_msg_id,
                             "timestamp": timestamp,
                             "unread": unread_counts.get(&other).copied().unwrap_or(0),
                             "is_contact": is_contact,
@@ -463,5 +480,66 @@ mod tests {
             rows[0].get("is_contact").and_then(|v| v.as_bool()),
             Some(false)
         );
+    }
+
+    #[tokio::test]
+    async fn the_list_carries_the_last_outgoing_state() {
+        let state = make_state();
+        let me = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let identity = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        crate::db::save_identity(&state.db, identity, me, "me", "Me");
+        crate::db::set_active_identity(&state.db, identity).unwrap();
+        let waiting_peer = "11111111111111111111111111111111";
+        let inbound_peer = "22222222222222222222222222222222";
+        {
+            let conn = state.db.get().unwrap();
+            let mut insert = conn
+                .prepare(
+                    "INSERT INTO messages
+                        (id, source, destination, content, timestamp, state, direction, identity_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                )
+                .unwrap();
+            for (id, source, destination, timestamp, message_state, direction) in [
+                ("out-old", me, waiting_peer, 100.0, "delivered", "outbound"),
+                ("out-last", me, waiting_peer, 200.0, "waiting", "outbound"),
+                ("out-earlier", me, inbound_peer, 100.0, "failed", "outbound"),
+                ("in-last", inbound_peer, me, 300.0, "delivered", "inbound"),
+            ] {
+                insert
+                    .execute(rusqlite::params![
+                        id,
+                        source,
+                        destination,
+                        "hello",
+                        timestamp,
+                        message_state,
+                        direction,
+                        identity,
+                    ])
+                    .unwrap();
+            }
+        }
+
+        let payload = build_conversations_payload(&state).await.unwrap();
+        let row = |peer: &str| {
+            payload
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["hash"] == peer)
+                .cloned()
+                .expect("a row for the peer")
+        };
+        let waiting = row(waiting_peer);
+        assert_eq!(waiting["last_state"], "waiting");
+        assert_eq!(waiting["last_msg_id"], "out-last");
+        let inbound = row(inbound_peer);
+        assert_eq!(inbound["last_direction"], "inbound");
+        assert!(
+            inbound["last_state"].is_null(),
+            "a received message has no delivery state to mark"
+        );
+        assert_eq!(inbound["last_msg_id"], "in-last");
     }
 }

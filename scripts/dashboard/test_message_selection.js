@@ -199,5 +199,16 @@ const settle = () => new Promise((r) => setImmediate(r));
     assert(html.indexOf('id="lxmf-select-bar"') > html.indexOf('id="chat-header-menu-btn"'),
         'the bar sits under the header; Call and More stay in place');
 
+    // A waiting send is stopped, not deleted: it gets no circle and never joins a selection.
+    const waiting = msg('w', { direction: 'outbound', state: 'waiting' });
+    h = harness(messages.concat([waiting]));
+    h.context._selectMessage(waiting);
+    assert.strictEqual(h.context._messageSelectionActive(), false, 'a waiting send cannot start a selection');
+    h.context._selectMessage(messages[0]);
+    h.context._toggleMessageSelection(waiting);
+    assert.strictEqual(h.status.textContent, '1 selected', 'a waiting send cannot join one');
+    assert.strictEqual(h.context._messageSelectable(Object.assign({}, waiting, { state: 'cancelled' })), true,
+        'once stopped it can be deleted');
+
     console.log('Message selection tests passed.');
 })().catch((err) => { console.error(err); process.exit(1); });

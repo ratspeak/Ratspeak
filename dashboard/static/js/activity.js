@@ -1662,6 +1662,8 @@ function activityEventSummary(event) {
         'lxmf.propagation.started': 'Storing message in Offline Inbox',
         'lxmf.propagation.succeeded': 'Message stored in Offline Inbox',
         'lxmf.propagation.failed': 'Offline Inbox delivery failed',
+        'lxmf.delivery.deferred': 'Message waiting to send',
+        'lxmf.delivery.retrying': 'Message trying again',
         'channels.session.greeting_observed': 'Hub greeting received',
         'channels.session.negotiated': 'Channel session ready'
     };
@@ -1775,8 +1777,9 @@ function activityInterfaceLabel(code) {
     return labels[code] || 'Interface';
 }
 
-// Why a send failed, in plain words. Scoped to message and Offline Inbox
-// events so other areas keep their own wording for the same codes.
+// Why a send failed or waits, and what set off a new attempt, in plain words.
+// Scoped to message and Offline Inbox events so other areas keep their own
+// wording for the same codes.
 var ACTIVITY_DELIVERY_REASON_LABELS = {
     path_unavailable: 'No route found',
     link_not_established: "Couldn't connect",
@@ -1789,20 +1792,32 @@ var ACTIVITY_DELIVERY_REASON_LABELS = {
     inbox_rejected: 'Refused by the Offline Inbox',
     inbox_unreachable: "Couldn't reach the Offline Inbox",
     inbox_off: 'Offline Inbox is off',
-    expired: 'Too old to send',
+    expired: 'Older than 30 days',
+    wait_expired: 'Not delivered after 24 hours',
     too_large: 'Over the size limit',
     no_interface: 'No network connection',
-    attempts_exhausted: 'Out of retries',
+    attempts_exhausted: 'Tried several times',
     transport_failed: 'Network error on this device',
     preparation_failed: "Couldn't prepare the message",
     queue_rejected: "Couldn't start sending",
-    router_unavailable: "Messaging wasn't ready"
+    router_unavailable: "Messaging wasn't ready",
+    behind_earlier: 'Behind an earlier message',
+    wake_network: 'Network connected',
+    wake_recipient: 'Recipient announced',
+    wake_inbox: 'Offline Inbox reachable',
+    wake_start: 'Ratspeak opened',
+    wake_user: 'You chose Try now',
+    wake_timer: 'Scheduled check',
+    wake_new_send: 'You sent another message',
+    wake_queue: 'Earlier message finished'
 };
 
 var ACTIVITY_REASON_IN_META_KINDS = [
     'lxmf.delivery.failed',
     'lxmf.delivery.rejected',
     'lxmf.delivery.submission_failed',
+    'lxmf.delivery.deferred',
+    'lxmf.delivery.retrying',
     'lxmf.propagation.failed'
 ];
 

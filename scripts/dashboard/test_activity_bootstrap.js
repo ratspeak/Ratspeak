@@ -1481,6 +1481,97 @@ test('historical transfer lifecycle details omit frozen percentages', function()
     assert(ui.activityEventDetails(event).includes('10%'), 'explicit trace event remains a historical observation');
 });
 
+// ---------------------------------------------------------------------------
+// Waiting to send: the wait, the new attempt, and the 24-hour stop.
+// ---------------------------------------------------------------------------
+function deliveryEvent(sequence, kind, reason, outcome, severity) {
+    var row = messageEvent(SESSION_A, sequence, kind, 'aaa', reason);
+    row.summary_code = kind;
+    row.outcome = outcome;
+    row.severity = severity;
+    return row;
+}
+
+test('a waiting message, its new attempt, and the 24-hour stop read as three plain lines', function() {
+    var ctx = loadUiHarness().context;
+    var waiting = deliveryEvent('1', 'lxmf.delivery.deferred', 'no_interface', 'none', 'info');
+    var again = deliveryEvent('2', 'lxmf.delivery.retrying', 'wake_network', 'none', 'info');
+    var gaveUp = deliveryEvent('3', 'lxmf.delivery.failed', 'wait_expired', 'failed', 'error');
+    assert.strictEqual(ctx.activityEventSummary(waiting), 'Message waiting to send');
+    assert.strictEqual(ctx.activityEventSummary(again), 'Message trying again');
+    assert.strictEqual(ctx.activityEventSummary(gaveUp), 'Message failed');
+
+    assert.strictEqual(ctx.activityIsProblem(waiting), false, 'waiting is not a problem');
+    assert.strictEqual(ctx.activityIsProblem(again), false, 'trying again is not a problem');
+    assert.strictEqual(ctx.activityIsProblem(gaveUp), true);
+
+    ctx.activityEvents = [waiting, again, gaveUp];
+    ctx.renderActivityFeed();
+    var rows = ctx.document.getElementById('activity-feed').innerHTML
+        .split(/(?=<div class="activity-event(?: [a-z-]+)*" data-area=)/);
+    assert.strictEqual(rows.length, 3);
+    assert(rows[0].includes('<span>Messages</span><span data-reason>No network connection</span>'),
+        'the reason follows the area; waiting has no outcome');
+    assert(rows[1].includes('<span>Messages</span><span data-reason>Network connected</span>'),
+        'what set off the attempt follows the area');
+    assert(rows[2].includes('<span data-outcome="failed">Failed</span><span data-reason>Not delivered after 24 hours</span>'));
+    assert(!rows[0].includes('is-problem') && !rows[1].includes('is-problem') && rows[2].includes('is-problem'));
+    ctx.activityProblemsOnly = true;
+    assert.deepStrictEqual(ctx.activityEvents.filter(ctx.activityEventMatches).map(function(e) { return e.sequence; }), ['3']);
+});
+
+test('every delivery reason and retry cause has its final wording', function() {
+    var ctx = loadUiHarness().context;
+    var wording = {
+        no_interface: 'No network connection',
+        path_unavailable: 'No route found',
+        link_not_established: "Couldn't connect",
+        link_closed: 'Connection dropped',
+        link_interrupted: 'Connection interrupted',
+        proof_timed_out: 'No delivery confirmation',
+        inbox_unreachable: "Couldn't reach the Offline Inbox",
+        attempts_exhausted: 'Tried several times',
+        behind_earlier: 'Behind an earlier message',
+        wait_expired: 'Not delivered after 24 hours',
+        expired: 'Older than 30 days',
+        inbox_off: 'Offline Inbox is off',
+        rejected: 'Refused by the recipient',
+        inbox_rejected: 'Refused by the Offline Inbox',
+        too_large: 'Over the size limit',
+        transfer_failed: 'Sending stopped partway',
+        resource_failed: 'Sending stopped partway',
+        transport_failed: 'Network error on this device',
+        preparation_failed: "Couldn't prepare the message",
+        queue_rejected: "Couldn't start sending",
+        router_unavailable: "Messaging wasn't ready",
+        wake_network: 'Network connected',
+        wake_recipient: 'Recipient announced',
+        wake_inbox: 'Offline Inbox reachable',
+        wake_start: 'Ratspeak opened',
+        wake_user: 'You chose Try now',
+        wake_timer: 'Scheduled check',
+        wake_new_send: 'You sent another message',
+        wake_queue: 'Earlier message finished'
+    };
+    assert.deepStrictEqual(Object.assign({}, ctx.ACTIVITY_DELIVERY_REASON_LABELS), wording);
+    Object.keys(wording).forEach(function(code) {
+        var row = deliveryEvent('1', 'lxmf.delivery.deferred', code, 'none', 'info');
+        assert.strictEqual(ctx.activityDeliveryReasonLabel(row), wording[code], code);
+        assert(ctx.activityEventDetails(row).includes('<span>' + wording[code] + '</span>'), code + ' in details');
+    });
+    assert.deepStrictEqual(Array.from(ctx.ACTIVITY_REASON_IN_META_KINDS), [
+        'lxmf.delivery.failed',
+        'lxmf.delivery.rejected',
+        'lxmf.delivery.submission_failed',
+        'lxmf.delivery.deferred',
+        'lxmf.delivery.retrying',
+        'lxmf.propagation.failed'
+    ]);
+    var call = { key: 'reason', value: { type: 'code', value: 'wake_user' } };
+    assert.strictEqual(ctx.activityFormatAttributeValue(call, { kind: 'lxst.call.ended' }), 'wake_user',
+        'other areas keep their own wording');
+});
+
 (async function run() {
     var failures = 0;
     for (var i = 0; i < tests.length; i++) {

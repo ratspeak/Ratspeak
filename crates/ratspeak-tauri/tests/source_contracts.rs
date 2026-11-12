@@ -10953,3 +10953,130 @@ fn identity_keys_leave_only_through_authorized_exports() {
     let runtime = read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("lxmf");
     assert!(!runtime.contains("pub fn export_identity("));
 }
+
+// ---------------------------------------------------------------------------
+// Waiting messages: the dashboard side.
+// ---------------------------------------------------------------------------
+
+/// A waiting message has one mark, Try now and Stop trying ahead of the usual
+/// menu rows, a notice only when 24 hours ran out, and its own row in the list.
+#[test]
+fn a_waiting_message_is_marked_stoppable_and_listed() {
+    let root = repo_root();
+    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("messaging js");
+    let css =
+        read_source(root.join("dashboard/static/css/09-messaging.css")).expect("messaging css");
+    let list = read_source(root.join("crates/ratspeak-runtime/src/messaging.rs"))
+        .expect("conversation list");
+
+    assert!(lxmf.contains(
+        "if (state === 'waiting') return wrap('msg-state-waiting', 'Waiting to send. Ratspeak keeps trying for up to 24 hours.', ICON.waiting);"
+    ));
+    assert!(css.contains("\n.msg-state-waiting svg { stroke: var(--text-muted); }\n"));
+    assert_eq!(
+        css.matches("msg-state-waiting").count(),
+        1,
+        "the hourglass has one rule and no animation"
+    );
+
+    let position = |needle: &str| lxmf.find(needle).unwrap_or_else(|| panic!("{needle}"));
+    let try_now = position("tryNowBtn.setAttribute('data-message-action', 'try-now');");
+    let stop_trying = position("stopTryingBtn.setAttribute('data-message-action', 'stop-trying');");
+    let retry = position("retryBtn.setAttribute('data-message-action', 'retry');");
+    let show_in_activity =
+        position("activityBtn.setAttribute('data-message-action', 'show-activity');");
+    assert!(try_now < stop_trying && stop_trying < retry && retry < show_in_activity);
+    assert!(lxmf.contains("'<span>Try now</span>'") && lxmf.contains("'<span>Stop trying</span>'"));
+    assert!(lxmf.contains(
+        "return RS.invoke('try_waiting_now', {\n        args: { msg_id: msg.id }\n    })"
+    ));
+    let stop = lxmf
+        .split("function _stopWaitingLxmfMessage(msg) {")
+        .nth(1)
+        .and_then(|tail| tail.split("\n}\n").next())
+        .expect("Stop trying");
+    assert!(stop.contains("return _invokeLxmfCancel(msg.id).then(function(resp)"));
+    assert!(!stop.contains("rsConfirm"), "Stop trying asks nothing");
+
+    assert!(lxmf.contains("if (data.step === 'waiting' || data.step === 'sending') {"));
+    assert!(lxmf.contains(
+        "if (current === 'waiting') return resolvedState === 'sending' ? 'sending' : null;"
+    ));
+    assert!(lxmf.contains("_noticeUndeliveredMessage(data.destination, data.reason);"));
+    assert!(lxmf.contains("if (reason === 'keep_trying_off') return;"));
+    assert!(lxmf.contains(
+        "showToast('Message to ' + name + ' not delivered after 24 hours', 'toast-action', 4000,"
+    ));
+
+    assert!(list.contains("\"last_state\": (direction == \"outbound\").then_some(last_state),"));
+    assert!(list.contains("\"last_msg_id\": last_msg_id,"));
+    assert!(lxmf.contains("row.last_msg_id !== data.msg_id"));
+    assert!(lxmf.contains("state: c.last_state,"));
+}
+
+/// Activity words the wait, the new attempt, every reason the runtime can
+/// record, and every cause of a new attempt.
+#[test]
+fn activity_words_every_delivery_reason_and_retry_cause() {
+    let root = repo_root();
+    let activity = read_source(root.join("dashboard/static/js/activity.js")).expect("activity js");
+    let catalog = read_source(root.join("crates/ratspeak-runtime/src/activity/catalog.rs"))
+        .expect("activity catalog");
+    let schema = read_source(root.join("crates/ratspeak-runtime/src/activity/schema.rs"))
+        .expect("activity schema");
+
+    for (kind, line) in [
+        ("lxmf.delivery.deferred", "Message waiting to send"),
+        ("lxmf.delivery.retrying", "Message trying again"),
+    ] {
+        assert!(schema.contains(&format!("\"{kind}\"")), "{kind}");
+        assert!(activity.contains(&format!("'{kind}': '{line}',")), "{kind}");
+        assert!(
+            activity
+                .split("var ACTIVITY_REASON_IN_META_KINDS = [")
+                .nth(1)
+                .and_then(|tail| tail.split("];").next())
+                .is_some_and(|kinds| kinds.contains(&format!("'{kind}'"))),
+            "{kind} shows its reason beside the area"
+        );
+    }
+
+    let labels = activity
+        .split("var ACTIVITY_DELIVERY_REASON_LABELS = {")
+        .nth(1)
+        .and_then(|tail| tail.split("\n};").next())
+        .expect("delivery reason labels");
+    let reasons = catalog
+        .split("impl DeliveryFailureReason {")
+        .nth(1)
+        .and_then(|tail| {
+            tail.split("pub const fn code(self) -> &'static str {")
+                .nth(1)
+        })
+        .and_then(|tail| tail.split("\n    }\n").next())
+        .expect("delivery failure codes")
+        .lines()
+        .filter_map(|line| line.split_once("=> \""))
+        .map(|(_, code)| code.trim_end_matches("\","))
+        .collect::<Vec<_>>();
+    assert!(reasons.contains(&"wait_expired") && reasons.len() >= 19);
+    let causes = [
+        "wake_network",
+        "wake_recipient",
+        "wake_inbox",
+        "wake_start",
+        "wake_user",
+        "wake_timer",
+        "wake_new_send",
+        "wake_queue",
+    ];
+    for code in reasons.into_iter().chain(causes) {
+        assert!(
+            labels.contains(&format!("\n    {code}: ")),
+            "{code} has no wording"
+        );
+    }
+    assert!(labels.contains("wait_expired: 'Not delivered after 24 hours'"));
+    assert!(labels.contains("attempts_exhausted: 'Tried several times'"));
+    assert!(!activity.contains("Out of retries") && !activity.contains("Too old to send"));
+}

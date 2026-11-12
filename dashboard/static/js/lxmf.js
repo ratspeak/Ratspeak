@@ -1795,8 +1795,9 @@ function _messageBodyHtml(msg, hasRenderedAudio) {
 }
 
 // One check is Sent, two are Delivered (the recipient's proof). The envelope
-// is a confirmed Offline Inbox deposit, not recipient delivery.
-function _messageStateIconHtml(msg) {
+// is a confirmed Offline Inbox deposit, not recipient delivery. The
+// conversation list asks for the mark alone: it has no room for a word.
+function _messageStateIconHtml(msg, markOnly) {
     var state = msg.state;
     var SVG_OPEN = '<svg viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
     var ICON = {
@@ -1807,6 +1808,7 @@ function _messageStateIconHtml(msg) {
         bang: '<line x1="8" y1="2.5" x2="8" y2="9"/><line x1="8" y1="13" x2="8" y2="13.01"/>',
         rejected: '<circle cx="8" cy="8" r="6"/><line x1="5" y1="5" x2="11" y2="11"/><line x1="11" y1="5" x2="5" y2="11"/>',
         envelope: '<rect x="2" y="4" width="12" height="9" rx="1.5"/><polyline points="2.5 5 8 10 13.5 5"/>',
+        waiting: '<path d="M3.5 2.5h9M3.5 13.5h9M5 2.5V5l3 3-3 3v2.5M11 2.5V5L8 8l3 3v2.5"/>',
         paper: '<rect x="2" y="2" width="5" height="5"/><rect x="9" y="2" width="5" height="5"/><rect x="2" y="9" width="5" height="5"/><path d="M9 9h2v2H9zM13 9v1M9 14h5v-2"/>'
     };
     function wrap(cls, label, body) {
@@ -1817,10 +1819,12 @@ function _messageStateIconHtml(msg) {
     // "!" as other messengers mark a send that needs you; ✕ is for what you cancelled.
     if (state === 'failed' || state === 'timeout') return wrap('msg-state-failed', 'Not delivered', ICON.bang);
     if (state === 'cancelled') return wrap('msg-state-cancelled', 'Sending cancelled', ICON.x);
-    if (state === 'rejected') return wrap('msg-state-rejected', 'Rejected', ICON.rejected) + ' <span class="msg-state-label">Rejected</span>';
+    if (state === 'rejected') return wrap('msg-state-rejected', 'Rejected', ICON.rejected) + (markOnly ? '' : ' <span class="msg-state-label">Rejected</span>');
     if (state === 'propagated') return wrap('msg-state-propagated', 'Stored in Offline Inbox', ICON.envelope);
     if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.double);
     if (state === 'sent') return wrap('msg-state-sent', 'Sent', ICON.check);
+    // Parked until it can go; the clock is for an attempt that is running now.
+    if (state === 'waiting') return wrap('msg-state-waiting', 'Waiting to send. Ratspeak keeps trying for up to 24 hours.', ICON.waiting);
     // Anything else is on its way: queued, routing, Link setup, or Resource transfer.
     var progressPercent = _messageProgressPercent(msg);
     var label = progressPercent !== null
@@ -1872,11 +1876,17 @@ function _messageCanRetry(msg) {
         _isCanonicalLxmfMsgId(msg.id) && !_messageIsPaper(msg);
 }
 
-// Activity explains a send that ended undelivered; cancelling explains itself.
+// Activity explains a send that waits or ended undelivered; cancelling explains itself.
 function _messageCanShowInActivity(msg) {
     return !!msg && msg.direction === 'outbound' &&
-        ['failed', 'timeout', 'rejected'].indexOf(msg.state) !== -1 &&
+        ['waiting', 'failed', 'timeout', 'rejected'].indexOf(msg.state) !== -1 &&
         _isCanonicalLxmfMsgId(msg.id) && !_messageIsPaper(msg);
+}
+
+// Try now and Stop trying act on the stored message, which only its final id names.
+function _messageIsWaiting(msg) {
+    return !!msg && msg.direction === 'outbound' && msg.state === 'waiting' &&
+        _isCanonicalLxmfMsgId(msg.id);
 }
 
 var LXMF_SEND_METHOD_ICONS = {
@@ -2062,6 +2072,27 @@ function _cancelLxmfSend(msgId) {
             }
             _showLxmfStopResult(resp);
         });
+    }).catch(function(err) {
+        showToast('Could not stop sending: ' + ((err && err.message) || 'error'), 'toast-error', 3500);
+    });
+}
+
+// The attempt's own `sending` step moves the bubble; a wake that is held back leaves it waiting.
+function _tryWaitingLxmfMessage(msg) {
+    return RS.invoke('try_waiting_now', {
+        args: { msg_id: msg.id }
+    }).catch(function(err) {
+        showToast((err && err.message) || 'Could not send this message again', 'toast-error', 3500);
+    });
+}
+
+// Opening the menu is the deliberate step and Retry undoes it, so this asks nothing.
+function _stopWaitingLxmfMessage(msg) {
+    return _invokeLxmfCancel(msg.id).then(function(resp) {
+        if (resp && resp.cancelled) {
+            _markLxmfMessageCancelled(resp.msg_id || msg.id);
+        }
+        _showLxmfStopResult(resp);
     }).catch(function(err) {
         showToast('Could not stop sending: ' + ((err && err.message) || 'error'), 'toast-error', 3500);
     });
@@ -2996,7 +3027,7 @@ function _renderConversationsFromCache(convos) {
                 previewStateHtml = _messageStateIconHtml({
                     state: c.last_state,
                     delivery_method: c.last_delivery_method || null,
-                });
+                }, true);
             }
 
             html += '<div role="button" tabindex="0" class="conv-row' + activeClass + unreadClass + '" data-hash="' + escapeHtml(c.hash) + '">' +
@@ -5272,8 +5303,8 @@ function _conversationMessageById(id) {
 }
 
 function _messageSelectable(msg) {
-    // A message still sending would be delivered anyway; cancel it first.
-    return !!(msg && msg.id) && !_messageCanCancelSend(msg);
+    // A message still sending or waiting would be delivered anyway; stop it first.
+    return !!(msg && msg.id) && !_messageCanCancelSend(msg) && msg.state !== 'waiting';
 }
 
 function _messageSelectionActive() {
@@ -5533,6 +5564,9 @@ function _messageActionIcon(name) {
     }
     if (name === 'retry') {
         return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/></svg>';
+    }
+    if (name === 'stop') {
+        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
     }
     if (name === 'activity') {
         return '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>';
@@ -6208,6 +6242,34 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     var actions = document.createElement('div');
     actions.className = 'msg-action-panel msg-context-actions';
 
+    if (_messageIsWaiting(msgData)) {
+        var tryNowBtn = document.createElement('button');
+        tryNowBtn.className = 'msg-ctx-btn msg-ctx-try-now';
+        tryNowBtn.type = 'button';
+        tryNowBtn.setAttribute('data-message-action', 'try-now');
+        tryNowBtn.innerHTML = _messageActionIcon('retry') + '<span>Try now</span>';
+        _bindMessageFocusPreservingActivation(tryNowBtn, function() {
+            var shouldRestoreComposer = _messageActionShouldPreserveComposer();
+            _dismissContextMenu();
+            _tryWaitingLxmfMessage(msgData);
+            _restoreLxmfComposerKeyboard(shouldRestoreComposer);
+        });
+        actions.appendChild(tryNowBtn);
+
+        var stopTryingBtn = document.createElement('button');
+        stopTryingBtn.className = 'msg-ctx-btn msg-ctx-stop-trying';
+        stopTryingBtn.type = 'button';
+        stopTryingBtn.setAttribute('data-message-action', 'stop-trying');
+        stopTryingBtn.innerHTML = _messageActionIcon('stop') + '<span>Stop trying</span>';
+        _bindMessageFocusPreservingActivation(stopTryingBtn, function() {
+            var shouldRestoreComposer = _messageActionShouldPreserveComposer();
+            _dismissContextMenu();
+            _stopWaitingLxmfMessage(msgData);
+            _restoreLxmfComposerKeyboard(shouldRestoreComposer);
+        });
+        actions.appendChild(stopTryingBtn);
+    }
+
     if (_messageCanRetry(msgData)) {
         var retryBtn = document.createElement('button');
         retryBtn.className = 'msg-ctx-btn msg-ctx-retry';
@@ -6701,14 +6763,53 @@ document.addEventListener('rs-lifecycle-foreground-handled', function() {
 });
 
 // The ✕ says it in an open chat; elsewhere one toast names the chat.
-function _noticeUndeliveredMessage(destination) {
+function _noticeUndeliveredMessage(destination, reason) {
+    // Turning Keep trying off ends every waiting message at once; the marks show it.
+    if (reason === 'keep_trying_off') return;
     var hash = _canonicalConversationHash(destination);
     if (!hash || !_lxmfAttentionForeground() || _isConversationActivelyVisible(hash, lxmfActiveThread)) return;
     var info = _conversationNameInfo(hash, null, false);
     var name = (info && info.name) || _hashFallbackName(hash);
+    if (reason === 'wait_expired') {
+        showToast('Message to ' + name + ' not delivered after 24 hours', 'toast-action', 4000, function() {
+            openConversationWith(hash);
+        });
+        return;
+    }
     showToast('Message to ' + name + ' not delivered', 'toast-action', 4000, function() {
         openConversationWith(hash);
     });
+}
+
+// The state a delivery step leaves a message in, or null when it changes nothing.
+function _messageStateAfterStep(current, step) {
+    var resolvedState = (step === 'error') ? 'failed' : step;
+    // Paper is filed by the user and never arrives as a step.
+    if (_isTerminalMessageState(resolvedState) && resolvedState !== 'paper') {
+        // A proof outranks an earlier outcome; nothing else leaves one.
+        var proofOutranks = resolvedState === 'delivered' &&
+            current !== 'rejected' && current !== 'paper';
+        return (!_isTerminalMessageState(current) || proofOutranks) ? resolvedState : null;
+    }
+    if (_isTerminalMessageState(current)) return null;
+    if (resolvedState === 'waiting') return 'waiting';
+    // A waiting message leaves only by the `sending` of a new attempt.
+    if (current === 'waiting') return resolvedState === 'sending' ? 'sending' : null;
+    return _isInFlightStep(resolvedState) ? resolvedState : null;
+}
+
+// The list's mark for a chat's last message follows the same steps as its bubble.
+function _applyStepToConversationList(data) {
+    if (!data.msg_id) return;
+    for (var i = 0; i < lxmfConversations.length; i++) {
+        var row = lxmfConversations[i];
+        if (!row || row.last_direction !== 'outbound' || row.last_msg_id !== data.msg_id) continue;
+        var next = _messageStateAfterStep(row.last_state, data.step);
+        if (!next || next === row.last_state) return;
+        row.last_state = next;
+        _renderConversationsFromCache(lxmfConversations);
+        return;
+    }
 }
 
 RS.listen('lxmf_step', function(data) {
@@ -6732,10 +6833,7 @@ RS.listen('lxmf_step', function(data) {
         var eventMsgId = data.msg_id || data.client_msg_id;
         lxmfConversation.forEach(function(msg) {
             if (eventMsgId && msg.id === eventMsgId) {
-                // A proof outranks an earlier outcome; nothing else leaves one.
-                var proofOutranks = resolvedState === 'delivered' &&
-                    msg.state !== 'rejected' && msg.state !== 'paper';
-                if (!_isTerminalMessageState(msg.state) || proofOutranks) {
+                if (_messageStateAfterStep(msg.state, data.step)) {
                     msg.state = resolvedState;
                     if (data.rtt_ms) msg.rtt = data.rtt_ms;
                     if (data.method) msg.delivery_method = data.method;
@@ -6760,16 +6858,35 @@ RS.listen('lxmf_step', function(data) {
     if (_isInFlightStep(data.step)) {
         lxmfConversation.forEach(function(msg) {
             if (data.msg_id && msg.id === data.msg_id) {
-                if (!_isTerminalMessageState(msg.state)) msg.state = data.step;
+                if (_messageStateAfterStep(msg.state, data.step)) msg.state = data.step;
                 if (data.method) msg.delivery_method = data.method;
             }
         });
         _cacheActiveConversation();
         renderConversation();
     }
+    // `waiting` parks a message on its way; the `sending` of a new attempt takes it out.
+    if (data.step === 'waiting' || data.step === 'sending') {
+        var parkedOrWoken = false;
+        lxmfConversation.forEach(function(msg) {
+            if (data.msg_id && msg.id === data.msg_id && _messageStateAfterStep(msg.state, data.step)) {
+                msg.state = data.step;
+                if (data.method) msg.delivery_method = data.method;
+                delete msg.delivery_progress;
+                delete msg.delivery_link_id;
+                delete msg.delivery_representation;
+                parkedOrWoken = true;
+            }
+        });
+        if (parkedOrWoken) {
+            _cacheActiveConversation();
+            renderConversation();
+        }
+    }
+    _applyStepToConversationList(data);
 
     if (data.step === 'failed' || data.step === 'timeout') {
-        _noticeUndeliveredMessage(data.destination);
+        _noticeUndeliveredMessage(data.destination, data.reason);
     }
     if (data.step === 'error') {
         showToast(data.message || 'Send error', 'toast-error', 5000);
@@ -6796,7 +6913,7 @@ RS.listen('lxmf_delivery_progress', function(data) {
             if (data.link_id) msg.delivery_link_id = data.link_id;
             if (data.representation) msg.delivery_representation = data.representation;
             if (data.method) msg.delivery_method = data.method;
-            if (_isInFlightStep(data.step) && !_isTerminalMessageState(msg.state)) {
+            if (_isInFlightStep(data.step) && _messageStateAfterStep(msg.state, data.step)) {
                 msg.state = data.step;
             }
             changed = true;
