@@ -3667,8 +3667,8 @@ fn android_usb_runtime_config(
     config.coding_rate = radio.coding_rate;
     config.tx_power = radio.tx_power.max(0) as u8;
     config.mode = mode;
-    config.st_alock = radio.airtime_limit_short.map(|value| value as f32);
-    config.lt_alock = radio.airtime_limit_long.map(|value| value as f32);
+    config.st_alock = radio.airtime_limit_short;
+    config.lt_alock = radio.airtime_limit_long;
     config.id_interval = id_interval;
     config.id_callsign = id_callsign.map(|value| value.as_bytes().to_vec());
     config

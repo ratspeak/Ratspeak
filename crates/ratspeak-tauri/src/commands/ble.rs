@@ -1700,12 +1700,10 @@ pub async fn apply_ble_rnode_bridge_ready(
     // Range-validated at add_lora time; clamp here as belt-and-braces.
     let st_alock = args
         .airtime_limit_short
-        .filter(|v| v.is_finite() && (0.0..=100.0).contains(v))
-        .map(|v| v as f32);
+        .filter(|v| v.is_finite() && (0.0..=100.0).contains(v));
     let lt_alock = args
         .airtime_limit_long
-        .filter(|v| v.is_finite() && (0.0..=100.0).contains(v))
-        .map(|v| v as f32);
+        .filter(|v| v.is_finite() && (0.0..=100.0).contains(v));
 
     if tcp_port == 0 {
         #[cfg(target_os = "android")]
@@ -1788,6 +1786,8 @@ pub async fn apply_ble_rnode_bridge_ready(
                                     flow_control: false,
                                     id_interval,
                                     id_callsign,
+                                    // The Android bridge owns bonding.
+                                    pair_unbonded: false,
                                 },
                                 tcp_port,
                                 ble_rnode_startup_options(),
