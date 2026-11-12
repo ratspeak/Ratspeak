@@ -731,3 +731,109 @@ fn a_takeover_that_cannot_be_made_inactive_ends_in_an_error() {
     assert!(!f.running());
     assert_eq!(f.state.get_startup_stage(), "error");
 }
+
+fn send_to(f: &Fixture, dest: &str) -> Result<Value, ratspeak_tauri::error::AppError> {
+    let args = serde_json::from_value(serde_json::json!({
+        "dest_hash": dest,
+        "content": "hello",
+        "delivery_method": "direct",
+    }))
+    .unwrap();
+    f.runtime
+        .block_on(ratspeak_tauri::commands::messaging::send_lxmf_message(
+            f.app.state(),
+            args,
+        ))
+}
+
+/// A destination nobody has announced: a send to it is queued, not delivered.
+const STRANGER: &str = "0123456789abcdef0123456789abcdef";
+
+// A panic while the messaging manager is held (a tick, or a command) poisons
+// its lock. The session restarts by itself and a send issued meanwhile waits
+// for it; before, every send failed until the app was restarted.
+#[test]
+fn a_panic_under_the_messaging_lock_restarts_messaging_and_sends_work_again() {
+    let f = Fixture::new();
+    let a = f.import("A");
+    f.start(&a);
+    assert!(send_to(&f, STRANGER).is_ok(), "a send before the panic");
+
+    let state = Arc::clone(&f.state);
+    std::thread::spawn(move || {
+        let _held = state.lxmf.lock().unwrap();
+        panic!("injected panic under the messaging lock");
+    })
+    .join()
+    .unwrap_err();
+    assert!(f.state.lxmf.is_poisoned());
+
+    // A send waits for the restart. Other runtimes in this test process can
+    // hold it past the wait, and then the send says to try again.
+    let asked = std::time::Instant::now();
+    let sent = loop {
+        match send_to(&f, STRANGER) {
+            Err(refused)
+                if refused.message == "Messaging is still starting. Try again shortly."
+                    && asked.elapsed() < std::time::Duration::from_secs(90) => {}
+            other => break other,
+        }
+    };
+
+    assert!(sent.is_ok(), "the send after the panic: {sent:?}");
+    assert!(!f.state.lxmf.is_poisoned());
+    assert_eq!(f.loaded().as_deref(), Some(a.as_str()));
+    // The send returns once the manager is back; the network follows.
+    let restarted = std::time::Instant::now();
+    while f.state.get_startup_stage() != "ready"
+        && restarted.elapsed() < std::time::Duration::from_secs(30)
+    {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert_eq!(f.state.get_startup_stage(), "ready");
+    assert!(f.running());
+}
+
+// A send issued while the runtime is still starting waits for the manager.
+#[test]
+fn a_send_issued_during_start_up_waits_for_messaging() {
+    let f = Fixture::new();
+    let a = f.import("A");
+    db::set_active_identity(&f.state.db, &a).unwrap();
+    f.state.set_startup_stage("checking");
+    let state = Arc::clone(&f.state);
+    let start = f.runtime.spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        ratspeak_runtime::init_rns_lxmf(Arc::clone(&state), state.config.data_root.clone()).await;
+    });
+
+    let sent = send_to(&f, STRANGER);
+
+    f.runtime.block_on(start).unwrap();
+    assert!(sent.is_ok(), "the send during start-up: {sent:?}");
+}
+
+// When messaging cannot start, a send says why at once instead of waiting.
+#[test]
+fn a_send_says_at_once_why_messaging_is_unavailable() {
+    let f = Fixture::new();
+    let a = f.import("A");
+    db::set_active_identity(&f.state.db, &a).unwrap();
+    for (stage, reason) in [
+        ("error", "Messaging failed to start. Restart Ratspeak."),
+        ("hw_locked", "Unlock your identity to send messages."),
+        ("stopped", "Messaging is stopped."),
+    ] {
+        f.state.set_startup_stage(stage);
+        let asked = std::time::Instant::now();
+
+        let refused = send_to(&f, STRANGER).unwrap_err();
+
+        assert_eq!(refused.code, "lxmf_not_initialized", "{stage}");
+        assert_eq!(refused.message, reason, "{stage}");
+        assert!(
+            asked.elapsed() < std::time::Duration::from_secs(2),
+            "{stage}"
+        );
+    }
+}

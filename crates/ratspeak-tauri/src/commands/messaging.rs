@@ -78,6 +78,70 @@ fn queue_lxmf_client_send<T>(
         ))
 }
 
+/// How long a send waits for the manager while start-up or a restart runs.
+const MESSAGING_START_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Waits, with a bound, while messaging is starting and has no manager yet,
+/// so a send issued in that window is queued instead of refused.
+pub(crate) async fn wait_while_messaging_starts(state: &AppState) {
+    let deadline = tokio::time::Instant::now() + MESSAGING_START_WAIT;
+    while tokio::time::Instant::now() < deadline && state.messaging_is_starting() {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// Why a send found no manager, in words for the user.
+fn messaging_unavailable_message(state: &AppState) -> &'static str {
+    if state.messaging_is_starting() {
+        return "Messaging is still starting. Try again shortly.";
+    }
+    match state.get_startup_stage().as_str() {
+        "error" => "Messaging failed to start. Restart Ratspeak.",
+        "hw_locked" => "Unlock your identity to send messages.",
+        "stopped" => "Messaging is stopped.",
+        _ => "LXMF not initialized",
+    }
+}
+
+/// The text and error for a plain message that was not queued.
+fn message_submission_failure(
+    state: &AppState,
+    reason: producer::LxmfSubmissionFailureReason,
+) -> (&'static str, AppError) {
+    match reason {
+        producer::LxmfSubmissionFailureReason::RouterUnavailable => {
+            let message = messaging_unavailable_message(state);
+            (message, AppError::lxmf_not_initialized(message))
+        }
+        producer::LxmfSubmissionFailureReason::PreparationFailed => (
+            "Message could not be queued",
+            AppError::internal("Message could not be queued"),
+        ),
+        producer::LxmfSubmissionFailureReason::AttachmentBusy => (
+            "Another attachment transfer is already active",
+            AppError::conflict("Another attachment transfer is already active"),
+        ),
+        producer::LxmfSubmissionFailureReason::AttachmentMemoryPressure => (
+            "Attachment transfers are paused while memory recovers",
+            AppError::conflict("Attachment transfers are paused while memory recovers"),
+        ),
+        producer::LxmfSubmissionFailureReason::AttachmentTooLarge => (
+            "Attachment exceeds the configured receive limit",
+            AppError::bad_request("Attachment exceeds the configured receive limit"),
+        ),
+        producer::LxmfSubmissionFailureReason::AttachmentEnvelopeTooLarge => (
+            "Attachment and message metadata exceed the protocol resource limit",
+            AppError::bad_request(
+                "Attachment and message metadata exceed the protocol resource limit",
+            ),
+        ),
+        producer::LxmfSubmissionFailureReason::AttachmentStorageFailed => (
+            "Attachment storage is unavailable",
+            AppError::internal("Attachment storage is unavailable"),
+        ),
+    }
+}
+
 pub(crate) fn normalize_lxmf_client_msg_id(raw: Option<&str>) -> AppResult<Option<String>> {
     let Some(raw) = raw else {
         return Ok(None);
@@ -567,6 +631,7 @@ pub async fn send_lxmf_message(
     state: State<'_, Arc<AppState>>,
     args: SendLxmfArgs,
 ) -> AppResult<Value> {
+    wait_while_messaging_starts(&state).await;
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(&args.content)?;
     let title = sanitize_text(args.title.as_deref().unwrap_or(""), 256);
@@ -678,38 +743,7 @@ pub async fn send_lxmf_message(
         )),
         LxmfClientSendAttempt::Failed(reason) => {
             record_lxmf_submission_failed(&state, activity_fence, &dest_hash, reason);
-            let (message, error) = match reason {
-                producer::LxmfSubmissionFailureReason::RouterUnavailable => (
-                    "LXMF not initialized",
-                    AppError::lxmf_not_initialized("LXMF not initialized"),
-                ),
-                producer::LxmfSubmissionFailureReason::PreparationFailed => (
-                    "Message could not be queued",
-                    AppError::internal("Message could not be queued"),
-                ),
-                producer::LxmfSubmissionFailureReason::AttachmentBusy => (
-                    "Another attachment transfer is already active",
-                    AppError::conflict("Another attachment transfer is already active"),
-                ),
-                producer::LxmfSubmissionFailureReason::AttachmentMemoryPressure => (
-                    "Attachment transfers are paused while memory recovers",
-                    AppError::conflict("Attachment transfers are paused while memory recovers"),
-                ),
-                producer::LxmfSubmissionFailureReason::AttachmentTooLarge => (
-                    "Attachment exceeds the configured receive limit",
-                    AppError::bad_request("Attachment exceeds the configured receive limit"),
-                ),
-                producer::LxmfSubmissionFailureReason::AttachmentEnvelopeTooLarge => (
-                    "Attachment and message metadata exceed the protocol resource limit",
-                    AppError::bad_request(
-                        "Attachment and message metadata exceed the protocol resource limit",
-                    ),
-                ),
-                producer::LxmfSubmissionFailureReason::AttachmentStorageFailed => (
-                    "Attachment storage is unavailable",
-                    AppError::internal("Attachment storage is unavailable"),
-                ),
-            };
+            let (message, error) = message_submission_failure(&state, reason);
             state.emit_to_all("lxmf_step", json!({ "step": "error", "message": message }));
             Err(error)
         }
@@ -736,6 +770,7 @@ pub async fn send_reaction(
     state: State<'_, Arc<AppState>>,
     args: SendReactionArgs,
 ) -> AppResult<Value> {
+    wait_while_messaging_starts(&state).await;
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let message_id = sanitize_text(&args.message_id, 128);
     let emoji = sanitize_text(&args.emoji, 16);
@@ -819,7 +854,9 @@ pub async fn send_reaction(
         );
         Ok(json!(null))
     } else {
-        Err(AppError::lxmf_not_initialized("LXMF not initialized"))
+        Err(AppError::lxmf_not_initialized(
+            messaging_unavailable_message(&state),
+        ))
     }
 }
 
@@ -847,6 +884,7 @@ pub async fn send_lxmf_reply(
     state: State<'_, Arc<AppState>>,
     args: SendReplyArgs,
 ) -> AppResult<Value> {
+    wait_while_messaging_starts(&state).await;
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(&args.content)?;
     let reply_to_id = sanitize_text(args.reply_to_id.as_deref().unwrap_or(""), 128);
@@ -953,12 +991,10 @@ pub async fn send_lxmf_reply(
             &state,
             client_msg_id.as_deref().unwrap_or_default(),
         )),
-        LxmfClientSendAttempt::Failed(_) => {
-            state.emit_to_all(
-                "lxmf_step",
-                json!({ "step": "error", "message": "LXMF not initialized" }),
-            );
-            Err(AppError::lxmf_not_initialized("LXMF not initialized"))
+        LxmfClientSendAttempt::Failed(reason) => {
+            let (message, error) = message_submission_failure(&state, reason);
+            state.emit_to_all("lxmf_step", json!({ "step": "error", "message": message }));
+            Err(error)
         }
     }
 }
@@ -978,6 +1014,7 @@ pub async fn send_lxmf_propagated(
     state: State<'_, Arc<AppState>>,
     args: SendPropagatedArgs,
 ) -> AppResult<Value> {
+    wait_while_messaging_starts(&state).await;
     use lxmf_core::message_api::DeliveryMethod;
 
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
@@ -1088,16 +1125,17 @@ pub async fn send_lxmf_propagated(
             &state,
             client_msg_id.as_deref().unwrap_or_default(),
         )),
-        LxmfClientSendAttempt::Failed(_) => {
+        LxmfClientSendAttempt::Failed(reason) => {
+            let (message, error) = message_submission_failure(&state, reason);
             state.emit_to_all(
                 "lxmf_step",
                 json!({
                     "step": "error",
-                    "message": "LXMF not initialized",
+                    "message": message,
                     "client_msg_id": client_msg_id,
                 }),
             );
-            Err(AppError::lxmf_not_initialized("LXMF not initialized"))
+            Err(error)
         }
     }
 }
@@ -1322,8 +1360,8 @@ async fn queue_prepared_attachment(
             let (code, message, error) = match reason {
                 producer::LxmfSubmissionFailureReason::RouterUnavailable => (
                     "lxmf_not_initialized",
-                    "LXMF not initialized",
-                    AppError::lxmf_not_initialized("LXMF not initialized"),
+                    messaging_unavailable_message(&state),
+                    AppError::lxmf_not_initialized(messaging_unavailable_message(&state)),
                 ),
                 producer::LxmfSubmissionFailureReason::PreparationFailed => (
                     "lxmf_preparation_failed",
@@ -1603,8 +1641,8 @@ async fn finish_voice_send(
             let (code, message, error) = match reason {
                 producer::LxmfSubmissionFailureReason::RouterUnavailable => (
                     "lxmf_not_initialized",
-                    "LXMF not initialized",
-                    AppError::lxmf_not_initialized("LXMF not initialized"),
+                    messaging_unavailable_message(state),
+                    AppError::lxmf_not_initialized(messaging_unavailable_message(state)),
                 ),
                 producer::LxmfSubmissionFailureReason::PreparationFailed => (
                     "audio_invalid",
@@ -1648,6 +1686,7 @@ pub async fn send_lxmf_with_attachment(
     state: State<'_, Arc<AppState>>,
     args: SendWithAttachmentArgs,
 ) -> AppResult<Value> {
+    wait_while_messaging_starts(&state).await;
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(args.content.as_deref().unwrap_or(""))?;
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref())?;
@@ -2150,6 +2189,7 @@ pub async fn send_lxmf_with_staged_attachment(
     state: State<'_, Arc<AppState>>,
     args: SendStagedAttachmentArgs,
 ) -> AppResult<Value> {
+    wait_while_messaging_starts(&state).await;
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(args.content.as_deref().unwrap_or(""))?;
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref())?;

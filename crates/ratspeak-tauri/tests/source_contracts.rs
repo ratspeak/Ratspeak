@@ -9702,10 +9702,18 @@ fn lxmf_tick_runs_blocking_work_off_async_runtime() {
     assert!(runtime.contains("tokio::task::spawn_blocking(move ||"));
     // Match the call rather than its line layout so `cargo fmt` cannot break
     // this source contract by wrapping the receiver onto a preceding line.
+    let tick_call = runtime
+        .split("tick_with_auto_propagation_download_ready(")
+        .nth(1)
+        .expect("the tick call");
     assert!(
-        runtime.contains("tick_with_auto_propagation_download_ready(auto_inbox_download_ready)")
+        tick_call
+            .trim_start()
+            .starts_with("auto_inbox_download_ready")
     );
-    assert!(runtime.contains("lxmf tick worker failed; skipping this tick"));
+    // A panic in the tick is caught and messaging restarts; it is never skipped.
+    assert!(runtime.contains("std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {"));
+    assert!(runtime.contains("recover_lxmf_after_panic(&tick_state, \"tick panic\")"));
     assert!(lxmf.contains("OutboundAction::Failed(message) =>"));
     assert!(lxmf.contains("try_auto_propagation_fallback("));
     assert!(lxmf.contains("fn fail_expired_outbound("));

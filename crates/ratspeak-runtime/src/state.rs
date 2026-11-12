@@ -549,6 +549,57 @@ fn next_rnode_activity_session_generation(counter: &AtomicU64) -> u64 {
         }
     }
 }
+/// How many panic recoveries may run inside `LXMF_RECOVERY_WINDOW`.
+const LXMF_RECOVERY_LIMIT: usize = 3;
+const LXMF_RECOVERY_WINDOW: Duration = Duration::from_secs(600);
+
+/// What a caller that found the manager lock poisoned should do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LxmfRecoveryClaim {
+    /// This caller restarts messaging.
+    Restart,
+    /// A restart is already under way.
+    AlreadyRunning,
+    /// Too many recoveries in the window: stop messaging instead of looping.
+    GiveUp,
+}
+
+/// One restart at a time after a panic under the manager lock, and a bound on
+/// how many, so a panic that repeats cannot restart the session for ever.
+#[derive(Default)]
+pub struct LxmfPanicRecovery {
+    in_flight: AtomicBool,
+    recent: Mutex<std::collections::VecDeque<Instant>>,
+}
+
+impl LxmfPanicRecovery {
+    pub fn in_flight(&self) -> bool {
+        self.in_flight.load(Ordering::Acquire)
+    }
+
+    pub fn claim(&self) -> LxmfRecoveryClaim {
+        if self.in_flight.swap(true, Ordering::AcqRel) {
+            return LxmfRecoveryClaim::AlreadyRunning;
+        }
+        let mut recent = self.recent.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        while recent
+            .front()
+            .is_some_and(|at| now.duration_since(*at) > LXMF_RECOVERY_WINDOW)
+        {
+            recent.pop_front();
+        }
+        if recent.len() >= LXMF_RECOVERY_LIMIT {
+            return LxmfRecoveryClaim::GiveUp;
+        }
+        recent.push_back(now);
+        LxmfRecoveryClaim::Restart
+    }
+
+    pub fn finish(&self) {
+        self.in_flight.store(false, Ordering::Release);
+    }
+}
 
 /// Uses `std::sync::{Mutex, RwLock}`, not tokio variants. Critical sections
 /// must finish before `.await` or run in `spawn_blocking`
@@ -599,6 +650,10 @@ pub struct AppState {
     /// teardown. The handle slot alone cannot make check-then-register atomic.
     pub channel_hub_control_lock: tokio::sync::Mutex<()>,
     pub lxmf: Mutex<Option<LxmfManager>>,
+    /// Restarts after a panic under `lxmf`: one at a time, a few in a window.
+    pub lxmf_panic_recovery: LxmfPanicRecovery,
+    /// Soft restarts in progress; a send waits for one instead of failing.
+    pub runtime_restarts_in_flight: AtomicUsize,
     /// Serializes immutable LXMF persistence snapshots and their blocking
     /// writes. Protocol-state mutations take `lxmf` only long enough to
     /// capture a coherent snapshot; filesystem work must never hold `lxmf`.
@@ -948,6 +1003,8 @@ impl AppState {
             channel_hub: RwLock::new(None),
             channel_hub_control_lock: tokio::sync::Mutex::new(()),
             lxmf: Mutex::new(None),
+            lxmf_panic_recovery: LxmfPanicRecovery::default(),
+            runtime_restarts_in_flight: AtomicUsize::new(0),
             lxmf_persistence_lock: tokio::sync::Mutex::new(()),
             local_identity_public_keys: RwLock::new(HashMap::new()),
             #[cfg(feature = "lxst-voice")]
@@ -3421,9 +3478,25 @@ impl AppState {
         if let Ok(mut keys) = self.local_identity_public_keys.write() {
             keys.insert(identity_hash, public_key);
         }
-        if let Ok(mut l) = self.lxmf.lock() {
-            *l = Some(lxmf);
+        // A panic under the lock poisons it; the slot is still the manager's home.
+        self.lxmf.clear_poison();
+        *self.lxmf.lock().unwrap_or_else(|e| e.into_inner()) = Some(lxmf);
+    }
+
+    /// Whether a send should wait rather than be refused or handed to a
+    /// manager that is about to be replaced: a restart or a panic recovery is
+    /// under way, or start-up has not installed the manager yet.
+    pub fn messaging_is_starting(&self) -> bool {
+        if self.runtime_restarts_in_flight.load(Ordering::Acquire) > 0
+            || self.lxmf_panic_recovery.in_flight()
+            || self.lxmf.is_poisoned()
+        {
+            return true;
         }
+        matches!(
+            self.get_startup_stage().as_str(),
+            "starting" | "checking" | "lxmf" | "rns"
+        ) && !self.lxmf.lock().is_ok_and(|slot| slot.is_some())
     }
 
     pub fn local_identity_public_key(&self, identity_hash: &str) -> Option<[u8; 64]> {
@@ -3524,6 +3597,21 @@ fn json_number_as_f64(value: &serde_json::Value) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panic_recovery_runs_one_restart_at_a_time_and_gives_up_when_it_repeats() {
+        let recovery = LxmfPanicRecovery::default();
+        assert_eq!(recovery.claim(), LxmfRecoveryClaim::Restart);
+        assert!(recovery.in_flight());
+        assert_eq!(recovery.claim(), LxmfRecoveryClaim::AlreadyRunning);
+        recovery.finish();
+        assert!(!recovery.in_flight());
+        for _ in 1..LXMF_RECOVERY_LIMIT {
+            assert_eq!(recovery.claim(), LxmfRecoveryClaim::Restart);
+            recovery.finish();
+        }
+        assert_eq!(recovery.claim(), LxmfRecoveryClaim::GiveUp);
+    }
     use crate::config::DashboardConfig;
     use r2d2_sqlite::SqliteConnectionManager;
     use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

@@ -842,9 +842,27 @@ pub async fn shutdown_ble_peer_for_exit() {
     rns_interface::ble_peer::stop_ble_peer_interface().await;
 }
 
+/// Counts a soft restart for as long as it runs.
+struct RestartInFlight<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl<'a> RestartInFlight<'a> {
+    fn begin(counter: &'a std::sync::atomic::AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::AcqRel);
+        Self(counter)
+    }
+}
+
+impl Drop for RestartInFlight<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// Soft-restart: serialize identity lifecycle, stop RNS/LXMF, then re-init.
 /// Activity reset failure leaves the current protocol runtime untouched.
 pub async fn restart_rns_lxmf(state: Arc<AppState>) -> Result<(), ActivityRecorderError> {
+    // Sends wait for a restart instead of failing in its gap.
+    let _in_flight = RestartInFlight::begin(&state.runtime_restarts_in_flight);
     let _identity_lifecycle = state.identity_switch_lock.lock().await;
     let _auto_ownership = state.auto_interface_lock.lock().await;
     shutdown_rns_lxmf(&state).await?;
@@ -856,6 +874,43 @@ pub async fn restart_rns_lxmf(state: Arc<AppState>) -> Result<(), ActivityRecord
     let data_dir = state.config.data_root.clone();
     init_rns_lxmf(Arc::clone(&state), data_dir).await;
     Ok(())
+}
+
+/// A panic under the LXMF manager lock leaves it poisoned and the manager
+/// half-updated, so every later send fails until the app restarts. Clear the
+/// poison and rebuild the session once; a panic that keeps coming back ends
+/// with messaging stopped rather than a restart loop.
+pub fn recover_lxmf_after_panic(state: &Arc<AppState>, cause: &'static str) {
+    use state::LxmfRecoveryClaim;
+    let claim = state.lxmf_panic_recovery.claim();
+    if claim == LxmfRecoveryClaim::AlreadyRunning {
+        return;
+    }
+    let state = Arc::clone(state);
+    tokio::spawn(async move {
+        // The panic hook has logged where it happened.
+        state.lxmf.clear_poison();
+        if claim == LxmfRecoveryClaim::Restart {
+            tracing::error!(cause, "messaging panicked; restarting it");
+            if let Err(error) = restart_rns_lxmf(Arc::clone(&state)).await {
+                tracing::error!(%error, "messaging restart after a panic was refused");
+            }
+        } else {
+            tracing::error!(
+                cause,
+                "messaging panicked again after repeated restarts; stopping it"
+            );
+            if let Err(error) = shutdown_rns_lxmf(&state).await {
+                tracing::error!(%error, "messaging stop after repeated panics was refused");
+            }
+            state.set_startup_stage("error");
+            state.emit_to_all(
+                "system_status",
+                json!({"status": "error", "message": "Messaging stopped after repeated failures. Restart Ratspeak."}),
+            );
+        }
+        state.lxmf_panic_recovery.finish();
+    });
 }
 
 fn seed_identity_rns_config_from_app_private(
@@ -1133,6 +1188,8 @@ async fn finish_shutdown_inner(
     }
 
     state.emit_to_all("system_status", json!({"status": "stopping"}));
+    // A poisoned manager lock would make every step below skip the manager.
+    state.lxmf.clear_poison();
     #[cfg(feature = "lxst-voice")]
     voice_memo::cancel_recording(state).await.ok();
     #[cfg(feature = "lxst-voice")]
@@ -1197,9 +1254,8 @@ async fn finish_shutdown_inner(
     {
         tracing::warn!(%error, "shutdown LXMF checkpoint failed");
     }
-    if let Ok(mut lxmf) = state.lxmf.lock() {
-        *lxmf = None;
-    }
+    state.lxmf.clear_poison();
+    *state.lxmf.lock().unwrap_or_else(|e| e.into_inner()) = None;
     // All signing loops are down — re-lock the token (drops the on-card PIN cache).
     if let Some(id) = hw_identity.filter(|_| relock_identity) {
         id.lock();
@@ -2730,6 +2786,15 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                     if tick_shutdown.is_triggered() {
                         break;
                     }
+                    // A panic under the manager lock, here or in a command.
+                    if tick_state.lxmf.is_poisoned() {
+                        recover_lxmf_after_panic(&tick_state, "poisoned manager lock");
+                    }
+                    if tick_state.lxmf_panic_recovery.in_flight() {
+                        // The manager may be half-updated: leave it alone until the restart.
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        continue;
+                    }
                     // Mobile: drop to 2s while backgrounded.
                     #[cfg(feature = "mobile-throttle")]
                     {
@@ -2788,82 +2853,91 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                         !delivery_only && save_counter.is_multiple_of(600);
                     let tick_state_for_lxmf = tick_state.clone();
                     let tick_result = tokio::task::spawn_blocking(move || {
-                        let empty_result = || {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+                            let empty_result = || {
+                                (
+                                    Vec::new(),
+                                    Vec::new(),
+                                    Vec::new(),
+                                    std::collections::HashMap::new(),
+                                    Vec::new(),
+                                    Vec::new(),
+                                    Vec::new(),
+                                    Vec::new(),
+                                    Vec::new(),
+                                    Vec::new(),
+                                    Vec::new(),
+                                )
+                            };
+                            let lock_wait_started = std::time::Instant::now();
+                            let Ok(mut lxmf) = tick_state_for_lxmf.lxmf.lock() else {
+                                return empty_result();
+                            };
+                            let Some(mgr) = lxmf.as_mut() else {
+                                return empty_result();
+                            };
+                            let waited = lock_wait_started.elapsed();
+                            if waited > Duration::from_secs(1) {
+                                tracing::warn!(
+                                    waited_ms = waited.as_millis() as u64,
+                                    "lxmf tick waited on manager lock"
+                                );
+                            }
+                            let hold_started = std::time::Instant::now();
+                            if !delivery_only {
+                                admit_resumes_within_budget(&tick_state_for_lxmf, mgr);
+                            }
+                            let results = if delivery_only {
+                                mgr.process_delivery_events()
+                            } else {
+                                mgr.tick_with_auto_propagation_download_ready(
+                                    auto_inbox_download_ready,
+                                )
+                            };
+                            if delivery_only
+                                && dispatch_started.elapsed() > Duration::from_millis(100)
+                            {
+                                tracing::debug!(
+                                    target: "ratspeak_runtime::delivery_dispatch",
+                                    wait_ms = dispatch_started.elapsed().as_millis() as u64,
+                                    "Delivery wake processing delayed"
+                                );
+                            }
+                            if mgr.take_path_recovery_refresh() {
+                                tick_state_for_lxmf.poll_now.notify_one();
+                            }
+                            let tick_held = hold_started.elapsed();
+                            if tick_held > Duration::from_secs(1) {
+                                tracing::warn!(
+                                    held_ms = tick_held.as_millis() as u64,
+                                    "lxmf tick held manager lock (tick body)"
+                                );
+                            }
+                            let delivery_progress = mgr.take_delivery_progress_updates();
+                            let delivery_failures = mgr.take_delivery_failure_updates();
+                            let failure_reasons = mgr.take_failure_reasons();
+                            let downloaded = mgr.take_downloaded_propagation_messages();
+                            let (
+                                completed_deposits,
+                                failed_deposits,
+                                completed_syncs,
+                                failed_syncs,
+                            ) = mgr.take_propagation_health();
+                            let expired_received_ratchets = mgr.take_expired_received_ratchets();
                             (
-                                Vec::new(),
-                                Vec::new(),
-                                Vec::new(),
-                                std::collections::HashMap::new(),
-                                Vec::new(),
-                                Vec::new(),
-                                Vec::new(),
-                                Vec::new(),
-                                Vec::new(),
-                                Vec::new(),
-                                Vec::new(),
+                                results,
+                                delivery_progress,
+                                delivery_failures,
+                                failure_reasons,
+                                downloaded,
+                                completed_deposits,
+                                failed_deposits,
+                                completed_syncs,
+                                failed_syncs,
+                                expired_received_ratchets,
+                                mgr.take_packet_delivery_rtts(),
                             )
-                        };
-                        let lock_wait_started = std::time::Instant::now();
-                        let Ok(mut lxmf) = tick_state_for_lxmf.lxmf.lock() else {
-                            return empty_result();
-                        };
-                        let Some(mgr) = lxmf.as_mut() else {
-                            return empty_result();
-                        };
-                        let waited = lock_wait_started.elapsed();
-                        if waited > Duration::from_secs(1) {
-                            tracing::warn!(
-                                waited_ms = waited.as_millis() as u64,
-                                "lxmf tick waited on manager lock"
-                            );
-                        }
-                        let hold_started = std::time::Instant::now();
-                        if !delivery_only {
-                            admit_resumes_within_budget(&tick_state_for_lxmf, mgr);
-                        }
-                        let results = if delivery_only {
-                            mgr.process_delivery_events()
-                        } else {
-                            mgr.tick_with_auto_propagation_download_ready(auto_inbox_download_ready)
-                        };
-                        if delivery_only && dispatch_started.elapsed() > Duration::from_millis(100)
-                        {
-                            tracing::debug!(
-                                target: "ratspeak_runtime::delivery_dispatch",
-                                wait_ms = dispatch_started.elapsed().as_millis() as u64,
-                                "Delivery wake processing delayed"
-                            );
-                        }
-                        if mgr.take_path_recovery_refresh() {
-                            tick_state_for_lxmf.poll_now.notify_one();
-                        }
-                        let tick_held = hold_started.elapsed();
-                        if tick_held > Duration::from_secs(1) {
-                            tracing::warn!(
-                                held_ms = tick_held.as_millis() as u64,
-                                "lxmf tick held manager lock (tick body)"
-                            );
-                        }
-                        let delivery_progress = mgr.take_delivery_progress_updates();
-                        let delivery_failures = mgr.take_delivery_failure_updates();
-                        let failure_reasons = mgr.take_failure_reasons();
-                        let downloaded = mgr.take_downloaded_propagation_messages();
-                        let (completed_deposits, failed_deposits, completed_syncs, failed_syncs) =
-                            mgr.take_propagation_health();
-                        let expired_received_ratchets = mgr.take_expired_received_ratchets();
-                        (
-                            results,
-                            delivery_progress,
-                            delivery_failures,
-                            failure_reasons,
-                            downloaded,
-                            completed_deposits,
-                            failed_deposits,
-                            completed_syncs,
-                            failed_syncs,
-                            expired_received_ratchets,
-                            mgr.take_packet_delivery_rtts(),
-                        )
+                        }))
                     })
                     .await;
                     let (
@@ -2879,12 +2953,9 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                         expired_received_ratchets,
                         packet_delivery_rtts,
                     ) = match tick_result {
-                        Ok(result) => result,
-                        Err(_) => {
-                            tracing::error!(
-                                reason = "worker_failed",
-                                "lxmf tick worker failed; skipping this tick"
-                            );
+                        Ok(Ok(result)) => result,
+                        Ok(Err(_)) | Err(_) => {
+                            recover_lxmf_after_panic(&tick_state, "tick panic");
                             (
                                 Vec::new(),
                                 Vec::new(),
