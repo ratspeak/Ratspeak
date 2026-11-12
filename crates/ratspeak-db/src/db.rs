@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
+use ratspeak_core::delivery::{OutboundState, PROGRESS_STEPS, Phase, sql_list};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use tokio::task::JoinError;
 
@@ -3793,11 +3794,12 @@ pub fn outbound_on_its_way(
     let Ok(conn) = pool.get() else {
         return Vec::new();
     };
-    let Ok(mut stmt) = conn.prepare(
+    let Ok(mut stmt) = conn.prepare(&format!(
         "SELECT id FROM messages WHERE identity_id = ?1 AND direction = 'outbound'
            AND (?2 IS NULL OR destination = ?2) AND (?3 IS NULL OR thread = ?3)
-           AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper')",
-    ) else {
+           AND state NOT IN {}",
+        sql_list(OutboundState::is_final)
+    )) else {
         return Vec::new();
     };
     stmt.query_map(params![identity_id, peer, thread], |row| row.get(0))
@@ -3814,7 +3816,10 @@ pub struct OutboxRow {
     pub message: Vec<u8>,
 }
 
-const OUTBOX_ENDED_STATES: &str = "('failed', 'cancelled', 'timeout')";
+/// The states Retry sends again, as an SQL list.
+fn outbox_ended_states() -> String {
+    sql_list(|state| state.phase() == Phase::Ended)
+}
 
 /// `identity_id`'s messages still on their way, oldest first.
 pub fn outbox_rows(pool: &DbPool, identity_id: &str) -> Result<Vec<OutboxRow>, String> {
@@ -3824,8 +3829,9 @@ pub fn outbox_rows(pool: &DbPool, identity_id: &str) -> Result<Vec<OutboxRow>, S
             "SELECT o.message_id, o.preference, o.profile, o.message
              FROM lxmf_outbox o JOIN messages m
                ON m.id = o.message_id AND m.identity_id = o.identity_id
-             WHERE o.identity_id = ?1 AND m.state NOT IN {OUTBOX_ENDED_STATES}
-             ORDER BY o.queued_at ASC, o.rowid ASC"
+             WHERE o.identity_id = ?1 AND m.state NOT IN {}
+             ORDER BY o.queued_at ASC, o.rowid ASC",
+            outbox_ended_states()
         ))
         .map_err(|error| error.to_string())?;
     stmt.query_map(params![identity_id], outbox_row)
@@ -3846,7 +3852,8 @@ pub fn retryable_outbox_row(
              FROM lxmf_outbox o JOIN messages m
                ON m.id = o.message_id AND m.identity_id = o.identity_id
              WHERE o.identity_id = ?1 AND o.message_id = ?2
-               AND m.direction = 'outbound' AND m.state IN {OUTBOX_ENDED_STATES}"
+               AND m.direction = 'outbound' AND m.state IN {}",
+            outbox_ended_states()
         ),
         params![identity_id, msg_id],
         outbox_row,
@@ -3875,7 +3882,8 @@ pub fn restart_outbound_message(
                 "SELECT m.state FROM messages m JOIN lxmf_outbox o
                    ON o.identity_id = m.identity_id AND o.message_id = m.id
                  WHERE m.id = ?1 AND m.identity_id = ?2 AND m.direction = 'outbound'
-                   AND m.state IN {OUTBOX_ENDED_STATES}"
+                   AND m.state IN {}",
+                outbox_ended_states()
             ),
             params![msg_id, identity_id],
             |row| row.get::<_, String>(0),
@@ -4350,8 +4358,8 @@ pub fn get_message_for_identity(
     Some(message)
 }
 
-/// One-way lattice: terminal states (delivered/propagated/failed/cancelled/rejected/timeout/paper)
-/// cannot be regressed by later updates. `propagated` is terminal at the LXMF
+/// One-way lattice: a final state (`OutboundState::is_final`) cannot be
+/// regressed by later updates. `propagated` is terminal at the LXMF
 /// layer because the propagation path only confirms node-deposit, not end-to-end
 /// recipient delivery — there is no later signal that upgrades it to `delivered`.
 pub fn update_message_state(
@@ -4368,9 +4376,9 @@ pub fn update_message_state(
     // A proof outranks every earlier outcome: a message that arrived was never
     // undelivered. Nothing else leaves a settled state.
     let settled = if state == "delivered" {
-        "('delivered', 'rejected', 'paper')"
+        sql_list(|current| !current.yields_to_proof())
     } else {
-        "('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper')"
+        sql_list(OutboundState::is_final)
     };
     let result = conn
         .execute(
@@ -4390,8 +4398,11 @@ pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str, identity_id: &
         Err(_) => return false,
     };
     conn.execute(
-        "UPDATE messages SET state = 'cancelled' \
-         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state NOT IN ('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper')",
+        &format!(
+            "UPDATE messages SET state = 'cancelled' \
+             WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state NOT IN {}",
+            sql_list(OutboundState::is_final)
+        ),
         params![msg_id, identity_id],
     )
     .map(|n| n > 0)
@@ -4670,6 +4681,25 @@ pub fn get_all_unread_counts_conn(
     })
 }
 
+/// In-flight names an earlier build may have stored; nothing writes them now.
+const RETIRED_IN_FLIGHT_STATES: [&str; 5] = [
+    "pending",
+    "outbound",
+    "generating",
+    "resolving",
+    "resending",
+];
+
+/// Every state name a run can have left on its way.
+fn stale_outbound_states() -> impl Iterator<Item = &'static str> {
+    OutboundState::ALL
+        .into_iter()
+        .filter(|state| state.phase() == Phase::InFlight)
+        .map(OutboundState::as_str)
+        .chain(PROGRESS_STEPS)
+        .chain(RETIRED_IN_FLIGHT_STATES)
+}
+
 /// Fail what the last run left on its way, except what the outbox sends
 /// again and Sent messages, which already left the device.
 pub fn cleanup_stale_outbound(pool: &DbPool, identity_id: &str) {
@@ -4678,15 +4708,17 @@ pub fn cleanup_stale_outbound(pool: &DbPool, identity_id: &str) {
         Err(_) => return,
     };
     let result = conn.execute(
-        "UPDATE messages SET state = 'failed' WHERE state IN (\
-         'pending', 'outbound', 'generating', 'sending', 'routing', 'resolving', \
-         'propagating', 'resending', 'link_establishing', 'sending_via_link', \
-         'resource_link_ready', 'resource_advertised', 'resource_transferring', \
-         'resource_waiting_for_proof', 'reusing_direct_link', 'reusing_backchannel', \
-         'sent') AND direction = 'outbound' AND identity_id = ?1 \
-         AND NOT EXISTS (SELECT 1 FROM lxmf_outbox o \
-             WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) \
-         AND NOT (state = 'sent' AND lower(COALESCE(delivery_method, '')) <> 'direct')",
+        &format!(
+            "UPDATE messages SET state = 'failed' WHERE state IN ({}) \
+             AND direction = 'outbound' AND identity_id = ?1 \
+             AND NOT EXISTS (SELECT 1 FROM lxmf_outbox o \
+                 WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) \
+             AND NOT (state = 'sent' AND lower(COALESCE(delivery_method, '')) <> 'direct')",
+            stale_outbound_states()
+                .map(|name| format!("'{name}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         params![identity_id],
     );
     if let Some(count) = result.ok().filter(|count| *count > 0) {
@@ -13216,6 +13248,177 @@ mod migration_tests {
             .unwrap()
             .map(Result::unwrap)
             .collect()
+    }
+
+    // The state lists as literals; the derived lists must equal them.
+    const FINAL_STATES: [&str; 7] = [
+        "delivered",
+        "propagated",
+        "failed",
+        "cancelled",
+        "rejected",
+        "timeout",
+        "paper",
+    ];
+    const PROOF_FINAL_STATES: [&str; 3] = ["delivered", "rejected", "paper"];
+    const ENDED_STATES: [&str; 3] = ["failed", "cancelled", "timeout"];
+    const STALE_STATES: [&str; 17] = [
+        "pending",
+        "outbound",
+        "generating",
+        "sending",
+        "routing",
+        "resolving",
+        "propagating",
+        "resending",
+        "link_establishing",
+        "sending_via_link",
+        "resource_link_ready",
+        "resource_advertised",
+        "resource_transferring",
+        "resource_waiting_for_proof",
+        "reusing_direct_link",
+        "reusing_backchannel",
+        "sent",
+    ];
+
+    #[test]
+    fn generated_lists_equal_the_shipped_literals() {
+        assert_eq!(
+            sql_list(OutboundState::is_final),
+            "('delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper')"
+        );
+        assert_eq!(
+            sql_list(|state| !state.yields_to_proof()),
+            "('delivered', 'rejected', 'paper')"
+        );
+        assert_eq!(outbox_ended_states(), "('failed', 'cancelled', 'timeout')");
+        let mut stale = stale_outbound_states().collect::<Vec<_>>();
+        stale.sort_unstable();
+        let mut shipped = STALE_STATES;
+        shipped.sort_unstable();
+        assert_eq!(stale, shipped);
+    }
+
+    #[test]
+    fn every_reader_treats_each_state_as_its_literal_list_does() {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        // Without the trigger every state keeps its entry, so each list is tested alone.
+        pool.get()
+            .unwrap()
+            .execute_batch("PRAGMA foreign_keys=ON; DROP TRIGGER lxmf_outbox_settled;")
+            .unwrap();
+        let mut next = 0;
+        let mut in_state = |state: &str| {
+            next += 1;
+            let id = format!("m{next}");
+            outbound(&pool, &id, "auto");
+            pool.get()
+                .unwrap()
+                .execute(
+                    "UPDATE messages SET state = ?1 WHERE id = ?2",
+                    params![state, id],
+                )
+                .unwrap();
+            id
+        };
+        let names = OutboundState::ALL
+            .map(OutboundState::as_str)
+            .into_iter()
+            .chain(STALE_STATES)
+            .chain(["unknown", "received", "resent"]);
+        for name in names {
+            let listed = |list: &[&str]| list.contains(&name);
+
+            let id = in_state(name);
+            assert_eq!(
+                outbound_on_its_way(&pool, "identity", None, None).contains(&id),
+                !listed(&FINAL_STATES),
+                "{name} on its way"
+            );
+            assert_eq!(
+                outbox_rows(&pool, "identity")
+                    .unwrap()
+                    .iter()
+                    .any(|row| row.message_id == id),
+                !listed(&ENDED_STATES),
+                "{name} resumed"
+            );
+            assert_eq!(
+                retryable_outbox_row(&pool, "identity", &id)
+                    .unwrap()
+                    .is_some(),
+                listed(&ENDED_STATES),
+                "{name} retryable"
+            );
+            assert_eq!(
+                update_message_state(&pool, &id, "identity", "routing", None),
+                !listed(&FINAL_STATES),
+                "{name} takes a step"
+            );
+            assert_eq!(
+                update_message_state(&pool, &in_state(name), "identity", "delivered", None),
+                !listed(&PROOF_FINAL_STATES),
+                "{name} takes a proof"
+            );
+            assert_eq!(
+                cancel_outbound_message_state(&pool, &in_state(name), "identity"),
+                !listed(&FINAL_STATES),
+                "{name} cancels"
+            );
+            assert_eq!(
+                restart_outbound_message(&pool, "identity", &in_state(name), "auto", "direct")
+                    .unwrap()
+                    .is_some(),
+                listed(&ENDED_STATES),
+                "{name} restarts"
+            );
+
+            let id = in_state(name);
+            pool.get()
+                .unwrap()
+                .execute("DELETE FROM lxmf_outbox WHERE message_id = ?1", params![id])
+                .unwrap();
+            cleanup_stale_outbound(&pool, "identity");
+            assert_eq!(
+                state_of(&pool, &id) == "failed",
+                listed(&STALE_STATES) || name == "failed",
+                "{name} failed at start"
+            );
+        }
+    }
+
+    #[test]
+    fn the_outbox_trigger_matches_the_table() {
+        assert!(OUTBOX_SCHEMA_SQL.contains(&format!(
+            "WHEN NEW.state IN {}\nBEGIN",
+            sql_list(OutboundState::clears_outbox)
+        )));
+
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        pool.get()
+            .unwrap()
+            .execute_batch("PRAGMA foreign_keys=ON;")
+            .unwrap();
+        for state in OutboundState::ALL {
+            let id = format!("m-{}", state.as_str());
+            outbound(&pool, &id, "auto");
+            pool.get()
+                .unwrap()
+                .execute(
+                    "UPDATE messages SET state = ?1 WHERE id = ?2",
+                    params![state.as_str(), id],
+                )
+                .unwrap();
+            assert_eq!(
+                outbox_ids(&pool).contains(&id),
+                !state.clears_outbox(),
+                "{}",
+                state.as_str()
+            );
+        }
     }
 
     #[test]

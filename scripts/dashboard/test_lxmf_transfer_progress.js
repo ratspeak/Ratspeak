@@ -5,10 +5,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../../dashboard/static/js/lxmf.js'), 'utf8');
-const names = ['_isTerminalMessageState', '_messageDeliveryMethod', '_messageCanCancelSend',
+const names = ['_messageDeliveryMethod', '_messageCanCancelSend',
     '_messageHasTransferPayload', '_messageCanCancelTransfer', '_messageTransferPayloadSize',
     '_messageShowsTransferPercent', '_messageProgressPercent'];
 const context = vm.createContext({lxmfLimits: {efficient_resource_bytes: 1048575}});
+vm.runInContext(source.slice(0, source.indexOf('var lxmfIdentity')), context);
 for (const name of names) {
     const start = source.indexOf('function ' + name + '(');
     const end = source.indexOf('\nfunction ', start + 1);

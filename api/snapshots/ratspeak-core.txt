@@ -21,6 +21,39 @@ pub const ratspeak_core::config::LEGACY_RNS_SHARED_INSTANCE_PORT: u16
 pub const ratspeak_core::config::RATSPEAK_RNS_CONFIG_DIR_ENV: &str
 pub const ratspeak_core::config::RATSPEAK_RNS_INSTANCE_CONTROL_PORT: u16
 pub const ratspeak_core::config::RATSPEAK_RNS_SHARED_INSTANCE_PORT: u16
+pub mod ratspeak_core::delivery
+pub enum ratspeak_core::delivery::OutboundState
+pub ratspeak_core::delivery::OutboundState::Cancelled
+pub ratspeak_core::delivery::OutboundState::Delivered
+pub ratspeak_core::delivery::OutboundState::Failed
+pub ratspeak_core::delivery::OutboundState::LinkEstablishing
+pub ratspeak_core::delivery::OutboundState::Paper
+pub ratspeak_core::delivery::OutboundState::Propagated
+pub ratspeak_core::delivery::OutboundState::Propagating
+pub ratspeak_core::delivery::OutboundState::Rejected
+pub ratspeak_core::delivery::OutboundState::ReusingBackchannel
+pub ratspeak_core::delivery::OutboundState::ReusingDirectLink
+pub ratspeak_core::delivery::OutboundState::Routing
+pub ratspeak_core::delivery::OutboundState::Sending
+pub ratspeak_core::delivery::OutboundState::SendingViaLink
+pub ratspeak_core::delivery::OutboundState::Sent
+pub ratspeak_core::delivery::OutboundState::Timeout
+impl ratspeak_core::delivery::OutboundState
+pub const ratspeak_core::delivery::OutboundState::ALL: [Self; 15]
+pub const fn ratspeak_core::delivery::OutboundState::as_str(self) -> &'static str
+pub const fn ratspeak_core::delivery::OutboundState::clears_outbox(self) -> bool
+pub const fn ratspeak_core::delivery::OutboundState::ends_delivery_clock(self) -> bool
+pub const fn ratspeak_core::delivery::OutboundState::is_final(self) -> bool
+pub fn ratspeak_core::delivery::OutboundState::parse(&str) -> core::option::Option<Self>
+pub const fn ratspeak_core::delivery::OutboundState::phase(self) -> ratspeak_core::delivery::Phase
+pub const fn ratspeak_core::delivery::OutboundState::starts_delivery_clock(self) -> bool
+pub const fn ratspeak_core::delivery::OutboundState::yields_to_proof(self) -> bool
+pub enum ratspeak_core::delivery::Phase
+pub ratspeak_core::delivery::Phase::Done
+pub ratspeak_core::delivery::Phase::Ended
+pub ratspeak_core::delivery::Phase::InFlight
+pub const ratspeak_core::delivery::PROGRESS_STEPS: [&str; 4]
+pub fn ratspeak_core::delivery::sql_list(impl core::ops::function::Fn(ratspeak_core::delivery::OutboundState) -> bool) -> alloc::string::String
 pub mod ratspeak_core::emitter
 pub enum ratspeak_core::emitter::EmitError
 pub ratspeak_core::emitter::EmitError::Rejected

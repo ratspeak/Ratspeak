@@ -64,6 +64,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use ratspeak_core::delivery::{OutboundState, PROGRESS_STEPS};
 use ratspeak_core::{LXMF_DELIVERY_APP_NAME, LXMF_PROPAGATION_APP_NAME};
 use rns_identity::destination::Destination;
 use serde_json::{Value, json};
@@ -3099,10 +3100,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                             .then(|| packet_delivery_rtts.get(msg_id))
                             .flatten()
                             .map(|rtt| rtt.as_secs_f64() * 1000.0);
-                        if matches!(
-                            *new_state,
-                            "delivered" | "propagated" | "rejected" | "failed"
-                        ) {
+                        if OutboundState::parse(new_state).is_some_and(OutboundState::is_final) {
                             tick_state.release_attachment_delivery_lease(msg_id);
                         }
                         let failure = delivery_failures
@@ -3212,20 +3210,8 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                             })
                         };
                         tick_state.emit_to_all("lxmf_step", step_payload);
-                        let activity_state = match *new_state {
-                            "routing" => Some(producer::LxmfDeliveryState::Routing),
-                            "propagating" => Some(producer::LxmfDeliveryState::Propagating),
-                            "reusing_backchannel" => {
-                                Some(producer::LxmfDeliveryState::ReusingBackchannel)
-                            }
-                            "sending_via_link" => Some(producer::LxmfDeliveryState::SendingViaLink),
-                            "sent" => Some(producer::LxmfDeliveryState::Sent),
-                            "delivered" => Some(producer::LxmfDeliveryState::Delivered),
-                            "propagated" => Some(producer::LxmfDeliveryState::Propagated),
-                            "rejected" => Some(producer::LxmfDeliveryState::Rejected),
-                            "failed" => Some(producer::LxmfDeliveryState::Failed),
-                            _ => None,
-                        };
+                        let activity_state =
+                            OutboundState::parse(new_state).and_then(step_activity_state);
                         if let Some(activity_state) = activity_state.filter(|_| {
                             !lxmf_progress_supersedes_state(&delivery_progress, msg_id, new_state)
                         }) {
@@ -6864,6 +6850,27 @@ async fn resume_outbox(state: &Arc<AppState>, mgr: lxmf::LxmfManager) -> lxmf::L
 // precedence; queued, expired and abandoned owners retain this ceiling.
 const MESSAGE_TIMEOUT_SECS: f64 = 180.0;
 
+/// The Activity entry a step of the tick makes, if it makes one.
+fn step_activity_state(step: OutboundState) -> Option<producer::LxmfDeliveryState> {
+    match step {
+        OutboundState::Routing => Some(producer::LxmfDeliveryState::Routing),
+        OutboundState::Propagating => Some(producer::LxmfDeliveryState::Propagating),
+        OutboundState::ReusingBackchannel => Some(producer::LxmfDeliveryState::ReusingBackchannel),
+        OutboundState::SendingViaLink => Some(producer::LxmfDeliveryState::SendingViaLink),
+        OutboundState::Sent => Some(producer::LxmfDeliveryState::Sent),
+        OutboundState::Delivered => Some(producer::LxmfDeliveryState::Delivered),
+        OutboundState::Propagated => Some(producer::LxmfDeliveryState::Propagated),
+        OutboundState::Rejected => Some(producer::LxmfDeliveryState::Rejected),
+        OutboundState::Failed => Some(producer::LxmfDeliveryState::Failed),
+        OutboundState::Sending
+        | OutboundState::LinkEstablishing
+        | OutboundState::ReusingDirectLink
+        | OutboundState::Cancelled
+        | OutboundState::Timeout
+        | OutboundState::Paper => None,
+    }
+}
+
 fn polled_delivery_method_override(
     step: &str,
     has_packet_proof: bool,
@@ -6881,28 +6888,12 @@ fn polled_delivery_method_override(
 }
 
 fn lxmf_step_starts_delivery_timeout(step: &str) -> bool {
-    matches!(
-        step,
-        "sent"
-            | "routing"
-            | "propagating"
-            | "resolving"
-            | "link_establishing"
-            | "sending_via_link"
-            | "resource_link_ready"
-            | "resource_advertised"
-            | "resource_transferring"
-            | "resource_waiting_for_proof"
-            | "reusing_direct_link"
-            | "reusing_backchannel"
-    )
+    PROGRESS_STEPS.contains(&step)
+        || OutboundState::parse(step).is_some_and(OutboundState::starts_delivery_clock)
 }
 
 fn lxmf_step_ends_delivery_timeout(step: &str) -> bool {
-    matches!(
-        step,
-        "delivered" | "propagated" | "failed" | "cancelled" | "rejected" | "timeout"
-    )
+    OutboundState::parse(step).is_some_and(OutboundState::ends_delivery_clock)
 }
 
 fn update_message_delivery_timeout(state: &AppState, msg_id: &str, step: &str) {
@@ -7012,6 +7003,90 @@ mod delivery_timeout_policy_tests {
             "timeout",
         ] {
             assert!(lxmf_step_ends_delivery_timeout(step), "{step}");
+        }
+    }
+
+    #[test]
+    fn the_clock_and_activity_lists_equal_the_literals_they_replaced() {
+        use crate::activity::producer::LxmfDeliveryState as Entry;
+        use ratspeak_core::delivery::{OutboundState, PROGRESS_STEPS};
+        let started = [
+            "sent",
+            "routing",
+            "propagating",
+            "resolving",
+            "link_establishing",
+            "sending_via_link",
+            "resource_link_ready",
+            "resource_advertised",
+            "resource_transferring",
+            "resource_waiting_for_proof",
+            "reusing_direct_link",
+            "reusing_backchannel",
+        ];
+        let ended = [
+            "delivered",
+            "propagated",
+            "failed",
+            "cancelled",
+            "rejected",
+            "timeout",
+        ];
+        let lease_released = ["delivered", "propagated", "rejected", "failed"];
+        // Every step the manager's results carry.
+        let manager_steps = [
+            "routing",
+            "propagating",
+            "link_establishing",
+            "sending_via_link",
+            "reusing_direct_link",
+            "reusing_backchannel",
+            "sent",
+            "delivered",
+            "propagated",
+            "rejected",
+            "failed",
+        ];
+        let names = OutboundState::ALL
+            .map(OutboundState::as_str)
+            .into_iter()
+            .chain(PROGRESS_STEPS)
+            .chain(["resolving", "unknown", ""]);
+        for name in names {
+            // Nothing emits `resolving`, and `paper` is never a step.
+            assert_eq!(
+                lxmf_step_starts_delivery_timeout(name),
+                started.contains(&name) && name != "resolving",
+                "{name}"
+            );
+            assert_eq!(
+                lxmf_step_ends_delivery_timeout(name),
+                ended.contains(&name) || name == "paper",
+                "{name}"
+            );
+            let entry = match name {
+                "routing" => Some(Entry::Routing),
+                "propagating" => Some(Entry::Propagating),
+                "reusing_backchannel" => Some(Entry::ReusingBackchannel),
+                "sending_via_link" => Some(Entry::SendingViaLink),
+                "sent" => Some(Entry::Sent),
+                "delivered" => Some(Entry::Delivered),
+                "propagated" => Some(Entry::Propagated),
+                "rejected" => Some(Entry::Rejected),
+                "failed" => Some(Entry::Failed),
+                _ => None,
+            };
+            assert!(
+                OutboundState::parse(name).and_then(super::step_activity_state) == entry,
+                "{name}"
+            );
+        }
+        for step in manager_steps {
+            assert_eq!(
+                OutboundState::parse(step).is_some_and(OutboundState::is_final),
+                lease_released.contains(&step),
+                "{step}"
+            );
         }
     }
 

@@ -10864,6 +10864,40 @@ fn discovery_settings_use_the_network_settings_commands() {
     assert!(listed.contains("e.joined || e.added"));
 }
 
+/// The dashboard's table of outbound states is the runtime's, name for name
+/// and in the same order.
+#[test]
+fn the_dashboard_state_table_matches_the_runtime() {
+    use ratspeak_core::delivery::{OutboundState, PROGRESS_STEPS, Phase};
+
+    let lxmf = read_source(repo_root().join("dashboard/static/js/lxmf.js")).expect("messaging js");
+    let table = lxmf
+        .split("var LXMF_OUTBOUND_STATES = {\n")
+        .nth(1)
+        .and_then(|tail| tail.split("\n};").next())
+        .expect("the dashboard state table");
+    let dashboard = table
+        .lines()
+        .map(|line| {
+            let (name, phase) = line.trim().split_once(": ").expect("name: 'phase'");
+            (name, phase.trim_end_matches(',').trim_matches('\''))
+        })
+        .collect::<Vec<_>>();
+    let runtime = OutboundState::ALL
+        .into_iter()
+        .map(|state| {
+            let phase = match state.phase() {
+                Phase::InFlight => "flight",
+                Phase::Ended => "ended",
+                Phase::Done => "done",
+            };
+            (state.as_str(), phase)
+        })
+        .chain(PROGRESS_STEPS.into_iter().map(|step| (step, "progress")))
+        .collect::<Vec<_>>();
+    assert_eq!(dashboard, runtime);
+}
+
 /// Keys leave only through the exports that ask for the identity's PIN or a
 /// confirmation; the raw-key commands that asked for neither are gone.
 #[test]

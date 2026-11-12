@@ -1,6 +1,7 @@
 //! Ratspeak domain types, emitter trait, and errors. No Tauri, SQLite, or RNS.
 
 pub mod config;
+pub mod delivery;
 pub mod emitter;
 pub mod errors;
 pub mod notification;

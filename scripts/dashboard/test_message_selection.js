@@ -38,7 +38,6 @@ function harness(messages) {
         lxmfActiveThread: '',
         _msgReactions: {},
         _canonicalConversationHash: (h) => h,
-        _messageCanCancelSend: (m) => m.direction === 'outbound' && m.state === 'sending',
         _messageDisplayContent: (m) => m.content,
         _conversationNameInfo: () => ({ name: 'Marisol', isHash: false }),
         _dismissContextMenu: () => false,
@@ -61,7 +60,8 @@ function harness(messages) {
         },
     };
     vm.createContext(context);
-    ['_canonicalConversationThread', '_conversationKey', '_activeConversationKey', '_resolveConversationThread'].forEach((name) => {
+    vm.runInContext(source.slice(0, source.indexOf('var lxmfIdentity')), context);
+    ['_messageDeliveryMethod', '_messageCanCancelSend', '_canonicalConversationThread', '_conversationKey', '_activeConversationKey', '_resolveConversationThread'].forEach((name) => {
         const at = source.indexOf('function ' + name + '(');
         vm.runInContext(source.slice(at, source.indexOf('\n}\n', at) + 3), context);
     });

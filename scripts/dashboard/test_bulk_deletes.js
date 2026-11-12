@@ -62,6 +62,15 @@ caches.cacheSet(peer, [recentSend]);
 caches.lxmfConversation = [recentSend];
 assert.equal(caches._mergeConversationMessages(peer, []).length, 1,
     'a cached recent send survives an empty fetch');
+// Only a send on its way, or one just stored in an Offline Inbox, is kept.
+var KEPT = ['sending', 'sent', 'routing', 'propagating', 'propagated', 'link_establishing', 'sending_via_link',
+    'resource_link_ready', 'resource_advertised', 'resource_transferring', 'resource_waiting_for_proof',
+    'reusing_direct_link', 'reusing_backchannel'];
+Object.keys(caches.LXMF_OUTBOUND_STATES).concat(['outbound', 'resolving', 'received']).forEach(function(state) {
+    caches.cacheSet(peer, [{ id: 'kept-' + state, direction: 'outbound', state: state, timestamp: Date.now() / 1000 }]);
+    assert.equal(caches._mergeConversationMessages(peer, []).length, KEPT.indexOf(state) === -1 ? 0 : 1, state);
+});
+caches.cacheSet(peer, [recentSend]);
 caches.resetConversationCaches();
 assert.equal(caches._mergeConversationMessages(peer, []).length, 0,
     'a deleted recent send must not come back when its conversation reopens');

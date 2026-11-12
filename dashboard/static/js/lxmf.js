@@ -1,3 +1,42 @@
+// Outbound message states by phase, the same table as ratspeak-core's
+// OutboundState. 'progress' steps come with transfer progress and are never stored.
+var LXMF_OUTBOUND_STATES = {
+    sending: 'flight',
+    routing: 'flight',
+    propagating: 'flight',
+    link_establishing: 'flight',
+    sending_via_link: 'flight',
+    reusing_direct_link: 'flight',
+    reusing_backchannel: 'flight',
+    sent: 'flight',
+    delivered: 'done',
+    propagated: 'done',
+    failed: 'ended',
+    cancelled: 'ended',
+    rejected: 'done',
+    timeout: 'ended',
+    paper: 'done',
+    resource_link_ready: 'progress',
+    resource_advertised: 'progress',
+    resource_transferring: 'progress',
+    resource_waiting_for_proof: 'progress'
+};
+
+function _isTerminalMessageState(state) {
+    var phase = LXMF_OUTBOUND_STATES[state];
+    return phase === 'done' || phase === 'ended';
+}
+
+function _isUnsettledMessageState(state) {
+    var phase = LXMF_OUTBOUND_STATES[state];
+    return phase === 'flight' || phase === 'progress';
+}
+
+// A step that shows a message on its way; the send itself sets `sending`.
+function _isInFlightStep(step) {
+    return step !== 'sending' && _isUnsettledMessageState(step);
+}
+
 var lxmfIdentity = null;
 var lxmfContacts = [];
 var lxmfConversations = [];
@@ -1781,8 +1820,7 @@ function _messageStateIconHtml(msg) {
     if (state === 'propagated') return wrap('msg-state-propagated', 'Stored in Offline Inbox', ICON.envelope);
     if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.double);
     if (state === 'sent') return wrap('msg-state-sent', 'Sent', ICON.check);
-    // In-flight: sending, routing, propagating, generating, outbound,
-    // resending, Link setup, or Resource transfer.
+    // Anything else is on its way: queued, routing, Link setup, or Resource transfer.
     var progressPercent = _messageProgressPercent(msg);
     var label = progressPercent !== null
         ? 'Sending ' + progressPercent + '%'
@@ -1792,10 +1830,6 @@ function _messageStateIconHtml(msg) {
 
 function _isCanonicalLxmfMsgId(msgId) {
     return /^[a-f0-9]{64}$/i.test(String(msgId || ''));
-}
-
-function _isTerminalMessageState(state) {
-    return ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper'].indexOf(state) !== -1;
 }
 
 function _messageDeliveryMethod(msg) {
@@ -1825,26 +1859,9 @@ function _messagePaperChipHtml(msg, isOut) {
 }
 
 function _messageCanCancelSend(msg) {
-    if (!msg || msg.direction !== 'outbound' || _isTerminalMessageState(msg.state)) return false;
+    if (!msg || msg.direction !== 'outbound') return false;
     if (msg.state === 'sent') return _messageDeliveryMethod(msg) === 'direct';
-    return [
-        'pending',
-        'outbound',
-        'generating',
-        'sending',
-        'routing',
-        'resolving',
-        'propagating',
-        'resending',
-        'link_establishing',
-        'sending_via_link',
-        'resource_link_ready',
-        'resource_advertised',
-        'resource_transferring',
-        'resource_waiting_for_proof',
-        'reusing_direct_link',
-        'reusing_backchannel'
-    ].indexOf(msg.state) !== -1;
+    return _isUnsettledMessageState(msg.state);
 }
 
 // Retry sends the stored message again; rows from before the outbox have none.
@@ -2162,29 +2179,12 @@ function _mergeConversationMessages(hash, serverMessages) {
         if (msg && msg.id) seen[msg.id] = true;
     });
 
-    var keepStates = [
-        'sending',
-        'outbound',
-        'sent',
-        'routing',
-        'resolving',
-        'propagating',
-        'propagated',
-        'link_establishing',
-        'sending_via_link',
-        'resource_link_ready',
-        'resource_advertised',
-        'resource_transferring',
-        'resource_waiting_for_proof',
-        'reusing_direct_link',
-        'reusing_backchannel'
-    ];
     var now = Date.now() / 1000;
     cached.forEach(function(msg) {
         if (!msg || !msg.id || seen[msg.id] || msg.direction !== 'outbound') return;
         var state = msg.state || '';
         var recent = !msg.timestamp || (now - msg.timestamp) < 3600;
-        if (recent && keepStates.indexOf(state) !== -1) {
+        if (recent && (_isUnsettledMessageState(state) || state === 'propagated')) {
             merged.push(msg);
             seen[msg.id] = true;
         }
@@ -6727,9 +6727,6 @@ RS.listen('lxmf_step', function(data) {
     }
     if (data.step === 'delivered' || data.step === 'propagated' || data.step === 'failed' || data.step === 'cancelled' || data.step === 'timeout' || data.step === 'error' || data.step === 'rejected') {
         var resolvedState = (data.step === 'error') ? 'failed' : data.step;
-        // `propagated` is terminal alongside `delivered`/`failed`/`cancelled`/
-        // `rejected` — see db::update_message_state for the matching guard.
-        var terminalStates = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper'];
         var matched = false;
         var eventMsgId = data.msg_id || data.client_msg_id;
         lxmfConversation.forEach(function(msg) {
@@ -6737,7 +6734,7 @@ RS.listen('lxmf_step', function(data) {
                 // A proof outranks an earlier outcome; nothing else leaves one.
                 var proofOutranks = resolvedState === 'delivered' &&
                     msg.state !== 'rejected' && msg.state !== 'paper';
-                if (terminalStates.indexOf(msg.state) === -1 || proofOutranks) {
+                if (!_isTerminalMessageState(msg.state) || proofOutranks) {
                     msg.state = resolvedState;
                     if (data.rtt_ms) msg.rtt = data.rtt_ms;
                     if (data.method) msg.delivery_method = data.method;
@@ -6759,21 +6756,7 @@ RS.listen('lxmf_step', function(data) {
         renderConversation();
         if (data.client_msg_id) delete _pendingLxmfCancelByClientId[data.client_msg_id];
     }
-    var inFlightSteps = [
-        'sent',
-        'routing',
-        'propagating',
-        'resolving',
-        'link_establishing',
-        'sending_via_link',
-        'resource_link_ready',
-        'resource_advertised',
-        'resource_transferring',
-        'resource_waiting_for_proof',
-        'reusing_direct_link',
-        'reusing_backchannel'
-    ];
-    if (inFlightSteps.indexOf(data.step) !== -1) {
+    if (_isInFlightStep(data.step)) {
         lxmfConversation.forEach(function(msg) {
             if (data.msg_id && msg.id === data.msg_id) {
                 if (!_isTerminalMessageState(msg.state)) msg.state = data.step;
@@ -6805,19 +6788,6 @@ RS.listen('lxmf_delivery_progress', function(data) {
         }
         _flushPendingLxmfCancel(data.client_msg_id, data.msg_id);
     }
-    var inFlightSteps = [
-        'routing',
-        'propagating',
-        'link_establishing',
-        'sending_via_link',
-        'resource_link_ready',
-        'resource_advertised',
-        'resource_transferring',
-        'resource_waiting_for_proof',
-        'reusing_direct_link',
-        'reusing_backchannel'
-    ];
-    var terminalStates = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper'];
     var changed = false;
     lxmfConversation.forEach(function(msg) {
         if (data.msg_id && msg.id === data.msg_id) {
@@ -6825,7 +6795,7 @@ RS.listen('lxmf_delivery_progress', function(data) {
             if (data.link_id) msg.delivery_link_id = data.link_id;
             if (data.representation) msg.delivery_representation = data.representation;
             if (data.method) msg.delivery_method = data.method;
-            if (data.step && inFlightSteps.indexOf(data.step) !== -1 && terminalStates.indexOf(msg.state) === -1) {
+            if (_isInFlightStep(data.step) && !_isTerminalMessageState(msg.state)) {
                 msg.state = data.step;
             }
             changed = true;

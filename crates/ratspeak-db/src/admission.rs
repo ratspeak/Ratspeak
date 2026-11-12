@@ -1,5 +1,6 @@
 //! Propagation-only durable admission. Normal interactive database work keeps
 //! using its existing pool; no pooled connection has its pragmas changed here.
+use ratspeak_core::delivery::{OutboundState, sql_list};
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
@@ -892,7 +893,7 @@ impl DurableInboundStore {
         // Matches the outbound states the client can still cancel.
         if ids.is_some()
             && tx.query_row(
-                &format!("SELECT EXISTS(SELECT 1 FROM messages WHERE {SCOPE} AND direction='outbound' AND state NOT IN ('delivered','propagated','failed','cancelled','rejected','timeout','read') AND NOT (state='sent' AND lower(COALESCE(delivery_method,''))<>'direct'))"),
+                &format!("SELECT EXISTS(SELECT 1 FROM messages WHERE {SCOPE} AND direction='outbound' AND state NOT IN {} AND state<>'read' AND NOT (state='sent' AND lower(COALESCE(delivery_method,''))<>'direct'))", sql_list(OutboundState::is_final)),
                 params![identity, peer, ids, thread],
                 |row| row.get::<_, bool>(0),
             )?
@@ -1545,6 +1546,47 @@ mod tests {
             .delete_selected_messages_guarded(&guard, &a, "peer", &ids, 1001)
             .unwrap();
         assert_eq!(deleted.len(), 3);
+        drop(guard);
+        drop(store);
+        drop(pool);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn a_selected_paper_message_can_be_deleted() {
+        let _serial = SERIAL.lock().unwrap();
+        let (path, pool, store) = fixture();
+        let a = "11".repeat(16);
+        let settled = [
+            "delivered",
+            "propagated",
+            "failed",
+            "cancelled",
+            "rejected",
+            "timeout",
+            "paper",
+        ];
+        let guard = try_reserve_admission().unwrap();
+        for (n, state) in OutboundState::ALL.into_iter().enumerate() {
+            let id = format!("out_{}", hex::encode([n as u8 + 1; 16]));
+            let state = state.as_str();
+            message(&pool, &a, "peer", &id, (state, Some("direct")), "");
+            let result = store.delete_selected_messages_guarded(
+                &guard,
+                &a,
+                "peer",
+                std::slice::from_ref(&id),
+                1001,
+            );
+            if settled.contains(&state) {
+                assert_eq!(result.unwrap().1, [id], "{state}");
+            } else {
+                assert!(
+                    matches!(result, Err(AdmissionDbError::StillSending)),
+                    "{state}"
+                );
+            }
+        }
         drop(guard);
         drop(store);
         drop(pool);

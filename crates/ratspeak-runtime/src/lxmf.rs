@@ -48,6 +48,7 @@ use crate::activity::producer::DeliveryFailureReason;
 use crate::announce_stamps::{AnnounceStamps, StampWait};
 use crate::db;
 use crate::state::DbPool;
+use ratspeak_core::delivery::OutboundState;
 use ratspeak_core::{LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME, LXMF_PROPAGATION_APP_NAME};
 
 const MAX_LXMF_RESOURCE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE;
@@ -1571,10 +1572,7 @@ const MAX_REPORTED_STEPS: usize = 4_096;
 const REPORTED_STEP_TTL_SECS: f64 = 24.0 * 60.0 * 60.0;
 
 fn terminal_delivery_step(step: &str) -> bool {
-    matches!(
-        step,
-        "delivered" | "propagated" | "rejected" | "failed" | "cancelled"
-    )
+    OutboundState::parse(step).is_some_and(OutboundState::is_final)
 }
 
 /// Loads a hardware (PIV-backed) identity from its `.hwid`; `pin` comes from
@@ -10520,6 +10518,23 @@ mod tests {
             "the Offline Inbox node refused it, not the recipient"
         );
         assert!(mgr.take_failure_reasons().is_empty(), "taken once");
+    }
+
+    #[test]
+    fn a_terminal_step_is_a_final_state() {
+        let shipped = ["delivered", "propagated", "rejected", "failed", "cancelled"];
+        for state in OutboundState::ALL {
+            let step = state.as_str();
+            // The manager never reports `timeout` or `paper`.
+            assert_eq!(
+                terminal_delivery_step(step),
+                shipped.contains(&step) || matches!(step, "timeout" | "paper"),
+                "{step}"
+            );
+        }
+        for step in ["", "unknown", "resource_transferring"] {
+            assert!(!terminal_delivery_step(step), "{step}");
+        }
     }
 
     #[test]

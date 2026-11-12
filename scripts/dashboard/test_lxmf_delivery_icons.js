@@ -87,7 +87,8 @@ assert(paperIcon.includes('msg-state-paper') && paperIcon.includes('aria-label="
 assert(!paperIcon.includes('msg-state-sending') && !paperIcon.includes('msg-state-sent'));
 context.escapeHtml = function(value) { return String(value); };
 vm.runInContext(source.slice(source.indexOf('var RS_QR_GLYPH_PATHS'), source.indexOf('var RS_PAPER_LINK_GLYPH')), context);
-['_isTerminalMessageState', '_messageDeliveryMethod', '_messageIsPaper', '_messagePaperChipHtml', '_messageCanCancelSend']
+vm.runInContext(source.slice(0, source.indexOf('var lxmfIdentity')), context);
+['_messageDeliveryMethod', '_messageIsPaper', '_messagePaperChipHtml', '_messageCanCancelSend']
     .forEach(function(name) { vm.runInContext(functionSource(name), context); });
 assert(context._isTerminalMessageState('paper'));
 assert.strictEqual(context._messageCanCancelSend({ direction: 'outbound', state: 'paper' }), false,
@@ -100,8 +101,72 @@ assert(outboundChip.includes('<span class="msg-state-label" aria-hidden="true">P
 var inboundChip = context._messagePaperChipHtml({ id: 'm2' }, false);
 assert(!inboundChip.includes('<button') && inboundChip.includes('aria-label="Received as a paper message"'));
 assert(outboundChip.includes('<path d="M14 21h7v-2"/>'), 'the chip and the chat link share one QR glyph');
-assert.strictEqual((source.match(/var terminalStates = \['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper'\];/g) || []).length, 2,
-    'step and progress events must not overwrite a paper state');
+
+// One table of outbound states, and every reader agrees with it for every state.
+var ON_ITS_WAY = ['sending', 'routing', 'propagating', 'link_establishing', 'sending_via_link',
+    'reusing_direct_link', 'reusing_backchannel', 'sent'];
+var SETTLED = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper'];
+var PROGRESS = ['resource_link_ready', 'resource_advertised', 'resource_transferring', 'resource_waiting_for_proof'];
+var RETIRED = ['pending', 'outbound', 'generating', 'resolving', 'resending'];
+assert.deepStrictEqual(Object.keys(context.LXMF_OUTBOUND_STATES), ON_ITS_WAY.concat(SETTLED, PROGRESS));
+['terminalStates', 'inFlightSteps', 'keepStates'].forEach(function(list) {
+    assert(!source.includes('var ' + list + ' = ['), list + ' is read from the table');
+});
+ON_ITS_WAY.concat(SETTLED, PROGRESS, RETIRED, ['received', 'read', 'unknown', '', undefined]).forEach(function(state) {
+    var settled = SETTLED.indexOf(state) !== -1;
+    var unsettled = ON_ITS_WAY.indexOf(state) !== -1 || PROGRESS.indexOf(state) !== -1;
+    assert.strictEqual(context._isTerminalMessageState(state), settled, state + ' settled');
+    assert.strictEqual(context._isInFlightStep(state), unsettled && state !== 'sending', state + ' step');
+    assert.strictEqual(context._messageCanCancelSend({ direction: 'outbound', state: state, delivery_method: 'direct' }),
+        unsettled, state + ' cancel');
+    assert.strictEqual(context._messageCanCancelSend({ direction: 'inbound', state: state }), false);
+});
+assert.strictEqual(context._messageCanCancelSend({ direction: 'outbound', state: 'sent' }), false,
+    'a sent packet has left the device');
+
+// Steps and transfer progress move a message on its way and never one that settled.
+function listenerSource(event) {
+    var start = source.indexOf("RS.listen('" + event + "', function(");
+    assert.notStrictEqual(start, -1, event + ' listener must exist');
+    var depth = 0;
+    for (var index = source.indexOf('{', start); index < source.length; index++) {
+        if (source[index] === '{') depth++;
+        if (source[index] === '}' && --depth === 0) return source.slice(start, source.indexOf(';', index) + 1);
+    }
+    throw new Error('unterminated listener ' + event);
+}
+var handlers = {};
+var events = {
+    RS: { listen: function(event, handler) { handlers[event] = handler; } },
+    lxmfConversation: [],
+    _pendingLxmfCancelByClientId: {},
+    _flushPendingLxmfCancel: function() {},
+    _cacheActiveConversation: function() {},
+    renderConversation: function() {},
+    _noticeUndeliveredMessage: function() {},
+    showToast: function() {}
+};
+vm.createContext(events);
+vm.runInContext(source.slice(0, source.indexOf('var lxmfIdentity')), events);
+vm.runInContext(listenerSource('lxmf_step') + listenerSource('lxmf_delivery_progress'), events);
+function after(event, from, step) {
+    events.lxmfConversation = [{ id: 'm', direction: 'outbound', state: from }];
+    handlers[event]({ msg_id: 'm', step: step });
+    return events.lxmfConversation[0].state;
+}
+var MOVES = ON_ITS_WAY.concat(PROGRESS).filter(function(step) { return step !== 'sending'; });
+ON_ITS_WAY.concat(SETTLED, PROGRESS, RETIRED).forEach(function(step) {
+    var moves = MOVES.indexOf(step) !== -1;
+    assert.strictEqual(after('lxmf_step', 'sending', step),
+        moves || ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout'].indexOf(step) !== -1 ? step : 'sending',
+        step + ' step');
+    assert.strictEqual(after('lxmf_delivery_progress', 'sending', step), moves ? step : 'sending', step + ' progress');
+    SETTLED.forEach(function(settled) {
+        var proof = step === 'delivered' && settled !== 'rejected' && settled !== 'paper';
+        assert.strictEqual(after('lxmf_step', settled, step), proof ? 'delivered' : settled, settled + ' after ' + step);
+        assert.strictEqual(after('lxmf_delivery_progress', settled, step), settled, settled + ' after progress ' + step);
+    });
+});
 assert(source.includes("var stateIcon = _messageIsPaper(msg)\n            ? _messagePaperChipHtml(msg, isOut)"));
 assert(source.includes("'.md-spoiler:not(.is-revealed), .md-code-copy, .msg-paper-state'"),
     'a hold on the chip opens message actions and swallows the trailing tap');
