@@ -2064,42 +2064,6 @@
     word-break: break-word;
 }
 
-.about-hero-address {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--text-secondary);
-}
-
-.about-id-badge {
-    display: inline-flex;
-    align-items: center;
-    padding: var(--space-1) var(--space-4);
-    border-radius: var(--radius-pill);
-    font-size: var(--type-badge-size);
-    font-weight: var(--type-badge-weight);
-    text-transform: uppercase;
-    letter-spacing: var(--type-badge-tracking);
-}
-.about-id-badge-verified {
-    background: var(--status-online-bg);
-    color: var(--status-online-fg);
-    border: 1px solid var(--status-online-border);
-}
-.about-id-badge-unverified {
-    background: var(--surface-elevation-3);
-    color: var(--text-muted);
-    border: 1px solid var(--border-light);
-}
-
-.about-section-label {
-    font-size: var(--type-section-label-size);
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: var(--type-section-label-tracking);
-    font-weight: var(--type-section-label-weight);
-    margin: var(--space-6) 0 var(--space-2);
-}
-
 .about-section {
     display: flex;
     flex-direction: column;
@@ -2129,20 +2093,6 @@
     word-break: break-word;
 }
 .about-row-value-muted { color: var(--text-muted); }
-
-.about-row-pair {
-    gap: var(--space-6);
-}
-.about-pair-cell {
-    flex: 1;
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: var(--space-3);
-    min-width: 0;
-}
-.about-pair-cell .about-row-label { flex-shrink: 0; }
-.about-pair-cell .about-row-value { text-align: right; }
 
 .about-status-chip {
     display: inline-flex;
@@ -2174,19 +2124,6 @@
     color: var(--text-muted);
     border: 1px solid var(--border-light);
 }
-
-.about-iface-stale {
-    color: var(--text-muted);
-    font-size: var(--text-xs);
-}
-
-.about-via-link {
-    color: var(--accent);
-    font-family: var(--font-mono);
-    font-size: var(--type-id-size);
-    text-decoration: none;
-}
-.about-via-link:hover { text-decoration: underline; }
 
 .about-messages-link {
     color: var(--accent);

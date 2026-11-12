@@ -108,15 +108,6 @@
 .lxmf-own-hash:hover {
     color: var(--ble-accent-fg);
 }
-.contact-id-status {
-    width: 6px;
-    height: 6px;
-    border-radius: var(--radius-full);
-    display: inline-block;
-    flex-shrink: 0;
-}
-.contact-id-status.known { background: var(--status-online); }
-.contact-id-status.unknown { background: var(--border-light); }
 .lxmf-chat {
     flex: 1;
     display: flex;

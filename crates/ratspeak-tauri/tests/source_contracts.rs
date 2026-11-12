@@ -7399,7 +7399,7 @@ fn contact_detail_sheet_centers_identity_and_separates_primary_actions() {
         .expect("primary actions");
     let fields = lxmf_js.find("contact-detail-fields").expect("fields");
     let danger_actions = lxmf_js
-        .find("contact-detail-danger-actions")
+        .find("contact-detail-action-rows")
         .expect("danger actions");
     assert!(hash_row < primary_actions);
     assert!(primary_actions < fields);
@@ -7409,7 +7409,7 @@ fn contact_detail_sheet_centers_identity_and_separates_primary_actions() {
     assert!(views_css.contains("margin: var(--space-4) auto 0;"));
     assert!(views_css.contains(".contact-detail-avatar svg,"));
     assert!(views_css.contains(".contact-detail-primary-actions"));
-    assert!(views_css.contains(".contact-detail-danger-actions"));
+    assert!(views_css.contains(".contact-detail-action-rows"));
 }
 
 #[test]
@@ -7437,14 +7437,11 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
         connections
             .contains("sheet.classList.toggle('conn-detail-sheet--progressive', progressive);")
     );
+    assert!(
+        connections.contains("sheet.classList.toggle('conn-detail-sheet--compact', progressive);")
+    );
     assert!(connections.contains(
-        "sheet.classList.toggle('conn-detail-sheet--compact', progressive && !addActionHtml);"
-    ));
-    assert!(connections.contains(
-        "sheet.classList.toggle('conn-detail-sheet--with-add', progressive && !!addActionHtml);"
-    ));
-    assert!(connections.contains(
-        "sheet.classList.remove('conn-detail-sheet--progressive', 'conn-detail-sheet--expanded', 'conn-detail-sheet--compact', 'conn-detail-sheet--with-add');"
+        "sheet.classList.remove('conn-detail-sheet--progressive', 'conn-detail-sheet--expanded', 'conn-detail-sheet--compact');"
     ));
     assert!(connections.contains("dy < -28"));
     let sheet_start = connections
@@ -7458,19 +7455,12 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
     assert!(sheet_source.contains("identityAvatar(contact.hash, 64)"));
     assert!(sheet_source.contains("conn-detail-sheet-identity"));
     assert!(sheet_source.contains("conn-detail-sheet-header-actions"));
-    assert!(sheet_source.contains("id=\"conn-sheet-more-btn\""));
-    assert!(sheet_source.contains("actionPopover(this"));
-    assert!(sheet_source.contains("label: 'Block'"));
-    assert!(sheet_source.contains("function confirmBlockPeer(h)"));
+    assert!(sheet_source.contains("peerActionRowsHtml(contact.is_contact)"));
+    assert!(sheet_source.contains("wirePeerActionRows(content, contact.hash"));
     assert!(!sheet_source.contains("id=\"conn-sheet-block-btn\""));
     assert!(sheet_source.contains("conn-detail-sheet-primary-actions entity-action-grid"));
-    assert!(sheet_source.contains("conn-detail-sheet-secondary-actions entity-action-grid"));
-    assert!(sheet_source.contains("<span>Message route</span><strong>"));
-    assert!(sheet_source.contains("<span>Call route</span><strong>"));
+    assert!(sheet_source.contains("peerDetailRowsHtml(contact"));
     assert!(!sheet_source.contains("<span>Hops</span><strong>"));
-    assert!(!sheet_source.contains("<span>Route</span>"));
-    assert!(!sheet_source.contains("<span>Via</span>"));
-    assert!(sheet_source.contains("TODO(dev-mode): expose next-hop/via"));
 
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("css");
@@ -7484,19 +7474,12 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
     assert!(responsive_css.contains(".conn-detail-sheet-header-actions"));
     assert!(responsive_css.contains(".conn-detail-sheet-icon-btn"));
     assert!(responsive_css.contains(".conn-detail-sheet-primary-actions"));
-    assert!(responsive_css.contains(".conn-detail-sheet-secondary-actions"));
     assert!(
         responsive_css.contains(
             ".conn-detail-sheet.conn-detail-sheet--progressive.conn-detail-sheet--compact"
         )
     );
-    assert!(
-        responsive_css.contains(
-            ".conn-detail-sheet.conn-detail-sheet--progressive.conn-detail-sheet--with-add"
-        )
-    );
     assert!(responsive_css.contains(".conn-detail-sheet--compact .conn-detail-sheet-expand-hint"));
-    assert!(responsive_css.contains(".conn-detail-sheet--with-add .conn-detail-sheet-expand-hint"));
     let conn_sheet_css = responsive_css
         .split(".conn-detail-sheet {")
         .nth(1)
@@ -7510,9 +7493,6 @@ fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
         responsive_css
             .contains(".conn-detail-sheet--compact .conn-detail-sheet-actions .entity-action-btn")
     );
-    assert!(responsive_css.contains(
-        ".conn-detail-sheet-secondary-actions {\n    grid-template-columns: minmax(0, 1fr);"
-    ));
     assert!(responsive_css.contains("overflow-x: hidden;"));
     assert!(responsive_css.contains("grid-template-areas: \"avatar title actions\";"));
     assert!(responsive_css.contains("grid-template-columns: 64px minmax(0, 1fr) auto;"));

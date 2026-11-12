@@ -196,31 +196,25 @@
 }
 
 .conn-status-dot.status-reachable,
-.conn-status-dot.status-direct,
-.contact-id-status.status-reachable,
-.contact-id-status.status-direct {
+.conn-status-dot.status-direct {
     background: var(--status-online);
     box-shadow: 0 0 3px rgba(var(--accent-rgb), 0.25);
 }
 
-.conn-status-dot.status-stale,
-.contact-id-status.status-stale {
+.conn-status-dot.status-stale {
     background: var(--status-warning);
     box-shadow: 0 0 4px rgba(var(--status-warning-rgb), 0.3);
 }
 
-.conn-status-dot.status-offline,
-.contact-id-status.status-offline {
+.conn-status-dot.status-offline {
     background: var(--text-muted);
 }
 
-.conn-status-dot.status-unreachable,
-.contact-id-status.status-unreachable {
+.conn-status-dot.status-unreachable {
     background: var(--status-error);
 }
 
-.conn-status-dot.status-unknown,
-.contact-id-status.status-unknown {
+.conn-status-dot.status-unknown {
     background: var(--border-light);
 }
 

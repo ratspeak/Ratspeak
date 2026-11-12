@@ -238,7 +238,7 @@ assert(!read('static/js/peers.js').includes('displayName.substring(0, 40)'));
 assert(!read('static/js/connections.js').includes('displayName.substring(0, 40)'));
 assert(stateSource.includes("return '<button class=\"hash-copy\" type=\"button\""),
     'compact hashes must remain keyboard-operable copy buttons');
-assert(read('static/js/peers.js').includes('<button class="peers-detail-hash"'),
+assert(read('static/js/peer_details.js').includes('<button class="peers-detail-hash"'),
     'peer detail hashes must use a semantic copy control');
 
 var identitySource = read('static/js/identity.js');

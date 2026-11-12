@@ -510,120 +510,32 @@ function renderPeersDetailPanel(hash) {
     }
     if (!peer) { hidePeersDetail(); return; }
 
-    var iface = peer.iface || null;
-
     var hasName = peer.display_name && peer.display_name !== '' && peer.display_name !== peer.hash;
-    var displayName = hasName ? peer.display_name : (typeof shortHash === 'function' ? shortHash(peer.hash, 8, 4) : peer.hash.substring(0, 12) + '\u2026');
     var av = (typeof identityAvatar === 'function') ? identityAvatar(hash, 64) : '';
-    var statusLabel = peer.status === 'reachable' || peer.status === 'direct' ? 'Recent' : peer.status === 'stale' ? 'Seen today' : 'Older / unknown';
-    var statusDotClass = 'status-' + peer.status;
-    var lastHeardText = typeof formatLastHeard === 'function' ? formatLastHeard(peer.last_seen) : (peer.last_seen ? new Date(peer.last_seen * 1000).toLocaleString() : 'No activity yet');
-    var firstHeardText = peer.first_seen ? (typeof formatLastHeard === 'function' ? formatLastHeard(peer.first_seen) : new Date(peer.first_seen * 1000).toLocaleString()) : '\u2014';
-    var pathAgeText = peer.in_path && typeof formatPathAge === 'function' ? formatPathAge(peer.path_age) : '\u2014';
-    var viaText = peer.in_path ? (typeof formatVia === 'function' ? formatVia(peer.via) : (peer.via || 'direct')) : '\u2014';
-    var hopText = (peer.hops !== null && peer.hops !== undefined) ? peer.hops : '\u2014';
-    var ifaceText = iface ? iface + (peer.iface_is_live ? '' : ' (last known)') : '\u2014';
+    var trust = '';
+    if (peer.is_contact && _peersContactCache) {
+        _peersContactCache.forEach(function(ct) { if (ct.dest_hash === hash || ct.hash === hash) trust = ct.trust || ''; });
+    }
 
     var html = '<div class="peers-detail-header">' +
         '<div class="peers-detail-avatar">' + av + '</div>' +
-        '<div class="peers-detail-name">' + ratspeakDisplayNameHtml(displayName, peer) + '</div>' +
-        '<button class="peers-detail-hash" id="peers-detail-hash-copy" type="button" dir="ltr" aria-label="Copy identity hash ' + escapeHtml(hash) + '" title="Copy identity hash">' + escapeHtml(hash) + '</button>' +
-        '<div class="peers-detail-status"><span class="conn-status-dot ' + statusDotClass + '"></span> ' + statusLabel + '</div>' +
-    '</div>';
-
-    html += '<div class="peers-detail-section">' +
-        '<div class="peers-detail-section-title">Activity</div>' +
-        '<div class="peers-detail-field"><span class="peers-detail-field-label">Last heard</span><span class="peers-detail-field-value">' + escapeHtml(lastHeardText) + '</span></div>' +
-        '<div class="peers-detail-field"><span class="peers-detail-field-label">First heard</span><span class="peers-detail-field-value">' + escapeHtml(firstHeardText) + '</span></div>' +
-    '</div>';
-
-    html += '<div class="peers-detail-section">' +
-        '<div class="peers-detail-section-title">Routing</div>' +
-        '<div class="peers-detail-field"><span class="peers-detail-field-label">Route</span><span class="peers-detail-field-value">' + escapeHtml(peer.route_label || 'No current path') + '</span></div>' +
-        '<div class="peers-detail-field"><span class="peers-detail-field-label">Hops</span><span class="peers-detail-field-value">' + hopText + '</span></div>' +
-        '<div class="peers-detail-field"><span class="peers-detail-field-label">Path age</span><span class="peers-detail-field-value">' + pathAgeText + '</span></div>' +
-        '<div class="peers-detail-field"><span class="peers-detail-field-label">Via</span><span class="peers-detail-field-value">' + escapeHtml(viaText) + '</span></div>' +
-        '<div class="peers-detail-field"><span class="peers-detail-field-label">Interface</span><span class="peers-detail-field-value">' + escapeHtml(ifaceText) + '</span></div>' +
-    '</div>';
-
-    html += '<div class="peers-detail-section" id="peers-detail-contact-section">' +
-        '<div class="peers-detail-section-title">Contact</div>' +
-        '<div class="peers-detail-field"><span class="peers-detail-field-label">Saved</span><span class="peers-detail-field-value">' + (peer.is_contact ? 'Yes' : 'No') + '</span></div>';
-
-    if (peer.is_contact && _peersContactCache) {
-        var contact = null;
-        _peersContactCache.forEach(function(ct) { if (ct.dest_hash === hash || ct.hash === hash) contact = ct; });
-        if (contact) {
-            if (contact.trust) html += '<div class="peers-detail-field"><span class="peers-detail-field-label">Trust</span><span class="peers-detail-field-value">' + escapeHtml(contact.trust) + '</span></div>';
-        }
-    }
-    html += '</div>';
-
-    html += '<div class="peers-detail-actions entity-action-grid">';
-    if (typeof voiceActionButtonHtml === 'function') {
-        html += voiceActionButtonHtml('peers-detail-call-btn', hash);
-    }
-    html += '<button class="nr-btn entity-action-btn" id="peers-detail-message-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Message</span></button>';
-    if (!peer.is_contact) {
-        html += '<button class="nr-btn entity-action-btn" id="peers-detail-add-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg><span>Add</span></button>';
-    }
-    html += '<button class="danger-btn entity-action-btn" id="peers-detail-block-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg><span>Block</span></button>';
-    html += '</div>';
+        peerNameHtml('peers-detail-name', hasName ? ratspeakDisplayNameHtml(peer.display_name, peer) : '') +
+        peerAddressButtonHtml(hash) +
+        peerStatusChipHtml(peer) +
+    '</div>' +
+    peerActionPairHtml('peers-detail-actions entity-action-grid', 'peers-detail', hash) +
+    peerDetailsHtml('peers-detail-rows', peer, { trust: trust }) +
+    peerActionRowsHtml(peer.is_contact);
 
     if (empty) empty.style.display = 'none';
     content.style.display = '';
-    content.innerHTML = html;
-
-    var hashEl = document.getElementById('peers-detail-hash-copy');
-    if (hashEl) {
-        hashEl.addEventListener('click', function() {
-            RS.copyText(hash).then(function(ok) {
-                if (ok && typeof showCopyConfirmationToast === 'function') showCopyConfirmationToast('Address');
-            });
-        });
-    }
-    var msgBtn = document.getElementById('peers-detail-message-btn');
-    if (msgBtn) {
-        msgBtn.addEventListener('click', function() {
-            if (typeof openConversationWith === 'function') openConversationWith(hash);
-        });
-    }
-    if (typeof wireVoiceActionButton === 'function') {
-        wireVoiceActionButton('peers-detail-call-btn');
-    }
-    var addBtn = document.getElementById('peers-detail-add-btn');
-    if (addBtn) {
-        addBtn.addEventListener('click', function() {
-            var prefill = peer.display_name || '';
-            rsPrompt({ message: 'Contact name (optional):', placeholder: 'Display name', defaultValue: prefill }).then(function(name) {
-                if (name === null) return;
-                RS.invokeOrToast('add_contact', { args: { hash: hash, display_name: name.trim() || null } }, 'Could not add contact');
-            });
-        });
-    }
-    var blockBtn = document.getElementById('peers-detail-block-btn');
-    if (blockBtn) {
-        blockBtn.addEventListener('click', function() {
-            var displayName = peer.display_name || (typeof shortHash === 'function' ? shortHash(hash, 8, 4) : hash.substring(0, 12));
-            rsConfirmWithCheckbox({
-                message: 'Block "' + displayName + '"? They won\'t appear in your peers list and their messages will be hidden.',
-                danger: true,
-                confirmText: 'Block',
-                checkboxLabel: 'Also block at the network layer (drop their packets entirely)',
-                checkboxHelp: 'Stops their messages from reaching this device at all, instead of just hiding them. Useful for relay nodes. This affects all accounts on this device.',
-                defaultChecked: false
-            }).then(function(result) {
-                if (!result.confirmed) return;
-                RS.invokeOrToast('block_contact', { args: { hash: hash, escalate_to_blackhole: result.checked } }, 'Could not block contact')
-                    .then(function(resp) {
-                        if (resp && resp.blackhole_pending && typeof showToast === 'function') {
-                            showToast('Blocked. Network filtering starts after their next announce.', 'toast-warning', 5000);
-                        }
-                    })
-                    .catch(function() {});
-                hidePeersDetail();
-            });
-        });
+    // The panel re-renders on a timer; leave unchanged markup in place so focus and hover survive.
+    if (content._rsLastHtml !== html) {
+        content._rsLastHtml = html;
+        content.innerHTML = html;
+        syncPeerDetails(content);
+        wirePeerActionPair('peers-detail', hash);
+        wirePeerActionRows(content, hash, { name: hasName ? peer.display_name : '', onBlocked: hidePeersDetail });
     }
 
     if (peer.is_contact && !_peersContactCache) {

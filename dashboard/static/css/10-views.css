@@ -492,58 +492,101 @@
 }
 .peers-detail-hash:hover { color: var(--accent); }
 .peers-detail-hash:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; border-radius: var(--radius-xs); }
-.peers-detail-status {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-3);
-    font-size: var(--type-row-detail-size);
-    font-weight: var(--type-weight-medium);
-}
-.peers-detail-section {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-1);
-}
-.peers-detail-section-title {
-    font-size: var(--type-section-label-size);
-    font-weight: var(--type-section-label-weight);
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: var(--type-section-label-tracking);
-    margin-bottom: var(--space-2);
-}
-.peers-detail-field {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    padding: var(--space-2) 0;
-    border-bottom: 1px solid var(--divider);
-}
-.peers-detail-field:last-child { border-bottom: none; }
-.peers-detail-field-label {
-    font-size: var(--type-row-meta-size);
-    color: var(--text-secondary);
-}
-.peers-detail-field-value {
-    font-size: var(--type-row-meta-size);
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    text-align: right;
-    max-width: 60%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
 .peers-detail-actions {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));
     gap: var(--space-4);
-    padding-top: var(--space-4);
 }
 .peers-detail-actions .nr-btn,
 .peers-detail-actions .danger-btn {
     width: auto;
     min-width: 0;
+}
+
+/* Shared by the Peers panel, the About sheet, the contact sheet, and the mobile peer sheet. */
+.peer-name-placeholder { color: var(--text-muted); }
+.peer-hash {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3);
+    font-size: var(--type-id-size);
+    color: var(--text-primary);
+}
+.peer-hash--full {
+    font-size: var(--type-id-sm-size);
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: right;
+}
+.peer-copy-glyph {
+    width: 13px;
+    height: 13px;
+    flex-shrink: 0;
+    color: var(--text-muted);
+}
+.peer-hash:hover .peer-copy-glyph { color: var(--accent); }
+/* A full hash drops under its label where the row is too narrow for both. */
+.peer-identity-row {
+    flex-wrap: wrap;
+    row-gap: var(--space-1);
+}
+.peer-identity-row .about-row-value { margin-left: auto; }
+
+.peer-details {
+    border-top: 1px solid var(--border-light);
+    border-bottom: 1px solid var(--border-light);
+}
+.peer-details-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-5);
+    width: 100%;
+    min-height: 44px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    font-size: var(--text-sm);
+    font-weight: var(--type-weight-medium);
+    text-align: left;
+    cursor: pointer;
+}
+.peer-details-toggle:hover,
+.peer-details-toggle:focus-visible { color: var(--text-primary); }
+.peer-details-chevron {
+    flex-shrink: 0;
+    color: var(--text-muted);
+    transition: transform var(--transition-fast);
+}
+.peer-details-toggle:hover .peer-details-chevron,
+.peer-details-toggle:focus-visible .peer-details-chevron { color: var(--accent); }
+.peer-details[data-open="true"] .peer-details-chevron { transform: rotate(90deg); }
+.peer-details[data-open="true"] .peer-details-toggle { border-bottom: 1px solid var(--border-light); }
+.peer-details-region {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows var(--transition-base);
+}
+.peer-details[data-open="true"] .peer-details-region { grid-template-rows: 1fr; }
+/* The side bleed keeps a focus ring on a value at the row edge from being clipped. */
+.peer-details-region > .about-section {
+    min-height: 0;
+    overflow: hidden;
+    margin: 0 calc(var(--space-2) * -1);
+    padding: 0 var(--space-2);
+}
+
+.peer-action-rows {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+.peer-action-rows .action-popover-item {
+    min-height: 44px;
+    padding-left: 0;
+    padding-right: 0;
 }
 
 .network-layout {
@@ -4949,57 +4992,13 @@ body.setup-active .main-content {
 }
 .contact-detail-hash-row {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    justify-content: center;
     gap: var(--space-3);
     margin: var(--space-2) var(--space-10) var(--space-5);
 }
-.contact-detail-hash {
-    font-size: var(--text-xs);
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    word-break: break-all;
-    flex: 1;
-    text-align: center;
-}
-.contact-detail-copy-btn {
-    flex-shrink: 0;
-    width: 32px;
-    height: 32px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    color: var(--text-muted);
-    cursor: pointer;
-    padding: 0;
-    transition: color var(--transition-base), border-color var(--transition-base);
-}
-.contact-detail-copy-btn:hover {
-    color: var(--accent);
-    border-color: var(--accent);
-}
 .contact-detail-fields {
     padding: 0 var(--space-10);
-}
-.contact-detail-field {
-    display: flex;
-    justify-content: space-between;
-    padding: var(--space-5) 0;
-    border-bottom: 1px solid var(--border);
-    font-size: var(--text-base);
-}
-.contact-detail-field-label {
-    color: var(--text-muted);
-}
-.contact-detail-field-value {
-    color: var(--text-primary);
-    font-weight: 500;
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
 }
 .contact-detail-actions {
     display: grid;
@@ -5010,9 +5009,8 @@ body.setup-active .main-content {
 .contact-detail-primary-actions {
     padding-bottom: var(--space-3);
 }
-.contact-detail-danger-actions {
-    padding-top: var(--space-3);
-    padding-bottom: var(--space-2);
+.contact-detail-action-rows {
+    padding: 0 var(--space-10) var(--space-2);
 }
 .contact-detail-actions .nr-btn,
 .contact-detail-actions .danger-btn {

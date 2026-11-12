@@ -1657,10 +1657,7 @@
 }
 .conn-detail-sheet.conn-detail-sheet--progressive.conn-detail-sheet--compact {
     min-height: 0;
-    max-height: min(48vh, 380px);
-}
-.conn-detail-sheet.conn-detail-sheet--progressive.conn-detail-sheet--with-add {
-    max-height: min(58vh, 440px);
+    max-height: min(62vh, 480px);
 }
 .conn-detail-sheet.conn-detail-sheet--progressive.conn-detail-sheet--expanded {
     max-height: min(84vh, calc(100vh - 40px));
@@ -1686,10 +1683,6 @@
     flex: 0 0 auto;
     gap: var(--space-4);
     padding-bottom: calc(var(--space-5) + var(--sab));
-}
-.conn-detail-sheet--progressive.conn-detail-sheet--with-add .conn-detail-sheet-content {
-    gap: var(--space-5);
-    padding-bottom: calc(var(--space-3) + var(--sab));
 }
 .conn-detail-sheet-identity {
     display: grid;
@@ -1794,12 +1787,7 @@
 .conn-detail-sheet--compact .conn-detail-sheet-actions {
     margin-top: 0;
 }
-.conn-detail-sheet--with-add .conn-detail-sheet-actions {
-    gap: var(--space-3);
-    margin-top: 0;
-}
-.conn-detail-sheet-primary-actions,
-.conn-detail-sheet-secondary-actions {
+.conn-detail-sheet-primary-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-4);
@@ -1809,9 +1797,6 @@
 }
 .conn-detail-sheet--compact .conn-detail-sheet-primary-actions {
     gap: var(--space-3);
-}
-.conn-detail-sheet-secondary-actions {
-    grid-template-columns: minmax(0, 1fr);
 }
 .conn-detail-sheet-actions .nr-btn,
 .conn-detail-sheet-actions .danger-btn {
@@ -1841,11 +1826,7 @@
 .conn-detail-sheet-primary-actions .entity-action-btn {
     min-height: 60px;
 }
-.conn-detail-sheet-secondary-actions .entity-action-btn {
-    min-height: 52px;
-}
-.conn-detail-sheet-primary-actions .entity-action-btn:only-child,
-.conn-detail-sheet-secondary-actions .entity-action-btn:only-child {
+.conn-detail-sheet-primary-actions .entity-action-btn:only-child {
     grid-column: 1 / -1;
 }
 .conn-detail-sheet-expand-hint {
@@ -1873,9 +1854,6 @@
     margin-top: 0;
     min-height: 44px;
 }
-.conn-detail-sheet--with-add .conn-detail-sheet-expand-hint {
-    margin-top: 0;
-}
 .conn-detail-sheet-expand-hint svg {
     color: var(--accent);
     opacity: 0.78;
@@ -1883,8 +1861,7 @@
 .conn-detail-sheet-fields {
     display: flex;
     flex-direction: column;
-    gap: var(--space-1);
-    margin-top: var(--space-2);
+    border-top: 1px solid var(--border-light);
 }
 .conn-detail-sheet--progressive .conn-detail-sheet-fields {
     display: none;
@@ -1894,31 +1871,6 @@
 }
 .conn-detail-sheet--progressive.conn-detail-sheet--expanded .conn-detail-sheet-expand-hint {
     display: none;
-}
-.conn-detail-sheet-field {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: var(--space-4);
-    padding: var(--space-4) 0;
-    border-bottom: 1px solid var(--divider);
-}
-.conn-detail-sheet-field:last-child { border-bottom: none; }
-.conn-detail-sheet-field span {
-    color: var(--text-secondary);
-    font-size: var(--type-row-meta-size);
-}
-.conn-detail-sheet-field strong {
-    color: var(--text-primary);
-    font-family: var(--font-mono);
-    font-size: var(--type-row-meta-size);
-    font-weight: var(--type-weight-medium);
-    text-align: right;
-    min-width: 0;
-    max-width: 62%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
 }
 
 @media (max-width: 360px) {
@@ -1940,8 +1892,7 @@
 
     .conn-detail-sheet-name { font-size: var(--text-lg); }
 
-    .conn-detail-sheet-primary-actions,
-    .conn-detail-sheet-secondary-actions {
+    .conn-detail-sheet-primary-actions {
         gap: var(--space-3);
     }
 
@@ -2062,10 +2013,9 @@
         height: 5px;
         margin: var(--space-6) auto var(--space-4);
     }
-    .contact-detail-field {
-        padding: var(--space-7) 0;
-    }
-    .contact-detail-actions {
+    .contact-detail-actions,
+    .contact-detail-fields,
+    .contact-detail-action-rows {
         padding-left: var(--space-12);
         padding-right: var(--space-12);
     }
@@ -2073,8 +2023,7 @@
         padding-top: 0;
         padding-bottom: var(--space-3);
     }
-    .contact-detail-danger-actions {
-        padding-top: var(--space-3);
+    .contact-detail-action-rows {
         padding-bottom: var(--space-6);
     }
     .bottom-sheet-divider {

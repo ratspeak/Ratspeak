@@ -1497,15 +1497,6 @@ function _peerInfo(hash) {
     return null;
 }
 
-function _peerRouteLabel(peer) {
-    if (!peer) return 'No current path';
-    if (peer.route_label) return peer.route_label;
-    if (peer.hops !== null && peer.hops !== undefined) {
-        return peer.hops === 0 ? 'Direct' : peer.hops + ' hop' + (peer.hops !== 1 ? 's' : '');
-    }
-    return peer.in_path ? 'Available' : 'No current path';
-}
-
 function _peerActivityLabel(peer) {
     if (!peer) return 'Never seen';
     return peer.activity_label || 'Never seen';
@@ -1552,23 +1543,6 @@ function _applyChatHeaderPresence() {
             (presenceClass === 'online' || presenceClass === 'stale' ? ' ' + presenceClass : '');
         avatarEl.title = title;
     }
-}
-
-function _peerLastHeardLabel(peer) {
-    if (typeof formatLastHeard === 'function') return formatLastHeard(peer ? peer.last_seen : null);
-    if (peer && peer.last_seen) return prettyTime((Date.now() / 1000) - peer.last_seen) + ' ago';
-    return 'No activity yet';
-}
-
-function _peerFirstHeardLabel(peer) {
-    if (!peer || !peer.first_seen) return '\u2014';
-    if (typeof formatLastHeard === 'function') return formatLastHeard(peer.first_seen);
-    return prettyTime((Date.now() / 1000) - peer.first_seen) + ' ago';
-}
-
-function _peerPathAgeLabel(peer) {
-    if (!peer || !peer.in_path || peer.path_age === null || peer.path_age === undefined) return '\u2014';
-    return prettyTime(peer.path_age) + ' ago';
 }
 
 function _lookupContactRecord(hash) {
@@ -1647,23 +1621,11 @@ function _refreshRenderedConversationPresence() {
     _applyChatHeaderPresence();
 }
 
-function _peerViaLabel(peer) {
-    if (!peer || !peer.in_path) return '\u2014';
-    if (typeof formatVia === 'function') return formatVia(peer.via);
-    return peer.via || 'direct';
-}
-
 function _peerCompactIfaceLabel(iface) {
     if (!iface) return null;
     var s = String(iface).toLowerCase();
     if (s.indexOf('ble_peer') >= 0 || s.indexOf('ble mesh') >= 0 || s.indexOf('bluetooth peer') >= 0) return 'BLE';
     return null;
-}
-
-function _peerInterfaceLabel(peer) {
-    if (!peer || !peer.iface) return '\u2014';
-    var label = _peerCompactIfaceLabel(peer.iface) || peer.iface;
-    return label + (peer.iface_is_live ? '' : ' (last known)');
 }
 
 function _deliveryPrefOrAuto(method) {
@@ -3328,22 +3290,8 @@ function showContactDetailSheet(hash) {
     if (existingSheet) existingSheet.remove();
 
     var contact = lxmfContacts.find(function(c) { return c.hash === hash; });
-    var name = contact ? (contact.display_name || 'Anonymous') : (typeof shortHash === 'function' ? shortHash(hash, 8, 4) : hash.substring(0, 4) + '...' + hash.substring(hash.length - 4));
-
-    var reachStatus = 'unknown';
+    var name = contact ? (contact.display_name || 'Anonymous') : '';
     var peer = _peerInfo(hash);
-    var routeLabel = _peerRouteLabel(peer);
-    var hopsText = peer && peer.hops !== null && peer.hops !== undefined
-        ? peer.hops + (peer.hops === 1 ? ' hop' : ' hops')
-        : '\u2014';
-    var lastHeardText = _peerLastHeardLabel(peer);
-    var firstHeardText = _peerFirstHeardLabel(peer);
-    var pathAgeText = _peerPathAgeLabel(peer);
-    var viaText = _peerViaLabel(peer);
-    var ifaceText = _peerInterfaceLabel(peer);
-    if (peer) reachStatus = peer.status || 'unknown';
-
-    var avatarSvg = identityAvatar(hash, 64);
 
     var overlay = document.createElement('div');
     overlay.id = 'contact-detail-overlay';
@@ -3358,53 +3306,14 @@ function showContactDetailSheet(hash) {
             '<button class="contact-detail-edit-btn" id="cd-edit-name-btn" title="Edit display name" aria-label="Edit display name">' +
                 '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>' +
             '</button>' +
-            '<div class="contact-detail-avatar">' + avatarSvg + '</div>' +
-            '<div class="contact-detail-name">' + ratspeakDisplayNameHtml(name, contact || hash) + '</div>' +
-            '<div class="contact-detail-hash-row">' +
-                '<span class="contact-detail-hash">' + escapeHtml(hash) + '</span>' +
-                '<button class="contact-detail-copy-btn" id="cd-copy-hash-btn" title="Copy LXMF address" aria-label="Copy LXMF address">' +
-                    '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' +
-                '</button>' +
-            '</div>' +
-            '<div class="contact-detail-actions contact-detail-primary-actions entity-action-grid">' +
-                voiceActionButtonHtml('cd-call-btn', hash) +
-                '<button class="nr-btn entity-action-btn" id="cd-message-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>Message</span></button>' +
-            '</div>' +
-            '<div class="contact-detail-fields">' +
-                '<div class="contact-detail-field">' +
-                    '<span class="contact-detail-field-label">Last heard</span>' +
-                    '<span class="contact-detail-field-value"><span class="contact-id-status status-' + reachStatus + '"></span> ' + escapeHtml(lastHeardText) + '</span>' +
-                '</div>' +
-                '<div class="contact-detail-field">' +
-                    '<span class="contact-detail-field-label">First heard</span>' +
-                    '<span class="contact-detail-field-value">' + escapeHtml(firstHeardText) + '</span>' +
-                '</div>' +
-                '<div class="contact-detail-field">' +
-                    '<span class="contact-detail-field-label">Route</span>' +
-                    '<span class="contact-detail-field-value">' + escapeHtml(routeLabel) + '</span>' +
-                '</div>' +
-                '<div class="contact-detail-field">' +
-                    '<span class="contact-detail-field-label">Hops</span>' +
-                    '<span class="contact-detail-field-value">' + escapeHtml(hopsText) + '</span>' +
-                '</div>' +
-                '<div class="contact-detail-field">' +
-                    '<span class="contact-detail-field-label">Path age</span>' +
-                    '<span class="contact-detail-field-value">' + escapeHtml(pathAgeText) + '</span>' +
-                '</div>' +
-                '<div class="contact-detail-field">' +
-                    '<span class="contact-detail-field-label">Via</span>' +
-                    '<span class="contact-detail-field-value">' + escapeHtml(viaText) + '</span>' +
-                '</div>' +
-                '<div class="contact-detail-field">' +
-                    '<span class="contact-detail-field-label">Interface</span>' +
-                    '<span class="contact-detail-field-value">' + escapeHtml(ifaceText) + '</span>' +
-                '</div>' +
-            '</div>' +
-            '<div class="contact-detail-actions contact-detail-danger-actions entity-action-grid">' +
-                '<button class="danger-btn entity-action-btn" id="cd-remove-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg><span>Remove</span></button>' +
-                '<button class="danger-btn entity-action-btn" id="cd-block-btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg><span>Block</span></button>' +
-            '</div>' +
+            '<div class="contact-detail-avatar">' + identityAvatar(hash, 64) + '</div>' +
+            peerNameHtml('contact-detail-name', name ? ratspeakDisplayNameHtml(name, contact || hash) : '') +
+            '<div class="contact-detail-hash-row">' + peerAddressButtonHtml(hash) + peerStatusChipHtml(peer) + '</div>' +
+            peerActionPairHtml('contact-detail-actions contact-detail-primary-actions entity-action-grid', 'cd', hash) +
+            '<div class="contact-detail-fields">' + peerDetailsHtml('cd-detail-rows', peer, { trust: contact ? contact.trust : '' }) + '</div>' +
+            '<div class="contact-detail-action-rows">' + peerActionRowsHtml(!!contact) + '</div>' +
         '</div>';
+    syncPeerDetails(sheet);
 
     document.body.appendChild(overlay);
     document.body.appendChild(sheet);
@@ -3427,17 +3336,6 @@ function showContactDetailSheet(hash) {
         initSheetSwipeDismiss('contact-detail-sheet', 'contact-detail-overlay', closeSheet);
     }
 
-    // Icon is the only copy affordance; hash text remains selectable without copying.
-    var copyBtn = document.getElementById('cd-copy-hash-btn');
-    if (copyBtn) {
-        copyBtn.addEventListener('click', function(ev) {
-            ev.stopPropagation();
-            RS.copyText(hash).then(function(ok) {
-                if (ok) showCopyConfirmationToast('Address');
-            });
-        });
-    }
-
     // add_contact is upsert-by-hash; new display_name renames in place.
     var editBtn = document.getElementById('cd-edit-name-btn');
     if (editBtn) {
@@ -3458,44 +3356,8 @@ function showContactDetailSheet(hash) {
         });
     }
 
-    document.getElementById('cd-message-btn').addEventListener('click', function() {
-        closeSheet();
-        if (typeof openConversationWith === 'function') {
-            openConversationWith(hash);
-        } else {
-            if (typeof switchView === 'function') switchView('message');
-        }
-    });
-    wireVoiceActionButton('cd-call-btn', closeSheet);
-
-    document.getElementById('cd-remove-btn').addEventListener('click', function() {
-        closeSheet();
-        rsConfirm({ message: 'Remove contact "' + name + '"?', danger: true, confirmText: 'Remove' }).then(function(ok) {
-            if (!ok) return;
-            RS.invokeOrToast('remove_contact', { hash: hash }, 'Could not remove contact');
-        });
-    });
-
-    document.getElementById('cd-block-btn').addEventListener('click', function() {
-        closeSheet();
-        rsConfirmWithCheckbox({
-            message: 'Block "' + name + '"? They won\'t appear in your peers list and their messages will be hidden.',
-            danger: true,
-            confirmText: 'Block',
-            checkboxLabel: 'Also block at the network layer (drop their packets entirely)',
-            checkboxHelp: 'Stops their messages from reaching this device at all, instead of just hiding them. Useful for relay nodes. This affects all accounts on this device.',
-            defaultChecked: false
-        }).then(function(result) {
-            if (!result.confirmed) return;
-            RS.invokeOrToast('block_contact', { args: { hash: hash, escalate_to_blackhole: result.checked } }, 'Could not block contact')
-                .then(function(resp) {
-                    if (resp && resp.blackhole_pending && typeof showToast === 'function') {
-                        showToast('Blocked. Network filtering starts after their next announce.', 'toast-warning', 5000);
-                    }
-                })
-                .catch(function() {});
-        });
-    });
+    wirePeerActionPair('cd', hash, closeSheet);
+    wirePeerActionRows(sheet, hash, { name: name, before: closeSheet });
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -6998,167 +6860,55 @@ RS.listen('contact_error', function(data) {
     showToast(data.error || 'Could not update contact', 'toast-error', 4000);
 });
 
-function _aboutClassifyIface(iface) {
-    if (!iface) return null;
-    var s = String(iface).toLowerCase();
-    if (s.indexOf('rnode') >= 0) return 'LoRa';
-    if (s.indexOf('ble_peer') >= 0 || s.indexOf('ble mesh') >= 0 || s.indexOf('bluetooth peer') >= 0) return 'BLE';
-    if (s.indexOf('ble') >= 0) return 'Bluetooth';
-    if (s.indexOf('androidusb') >= 0) return 'USB';
-    if (s.indexOf('serial') >= 0) return 'Serial';
-    if (s.indexOf('udp') >= 0) return 'UDP';
-    if (s.indexOf('tcp') >= 0 || /:\d+$/.test(s)) return 'TCP';
-    if (s.indexOf('i2p') >= 0) return 'I2P';
-    if (s.indexOf('auto') >= 0) return 'Auto';
-    if (s.indexOf('local') >= 0) return 'Local';
-    return iface.charAt(0).toUpperCase() + iface.slice(1);
-}
-
-function _aboutChipColor(status) {
-    if (status === 'reachable' || status === 'direct') return 'green';
-    if (status === 'stale') return 'warning';
-    return 'muted';
-}
-
 function showContactAbout(hash) {
-    var reach = null;
-    var _peers = _lxmfPeers();
-    for (var i = 0; i < _peers.length; i++) {
-        if (_peers[i].hash === hash) { reach = _peers[i]; break; }
-    }
-    var name = _conversationNameInfo(hash, null, false).name;
+    var reach = _peerInfo(hash);
+    var nameInfo = _conversationNameInfo(hash, null, false);
+    var name = nameInfo.isHash ? '' : nameInfo.name;
+    var contact = _lookupContactRecord(hash);
     var status = reach ? reach.status : 'unknown';
-    var chipColor = _aboutChipColor(status);
     var avatarStateClass = (status === 'reachable' || status === 'direct') ? 'online' : (status === 'stale' ? 'stale' : '');
-    var activityLabel = _peerActivityLabel(reach);
     var profileStatus = reach && typeof ratspeakProfileStatusText === 'function'
         ? ratspeakProfileStatusText(reach)
         : (reach && ratspeakSupportsFeatures(reach) && reach.profile_status ? reach.profile_status : '');
-    var routeLabel = _peerRouteLabel(reach);
-
-    var hops = (reach && reach.hops !== null && reach.hops !== undefined) ? reach.hops : '\u2014';
-    var pathAge = (reach && reach.in_path && reach.path_age !== null && reach.path_age !== undefined) ? prettyTime(reach.path_age) + ' ago' : '\u2014';
-    var idKnown = reach ? (reach.identity_known ? 'Yes' : 'No') : 'Unknown';
     var msgCount = lxmfConversation ? lxmfConversation.length : 0;
-
-    var ifaceLabel = _aboutClassifyIface(reach ? reach.iface : null);
-    var ifaceLive = !!(reach && reach.iface_is_live);
-
-    var nowSecs = Date.now() / 1000;
-    var firstSeen = (reach && reach.first_seen) ? reach.first_seen : null;
-    var firstSeenText = firstSeen ? (typeof formatLastHeard === 'function' ? formatLastHeard(firstSeen) : prettyTime(nowSecs - firstSeen) + ' ago') : '\u2014';
-    var firstSeenTitle = firstSeen ? new Date(firstSeen * 1000).toLocaleString() : '';
-    var lastHeard = (reach && reach.last_seen) ? reach.last_seen : null;
-    var lastHeardText = typeof formatLastHeard === 'function' ? formatLastHeard(lastHeard) : (lastHeard ? prettyTime(nowSecs - lastHeard) + ' ago' : 'No activity yet');
-    var lastHeardTitle = lastHeard ? new Date(lastHeard * 1000).toLocaleString() : '';
-
-    var viaHash = (reach && reach.in_path) ? reach.via : null;
-    var viaIsRelay = !!(viaHash && viaHash !== hash && reach && (reach.hops == null || reach.hops > 1));
-    var viaShort = viaHash ? (typeof shortHash === 'function' ? shortHash(viaHash, 6, 4) : viaHash.substring(0, 6) + '\u2026' + viaHash.substring(viaHash.length - 4)) : '';
-    var viaInPeerCache = false;
-    if (viaIsRelay) {
-        for (var j = 0; j < _peers.length; j++) {
-            if (_peers[j].hash === viaHash) { viaInPeerCache = true; break; }
-        }
-    }
-
-    var idBadgeClass = (idKnown === 'Yes') ? 'about-id-badge about-id-badge-verified' : 'about-id-badge about-id-badge-unverified';
-    var idBadgeText = (idKnown === 'Yes') ? 'Verified' : 'Unverified';
 
     var modal = document.getElementById('node-modal');
     if (!modal) return;
     document.getElementById('modal-title').textContent = 'About';
     var body = modal.querySelector('.bottom-sheet-body');
 
-    var html = '';
+    var html = '<div class="about-hero">' +
+        '<div class="about-hero-avatar ' + avatarStateClass + '">' + identityAvatar(hash, 56) + '</div>' +
+        peerNameHtml('about-hero-name', escapeHtml(name)) +
+        peerAddressButtonHtml(hash) +
+        peerStatusChipHtml(reach) +
+    '</div>';
 
-    html += '<div class="about-hero">';
-    html += '  <div class="about-hero-avatar ' + avatarStateClass + '">' + identityAvatar(hash, 56) + '</div>';
-    html += '  <div class="about-hero-name">' + escapeHtml(name) + '</div>';
-    html += '  <div class="about-hero-address" title="' + escapeHtml(hash) + '">' + copyableHash(hash, 8) + '</div>';
-    html += '  <span class="' + idBadgeClass + '">' + idBadgeText + '</span>';
-    html += '</div>';
-
-    html += '<div class="about-section-label">Availability</div>';
     html += '<div class="about-section">';
-    html += '  <div class="about-row">';
-    html += '    <span class="about-row-label">Activity</span>';
-    html += '    <span class="about-status-chip about-status-chip-' + chipColor + '">';
-    html += '      <span class="dot ' + (chipColor === 'muted' ? 'gray' : (chipColor === 'warning' ? 'orange' : 'green')) + '"></span>';
-    html += escapeHtml(activityLabel);
-    html += '    </span>';
-    html += '  </div>';
     if (profileStatus) {
-        html += '  <div class="about-row">';
-        html += '    <span class="about-row-label">Status</span>';
-        html += '    <span class="about-row-value">' + escapeHtml(profileStatus) + '</span>';
-        html += '  </div>';
+        html += '<div class="about-row">' +
+            '<span class="about-row-label">Status</span>' +
+            '<span class="about-row-value">' + escapeHtml(profileStatus) + '</span>' +
+        '</div>';
     }
-    html += '  <div class="about-row">';
-    html += '    <span class="about-row-label">Route</span>';
-    html += '    <span class="about-row-value">' + escapeHtml(routeLabel) + '</span>';
-    html += '  </div>';
-    html += '  <div class="about-row about-row-pair">';
-    html += '    <span class="about-pair-cell"><span class="about-row-label">Hops</span><span class="about-row-value">' + hops + '</span></span>';
-    html += '    <span class="about-pair-cell"><span class="about-row-label">Path Age</span><span class="about-row-value">' + escapeHtml(pathAge) + '</span></span>';
-    html += '  </div>';
-    if (ifaceLabel) {
-        html += '  <div class="about-row">';
-        html += '    <span class="about-row-label">Interface</span>';
-        html += '    <span class="about-row-value">' + escapeHtml(ifaceLabel) + (ifaceLive ? '' : ' <span class="about-iface-stale">\u00b7 last known</span>') + '</span>';
-        html += '  </div>';
-    }
-    html += '  <div class="about-row">';
-    html += '    <span class="about-row-label">Via</span>';
-    if (viaIsRelay) {
-        html += '    <a href="#" class="about-via-link" data-via="' + escapeHtml(viaHash) + '" data-known="' + (viaInPeerCache ? '1' : '0') + '">' + escapeHtml(viaShort) + ' \u2192</a>';
-    } else if (reach && reach.in_path) {
-        html += '    <span class="about-row-value about-row-value-muted">Direct</span>';
-    } else {
-        html += '    <span class="about-row-value about-row-value-muted">No current path</span>';
-    }
-    html += '  </div>';
+    html += '<div class="about-row">' +
+        '<span class="about-row-label">Messages</span>' +
+        (msgCount > 0
+            ? '<a href="#" class="about-messages-link">' + msgCount + ' \u00b7 View \u2192</a>'
+            : '<span class="about-row-value about-row-value-muted">0</span>') +
+    '</div>';
     html += '</div>';
 
-    html += '<div class="about-section-label">Activity</div>';
-    html += '<div class="about-section">';
-    html += '  <div class="about-row">';
-    html += '    <span class="about-row-label">Last heard</span>';
-    html += '    <span class="about-row-value"' + (lastHeardTitle ? ' title="' + escapeHtml(lastHeardTitle) + '"' : '') + '>' + escapeHtml(lastHeardText) + '</span>';
-    html += '  </div>';
-    html += '  <div class="about-row">';
-    html += '    <span class="about-row-label">First heard</span>';
-    html += '    <span class="about-row-value"' + (firstSeenTitle ? ' title="' + escapeHtml(firstSeenTitle) + '"' : '') + '>' + escapeHtml(firstSeenText) + '</span>';
-    html += '  </div>';
-    html += '  <div class="about-row">';
-    html += '    <span class="about-row-label">Messages</span>';
-    if (msgCount > 0) {
-        html += '    <a href="#" class="about-messages-link">' + msgCount + ' \u00b7 View \u2192</a>';
-    } else {
-        html += '    <span class="about-row-value about-row-value-muted">0</span>';
-    }
-    html += '  </div>';
-    html += '</div>';
+    html += peerDetailsHtml('about-detail-rows', reach, { trust: contact ? contact.trust : '' });
+    html += peerActionRowsHtml(!!contact);
 
     body.innerHTML = html;
+    syncPeerDetails(body);
     var overlay = document.getElementById('node-modal-overlay');
     modal.classList.add('open');
     if (overlay) overlay.classList.add('active');
 
     // CSP blocks inline onclick — wire here.
-    var viaLink = body.querySelector('.about-via-link');
-    if (viaLink) {
-        viaLink.addEventListener('click', function(ev) {
-            ev.preventDefault();
-            ev.stopPropagation();
-            var v = viaLink.getAttribute('data-via');
-            if (viaLink.getAttribute('data-known') === '1') {
-                showContactAbout(v);
-            } else {
-                showToast('Relay is not in your peer list', 'toast-warning', 1500);
-            }
-        });
-    }
     var msgLink = body.querySelector('.about-messages-link');
     if (msgLink) {
         msgLink.addEventListener('click', function(ev) {
@@ -7169,6 +6919,7 @@ function showContactAbout(hash) {
             if (msgs) msgs.scrollTop = 0;
         });
     }
+    wirePeerActionRows(body, hash, { name: name, before: closeNodeModal });
 }
 
 function openConversationWith(hash, options) {
