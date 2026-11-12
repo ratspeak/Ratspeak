@@ -201,7 +201,7 @@ impl LxmfManager {
                 .map(|attempt| attempt.lifetime.saturating_sub(LATE_PROOF_GRACE));
             owner.attempts.retain_mut(|attempt| {
                 // Sample terminal proof before expiry or a queued dispatch ACK.
-                if let ReceiptUpdate::Delivered { rtt } = *attempt.status.borrow() {
+                if let ReceiptUpdate::Delivered { rtt, .. } = *attempt.status.borrow() {
                     completed.get_or_insert(rtt);
                     return true;
                 }
@@ -537,6 +537,8 @@ mod tests {
         mgr.auto_live_fallback.insert(hash);
         proof.send_replace(ReceiptUpdate::Delivered {
             rtt: Duration::from_secs(13),
+            proof_hash: None,
+            metrics: Default::default(),
         });
         mgr.poll_opportunistic_proofs(&mut updates);
         assert_eq!(updates, vec![(hex::encode(hash), "delivered")]);
@@ -575,6 +577,8 @@ mod tests {
         assert_eq!(mgr.router.pending_outbound[0].delivery_attempts, 2);
         first.send_replace(ReceiptUpdate::Delivered {
             rtt: Duration::from_secs(1),
+            proof_hash: None,
+            metrics: Default::default(),
         });
         let mut updates = Vec::new();
         mgr.poll_opportunistic_proofs(&mut updates);
@@ -592,6 +596,8 @@ mod tests {
         assert!(mgr.router.pending_outbound.is_empty());
         proof.send_replace(ReceiptUpdate::Delivered {
             rtt: Duration::from_secs(1),
+            proof_hash: None,
+            metrics: Default::default(),
         });
         let mut updates = Vec::new();
         mgr.poll_opportunistic_proofs(&mut updates);
@@ -645,6 +651,8 @@ mod tests {
         );
         proof.send_replace(ReceiptUpdate::Delivered {
             rtt: Duration::from_secs(2),
+            proof_hash: None,
+            metrics: Default::default(),
         });
         mgr.poll_opportunistic_proofs(&mut updates);
         assert_eq!(updates, vec![(hex::encode(hash), "delivered")]);

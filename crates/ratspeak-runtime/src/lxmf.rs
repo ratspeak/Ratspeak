@@ -12836,6 +12836,8 @@ mod tests {
             .status_tx
             .send_replace(rns_transport::messages::ReceiptUpdate::Delivered {
                 rtt: Duration::from_millis(4),
+                proof_hash: None,
+                metrics: Default::default(),
             });
         assert!(rx.try_recv().is_err());
         assert!(
