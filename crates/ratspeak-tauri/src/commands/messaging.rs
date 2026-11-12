@@ -255,13 +255,13 @@ fn record_lxmf_delivery_queued(
 fn emit_lxmf_send_taken(
     state: &AppState,
     fence: crate::state::ActivityRequestFence,
-    waiting: bool,
+    waiting: Option<producer::DeliveryFailureReason>,
     message: &str,
     msg_id: &str,
     client_msg_id: Option<&str>,
     dest_hash: &str,
 ) {
-    if !waiting {
+    let Some(reason) = waiting else {
         state.emit_to_all(
             "lxmf_step",
             json!({
@@ -272,8 +272,7 @@ fn emit_lxmf_send_taken(
             }),
         );
         return;
-    }
-    let reason = producer::DeliveryFailureReason::BehindEarlier;
+    };
     state.emit_to_all(
         "lxmf_step",
         json!({
@@ -608,12 +607,48 @@ pub(crate) fn schedule_announce_after_user_send_from_origin(
     });
 }
 
+/// Whether a send has a row that can wait for the Offline Inbox; a reaction
+/// or a game move has none.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InboxSend {
+    Stored,
+    Unstored,
+}
+
+/// Why a send that starts at the Offline Inbox is refused, if it is. One that
+/// waits is accepted while the inbox is out of reach; with no node to wait
+/// for it is refused all the same.
+fn inbox_send_refusal(
+    readiness: crate::propagation::RelayReadiness,
+    recipient_known: bool,
+    waits: bool,
+) -> Option<&'static str> {
+    use crate::propagation::RelayReadiness;
+    match readiness {
+        RelayReadiness::Ready if recipient_known => None,
+        RelayReadiness::Unavailable => {
+            Some("No Offline Inbox node is configured. Check Settings > Network.")
+        }
+        _ if waits => None,
+        RelayReadiness::Ready => Some(
+            "Recipient identity key is not known yet. Scan or import their contact card, or wait for their LXMF announce before using Offline Inbox.",
+        ),
+        RelayReadiness::Offline => Some(
+            "Network is offline. Offline Inbox will be checked again when an interface is online.",
+        ),
+        RelayReadiness::Waiting => {
+            Some("No reachable Offline Inbox is available yet. Ratspeak is looking for one.")
+        }
+    }
+}
+
 pub(crate) async fn ensure_propagation_ready_for_send(
     state: &Arc<AppState>,
     dest_hash: &str,
     pref: DeliveryPreference,
     profile: DeliveryProfile,
     client_msg_id: Option<&str>,
+    send: InboxSend,
 ) -> AppResult<()> {
     let st = Arc::clone(state);
     let dh = dest_hash.to_string();
@@ -635,27 +670,12 @@ pub(crate) async fn ensure_propagation_ready_for_send(
     }
 
     let readiness = crate::propagation::ensure_relay_ready_for_send(state).await;
-    if readiness == crate::propagation::RelayReadiness::Ready
-        && destination_identity_known(state, dest_hash)
-    {
+    let Some(message) = inbox_send_refusal(
+        readiness,
+        destination_identity_known(state, dest_hash),
+        send == InboxSend::Stored && state.lxmf_keep_trying_enabled(),
+    ) else {
         return Ok(());
-    }
-
-    let message = if readiness == crate::propagation::RelayReadiness::Ready {
-        "Recipient identity key is not known yet. Scan or import their contact card, or wait for their LXMF announce before using Offline Inbox."
-    } else {
-        match readiness {
-            crate::propagation::RelayReadiness::Offline => {
-                "Network is offline. Offline Inbox will be checked again when an interface is online."
-            }
-            crate::propagation::RelayReadiness::Waiting => {
-                "No reachable Offline Inbox is available yet. Ratspeak is looking for one."
-            }
-            crate::propagation::RelayReadiness::Unavailable => {
-                "No Offline Inbox node is configured. Check Settings > Network."
-            }
-            crate::propagation::RelayReadiness::Ready => unreachable!(),
-        }
     };
 
     state.emit_to_all(
@@ -731,6 +751,7 @@ pub async fn send_lxmf_message(
         delivery_pref,
         DeliveryProfile::Message,
         client_msg_id.as_deref(),
+        InboxSend::Stored,
     )
     .await;
     if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
@@ -849,6 +870,7 @@ pub async fn send_reaction(
             delivery_pref,
             DeliveryProfile::Message,
             None,
+            InboxSend::Unstored,
         )
         .await?;
     }
@@ -983,6 +1005,7 @@ pub async fn send_lxmf_reply(
         delivery_pref,
         DeliveryProfile::Message,
         client_msg_id.as_deref(),
+        InboxSend::Stored,
     )
     .await;
     if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
@@ -1116,6 +1139,7 @@ pub async fn send_lxmf_propagated(
         DeliveryPreference::Propagated,
         DeliveryProfile::Message,
         client_msg_id.as_deref(),
+        InboxSend::Stored,
     )
     .await;
     if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
@@ -1276,6 +1300,7 @@ async fn queue_prepared_attachment(
         delivery_pref,
         DeliveryProfile::Attachment,
         client_msg_id.as_deref(),
+        InboxSend::Stored,
     )
     .await;
     if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
@@ -1334,7 +1359,7 @@ async fn queue_prepared_attachment(
             let id = queued.message_id;
             // A waiting message holds no budget; its wake reserves again.
             let lease = attachment_owner.into_transfer_lease();
-            if !queued.waiting {
+            if queued.waiting.is_none() {
                 state.hold_attachment_delivery_lease(id.clone(), lease);
             }
             if finalize_lxmf_client_send(&state, client_send.as_ref(), &id).await? {
@@ -1518,6 +1543,7 @@ pub(crate) async fn queue_prepared_audio(
         delivery_pref,
         DeliveryProfile::Attachment,
         client_msg_id.as_deref(),
+        InboxSend::Stored,
     )
     .await;
     if let Some(response) = cancelled_lxmf_client_send_response(&state, client_send.as_ref()) {
@@ -1583,7 +1609,7 @@ pub(crate) async fn queue_prepared_audio(
                 .take()
                 .expect("admission owns its staged clip")
                 .into_transfer_lease();
-            if !queued.waiting {
+            if queued.waiting.is_none() {
                 state.hold_attachment_delivery_lease(queued.message_id.clone(), lease);
             }
         }
@@ -3312,7 +3338,7 @@ mod tests {
         emit_lxmf_send_taken(
             &state,
             fence,
-            false,
+            None,
             "Message queued for delivery",
             &id,
             Some("out_1"),
@@ -3332,29 +3358,71 @@ mod tests {
             "a send on its way wakes nothing"
         );
 
-        emit_lxmf_send_taken(
-            &state,
-            fence,
-            true,
-            "Message queued for delivery",
-            &id,
-            Some("out_2"),
-            PEER,
+        for (reason, code) in [
+            (
+                producer::DeliveryFailureReason::BehindEarlier,
+                "behind_earlier",
+            ),
+            (
+                producer::DeliveryFailureReason::InboxUnreachable,
+                "inbox_unreachable",
+            ),
+        ] {
+            emit_lxmf_send_taken(
+                &state,
+                fence,
+                Some(reason),
+                "Message queued for delivery",
+                &id,
+                Some("out_2"),
+                PEER,
+            );
+            assert_eq!(
+                steps.0.lock().unwrap().pop().unwrap(),
+                json!({
+                    "step": "waiting",
+                    "msg_id": id,
+                    "client_msg_id": "out_2",
+                    "reason": code,
+                })
+            );
+            assert_eq!(
+                state.take_wake_signals(),
+                signal(crate::lxmf::WakeEvent::NewSend(peer_hash())),
+                "the oldest message to that recipient is tried"
+            );
+        }
+    }
+
+    #[test]
+    fn an_inbox_send_is_taken_while_the_inbox_is_out_of_reach_where_it_can_wait() {
+        use crate::propagation::RelayReadiness::{Offline, Ready, Waiting};
+
+        // Ready, with the recipient's key: nothing to decide.
+        assert_eq!(inbox_send_refusal(Ready, true, false), None);
+        for readiness in [Offline, Waiting] {
+            assert_eq!(inbox_send_refusal(readiness, true, true), None);
+            assert!(inbox_send_refusal(readiness, true, false).is_some());
+        }
+        // The recipient's key not yet known is one more thing to wait for.
+        assert_eq!(inbox_send_refusal(Ready, false, true), None);
+        assert!(
+            inbox_send_refusal(Ready, false, false)
+                .unwrap()
+                .starts_with("Recipient identity key is not known yet.")
         );
-        assert_eq!(
-            steps.0.lock().unwrap().pop().unwrap(),
-            json!({
-                "step": "waiting",
-                "msg_id": id,
-                "client_msg_id": "out_2",
-                "reason": "behind_earlier",
-            })
-        );
-        assert_eq!(
-            state.take_wake_signals(),
-            signal(crate::lxmf::WakeEvent::NewSend(peer_hash())),
-            "the oldest message to that recipient is tried"
-        );
+    }
+
+    #[test]
+    fn no_node_configured_still_refuses() {
+        use crate::propagation::RelayReadiness::Unavailable;
+
+        for (recipient_known, waits) in [(true, true), (false, true), (true, false)] {
+            assert_eq!(
+                inbox_send_refusal(Unavailable, recipient_known, waits),
+                Some("No Offline Inbox node is configured. Check Settings > Network.")
+            );
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -151,6 +151,7 @@ pub async fn send_game_action(
         delivery_pref,
         ratspeak_runtime::lxmf::DeliveryProfile::Lrgp,
         None,
+        crate::commands::messaging::InboxSend::Unstored,
     )
     .await?;
 
@@ -811,6 +812,7 @@ pub async fn resend_last_game_action(
         delivery_pref,
         ratspeak_runtime::lxmf::DeliveryProfile::Lrgp,
         None,
+        crate::commands::messaging::InboxSend::Unstored,
     )
     .await?;
 

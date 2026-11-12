@@ -214,7 +214,8 @@ impl LxmfManager {
             return outcome;
         };
         let held = std::mem::take(&mut self.wakes.held);
-        let inbox_ready = self.inbox_ready();
+        // Whether that node can take a deposit is found out in the router, as for any inbox send.
+        let inbox_in_use = self.router.outbound_propagation_node.is_some();
         let stamps_idle = self.router.pending_deferred_stamps.is_empty()
             && self.router.active_deferred_stamp.is_none();
         let mut lane = self
@@ -284,13 +285,13 @@ impl LxmfManager {
             let cycle = if after_deposit
                 && stored == DeliveryPreference::Auto
                 && policy::FOLLOWERS_USE_INBOX_AFTER_DEPOSIT
-                && inbox_ready
+                && inbox_in_use
             {
                 DeliveryPreference::Propagated
             } else {
                 stored
             };
-            if cycle == DeliveryPreference::Propagated && !inbox_ready {
+            if cycle == DeliveryPreference::Propagated && !inbox_in_use {
                 continue;
             }
             let attachment = queue.profile == DeliveryProfile::Attachment.as_str();
@@ -352,45 +353,47 @@ impl LxmfManager {
         outcome
     }
 
-    /// Whether a send that starts at the Offline Inbox can go now.
-    fn inbox_ready(&self) -> bool {
-        // Routes expire by the wall clock.
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-        self.client_propagation_enabled
-            && self.router.outbound_propagation_node.is_some_and(|node| {
-                self.known_identities.contains_key(&hex::encode(node))
-                    && self.direct_route_entry(node, now).is_some()
-            })
-    }
-
-    /// Whether a new message must wait its turn behind earlier ones of its queue.
-    pub(super) fn waits_behind_earlier(
+    /// Why a new message is saved waiting and not handed to the network: it
+    /// takes its turn behind earlier ones of its queue, or it goes by the
+    /// Offline Inbox and no node is in use.
+    pub(super) fn held_at_send(
         &self,
         db_pool: &DbPool,
         identity_id: &str,
         destination: &str,
         preference: DeliveryPreference,
         profile: DeliveryProfile,
-    ) -> bool {
-        self.keep_trying
-            && db::queue_blocks_new_send(
-                db_pool,
-                identity_id,
-                destination,
-                preference.as_str(),
-                profile.as_str(),
-            )
+        method: lxmf_core::message_api::DeliveryMethod,
+    ) -> Option<DeliveryFailureReason> {
+        if !self.keep_trying {
+            return None;
+        }
+        if db::queue_blocks_new_send(
+            db_pool,
+            identity_id,
+            destination,
+            preference.as_str(),
+            profile.as_str(),
+        ) {
+            return Some(DeliveryFailureReason::BehindEarlier);
+        }
+        (method == lxmf_core::message_api::DeliveryMethod::Propagated
+            && self.router.outbound_propagation_node.is_none())
+        .then(|| self.missing_inbox_reason())
+        .filter(|reason| reason.can_wait())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lxmf::tests::{known_route, test_manager};
-    use crate::lxmf::{AttachmentMessageRequest, LxmfQueuedMessage, MessageSendRequest};
+    use crate::lxmf::tests::{
+        failure_code, finish_pending_propagation, known_route, ready_auto_propagation_fallback,
+        test_manager,
+    };
+    use crate::lxmf::{
+        AttachmentMessageRequest, LxmfQueuedMessage, LxmfSubmissionFailure, MessageSendRequest,
+    };
     use lxmf_core::message_api::DeliveryMethod;
     use r2d2_sqlite::SqliteConnectionManager;
     use rusqlite::params;
@@ -452,6 +455,15 @@ mod tests {
             preference: DeliveryPreference,
             text: &str,
         ) -> LxmfQueuedMessage {
+            self.try_send(to, preference, text).unwrap()
+        }
+
+        fn try_send(
+            &mut self,
+            to: &str,
+            preference: DeliveryPreference,
+            text: &str,
+        ) -> Result<LxmfQueuedMessage, LxmfSubmissionFailure> {
             self.mgr
                 .send_message_with_preference_report(MessageSendRequest {
                     dest_hash_hex: to,
@@ -464,7 +476,6 @@ mod tests {
                     renderer: None,
                     thread: "",
                 })
-                .unwrap()
         }
 
         fn send_file(&mut self, to: &str, name: &str) -> LxmfQueuedMessage {
@@ -491,7 +502,7 @@ mod tests {
         /// or it was held behind an earlier one that waits.
         fn waiting(&mut self, to: &str, preference: DeliveryPreference, text: &str) -> String {
             let queued = self.send(to, preference, text);
-            if !queued.waiting {
+            if queued.waiting.is_none() {
                 self.network_failure(&queued.message_id);
             }
             queued.message_id
@@ -670,7 +681,10 @@ mod tests {
         let first = b.waiting(&to, Auto, "first");
 
         let second = b.send(&to, Auto, "second");
-        assert!(second.waiting);
+        assert_eq!(
+            second.waiting.map(DeliveryFailureReason::code),
+            Some("behind_earlier")
+        );
         assert_eq!(b.state(&second.message_id), "waiting");
         assert!(b.sent().is_empty(), "it is not handed to the network");
         assert!(
@@ -688,7 +702,7 @@ mod tests {
 
         // A wake's send on its way holds the queue as a waiting message does.
         let third = b.send(&to, Auto, "third");
-        assert!(third.waiting);
+        assert!(third.waiting.is_some());
         assert!(b.wake(&[Bench::new_send(&to)]).is_empty(), "one at a time");
 
         // The queue moves on by itself; the send that asked for it stays the cause on record.
@@ -705,7 +719,7 @@ mod tests {
 
         // With nothing waiting, a send goes out as it always has.
         let fourth = b.send(&to, Auto, "fourth");
-        assert!(!fourth.waiting);
+        assert!(fourth.waiting.is_none());
         assert_eq!(b.state(&fourth.message_id), "sending");
         assert_eq!(b.sent(), [fourth.message_id]);
     }
@@ -845,7 +859,7 @@ mod tests {
 
         // A message sent now goes straight out.
         let fresh = b.send(&peer(30), Auto, "fresh");
-        assert!(!fresh.waiting);
+        assert!(fresh.waiting.is_none());
         assert_eq!(b.state(&fresh.message_id), "sending");
         assert!(b.sent().contains(&fresh.message_id));
 
@@ -912,7 +926,7 @@ mod tests {
         assert_eq!(b.state(&id), "waiting");
         assert_eq!(b.entry(&id).0, ahead, "no time is rewritten");
         let born = b.send(&to, Auto, "next");
-        assert!(!born.waiting, "and a new send is not held");
+        assert!(born.waiting.is_none(), "and a new send is not held");
         b.ends(&born.message_id, "delivered");
 
         // Turned on again, the engine starts over: the wake at start reaches it.
@@ -1157,6 +1171,24 @@ mod tests {
             db::get_message_delivery_method(&b.pool, &last, &b.identity).as_deref(),
             Some("propagated")
         );
+
+        // So does the follower of a deposit once no node is in use.
+        b.sent();
+        b.network_failure(&last);
+        let behind = b.send(&to, Auto, "behind").message_id;
+        b.now += 61.0;
+        assert_eq!(
+            b.wake(&[Bench::heard(&to)]),
+            [(last.clone(), WakeCause::Recipient)]
+        );
+        b.sent();
+        b.mgr.set_runtime_propagation_node(None);
+        b.ends(&last, "propagated");
+        assert_eq!(b.wake(&[]), [(behind.clone(), WakeCause::Queue)]);
+        assert_ne!(
+            db::get_message_delivery_method(&b.pool, &behind, &b.identity).as_deref(),
+            Some("propagated")
+        );
     }
 
     #[test]
@@ -1168,10 +1200,10 @@ mod tests {
 
         // A waiting file does not hold a new text; it does hold a new file.
         let text = b.send(&to, Auto, "text");
-        assert!(!text.waiting);
+        assert!(text.waiting.is_none());
         assert!(b.sent().contains(&text.message_id));
         let later_file = b.send_file(&to, "more.txt");
-        assert!(later_file.waiting);
+        assert!(later_file.waiting.is_some());
 
         // Text that waits and a file that waits are woken side by side.
         b.network_failure(&text.message_id);
@@ -1341,12 +1373,13 @@ mod tests {
     }
 
     #[test]
-    fn an_inbox_message_waits_for_a_usable_inbox() {
+    fn an_inbox_message_waits_for_a_node_and_the_router_finds_out_whether_it_can_be_used() {
         let mut b = Bench::new();
         let to = peer(31);
+        let node = [0xEE; 16];
         // Sent with a node in use, which then went away.
         b.mgr.client_propagation_enabled = true;
-        b.mgr.router.set_outbound_propagation_node(Some([0xEE; 16]));
+        b.mgr.router.set_outbound_propagation_node(Some(node));
         let id = b.send(&to, Propagated, "by the inbox").message_id;
         b.mgr.router.set_outbound_propagation_node(None);
         b.network_failure(&id);
@@ -1357,14 +1390,202 @@ mod tests {
         );
         assert_eq!(b.entry(&id).1, 0, "and no wake is spent on it");
 
-        let node = b.usable_inbox();
+        // A node in use is enough to try: nothing is known of it yet.
+        b.mgr.set_runtime_propagation_node(Some(node));
         assert_eq!(b.wake(&[]), [(id.clone(), WakeCause::Inbox)]);
-        b.sent();
+        assert_eq!(b.sent(), [id.as_str()]);
+        assert_eq!(
+            b.mgr.router.pending_outbound[0].method,
+            DeliveryMethod::Propagated
+        );
+
+        // It is given as long there as a send made just now, and then waits again.
+        let start = wall();
+        let limit = b.mgr.discovery_limit(node).as_secs_f64();
+        assert!(b.mgr.run_router_outbound(start).is_empty());
+        let hash = <[u8; 32]>::try_from(hex::decode(&id).unwrap()).unwrap();
+        assert_eq!(
+            b.mgr.run_router_outbound(start + limit),
+            [(id.clone(), "failed")]
+        );
+        assert_eq!(failure_code(&mut b.mgr, hash), Some("inbox_unreachable"));
         b.network_failure(&id);
 
         // The node being heard again counts as the inbox being reachable.
         b.now += 61.0;
         assert_eq!(b.wake(&[WakeEvent::Heard(node)]), [(id, WakeCause::Inbox)]);
+    }
+
+    #[test]
+    fn an_offline_inbox_send_with_no_node_in_use_is_saved_waiting() {
+        let mut b = Bench::new();
+        let to = peer(41);
+        // On, with no node found yet.
+        b.mgr.client_propagation_enabled = true;
+
+        let held = b.send(&to, Propagated, "nowhere to put it yet");
+        assert_eq!(
+            held.waiting.map(DeliveryFailureReason::code),
+            Some("inbox_unreachable")
+        );
+        assert_eq!(b.state(&held.message_id), "waiting");
+        assert!(b.sent().is_empty(), "it is not handed to the network");
+        assert!(b.wake(&[Bench::new_send(&to)]).is_empty());
+        assert_eq!(b.entry(&held.message_id).1, 0, "no wake is spent on it");
+
+        let behind = b.send(&to, Propagated, "behind it");
+        assert_eq!(
+            behind.waiting.map(DeliveryFailureReason::code),
+            Some("behind_earlier")
+        );
+        let live = b.send(&to, Auto, "by the live path");
+        assert!(live.waiting.is_none(), "a send that does not start there");
+        b.ends(&live.message_id, "delivered");
+
+        b.mgr.set_runtime_propagation_node(Some([0xEE; 16]));
+        assert_eq!(
+            b.wake(&[]),
+            [(held.message_id.clone(), WakeCause::Inbox)],
+            "a node coming into use sends it"
+        );
+        assert_eq!(b.sent(), [held.message_id.as_str()]);
+
+        // Refused as it always was where it cannot wait.
+        let mut off = Bench::new();
+        assert!(off.try_send(&to, Propagated, "the inbox is off").is_err());
+        off.mgr.client_propagation_enabled = true;
+        off.keep_trying = false;
+        off.run(&[]);
+        assert!(off.try_send(&to, Propagated, "waiting is off").is_err());
+        assert_eq!(
+            db::waiting_queues(&off.pool, &off.identity).unwrap().len(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn an_offline_inbox_send_made_with_the_inbox_out_of_reach_waits_and_deposits_when_it_returns()
+     {
+        let mut b = Bench::new();
+        let recipient = [42; 16];
+        let (to, node) = (hex::encode(recipient), [0xEF; 16]);
+        let (tx, _transport) = tokio::sync::mpsc::channel(64);
+        b.mgr.router.set_transport(tx);
+        b.mgr.known_identities.insert(
+            to.clone(),
+            rns_identity::identity::Identity::new().get_public_key(),
+        );
+        // In use, and never heard: no key of its own, no route, no terms.
+        b.mgr.client_propagation_enabled = true;
+        b.mgr.set_runtime_propagation_node(Some(node));
+
+        let sent = b.send(&to, Propagated, "for when the node is back");
+        assert!(sent.waiting.is_none(), "it is taken and tried");
+        let id = sent.message_id;
+        let hash = <[u8; 32]>::try_from(hex::decode(&id).unwrap()).unwrap();
+        let start = wall();
+        let limit = b.mgr.discovery_limit(node).as_secs_f64();
+        assert!(b.mgr.run_router_outbound(start).is_empty());
+        assert_eq!(
+            b.mgr.run_router_outbound(start + limit),
+            [(id.clone(), "failed")]
+        );
+        assert_eq!(failure_code(&mut b.mgr, hash), Some("inbox_unreachable"));
+        b.network_failure(&id);
+        assert_eq!(b.state(&id), "waiting");
+
+        let _transport = ready_auto_propagation_fallback(&mut b.mgr, recipient, node);
+        assert_eq!(
+            b.wake(&[WakeEvent::Heard(node)]),
+            [(id.clone(), WakeCause::Inbox)]
+        );
+        assert_eq!(b.sent(), [id.as_str()]);
+        let results = finish_pending_propagation(&mut b.mgr, Vec::new()).await;
+        assert_eq!(results, [(id, "propagating")]);
+        assert_eq!(b.mgr.in_flight_propagation.get(&hash), Some(&node));
+    }
+
+    #[test]
+    fn the_inbox_card_and_the_sync_do_not_change() {
+        let Bench {
+            mut mgr,
+            pool,
+            identity,
+            ..
+        } = Bench::new();
+        let (recipient, node) = ([43; 16], [0xED; 16]);
+        let (tx, _transport) = tokio::sync::mpsc::channel(64);
+        mgr.router.set_transport(tx);
+        mgr.known_identities.insert(
+            hex::encode(recipient),
+            rns_identity::identity::Identity::new().get_public_key(),
+        );
+        mgr.client_propagation_enabled = true;
+        mgr.set_runtime_propagation_node(Some(node));
+        mgr.last_propagation_check =
+            wall() - crate::lxmf::AUTO_PROPAGATION_CHECK_INTERVAL_SECS - 1.0;
+        let root = mgr.data_dir.parent().unwrap().to_path_buf();
+        let state = crate::state::AppState::new(
+            crate::config::DashboardConfig {
+                data_dir: root.join(".ratspeak"),
+                rns_config_dir: root.join(".ratspeak").join("reticulum"),
+                data_root: root,
+                rns_config_dir_overridden: false,
+                max_log_entries: 200,
+            },
+            pool.clone(),
+            std::sync::Arc::new(ratspeak_core::NoopEmitter),
+            std::sync::Arc::new(ratspeak_core::NoopNotifier),
+        );
+        // What the card shows, and whether the inbox is due to be checked.
+        let seen = |mgr: LxmfManager| {
+            let due = mgr.auto_propagation_check_due(true);
+            *state.lxmf.lock().unwrap() = Some(mgr);
+            let card = crate::propagation::card_fingerprint(&state, true);
+            (card, due, state.lxmf.lock().unwrap().take().unwrap())
+        };
+        let (card, due, mut mgr) = seen(mgr);
+        assert!(due);
+
+        let id = mgr
+            .send_message_with_preference_report(MessageSendRequest {
+                dest_hash_hex: &hex::encode(recipient),
+                content: "left waiting",
+                title: "",
+                db_pool: &pool,
+                identity_id: &identity,
+                preference: Propagated,
+                profile: DeliveryProfile::Message,
+                renderer: None,
+                thread: "",
+            })
+            .unwrap()
+            .message_id;
+        let start = wall();
+        let limit = mgr.discovery_limit(node).as_secs_f64();
+        assert!(mgr.run_router_outbound(start).is_empty());
+        assert_eq!(
+            mgr.run_router_outbound(start + limit),
+            [(id.clone(), "failed")]
+        );
+        let settled = db::settle_failure(
+            &pool,
+            &id,
+            &identity,
+            true,
+            true,
+            start,
+            OutboundState::Failed,
+        );
+        assert_eq!(
+            settled.map(|settled| settled.state),
+            Some(OutboundState::Waiting)
+        );
+
+        let (card_after, due_after, mgr) = seen(mgr);
+        assert_eq!(card_after, card);
+        assert_eq!(due_after, due);
+        assert!(!mgr.propagated_deposit_pending());
     }
 
     #[test]

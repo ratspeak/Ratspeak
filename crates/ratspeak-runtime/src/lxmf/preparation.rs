@@ -42,6 +42,13 @@ impl LxmfManager {
         }
     }
 
+    /// How long a send waits for the identity of, or a route to, `dest`.
+    pub(super) fn discovery_limit(&self, dest: [u8; 16]) -> Duration {
+        self.packet_retry_window(dest).max(Duration::from_secs_f64(
+            rns_transport::constants::PATH_REQUEST_MI + PATH_REQUEST_WAIT as f64,
+        ))
+    }
+
     pub(super) fn prepare_live_outbound(
         &mut self,
         now: f64,
@@ -112,9 +119,7 @@ impl LxmfManager {
             let missing_route = (method == DeliveryMethod::Direct || auto)
                 && !self.has_live_direct_route(dest, now);
             if missing_identity || missing_route {
-                let limit = self.packet_retry_window(dest).max(Duration::from_secs_f64(
-                    rns_transport::constants::PATH_REQUEST_MI + PATH_REQUEST_WAIT as f64,
-                ));
+                let limit = self.discovery_limit(dest);
                 if !self.live_preparation.discovery.contains_key(&hash)
                     && !self.ephemeral_outbound.contains(&hash)
                 {

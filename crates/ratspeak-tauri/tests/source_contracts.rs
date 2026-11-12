@@ -11106,6 +11106,82 @@ fn waiting_messages_are_woken_by_one_engine_under_the_manager_lock() {
     assert!(messaging.contains("\"only_waiting\": stopped.only_waiting,"));
 }
 
+/// A send that starts at the Offline Inbox needs a node in use; whether the
+/// node can take it is found out in one place, in the time a live send gets.
+#[test]
+fn offline_inbox_sends_wait_as_live_sends_do() {
+    let root = repo_root();
+    let source = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+    let production = |source: String| {
+        source
+            .split("\n#[cfg(test)]\nmod ")
+            .next()
+            .expect("production code")
+            .to_owned()
+    };
+    let runtime = source("crates/ratspeak-runtime/src/lib.rs");
+    let manager = production(source("crates/ratspeak-runtime/src/lxmf.rs"));
+    let engine = production(source("crates/ratspeak-runtime/src/lxmf/waiting.rs"));
+    let live = production(source("crates/ratspeak-runtime/src/lxmf/preparation.rs"));
+    let messaging = production(source("crates/ratspeak-tauri/src/commands/messaging.rs"));
+    let games = source("crates/ratspeak-tauri/src/commands/games.rs");
+
+    // One length of wait for a route, live or by the inbox.
+    assert!(live.contains("let limit = self.discovery_limit(dest);"));
+    assert_eq!(live.matches("PATH_REQUEST_MI").count(), 1);
+    let window = manager
+        .split("fn prepare_propagated_outbound(")
+        .nth(1)
+        .and_then(|tail| tail.split("\n    fn ").next())
+        .expect("the inbox preparation");
+    assert!(window.contains("self.discovery_limit(lacking)"));
+    assert!(window.contains("self.router.mark_outbound_failed(&id);"));
+    assert!(!manager.contains("INBOX_READY_WAIT"));
+
+    // The engine, a new send, and a resumed send ask only whether a node is in use.
+    assert!(!engine.contains("fn inbox_ready"));
+    assert!(engine.contains("let inbox_in_use = self.router.outbound_propagation_node.is_some();"));
+    assert_eq!(manager.matches("self.held_at_send(").count(), 3);
+    assert_eq!(manager.matches("RESUME_RELAY_WAIT_SECS").count(), 2);
+    let resumed = manager
+        .split("fn queue_resumed(")
+        .nth(1)
+        .expect("the resume")
+        .split_whitespace()
+        .collect::<String>();
+    assert!(resumed.contains(
+        "self.client_propagation_enabled&&!self.keep_trying&&now-send.since<RESUME_RELAY_WAIT_SECS"
+    ));
+
+    // Only a stored message is taken while the inbox is out of reach.
+    assert!(messaging.contains("send == InboxSend::Stored && state.lxmf_keep_trying_enabled(),"));
+    assert_eq!(messaging.matches("InboxSend::Stored,").count(), 5);
+    let reaction = messaging
+        .split("pub async fn send_reaction(")
+        .nth(1)
+        .and_then(|tail| tail.split("\n#[tauri::command]").next())
+        .expect("the reaction send");
+    assert!(reaction.contains("InboxSend::Unstored,"));
+    assert_eq!(
+        games
+            .matches("crate::commands::messaging::InboxSend::Unstored,")
+            .count(),
+        2
+    );
+
+    // A message that came live, and a proof of delivery, show the peer is in reach.
+    assert!(runtime.contains(
+        "if source.marks_sender_seen() {\n        state.wake_waiting(lxmf::WakeEvent::Heard(msg.source_hash()));"
+    ));
+    let squeezed = runtime.split_whitespace().collect::<String>();
+    assert!(squeezed.contains(
+        "ifmatches!(written,Some((\"delivered\",..))){wake_recipient_of_proof(&state_for_db,&p,&identity_for_db,&msg_id_for_db,);}"
+    ));
+    assert!(squeezed.contains(
+        "ifupdated{wake_recipient_of_proof(&state_for_db,&p,&identity_for_db,&msg_id_for_db);}"
+    ));
+}
+
 /// Activity words the wait, the new attempt, every reason the runtime can
 /// record, and every cause of a new attempt.
 #[test]

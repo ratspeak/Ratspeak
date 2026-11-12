@@ -1750,7 +1750,9 @@ pub fn ratspeak_runtime::lxmf::LxmfPersistenceDelta::persist(&self) -> core::io:
 pub struct ratspeak_runtime::lxmf::LxmfQueuedMessage
 pub ratspeak_runtime::lxmf::LxmfQueuedMessage::message_id: alloc::string::String
 pub ratspeak_runtime::lxmf::LxmfQueuedMessage::method: lxmf_core::constants::DeliveryMethod
-pub ratspeak_runtime::lxmf::LxmfQueuedMessage::waiting: bool
+pub ratspeak_runtime::lxmf::LxmfQueuedMessage::waiting: core::option::Option<ratspeak_runtime::activity::producer::DeliveryFailureReason>
+impl core::fmt::Debug for ratspeak_runtime::lxmf::LxmfQueuedMessage
+pub fn ratspeak_runtime::lxmf::LxmfQueuedMessage::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct ratspeak_runtime::lxmf::MessageSendRequest<'a>
 pub ratspeak_runtime::lxmf::MessageSendRequest::content: &'a str
 pub ratspeak_runtime::lxmf::MessageSendRequest::db_pool: &'a ratspeak_db::db::DbPool

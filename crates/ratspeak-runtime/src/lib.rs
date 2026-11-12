@@ -3121,6 +3121,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                             .cloned();
                         let msg_id_for_db = msg_id.clone();
                         let identity_for_db = identity_for_db.clone();
+                        let state_for_db = Arc::clone(&tick_state);
                         let step = *new_state;
                         let failure_reason = (step == "failed").then(|| {
                             failure_reasons
@@ -3182,6 +3183,14 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 &msg_id_for_db,
                                 &identity_for_db,
                             );
+                            if matches!(written, Some(("delivered", ..))) {
+                                wake_recipient_of_proof(
+                                    &state_for_db,
+                                    &p,
+                                    &identity_for_db,
+                                    &msg_id_for_db,
+                                );
+                            }
                             (written, method)
                         })
                         .await
@@ -4897,6 +4906,19 @@ async fn handle_lxmf_delivery_proofs(
     }
 }
 
+/// A proof of delivery shows its recipient is in reach: what else waits for it is tried.
+fn wake_recipient_of_proof(state: &AppState, pool: &db::DbPool, identity_id: &str, msg_id: &str) {
+    if !state.lxmf_keep_trying_enabled() {
+        return;
+    }
+    if let Some(recipient) = db::get_outbound_message_destination(pool, msg_id, identity_id)
+        .as_deref()
+        .and_then(ratspeak_core::hex_to_array16)
+    {
+        state.wake_waiting(lxmf::WakeEvent::Heard(recipient));
+    }
+}
+
 async fn complete_authenticated_lxmf_delivery_proof(
     state: &Arc<AppState>,
     msg_id: &str,
@@ -4926,10 +4948,14 @@ async fn complete_authenticated_lxmf_delivery_proof(
     let msg_id_for_db = msg_id.to_string();
     let identity_for_db = helpers::active_identity_id(state);
     // One hop: flip the state and read the method back for the emit.
+    let state_for_db = Arc::clone(state);
     let (updated, method) = db::spawn_db(state.db.clone(), move |p| {
         let updated =
             db::update_message_state(&p, &msg_id_for_db, &identity_for_db, "delivered", rtt_ms);
         let method = db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db);
+        if updated {
+            wake_recipient_of_proof(&state_for_db, &p, &identity_for_db, &msg_id_for_db);
+        }
         (updated, method)
     })
     .await
@@ -5862,6 +5888,10 @@ async fn process_inbound_lxmf(
     if let Err(error) = save_result {
         tracing::warn!(%error, "failed to persist inbound LXMF message");
         return InboundOutcome::SaveFailed;
+    }
+    // A message that came live shows its sender is in reach.
+    if source.marks_sender_seen() {
+        state.wake_waiting(lxmf::WakeEvent::Heard(msg.source_hash()));
     }
     // "Accepted" is intentionally recorded only after every authentication,
     // policy, duplicate, extension-routing, and persistence gate succeeds.
@@ -9645,6 +9675,36 @@ mod inbound_pipeline_tests {
         assert_eq!(message_rows(&state), 1);
     }
 
+    #[tokio::test]
+    async fn a_message_that_came_live_wakes_what_waits_for_its_sender() {
+        let (state, _emitter) = pipeline_state();
+        state
+            .lxmf_keep_trying
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let (stored, live) = ([0xD1; 16], [0xD2; 16]);
+
+        // From the Offline Inbox it may be hours old.
+        let data = packed_inbound(local_dest(&state), stored, "left for later");
+        handle_decrypted_lxmf(&state, data, InboundLxmfSource::Propagated).await;
+        assert_eq!(message_rows(&state), 1);
+        assert!(state.take_wake_signals().is_empty());
+
+        let data = packed_inbound(local_dest(&state), live, "here now");
+        handle_decrypted_lxmf(
+            &state,
+            data,
+            InboundLxmfSource::Link {
+                link_id: None,
+                remote_identity_hash: None,
+            },
+        )
+        .await;
+        assert_eq!(message_rows(&state), 2);
+        let mut heard = lxmf::WakeSignals::default();
+        heard.raise(lxmf::WakeEvent::Heard(live));
+        assert_eq!(state.take_wake_signals(), heard);
+    }
+
     /// The Link source persists like Propagated (shared pipeline).
     #[tokio::test]
     async fn link_source_persists_and_emits() {
@@ -10684,6 +10744,26 @@ mod waiting_send_tests {
         assert_eq!(step["method"], "direct");
         assert_eq!(state.take_wake_signals(), lxmf::WakeSignals::default());
         assert!(wake(&state).woken.is_empty(), "one signal, one wake");
+    }
+
+    #[test]
+    fn a_proof_of_delivery_wakes_what_else_waits_for_that_recipient() {
+        let (state, _emitter, identity) = session();
+        let id = send(&state, &identity, "proven");
+
+        wake_recipient_of_proof(&state, &state.db, &identity, &id);
+        assert!(state.take_wake_signals().is_empty(), "waiting is off");
+
+        state.lxmf_keep_trying.store(true, Ordering::Relaxed);
+        wake_recipient_of_proof(&state, &state.db, &identity, &"ee".repeat(32));
+        assert!(
+            state.take_wake_signals().is_empty(),
+            "not a message of ours"
+        );
+        wake_recipient_of_proof(&state, &state.db, &identity, &id);
+        let mut heard = lxmf::WakeSignals::default();
+        heard.raise(lxmf::WakeEvent::Heard(peer_hash()));
+        assert_eq!(state.take_wake_signals(), heard);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

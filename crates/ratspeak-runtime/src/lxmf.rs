@@ -811,12 +811,22 @@ pub enum LxmfDeliveryProgressRepresentation {
 /// Result of a locally accepted outbound LXMF submission. The method is read
 /// from the normalized message that was actually persisted and handed to the
 /// router, not from the pre-normalization preference decision.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct LxmfQueuedMessage {
     pub message_id: String,
     pub method: DeliveryMethod,
-    /// Not handed to the network: it waits behind earlier messages of its queue.
-    pub waiting: bool,
+    /// Why it was saved waiting and not handed to the network, when it was.
+    pub waiting: Option<DeliveryFailureReason>,
+}
+
+impl std::fmt::Debug for LxmfQueuedMessage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LxmfQueuedMessage")
+            .field("message_id", &self.message_id)
+            .field("method", &self.method)
+            .field("waiting", &self.waiting.map(DeliveryFailureReason::code))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1437,6 +1447,8 @@ pub struct LxmfManager {
     /// through the configured Offline Inbox after live delivery fails.
     auto_live_fallback: HashSet<[u8; 32]>,
     live_preparation: preparation::LivePreparation,
+    /// When each queued Offline Inbox send first found its node or recipient not ready.
+    inbox_waits: HashMap<[u8; 32], f64>,
     /// Outbox sends from the last run or a Retry, queued by the tick.
     resumable: Vec<ResumableSend>,
     /// Ids of outbox records the resume could not read; the tick fails them.
@@ -1480,7 +1492,8 @@ enum Resumed {
     Failed,
 }
 
-/// How long a resumed Offline Inbox send waits for its relay after startup.
+/// How long a resumed Offline Inbox send waits for its relay after startup
+/// when messages do not wait.
 const RESUME_RELAY_WAIT_SECS: f64 = 120.0;
 
 /// Immutable known-identity artifact captured while the LXMF manager is
@@ -2531,6 +2544,7 @@ impl LxmfManager {
             last_reported_steps: HashMap::new(),
             auto_live_fallback: HashSet::new(),
             live_preparation: preparation::LivePreparation::default(),
+            inbox_waits: HashMap::new(),
             resumable: Vec::new(),
             unreadable_outbox: Vec::new(),
             keep_trying: false,
@@ -3089,12 +3103,19 @@ impl LxmfManager {
             msg.timestamp(),
         );
 
-        let held =
-            self.waits_behind_earlier(db_pool, identity_id, dest_hash_hex, preference, profile);
-        if !held {
+        let held = self.held_at_send(
+            db_pool,
+            identity_id,
+            dest_hash_hex,
+            preference,
+            profile,
+            msg.method,
+        );
+        if held.is_none() {
             self.preempt_opportunistic_path(&mut msg);
         }
-        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference).filter(|_| !held);
+        let auto_fallback =
+            Self::auto_live_fallback_hash(&msg, preference).filter(|_| held.is_none());
         let method = msg.method;
         let resend = crate::outbox::OutboxMessage::of(&msg).encode();
         let source = self.lxmf_hash.clone();
@@ -3136,21 +3157,21 @@ impl LxmfManager {
         })
     }
 
-    /// Hand a signed message to the router and write its row; one that waits
-    /// behind earlier messages gets its row alone, and a wake sends it.
+    /// Hand a signed message to the router and write its row; one that is
+    /// held gets its row alone, and a wake sends it.
     fn submit_or_hold(
         &mut self,
         msg: SignedLxMessage,
-        held: bool,
+        held: Option<DeliveryFailureReason>,
         db_pool: &DbPool,
         record: db::OutboundMessage<'_>,
     ) -> Result<(), LxmfSubmissionFailure> {
         let message_id = msg.message_id();
-        if !held && self.submit_signed(msg).is_err() {
+        if held.is_none() && self.submit_signed(msg).is_err() {
             return Err(LxmfSubmissionFailure::PreparationFailed);
         }
         let record = db::OutboundMessage {
-            waiting: held,
+            waiting: held.is_some(),
             ..record
         };
         if self.persist_outbound(db_pool, message_id, &record) {
@@ -3350,14 +3371,17 @@ impl LxmfManager {
         }
     }
 
-    /// Sign the stored parts again and queue the message as a send would. An
-    /// Offline Inbox send waits a while for its relay; a rebuilt message that
-    /// is not the one stored fails rather than go out.
+    /// Sign the stored parts again and queue the message as a send would. A
+    /// rebuilt message that is not the one stored fails rather than go out.
     fn queue_resumed(&mut self, send: &ResumableSend, now: f64) -> Resumed {
         let dest_hex = hex::encode(send.message.destination());
         let method = self.delivery_method_for(&dest_hex, send.preference, send.profile);
         if method == DeliveryMethod::Propagated && self.router.outbound_propagation_node.is_none() {
-            return if self.client_propagation_enabled && now - send.since < RESUME_RELAY_WAIT_SECS {
+            // With waiting on it waits as any message does, and a node coming into use wakes it.
+            return if self.client_propagation_enabled
+                && !self.keep_trying
+                && now - send.since < RESUME_RELAY_WAIT_SECS
+            {
                 Resumed::AwaitingInbox
             } else {
                 Resumed::NoInbox
@@ -3541,17 +3565,19 @@ impl LxmfManager {
             msg.timestamp(),
         );
 
-        let held = self.waits_behind_earlier(
+        let held = self.held_at_send(
             db_pool,
             identity_id,
             dest_hash_hex,
             preference,
             DeliveryProfile::Attachment,
+            msg.method,
         );
-        if !held {
+        if held.is_none() {
             self.preempt_opportunistic_path(&mut msg);
         }
-        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference).filter(|_| !held);
+        let auto_fallback =
+            Self::auto_live_fallback_hash(&msg, preference).filter(|_| held.is_none());
         let method = msg.method;
         // The file is durable before the message is queued, so its row can
         // never reference a missing file; every failure below removes it.
@@ -3713,17 +3739,19 @@ impl LxmfManager {
             msg.timestamp(),
         );
 
-        let held = self.waits_behind_earlier(
+        let held = self.held_at_send(
             db_pool,
             identity_id,
             dest_hash_hex,
             preference,
             DeliveryProfile::Attachment,
+            msg.method,
         );
-        if !held {
+        if held.is_none() {
             self.preempt_opportunistic_path(&mut msg);
         }
-        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference).filter(|_| !held);
+        let auto_fallback =
+            Self::auto_live_fallback_hash(&msg, preference).filter(|_| held.is_none());
         let method = msg.method;
         let filename = if audio_mode == lxmf_core::constants::AM_CODEC2_700C {
             COMPACT_AUDIO_FILE_NAME
@@ -7112,10 +7140,13 @@ impl LxmfManager {
     ) -> HashSet<[u8; 32]> {
         let mut unready = HashSet::new();
         let Some(prop_hash) = self.router.outbound_propagation_node else {
+            self.inbox_waits.clear();
             return unready;
         };
         let mut candidates = Vec::new();
+        let mut queued = HashSet::new();
         for message in &self.router.pending_outbound {
+            queued.insert(message.message_id());
             if message.method != DeliveryMethod::Propagated
                 || message.state != lxmf_core::constants::MessageState::Outbound
                 || self
@@ -7132,6 +7163,7 @@ impl LxmfManager {
                 candidates.push(message.clone());
             }
         }
+        self.inbox_waits.retain(|id, _| queued.contains(id));
         for message in candidates {
             let id = message.message_id();
             if !self.timing_ready(prop_hash) {
@@ -7149,14 +7181,29 @@ impl LxmfManager {
                 self.known_identities.contains_key(&dest_hex),
                 now,
             ) {
-                Ok(prepared) => prepared,
-                Err(lxmf_core::propagation_send::MissingPropagationInput::RecipientIdentity) => {
-                    self.defer_propagation_delivery(&id, message.destination_hash(), now);
-                    unready.insert(id);
-                    continue;
+                Ok(prepared) => {
+                    self.inbox_waits.remove(&id);
+                    prepared
                 }
-                Err(_) => {
-                    self.defer_propagation_delivery(&id, prop_hash, now);
+                Err(missing) => {
+                    let (lacking, reason) = match missing {
+                        lxmf_core::propagation_send::MissingPropagationInput::RecipientIdentity => {
+                            (
+                                message.destination_hash(),
+                                DeliveryFailureReason::PathUnavailable,
+                            )
+                        }
+                        _ => (prop_hash, DeliveryFailureReason::InboxUnreachable),
+                    };
+                    let since = *self.inbox_waits.entry(id).or_insert(now);
+                    // As long as a live send waits for a route; a clock set back ends it too.
+                    if (0.0..self.discovery_limit(lacking).as_secs_f64()).contains(&(now - since)) {
+                        self.defer_propagation_delivery(&id, lacking, now);
+                    } else {
+                        self.inbox_waits.remove(&id);
+                        self.router.mark_outbound_failed(&id);
+                        self.push_failed_outbound_state(Some(id), reason, results);
+                    }
                     unready.insert(id);
                     continue;
                 }
@@ -7855,7 +7902,7 @@ mod tests {
             interface_role: rns_transport::messages::InterfaceRole::Normal,
         }]);
     }
-    async fn finish_pending_propagation(
+    pub(super) async fn finish_pending_propagation(
         mgr: &mut LxmfManager,
         mut states: Vec<(String, &'static str)>,
     ) -> Vec<(String, &'static str)> {
@@ -7873,7 +7920,7 @@ mod tests {
         .expect("bounded envelope worker should settle")
     }
 
-    fn ready_auto_propagation_fallback(
+    pub(super) fn ready_auto_propagation_fallback(
         mgr: &mut LxmfManager,
         dest: [u8; 16],
         node: [u8; 16],
@@ -13306,6 +13353,160 @@ mod tests {
         );
     }
 
+    /// An Offline Inbox send queued for `recipient` through `node`, which is
+    /// in use but has not been heard; when it was queued and how long it may wait.
+    fn unready_inbox_send(
+        mgr: &mut LxmfManager,
+        recipient: [u8; 16],
+        node: [u8; 16],
+    ) -> ([u8; 32], f64, f64) {
+        let (tx, rx) = tokio::sync::mpsc::channel::<TransportMessage>(64);
+        std::mem::forget(rx);
+        mgr.router.set_transport(tx);
+        mgr.known_identities
+            .insert(hex::encode(recipient), Identity::new().get_public_key());
+        mgr.router.set_outbound_propagation_node(Some(node));
+        let message = mgr
+            .create_final_message(
+                &hex::encode(recipient),
+                "by the inbox",
+                "",
+                DeliveryMethod::Propagated,
+            )
+            .expect("message created");
+        let id = message.message_id();
+        mgr.router.try_send(message).unwrap();
+        let start = unix_now();
+        assert!(mgr.run_router_outbound(start).is_empty());
+        (id, start, mgr.discovery_limit(node).as_secs_f64())
+    }
+
+    #[test]
+    fn an_inbox_send_that_cannot_become_ready_leaves_the_router_after_its_window() {
+        let mut mgr = test_manager();
+        let (id, start, limit) = unready_inbox_send(&mut mgr, [0x55; 16], [0x44; 16]);
+
+        // It is looked at again each time its path request has had its wait.
+        let inside = start + limit - PATH_REQUEST_WAIT as f64 - 1.0;
+        assert!(mgr.run_router_outbound(inside).is_empty());
+        assert_eq!(mgr.router.pending_outbound[0].message_id(), id);
+        assert_eq!(
+            mgr.router.pending_outbound[0].delivery_attempts, 0,
+            "the wait spends no attempt"
+        );
+
+        assert_eq!(
+            mgr.run_router_outbound(start + limit),
+            [(hex::encode(id), "failed")]
+        );
+        assert_eq!(failure_code(&mut mgr, id), Some("inbox_unreachable"));
+        assert!(mgr.router.pending_outbound.is_empty());
+        assert!(mgr.run_router_outbound(start + limit + 60.0).is_empty());
+    }
+
+    #[test]
+    fn an_inbox_send_without_its_recipients_key_waits_as_long_as_a_live_send_does() {
+        let mut mgr = test_manager();
+        let (recipient, node) = ([0x58; 16], [0x59; 16]);
+        let _transport = ready_auto_propagation_fallback(&mut mgr, recipient, node);
+        mgr.known_identities.remove(&hex::encode(recipient));
+        let message = mgr
+            .create_final_message(
+                &hex::encode(recipient),
+                "no key yet",
+                "",
+                DeliveryMethod::Propagated,
+            )
+            .expect("message created");
+        let id = message.message_id();
+        mgr.router.try_send(message).unwrap();
+        let start = unix_now();
+        let limit = mgr.discovery_limit(recipient).as_secs_f64();
+
+        assert!(mgr.run_router_outbound(start).is_empty());
+        let inside = start + limit - PATH_REQUEST_WAIT as f64 - 1.0;
+        assert!(mgr.run_router_outbound(inside).is_empty());
+        assert_eq!(
+            mgr.run_router_outbound(start + limit),
+            [(hex::encode(id), "failed")]
+        );
+        assert_eq!(failure_code(&mut mgr, id), Some("path_unavailable"));
+    }
+
+    #[test]
+    fn an_auto_message_that_fell_back_to_an_unready_inbox_waits_its_window_too() {
+        let mut mgr = test_manager();
+        let (recipient, node) = ([0x5A; 16], [0x5B; 16]);
+        let (tx, _transport) = tokio::sync::mpsc::channel::<TransportMessage>(64);
+        mgr.router.set_transport(tx);
+        mgr.known_identities
+            .insert(hex::encode(recipient), Identity::new().get_public_key());
+        mgr.router.set_outbound_propagation_node(Some(node));
+        mgr.client_propagation_enabled = true;
+        let message = mgr
+            .create_final_message(
+                &hex::encode(recipient),
+                "live, then the inbox",
+                "",
+                DeliveryMethod::Direct,
+            )
+            .expect("message created");
+        let id = message.message_id();
+        mgr.auto_live_fallback.insert(id);
+
+        let results = mgr.execute_encrypted_actions(vec![OutboundAction::Failed(message)]);
+        assert!(results.is_empty(), "{results:?}");
+        assert_eq!(
+            mgr.router.pending_outbound[0].method,
+            DeliveryMethod::Propagated
+        );
+        let start = unix_now();
+        let limit = mgr.discovery_limit(node).as_secs_f64();
+        assert!(mgr.run_router_outbound(start).is_empty());
+        assert_eq!(
+            mgr.run_router_outbound(start + limit),
+            [(hex::encode(id), "failed")]
+        );
+        assert_eq!(failure_code(&mut mgr, id), Some("inbox_unreachable"));
+    }
+
+    #[test]
+    fn the_relay_is_free_to_change_once_the_window_ends() {
+        let mut mgr = test_manager();
+        let (_, start, limit) = unready_inbox_send(&mut mgr, [0x5C; 16], [0x5D; 16]);
+
+        mgr.run_router_outbound(start + limit - PATH_REQUEST_WAIT as f64 - 1.0);
+        assert!(
+            mgr.propagated_deposit_pending(),
+            "held while it may deposit"
+        );
+        mgr.run_router_outbound(start + limit);
+        assert!(!mgr.propagated_deposit_pending());
+    }
+
+    #[tokio::test]
+    async fn becoming_ready_inside_the_window_deposits_and_spends_no_attempt() {
+        let mut mgr = test_manager();
+        let (recipient, node) = ([0x56; 16], [0x57; 16]);
+        let (id, start, limit) = unready_inbox_send(&mut mgr, recipient, node);
+
+        // The node is heard with a little of the window left.
+        let _transport = ready_auto_propagation_fallback(&mut mgr, recipient, node);
+        assert!(mgr.run_router_outbound(start + limit - 1.0).is_empty());
+        assert_eq!(mgr.router.pending_outbound[0].delivery_attempts, 0);
+
+        // Lost again later, it gets the whole window again.
+        let policy = mgr.propagation_node_policies.remove(&node).unwrap();
+        mgr.with_router_message(&id, |message| message.next_delivery_attempt = 0.0);
+        assert!(mgr.run_router_outbound(start + limit + 5.0).is_empty());
+        assert_eq!(mgr.router.pending_outbound[0].message_id(), id);
+
+        mgr.propagation_node_policies.insert(node, policy);
+        let results = finish_pending_propagation(&mut mgr, Vec::new()).await;
+        assert_eq!(results, [(hex::encode(id), "propagating")]);
+        assert_eq!(mgr.in_flight_propagation.get(&id), Some(&node));
+    }
+
     #[test]
     fn attempt_exhausted_outbound_surfaces_failed_state() {
         let mut mgr = test_manager();
@@ -14085,7 +14286,7 @@ mod tests {
         mgr
     }
 
-    fn failure_code(mgr: &mut LxmfManager, id: [u8; 32]) -> Option<&'static str> {
+    pub(super) fn failure_code(mgr: &mut LxmfManager, id: [u8; 32]) -> Option<&'static str> {
         mgr.take_failure_reasons()
             .get(&hex::encode(id))
             .map(|reason| reason.code())
@@ -14234,6 +14435,28 @@ mod tests {
         mgr.client_propagation_enabled = true;
         mgr.queue_resumable(unix_now() + RESUME_RELAY_WAIT_SECS + 1.0, &mut results);
         assert_eq!(results, [(hex::encode(id), "failed")], "not forever");
+    }
+
+    #[test]
+    fn with_waiting_on_a_resumed_inbox_send_without_a_node_waits_at_once() {
+        let pool = test_pool();
+        let mut mgr = test_manager();
+        mgr.router.set_outbound_propagation_node(Some([0x42; 16]));
+        let id = send_for_resume(
+            &mut mgr,
+            &pool,
+            &"ac".repeat(16),
+            DeliveryPreference::Propagated,
+        );
+
+        let mut mgr = restarted(mgr, &pool);
+        mgr.client_propagation_enabled = true;
+        mgr.keep_trying = true;
+        let mut results = Vec::new();
+        mgr.queue_resumable(unix_now(), &mut results);
+        assert_eq!(results, [(hex::encode(id), "failed")]);
+        assert_eq!(failure_code(&mut mgr, id), Some("inbox_unreachable"));
+        assert!(mgr.resumable.is_empty(), "a node coming into use wakes it");
     }
 
     #[test]
