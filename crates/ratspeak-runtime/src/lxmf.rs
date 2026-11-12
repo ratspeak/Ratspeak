@@ -99,7 +99,7 @@ pub const LEGACY_RATSPEAK_REACTION_TYPE: &[u8] = b"ratspeak.reaction";
 // Back-compat alias for callers (tests, source-contract guards) that still
 // reference the old single-version constant.
 pub const RATSPEAK_CHAT_CUSTOM_TYPE: &[u8] = RATSPEAK_CHAT_CUSTOM_TYPE_V1;
-// TRANSITION: replies/reactions now emit the standard LXMF 1.0.1 fields
+// TRANSITION: replies/reactions now emit the standard LXMF fields
 // (FIELD_REPLY_TO/FIELD_REPLY_QUOTE/FIELD_REACTION) as primary; the legacy
 // 0xFB/0xFC envelope is dual-emitted because shipped v1.0.x clients only
 // decode the envelope. Flip to false / remove in a future release once the
@@ -461,7 +461,7 @@ fn encode_standard_reaction_field(target: &[u8; 32], emoji: &str) -> Vec<u8> {
     ]))
 }
 
-// Standard LXMF 1.0.1 fields: FIELD_REPLY_TO 0x30 = bin(full LXMessage hash),
+// Standard LXMF fields: FIELD_REPLY_TO 0x30 = bin(full LXMessage hash),
 // FIELD_REPLY_QUOTE 0x31 = bin(quoted content UTF-8), FIELD_REACTION 0x40 =
 // dict (see above). Empty when the target id isn't a 32-byte hash (UUID
 // stand-in case) or the reaction is a removal — the standard field has no
