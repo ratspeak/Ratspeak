@@ -136,6 +136,15 @@ pub(crate) fn install_get_handler(
                 return;
             };
             let Some(identity) = request.remote_identity else {
+                // LXMRouter.message_get_request: the client is told to identify.
+                let mut reply = Vec::new();
+                let error = lxmf_core::constants::PeerError::NoIdentity as u64;
+                if rmpv::encode::write_value(&mut reply, &rmpv::Value::from(error)).is_ok() {
+                    drop(
+                        responder
+                            .respond(rns_runtime::link_manager::RequestOutcome::ReplyValue(reply)),
+                    );
+                }
                 return;
             };
             let destination = rns_identity::destination::Destination::hash_from_name_and_identity(
