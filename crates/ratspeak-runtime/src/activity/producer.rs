@@ -20,7 +20,7 @@ pub use super::catalog::{
     InterfaceDegradationReason, InterfaceFailureReason, InterfaceRollback, InterfaceTimeoutReason,
     InterfaceTransition, LinkId, LxmfDeliveryMethod, LxmfDeliveryState, LxmfInboundRejectionReason,
     LxmfProgressStep, LxmfSubmissionFailureReason, LxstCallReason, LxstTransition, MessageId,
-    PathEvidence, PathRequestMethod, SourceValidation, TcpEndpoint,
+    PathEvidence, PathRequestMethod, SourceValidation, TcpEndpoint, WakeCause,
 };
 
 /// Opaque timeless event accepted by [`super::ActivityRecorder::record_event`].
@@ -45,6 +45,7 @@ enum Payload {
     LxmfDeliveryQueued(LxmfDeliveryQueued),
     LxmfSubmissionFailed(LxmfSubmissionFailed),
     LxmfDeliveryStateChanged(LxmfDeliveryStateChanged),
+    LxmfDeliveryRetrying(LxmfDeliveryRetrying),
     LxmfDeliveryProgress(LxmfDeliveryProgress),
     LxmfInboundAccepted(LxmfInboundAccepted),
     LxmfInboundRejected(LxmfInboundRejected),
@@ -172,6 +173,14 @@ impl ProducerEvent {
                     method: input.method,
                     rtt_ms: input.rtt_ms,
                     failure_reason: input.failure_reason,
+                })
+            }
+            Payload::LxmfDeliveryRetrying(input) => {
+                catalog::lxmf_delivery_retrying(catalog::LxmfDeliveryRetrying {
+                    time,
+                    message: input.message,
+                    method: input.method,
+                    cause: input.cause,
                 })
             }
             Payload::LxmfDeliveryProgress(input) => {
@@ -412,6 +421,16 @@ pub struct LxmfDeliveryStateChanged {
 
 pub fn lxmf_delivery_state_changed(input: LxmfDeliveryStateChanged) -> ProducerEvent {
     ProducerEvent(Payload::LxmfDeliveryStateChanged(input))
+}
+
+pub struct LxmfDeliveryRetrying {
+    pub message: MessageId,
+    pub method: Option<LxmfDeliveryMethod>,
+    pub cause: WakeCause,
+}
+
+pub fn lxmf_delivery_retrying(input: LxmfDeliveryRetrying) -> ProducerEvent {
+    ProducerEvent(Payload::LxmfDeliveryRetrying(input))
 }
 
 pub struct LxmfDeliveryProgress {

@@ -5,6 +5,7 @@ pub use ratspeak_runtime::db
 pub use ratspeak_runtime::static_nodes
 pub mod ratspeak_runtime::activity
 pub mod ratspeak_runtime::activity::producer
+pub use ratspeak_runtime::activity::producer::WakeCause
 pub enum ratspeak_runtime::activity::producer::AnnounceComponents
 pub ratspeak_runtime::activity::producer::AnnounceComponents::LxmfDelivery
 pub ratspeak_runtime::activity::producer::AnnounceComponents::LxmfDeliveryAndLxst
@@ -124,6 +125,7 @@ pub ratspeak_runtime::activity::producer::ChannelSessionTransition::WelcomeValid
 pub ratspeak_runtime::activity::producer::ChannelSessionTransition::WelcomeValidated::encoded_bytes: u32
 pub enum ratspeak_runtime::activity::producer::DeliveryFailureReason
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::AttemptsExhausted
+pub ratspeak_runtime::activity::producer::DeliveryFailureReason::BehindEarlier
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::Expired
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::InboxOff
 pub ratspeak_runtime::activity::producer::DeliveryFailureReason::InboxRejected
@@ -444,6 +446,10 @@ pub struct ratspeak_runtime::activity::producer::LxmfDeliveryQueued
 pub ratspeak_runtime::activity::producer::LxmfDeliveryQueued::destination: ratspeak_runtime::activity::producer::DestinationHash
 pub ratspeak_runtime::activity::producer::LxmfDeliveryQueued::message: ratspeak_runtime::activity::producer::MessageId
 pub ratspeak_runtime::activity::producer::LxmfDeliveryQueued::method: ratspeak_runtime::activity::producer::LxmfDeliveryMethod
+pub struct ratspeak_runtime::activity::producer::LxmfDeliveryRetrying
+pub ratspeak_runtime::activity::producer::LxmfDeliveryRetrying::cause: ratspeak_core::delivery::WakeCause
+pub ratspeak_runtime::activity::producer::LxmfDeliveryRetrying::message: ratspeak_runtime::activity::producer::MessageId
+pub ratspeak_runtime::activity::producer::LxmfDeliveryRetrying::method: core::option::Option<ratspeak_runtime::activity::producer::LxmfDeliveryMethod>
 pub struct ratspeak_runtime::activity::producer::LxmfDeliveryStateChanged
 pub ratspeak_runtime::activity::producer::LxmfDeliveryStateChanged::failure_reason: core::option::Option<ratspeak_runtime::activity::producer::DeliveryFailureReason>
 pub ratspeak_runtime::activity::producer::LxmfDeliveryStateChanged::message: ratspeak_runtime::activity::producer::MessageId
@@ -497,6 +503,7 @@ pub fn ratspeak_runtime::activity::producer::interface_activity(ratspeak_runtime
 pub fn ratspeak_runtime::activity::producer::lxmf_delivery_failed(ratspeak_runtime::activity::producer::LxmfDeliveryFailed) -> ratspeak_runtime::activity::producer::ProducerEvent
 pub fn ratspeak_runtime::activity::producer::lxmf_delivery_progress(ratspeak_runtime::activity::producer::LxmfDeliveryProgress) -> ratspeak_runtime::activity::producer::ProducerEvent
 pub fn ratspeak_runtime::activity::producer::lxmf_delivery_queued(ratspeak_runtime::activity::producer::LxmfDeliveryQueued) -> ratspeak_runtime::activity::producer::ProducerEvent
+pub fn ratspeak_runtime::activity::producer::lxmf_delivery_retrying(ratspeak_runtime::activity::producer::LxmfDeliveryRetrying) -> ratspeak_runtime::activity::producer::ProducerEvent
 pub fn ratspeak_runtime::activity::producer::lxmf_delivery_state_changed(ratspeak_runtime::activity::producer::LxmfDeliveryStateChanged) -> ratspeak_runtime::activity::producer::ProducerEvent
 pub fn ratspeak_runtime::activity::producer::lxmf_inbound_accepted(ratspeak_runtime::activity::producer::LxmfInboundAccepted) -> ratspeak_runtime::activity::producer::ProducerEvent
 pub fn ratspeak_runtime::activity::producer::lxmf_inbound_rejected(ratspeak_runtime::activity::producer::LxmfInboundRejected) -> ratspeak_runtime::activity::producer::ProducerEvent
@@ -1526,6 +1533,12 @@ pub ratspeak_runtime::lxmf::RatspeakChatExtension::Reply
 pub ratspeak_runtime::lxmf::RatspeakChatExtension::Reply::preview: alloc::string::String
 pub ratspeak_runtime::lxmf::RatspeakChatExtension::Reply::target: alloc::string::String
 pub ratspeak_runtime::lxmf::RatspeakChatExtension::Reply::target_sender: core::option::Option<alloc::string::String>
+pub enum ratspeak_runtime::lxmf::WakeEvent
+pub ratspeak_runtime::lxmf::WakeEvent::Heard([u8; 16])
+pub ratspeak_runtime::lxmf::WakeEvent::InterfaceOnline
+pub ratspeak_runtime::lxmf::WakeEvent::NewSend([u8; 16])
+pub ratspeak_runtime::lxmf::WakeEvent::Resumed
+pub ratspeak_runtime::lxmf::WakeEvent::TryNow([u8; 16])
 pub struct ratspeak_runtime::lxmf::AttachmentMessageRequest<'a>
 pub ratspeak_runtime::lxmf::AttachmentMessageRequest::content: &'a str
 pub ratspeak_runtime::lxmf::AttachmentMessageRequest::db_pool: &'a ratspeak_db::db::DbPool
@@ -1594,6 +1607,7 @@ pub ratspeak_runtime::lxmf::LxmfManager::display_name: alloc::string::String
 pub ratspeak_runtime::lxmf::LxmfManager::identity: rns_identity::identity::Identity
 pub ratspeak_runtime::lxmf::LxmfManager::identity_hash: alloc::string::String
 pub ratspeak_runtime::lxmf::LxmfManager::is_hardware: bool
+pub ratspeak_runtime::lxmf::LxmfManager::keep_trying: bool
 pub ratspeak_runtime::lxmf::LxmfManager::known_identities: std::collections::hash::map::HashMap<alloc::string::String, [u8; 64]>
 pub ratspeak_runtime::lxmf::LxmfManager::link_delivery: core::option::Option<lxmf_core::link_delivery::LinkDeliveryManager>
 pub ratspeak_runtime::lxmf::LxmfManager::lxmf_dest_hash: [u8; 16]
@@ -1699,6 +1713,7 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::send_message_with_preference_report(
 pub fn ratspeak_runtime::lxmf::LxmfManager::send_reaction(&mut self, &str, &str, &str, &str, &ratspeak_db::db::DbPool, &str)
 pub fn ratspeak_runtime::lxmf::LxmfManager::send_reaction_with_preference(&mut self, ratspeak_runtime::lxmf::ReactionSendRequest<'_>) -> bool
 pub fn ratspeak_runtime::lxmf::LxmfManager::send_reply_with_preference(&mut self, ratspeak_runtime::lxmf::ReplyMessageSendRequest<'_>) -> core::option::Option<alloc::string::String>
+pub fn ratspeak_runtime::lxmf::LxmfManager::send_reply_with_preference_report(&mut self, ratspeak_runtime::lxmf::ReplyMessageSendRequest<'_>) -> core::option::Option<ratspeak_runtime::lxmf::LxmfQueuedMessage>
 pub fn ratspeak_runtime::lxmf::LxmfManager::set_delivery_limit_kb(&mut self, usize)
 pub fn ratspeak_runtime::lxmf::LxmfManager::set_display_name(&mut self, &str)
 pub fn ratspeak_runtime::lxmf::LxmfManager::set_opportunistic_proof_sender(&mut self, tokio::sync::mpsc::unbounded::UnboundedSender<rns_transport::link_messages::DestinationEvent>)
@@ -1722,6 +1737,8 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::update_route_hop(&mut self, [u8; 16]
 pub fn ratspeak_runtime::lxmf::LxmfManager::verify_inbound_signature(&self, &mut lxmf_core::message::LxMessage) -> core::option::Option<bool>
 pub fn ratspeak_runtime::lxmf::LxmfManager::voice_message_format(&self, &ratspeak_db::db::DbPool, &str) -> u8
 impl ratspeak_runtime::lxmf::LxmfManager
+pub fn ratspeak_runtime::lxmf::LxmfManager::run_wakes(&mut self, ratspeak_runtime::lxmf::WakeContext<'_>) -> ratspeak_runtime::lxmf::WakeOutcome
+impl ratspeak_runtime::lxmf::LxmfManager
 pub fn ratspeak_runtime::lxmf::LxmfManager::set_delivery_timing_owner(&mut self, rns_runtime::reticulum::ReticulumHandle)
 impl ratspeak_runtime::lxmf::LxmfManager
 pub fn ratspeak_runtime::lxmf::LxmfManager::set_path_recovery_handle(&mut self, rns_transport::path_recovery::PathRecoveryHandle)
@@ -1733,6 +1750,7 @@ pub fn ratspeak_runtime::lxmf::LxmfPersistenceDelta::persist(&self) -> core::io:
 pub struct ratspeak_runtime::lxmf::LxmfQueuedMessage
 pub ratspeak_runtime::lxmf::LxmfQueuedMessage::message_id: alloc::string::String
 pub ratspeak_runtime::lxmf::LxmfQueuedMessage::method: lxmf_core::constants::DeliveryMethod
+pub ratspeak_runtime::lxmf::LxmfQueuedMessage::waiting: bool
 pub struct ratspeak_runtime::lxmf::MessageSendRequest<'a>
 pub ratspeak_runtime::lxmf::MessageSendRequest::content: &'a str
 pub ratspeak_runtime::lxmf::MessageSendRequest::db_pool: &'a ratspeak_db::db::DbPool
@@ -1766,6 +1784,26 @@ pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::reply_to_id: &'a str
 pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::reply_to_preview: &'a str
 pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::thread: &'a str
 pub ratspeak_runtime::lxmf::ReplyMessageSendRequest::title: &'a str
+pub struct ratspeak_runtime::lxmf::WakeContext<'a>
+pub ratspeak_runtime::lxmf::WakeContext::db: &'a ratspeak_db::db::DbPool
+pub ratspeak_runtime::lxmf::WakeContext::keep_trying: bool
+pub ratspeak_runtime::lxmf::WakeContext::now: f64
+pub ratspeak_runtime::lxmf::WakeContext::online: bool
+pub ratspeak_runtime::lxmf::WakeContext::release: &'a mut dyn core::ops::function::FnMut(&str)
+pub ratspeak_runtime::lxmf::WakeContext::reserve: &'a mut dyn core::ops::function::FnMut(&str, usize) -> bool
+pub ratspeak_runtime::lxmf::WakeContext::signals: ratspeak_runtime::lxmf::WakeSignals
+pub struct ratspeak_runtime::lxmf::WakeOutcome
+pub ratspeak_runtime::lxmf::WakeOutcome::expired: alloc::vec::Vec<ratspeak_db::db::ExpiredWait>
+pub ratspeak_runtime::lxmf::WakeOutcome::failed: alloc::vec::Vec<(alloc::string::String, &'static str)>
+pub ratspeak_runtime::lxmf::WakeOutcome::woken: alloc::vec::Vec<ratspeak_runtime::lxmf::Woken>
+pub struct ratspeak_runtime::lxmf::WakeSignals
+impl ratspeak_runtime::lxmf::WakeSignals
+pub fn ratspeak_runtime::lxmf::WakeSignals::is_empty(&self) -> bool
+pub fn ratspeak_runtime::lxmf::WakeSignals::raise(&mut self, ratspeak_runtime::lxmf::WakeEvent)
+pub struct ratspeak_runtime::lxmf::Woken
+pub ratspeak_runtime::lxmf::Woken::cause: ratspeak_core::delivery::WakeCause
+pub ratspeak_runtime::lxmf::Woken::method: &'static str
+pub ratspeak_runtime::lxmf::Woken::msg_id: alloc::string::String
 pub const ratspeak_runtime::lxmf::AUDIO_MESSAGE_FILE_NAME: &str
 pub const ratspeak_runtime::lxmf::COMPACT_AUDIO_FILE_NAME: &str
 pub const ratspeak_runtime::lxmf::EMIT_LEGACY_REPLY_REACTION_ENVELOPE: bool
@@ -2517,8 +2555,10 @@ pub fn ratspeak_runtime::state::AppState::take_interface_reannounce_suppression(
 pub fn ratspeak_runtime::state::AppState::take_pending_ble_rnode_activity_operation(&self, &str) -> core::option::Option<BleRnodeActivityTake>
 pub fn ratspeak_runtime::state::AppState::take_pending_hw_pin(&self) -> core::option::Option<(alloc::string::String, zeroize::Zeroizing<alloc::string::String>)>
 pub fn ratspeak_runtime::state::AppState::take_retryable_attachment_staging(&self, &str) -> core::option::Option<ratspeak_runtime::state::StagedAttachment>
+pub fn ratspeak_runtime::state::AppState::take_wake_signals(&self) -> ratspeak_runtime::lxmf::WakeSignals
 pub fn ratspeak_runtime::state::AppState::trim_propagation_nodes(&self)
 pub async fn ratspeak_runtime::state::AppState::wait_for_mobile_platform_bridge(&self)
+pub fn ratspeak_runtime::state::AppState::wake_waiting(&self, ratspeak_runtime::lxmf::WakeEvent)
 pub fn ratspeak_runtime::state::AppState::withdraw_native_notifications(&self)
 pub struct ratspeak_runtime::state::AttachmentTransferLease
 impl core::ops::drop::Drop for ratspeak_runtime::state::AttachmentTransferLease
@@ -2795,6 +2835,11 @@ pub struct ratspeak_runtime::RNodeActivityRuntimeContext
 impl ratspeak_runtime::RNodeActivityRuntimeContext
 pub fn ratspeak_runtime::RNodeActivityRuntimeContext::handle(&self) -> &rns_runtime::reticulum::ReticulumHandle
 pub fn ratspeak_runtime::RNodeActivityRuntimeContext::origin(&self) -> ratspeak_runtime::state::RNodeActivityOrigin
+pub struct ratspeak_runtime::StoppedSend
+pub ratspeak_runtime::StoppedSend::delivery_method: core::option::Option<alloc::string::String>
+pub ratspeak_runtime::StoppedSend::live_owner_stopped: bool
+pub ratspeak_runtime::StoppedSend::only_waiting: bool
+pub ratspeak_runtime::StoppedSend::row_marked_stopped: bool
 pub const ratspeak_runtime::ACTIVITY_CAPTURE_SETTING: &str
 pub fn ratspeak_runtime::any_interface_online_cached(&ratspeak_runtime::state::AppState) -> core::option::Option<bool>
 pub fn ratspeak_runtime::apply_lxmf_settings_from_state(&ratspeak_runtime::state::AppState, &mut ratspeak_runtime::lxmf::LxmfManager)
@@ -2821,4 +2866,5 @@ pub async fn ratspeak_runtime::shutdown_rns_lxmf(&alloc::sync::Arc<ratspeak_runt
 pub fn ratspeak_runtime::spawn_startup_rnode_activity_monitor(alloc::sync::Arc<ratspeak_runtime::state::AppState>, rns_runtime::reticulum::RNodeRuntimeObserver, ratspeak_runtime::state::RNodeActivityOrigin)
 pub async fn ratspeak_runtime::start_activity_unless_stopped(&ratspeak_runtime::state::AppState)
 pub async fn ratspeak_runtime::start_channel_hub_service(&alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> bool
+pub fn ratspeak_runtime::stop_outbound_message(&ratspeak_runtime::state::AppState, &str, &str) -> ratspeak_runtime::StoppedSend
 pub fn ratspeak_runtime::telephony_hash_for_identity_hex(&str) -> core::option::Option<alloc::string::String>

@@ -990,6 +990,7 @@ mod tests {
             | "lxmf.delivery.rejected"
             | "lxmf.delivery.failed"
             | "lxmf.delivery.deferred"
+            | "lxmf.delivery.retrying"
             | "lxmf.propagation.started"
             | "lxmf.propagation.succeeded"
             | "lxmf.propagation.failed"
@@ -1014,6 +1015,7 @@ mod tests {
             | "interface.connecting"
             | "rns.path.requested"
             | "lxmf.delivery.queued"
+            | "lxmf.delivery.retrying"
             | "lxst.service.started"
             | "lxst.call.ringing"
             | "lxst.call.link_requested" => ActivityOutcome::Started,
@@ -1914,6 +1916,21 @@ mod tests {
                 [Message, Method, Reason],
                 "message",
                 "Message waiting to send",
+                "standard"
+            ),
+            projection_case!(
+                producer::lxmf_delivery_retrying(producer::LxmfDeliveryRetrying {
+                    message: message(18),
+                    method: Some(LxmfDeliveryMethod::Direct),
+                    cause: producer::WakeCause::Recipient,
+                }),
+                "lxmf.delivery.retrying",
+                Messages,
+                Info,
+                Normal,
+                [Message, Method, Reason],
+                "message",
+                "Message trying again",
                 "standard"
             ),
             projection_case!(

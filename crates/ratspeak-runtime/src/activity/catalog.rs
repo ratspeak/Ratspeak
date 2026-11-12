@@ -12,6 +12,7 @@
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use lxmf_core::link_delivery::{LinkDeliveryStartError, is_retryable_link_delivery_failure};
+pub use ratspeak_core::delivery::WakeCause;
 
 use super::classified::{
     ActivityDraft, ActivityRejectReason, ClassifiedEndpoint, CoalescingPolicy, CorrelationId,
@@ -2411,6 +2412,8 @@ pub struct LxmfDeliveryFailed {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum DeliveryFailureReason {
     AttemptsExhausted,
+    /// Not a failure of this message: an earlier one to the recipient waits, and it waits behind it.
+    BehindEarlier,
     Expired,
     InboxOff,
     InboxRejected,
@@ -2435,6 +2438,7 @@ impl DeliveryFailureReason {
     pub const fn code(self) -> &'static str {
         match self {
             Self::AttemptsExhausted => "attempts_exhausted",
+            Self::BehindEarlier => "behind_earlier",
             Self::Expired => "expired",
             Self::InboxOff => "inbox_off",
             Self::InboxRejected => "inbox_rejected",
@@ -2460,6 +2464,7 @@ impl DeliveryFailureReason {
     pub const fn can_wait(self) -> bool {
         match self {
             Self::AttemptsExhausted
+            | Self::BehindEarlier
             | Self::InboxUnreachable
             | Self::LinkClosed
             | Self::LinkInterrupted
@@ -2531,6 +2536,37 @@ impl DeliveryFailureReason {
             LinkDeliveryStartError::StampFailure => Self::PreparationFailed,
         }
     }
+}
+
+/// A waiting message taken for a new attempt.
+pub struct LxmfDeliveryRetrying {
+    pub time: ObservationTime,
+    pub message: MessageId,
+    pub method: Option<LxmfDeliveryMethod>,
+    pub cause: WakeCause,
+}
+
+pub fn lxmf_delivery_retrying(
+    input: LxmfDeliveryRetrying,
+) -> Result<ActivityDraft, ActivityRejectReason> {
+    let mut draft = ActivityDraft::new(
+        kinds::LXMF_DELIVERY_RETRYING,
+        ActivitySeverity::Info,
+        ActivityDirection::Outbound,
+        ActivityOutcome::Started,
+        input.time.unix_ms,
+        input.time.elapsed_ms,
+        CoalescingPolicy::Never,
+    )
+    .protocol_identifier(
+        ActivityAttributeKey::Message,
+        IdentifierKind::Message,
+        &input.message.0,
+    )?;
+    if let Some(method) = input.method {
+        draft = draft.operational_code(ActivityAttributeKey::Method, method.code())?;
+    }
+    draft.operational_code(ActivityAttributeKey::Reason, input.cause.code())
 }
 
 pub fn lxmf_delivery_failed(
@@ -3099,6 +3135,7 @@ mod tests {
         use DeliveryFailureReason::*;
         let table = [
             (AttemptsExhausted, true),
+            (BehindEarlier, true),
             (Expired, false),
             (InboxOff, false),
             (InboxRejected, false),

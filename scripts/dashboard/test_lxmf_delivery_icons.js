@@ -409,7 +409,7 @@ FakeElement.prototype.querySelectorAll = function() { return []; };
 var menuCalls = [];
 var menuToasts = [];
 var menuConfirms = 0;
-var cancelReply = { cancelled: true, row_marked_stopped: true };
+var cancelReply = { cancelled: true, row_marked_stopped: true, only_waiting: true };
 var menuBody = new FakeElement('body');
 var menuContext = {
     lxmfConversation: [],
@@ -491,8 +491,15 @@ assert.deepStrictEqual(openMenu(sentMessage('delivered')).actions, ['reply', 'se
     assert.strictEqual(menuConfirms, 0, 'Stop trying asks nothing');
     assert.strictEqual(waiting.state, 'cancelled');
     assert(context._messageCanRetry(waiting), 'and Retry is offered again');
-    assert.deepStrictEqual(menuToasts, [['No live send remained. The local message was cancelled, but a copy may still arrive.', 'toast-info']],
-        'the existing stop toasts apply');
+    assert.deepStrictEqual(menuToasts, [], 'a message that only waited was never in the air: the mark says it all');
+
+    // A new attempt that was in the air when it was stopped gets the existing result.
+    waiting.state = 'waiting';
+    cancelReply = { cancelled: true, live_owner_stopped: true, row_marked_stopped: true, only_waiting: false };
+    openMenu(waiting).button('stop-trying').activate();
+    for (turn = 0; turn < 4; turn++) await Promise.resolve();
+    assert.strictEqual(waiting.state, 'cancelled');
+    assert.deepStrictEqual(menuToasts, [['Cancelled local retries. A copy already handed to the network may still arrive.', 'toast-info']]);
 
     // A refusal leaves the message waiting and says why.
     menuToasts.length = 0;

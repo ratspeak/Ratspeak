@@ -525,6 +525,7 @@ pub fn apply_lxmf_settings_from_state(state: &AppState, mgr: &mut lxmf::LxmfMana
     };
     mgr.announce_ratspeak_usage = state.announce_ratspeak_usage_enabled();
     mgr.set_delivery_limit_kb(state.lxmf_delivery_limit_kb());
+    mgr.keep_trying = state.lxmf_keep_trying_enabled();
 
     let hosting = state.effective_propagation_hosting();
     let pn_cost = state
@@ -2874,6 +2875,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                     Vec::new(),
                                     Vec::new(),
                                     Vec::new(),
+                                    lxmf::WakeOutcome::default(),
                                 )
                             };
                             let lock_wait_started = std::time::Instant::now();
@@ -2891,16 +2893,19 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 );
                             }
                             let hold_started = std::time::Instant::now();
+                            let mut wakes = lxmf::WakeOutcome::default();
                             if !delivery_only {
                                 admit_resumes_within_budget(&tick_state_for_lxmf, mgr);
+                                wakes = run_wakes(&tick_state_for_lxmf, mgr);
                             }
-                            let results = if delivery_only {
+                            let mut results = std::mem::take(&mut wakes.failed);
+                            results.extend(if delivery_only {
                                 mgr.process_delivery_events()
                             } else {
                                 mgr.tick_with_auto_propagation_download_ready(
                                     auto_inbox_download_ready,
                                 )
-                            };
+                            });
                             if delivery_only
                                 && dispatch_started.elapsed() > Duration::from_millis(100)
                             {
@@ -2943,6 +2948,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 failed_syncs,
                                 expired_received_ratchets,
                                 mgr.take_packet_delivery_rtts(),
+                                wakes,
                             )
                         }))
                     })
@@ -2959,6 +2965,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                         failed_propagation_syncs,
                         expired_received_ratchets,
                         packet_delivery_rtts,
+                        wakes,
                     ) = match tick_result {
                         Ok(Ok(result)) => result,
                         Ok(Err(_)) | Err(_) => {
@@ -2975,9 +2982,11 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
+                                lxmf::WakeOutcome::default(),
                             )
                         }
                     };
+                    apply_wake_outcome(&tick_state, tick_activity_origin, &wakes);
                     let packet_delivery_rtts = packet_delivery_rtts
                         .into_iter()
                         .collect::<std::collections::HashMap<_, _>>();
@@ -6324,6 +6333,9 @@ async fn poll_stats_loop(
                             rnode_activity_covered,
                         );
                         if state_changed {
+                            if online {
+                                state.wake_waiting(lxmf::WakeEvent::InterfaceOnline);
+                            }
                             if emit_generic_state {
                                 activity_observations
                                     .push(PollActivityObservation::InterfaceState { online });
@@ -6428,6 +6440,7 @@ async fn poll_stats_loop(
                     }
 
                     for (destination, hops) in newly_reachable {
+                        state.wake_waiting(lxmf::WakeEvent::Heard(destination));
                         activity_observations
                             .push(PollActivityObservation::PathObserved { destination, hops });
                     }
@@ -6699,6 +6712,9 @@ async fn poll_stats_loop(
                 if !delivery_trigger_hashes.is_empty() {
                     delivery_trigger_hashes.sort();
                     delivery_trigger_hashes.dedup();
+                    for recipient in &delivery_trigger_hashes {
+                        state.wake_waiting(lxmf::WakeEvent::Heard(*recipient));
+                    }
                     let triggered = match state.lxmf.lock() {
                         Ok(mut lxmf) => lxmf.as_mut().map_or(0, |mgr| {
                             delivery_trigger_hashes
@@ -6820,6 +6836,122 @@ async fn poll_stats_loop(
         stats_emit_skipped = !emit;
 
         last_poll_at = std::time::Instant::now();
+    }
+}
+
+/// What stopping a send found and did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoppedSend {
+    /// The manager held the message and let go of it.
+    pub live_owner_stopped: bool,
+    /// Its row now says cancelled.
+    pub row_marked_stopped: bool,
+    /// It only waited: nothing of it was in the air on this attempt.
+    pub only_waiting: bool,
+    pub delivery_method: Option<String>,
+}
+
+/// Stop `msg_id`: the manager lets go of it and its row is marked cancelled.
+/// Both happen under the manager lock, where a wake also claims, so a
+/// waiting message is stopped or sent again and never both.
+pub fn stop_outbound_message(state: &AppState, msg_id: &str, identity_id: &str) -> StoppedSend {
+    let mut lxmf = state.lxmf.lock().ok();
+    let live_owner_stopped = lxmf
+        .as_mut()
+        .and_then(|lxmf| lxmf.as_mut())
+        .is_some_and(|manager| manager.cancel_outbound_message(msg_id));
+    let waited = db::outbound_message_state(&state.db, identity_id, msg_id)
+        .is_ok_and(|stored| stored.as_deref() == Some(OutboundState::Waiting.as_str()));
+    let row_marked_stopped = db::cancel_outbound_message_state(&state.db, msg_id, identity_id);
+    let delivery_method = db::get_message_delivery_method(&state.db, msg_id, identity_id);
+    drop(lxmf);
+    StoppedSend {
+        live_owner_stopped,
+        row_marked_stopped,
+        only_waiting: waited && row_marked_stopped && !live_owner_stopped,
+        delivery_method,
+    }
+}
+
+/// Run the wake engine; the caller holds the manager lock and applies the
+/// outcome once it is released.
+fn run_wakes(state: &Arc<AppState>, mgr: &mut lxmf::LxmfManager) -> lxmf::WakeOutcome {
+    mgr.run_wakes(lxmf::WakeContext {
+        db: &state.db,
+        now: state.steady_now(),
+        keep_trying: state.lxmf_keep_trying_enabled(),
+        online: any_interface_online_cached(state) == Some(true),
+        signals: state.take_wake_signals(),
+        reserve: &mut |msg_id, bytes| match state.reserve_attachment_transfer(bytes) {
+            Ok(lease) => {
+                state.hold_attachment_delivery_lease(msg_id.to_string(), lease);
+                true
+            }
+            Err(_) => false,
+        },
+        release: &mut |msg_id| {
+            state.release_attachment_delivery_lease(msg_id);
+        },
+    })
+}
+
+/// Tell the dashboard and Activity what the wake engine did: each new attempt
+/// with what prompted it, and each message whose time to wait ran out.
+fn apply_wake_outcome(
+    state: &AppState,
+    activity_origin: ActivityRequestFence,
+    wakes: &lxmf::WakeOutcome,
+) {
+    for woken in &wakes.woken {
+        // Nothing may hold a woken send: the watchdog ends one that goes nowhere.
+        if let Ok(mut times) = state.message_send_times.lock() {
+            times.insert(woken.msg_id.clone(), local_now_ts());
+        }
+        state.emit_to_all(
+            "lxmf_step",
+            json!({
+                "step": "sending",
+                "msg_id": woken.msg_id,
+                "method": woken.method,
+                "wake": woken.cause.code(),
+            }),
+        );
+        record_activity_if_current(state, activity_origin, || {
+            Ok(producer::lxmf_delivery_retrying(
+                producer::LxmfDeliveryRetrying {
+                    message: producer::MessageId::from_hex(&woken.msg_id)?,
+                    method: producer::LxmfDeliveryMethod::from_code(woken.method),
+                    cause: woken.cause,
+                },
+            ))
+        });
+    }
+    for expired in &wakes.expired {
+        let reason = producer::DeliveryFailureReason::WaitExpired;
+        state.emit_to_all(
+            "lxmf_step",
+            json!({
+                "step": "failed",
+                "msg_id": expired.msg_id,
+                "method": expired.delivery_method,
+                "destination": expired.destination,
+                "reason": reason.code(),
+            }),
+        );
+        record_activity_if_current(state, activity_origin, || {
+            Ok(producer::lxmf_delivery_state_changed(
+                producer::LxmfDeliveryStateChanged {
+                    message: producer::MessageId::from_hex(&expired.msg_id)?,
+                    state: producer::LxmfDeliveryState::Failed,
+                    method: expired
+                        .delivery_method
+                        .as_deref()
+                        .and_then(producer::LxmfDeliveryMethod::from_code),
+                    rtt_ms: None,
+                    failure_reason: Some(reason),
+                },
+            ))
+        });
     }
 }
 
@@ -10506,6 +10638,163 @@ mod waiting_send_tests {
             .lock()
             .unwrap()
             .insert(msg_id.to_owned(), 0.0);
+    }
+
+    fn peer_hash() -> [u8; 16] {
+        hex::decode(PEER).unwrap().try_into().unwrap()
+    }
+
+    /// One pass of the engine as the tick makes it: under the lock, then told.
+    fn wake(state: &Arc<AppState>) -> lxmf::WakeOutcome {
+        let outcome = {
+            let mut lxmf = state.lxmf.lock().unwrap();
+            run_wakes(state, lxmf.as_mut().unwrap())
+        };
+        apply_wake_outcome(state, state.activity_request_fence(), &outcome);
+        outcome
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_wake_tells_the_dashboard_and_starts_the_clock() {
+        let (state, emitter, identity) = session();
+        state.lxmf_keep_trying.store(true, Ordering::Relaxed);
+        let id = send(&state, &identity, "tried again");
+        orphan(&state, &id);
+        check_message_timeouts(&state, state.activity_request_fence()).await;
+        assert_eq!(stored_state(&state, &identity, &id), "waiting");
+        assert!(state.message_send_times.lock().unwrap().is_empty());
+        assert!(wake(&state).woken.is_empty(), "nothing asked for it yet");
+
+        // A signal raised anywhere reaches the engine at the next tick, once.
+        state.wake_waiting(lxmf::WakeEvent::TryNow(peer_hash()));
+        let outcome = wake(&state);
+        assert_eq!(outcome.woken.len(), 1);
+        assert_eq!(stored_state(&state, &identity, &id), "sending");
+        assert!(
+            state.message_send_times.lock().unwrap().contains_key(&id),
+            "the watchdog can end a woken send that goes nowhere"
+        );
+        let step = emitter
+            .payloads("lxmf_step")
+            .into_iter()
+            .find(|step| step["step"] == "sending")
+            .expect("the new attempt is announced");
+        assert_eq!(step["msg_id"], id.as_str());
+        assert_eq!(step["wake"], "wake_user");
+        assert_eq!(step["method"], "direct");
+        assert_eq!(state.take_wake_signals(), lxmf::WakeSignals::default());
+        assert!(wake(&state).woken.is_empty(), "one signal, one wake");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_wait_that_ran_out_ends_with_its_notice() {
+        let (state, emitter, identity) = session();
+        state.lxmf_keep_trying.store(true, Ordering::Relaxed);
+        let id = send(&state, &identity, "a day old");
+        orphan(&state, &id);
+        check_message_timeouts(&state, state.activity_request_fence()).await;
+        set_stored(
+            &state,
+            &id,
+            "UPDATE lxmf_outbox SET queued_at = queued_at - 86400.0 WHERE message_id = ?1",
+        );
+
+        // With waiting turned off since, the sweep is all that runs.
+        state.lxmf_keep_trying.store(false, Ordering::Relaxed);
+        let outcome = wake(&state);
+        assert!(outcome.woken.is_empty());
+        assert_eq!(outcome.expired.len(), 1);
+        assert_eq!(stored_state(&state, &identity, &id), "failed");
+        let step = emitter
+            .payloads("lxmf_step")
+            .into_iter()
+            .find(|step| step["step"] == "failed")
+            .expect("the end of the wait is announced");
+        assert_eq!(step["msg_id"], id.as_str());
+        assert_eq!(step["reason"], "wait_expired");
+        assert_eq!(step["destination"], PEER, "the notice names the chat");
+    }
+
+    #[test]
+    fn stop_trying_and_a_wake_cannot_both_win() {
+        let root = tempfile::tempdir().unwrap().keep();
+        lxmf::initialize_storage_namespace(&root).unwrap();
+        let pool = db::init_pool(&root).unwrap();
+        db::init_schema(&pool).unwrap();
+        let state = Arc::new(AppState::new(
+            ratspeak_core::config::DashboardConfig::from_env_and_defaults(root.clone()),
+            pool,
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        ));
+        let mgr = lxmf::LxmfManager::load_or_create(&root, None, None).unwrap();
+        let identity = mgr.identity_hash.clone();
+        *state.lxmf.lock().unwrap() = Some(mgr);
+        state.lxmf_keep_trying.store(true, Ordering::Relaxed);
+        let park = |content: &str| {
+            let id = send(&state, &identity, content);
+            let mut lxmf = state.lxmf.lock().unwrap();
+            lxmf.as_mut().unwrap().cancel_outbound_message(&id);
+            set_stored(
+                &state,
+                &id,
+                "UPDATE messages SET state = 'waiting' WHERE id = ?1",
+            );
+            id
+        };
+        let held = |id: &str| state.lxmf.lock().unwrap().as_ref().unwrap().still_owned(id);
+        assert!(wake(&state).woken.is_empty());
+
+        // Stopped first: it only waited, and a wake finds nothing to send.
+        let stopped_first = park("stopped first");
+        let stopped = stop_outbound_message(&state, &stopped_first, &identity);
+        assert!(stopped.only_waiting && stopped.row_marked_stopped && !stopped.live_owner_stopped);
+        state.wake_waiting(lxmf::WakeEvent::TryNow(peer_hash()));
+        assert!(wake(&state).woken.is_empty());
+        assert_eq!(stored_state(&state, &identity, &stopped_first), "cancelled");
+        assert!(!held(&stopped_first));
+
+        // Woken first: the stop takes the attempt back out of the manager.
+        let woken_first = park("woken first");
+        state.wake_waiting(lxmf::WakeEvent::TryNow(peer_hash()));
+        assert_eq!(wake(&state).woken.len(), 1);
+        assert!(held(&woken_first));
+        let stopped = stop_outbound_message(&state, &woken_first, &identity);
+        assert!(stopped.live_owner_stopped && stopped.row_marked_stopped && !stopped.only_waiting);
+        assert_eq!(stored_state(&state, &identity, &woken_first), "cancelled");
+        assert!(!held(&woken_first), "nothing of it is sent");
+
+        // The stop writes its row under the manager lock. With the database
+        // held, a stop that let go of the manager cannot have finished: the
+        // manager must stay locked for as long as the row is unwritten.
+        let racing = park("racing");
+        state.wake_waiting(lxmf::WakeEvent::TryNow(peer_hash()));
+        assert_eq!(wake(&state).woken.len(), 1);
+        let writer = state.db.get().unwrap();
+        writer.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let stopper = {
+            let (state, id, identity) = (Arc::clone(&state), racing.clone(), identity.clone());
+            std::thread::spawn(move || stop_outbound_message(&state, &id, &identity))
+        };
+        let mut locked_for = 0;
+        while locked_for < 20 {
+            match state.lxmf.try_lock() {
+                Err(_) => locked_for += 1,
+                Ok(lxmf) => {
+                    assert!(
+                        lxmf.as_ref().unwrap().still_owned(&racing),
+                        "the manager let go of the message and its row is not written yet: a wake could send it"
+                    );
+                    locked_for = 0;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        writer.execute_batch("COMMIT").unwrap();
+        drop(writer);
+        let stopped = stopper.join().unwrap();
+        assert!(stopped.live_owner_stopped && stopped.row_marked_stopped);
+        assert_eq!(stored_state(&state, &identity, &racing), "cancelled");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

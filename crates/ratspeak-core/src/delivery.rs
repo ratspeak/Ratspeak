@@ -156,6 +156,115 @@ pub mod policy {
             "auto" | "opportunistic" | "direct" | "propagated"
         )
     }
+
+    /// The most woken text messages in the air at once, so fresh sends keep
+    /// the links. Attachments take the transfer budget instead.
+    pub const LANE_LIMIT: usize = 2;
+
+    /// How often waiting messages are checked with no other prompt, and
+    /// expired ones ended.
+    pub const TIMER_PERIOD_SECS: f64 = 60.0;
+
+    /// An interface coming online wakes at most this often: links flap.
+    pub const INTERFACE_WAKE_MIN_SECS: f64 = 120.0;
+
+    /// After a waiting Auto message was stored in the Offline Inbox, the next
+    /// of its queue goes straight there: the live path just failed for it.
+    pub const FOLLOWERS_USE_INBOX_AFTER_DEPOSIT: bool = true;
+
+    /// How long a message rests after a wake before `gate` lets it be woken
+    /// again, given how often it was woken.
+    pub fn gate_secs(gate: super::WakeGate, auto_sends: u32) -> f64 {
+        let doubling = 30.0 * 2f64.powi(auto_sends.min(16) as i32);
+        match gate {
+            super::WakeGate::Open => 0.0,
+            super::WakeGate::Targeted => doubling.clamp(60.0, 900.0),
+            super::WakeGate::Broad => doubling.min(3_600.0),
+        }
+    }
+}
+
+/// What prompted a wake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WakeCause {
+    /// The user chose Try now.
+    User,
+    /// The user sent another message to the recipient.
+    NewSend,
+    /// An earlier message of the queue finished.
+    Queue,
+    /// The recipient was heard: an announce or a path.
+    Recipient,
+    /// The Offline Inbox became usable.
+    Inbox,
+    /// Ratspeak started or came to the foreground.
+    Start,
+    /// An interface came online.
+    Network,
+    /// The periodic check.
+    Timer,
+}
+
+/// How a cause is held back from waking a message that was just woken.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WakeGate {
+    /// Not at all: the user asked, or the queue moved on.
+    Open,
+    /// Briefly: something was heard of this recipient or the inbox.
+    Targeted,
+    /// With a growing pause: nothing says this recipient is nearer.
+    Broad,
+}
+
+impl WakeCause {
+    /// Strongest first: where several causes meet, the first of these wins.
+    pub const ALL: [Self; 8] = [
+        Self::User,
+        Self::NewSend,
+        Self::Queue,
+        Self::Recipient,
+        Self::Inbox,
+        Self::Start,
+        Self::Network,
+        Self::Timer,
+    ];
+
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::User => "wake_user",
+            Self::NewSend => "wake_new_send",
+            Self::Queue => "wake_queue",
+            Self::Recipient => "wake_recipient",
+            Self::Inbox => "wake_inbox",
+            Self::Start => "wake_start",
+            Self::Network => "wake_network",
+            Self::Timer => "wake_timer",
+        }
+    }
+
+    pub const fn gate(self) -> WakeGate {
+        match self {
+            Self::User | Self::NewSend | Self::Queue => WakeGate::Open,
+            Self::Recipient | Self::Inbox => WakeGate::Targeted,
+            Self::Start | Self::Network | Self::Timer => WakeGate::Broad,
+        }
+    }
+
+    /// Whether the cause is acted on only with an interface online; what the
+    /// user asks for is tried regardless.
+    pub const fn needs_network(self) -> bool {
+        !matches!(self, Self::User | Self::NewSend)
+    }
+
+    /// The stronger of two causes that meet on one queue.
+    pub fn stronger(self, other: Self) -> Self {
+        let rank = |cause: Self| Self::ALL.iter().position(|each| *each == cause);
+        if rank(other) < rank(self) {
+            other
+        } else {
+            self
+        }
+    }
 }
 
 /// What the outbox holds about a message's send.
@@ -410,6 +519,61 @@ mod tests {
             }),
             Wait
         );
+    }
+
+    #[test]
+    fn a_wake_is_gated_by_what_prompted_it() {
+        use WakeCause::*;
+        let codes = WakeCause::ALL.map(WakeCause::code);
+        assert_eq!(
+            codes,
+            [
+                "wake_user",
+                "wake_new_send",
+                "wake_queue",
+                "wake_recipient",
+                "wake_inbox",
+                "wake_start",
+                "wake_network",
+                "wake_timer"
+            ]
+        );
+        for (cause, gate, needs_network) in [
+            (User, WakeGate::Open, false),
+            (NewSend, WakeGate::Open, false),
+            (Queue, WakeGate::Open, true),
+            (Recipient, WakeGate::Targeted, true),
+            (Inbox, WakeGate::Targeted, true),
+            (Start, WakeGate::Broad, true),
+            (Network, WakeGate::Broad, true),
+            (Timer, WakeGate::Broad, true),
+        ] {
+            assert_eq!(cause.gate(), gate, "{}", cause.code());
+            assert_eq!(cause.needs_network(), needs_network, "{}", cause.code());
+        }
+        assert_eq!(Timer.stronger(Recipient), Recipient);
+        assert_eq!(Recipient.stronger(Timer), Recipient);
+        assert_eq!(Recipient.stronger(User), User);
+        assert_eq!(Start.stronger(Network), Start);
+
+        // (wakes so far, targeted pause, broad pause)
+        for (wakes, targeted, broad) in [
+            (0, 60.0, 30.0),
+            (1, 60.0, 60.0),
+            (2, 120.0, 120.0),
+            (4, 480.0, 480.0),
+            (5, 900.0, 960.0),
+            (7, 900.0, 3_600.0),
+            (63, 900.0, 3_600.0),
+        ] {
+            assert_eq!(policy::gate_secs(WakeGate::Open, wakes), 0.0);
+            assert_eq!(
+                policy::gate_secs(WakeGate::Targeted, wakes),
+                targeted,
+                "{wakes}"
+            );
+            assert_eq!(policy::gate_secs(WakeGate::Broad, wakes), broad, "{wakes}");
+        }
     }
 
     #[test]

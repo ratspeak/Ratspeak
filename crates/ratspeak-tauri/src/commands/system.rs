@@ -311,6 +311,7 @@ pub fn set_foreground_state_if_current(state: &Arc<AppState>, fg: bool, transiti
     if fg && !was {
         tracing::info!("lifecycle: foreground resume — waking LXMF ticker + stats poll");
         state.request_poll_now();
+        state.wake_waiting(ratspeak_runtime::lxmf::WakeEvent::Resumed);
         state.lxmf_notify.notify_one();
         // Reset send-time clock to avoid false timeouts after iOS suspend.
         let reset_count = state.reset_message_send_times_on_resume();

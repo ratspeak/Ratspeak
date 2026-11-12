@@ -23,8 +23,13 @@ pub const ratspeak_core::config::RATSPEAK_RNS_INSTANCE_CONTROL_PORT: u16
 pub const ratspeak_core::config::RATSPEAK_RNS_SHARED_INSTANCE_PORT: u16
 pub mod ratspeak_core::delivery
 pub mod ratspeak_core::delivery::policy
+pub const ratspeak_core::delivery::policy::FOLLOWERS_USE_INBOX_AFTER_DEPOSIT: bool
+pub const ratspeak_core::delivery::policy::INTERFACE_WAKE_MIN_SECS: f64
+pub const ratspeak_core::delivery::policy::LANE_LIMIT: usize
+pub const ratspeak_core::delivery::policy::TIMER_PERIOD_SECS: f64
 pub const ratspeak_core::delivery::policy::WAIT_LIMIT_SECS: f64
 pub const ratspeak_core::delivery::policy::WAKE_CAP: u32
+pub fn ratspeak_core::delivery::policy::gate_secs(ratspeak_core::delivery::WakeGate, u32) -> f64
 pub fn ratspeak_core::delivery::policy::method_waits(&str) -> bool
 pub enum ratspeak_core::delivery::AfterFailure
 pub ratspeak_core::delivery::AfterFailure::Fail
@@ -63,6 +68,25 @@ pub ratspeak_core::delivery::Phase::Done
 pub ratspeak_core::delivery::Phase::Ended
 pub ratspeak_core::delivery::Phase::InFlight
 pub ratspeak_core::delivery::Phase::Waiting
+pub enum ratspeak_core::delivery::WakeCause
+pub ratspeak_core::delivery::WakeCause::Inbox
+pub ratspeak_core::delivery::WakeCause::Network
+pub ratspeak_core::delivery::WakeCause::NewSend
+pub ratspeak_core::delivery::WakeCause::Queue
+pub ratspeak_core::delivery::WakeCause::Recipient
+pub ratspeak_core::delivery::WakeCause::Start
+pub ratspeak_core::delivery::WakeCause::Timer
+pub ratspeak_core::delivery::WakeCause::User
+impl ratspeak_core::delivery::WakeCause
+pub const ratspeak_core::delivery::WakeCause::ALL: [Self; 8]
+pub const fn ratspeak_core::delivery::WakeCause::code(self) -> &'static str
+pub const fn ratspeak_core::delivery::WakeCause::gate(self) -> ratspeak_core::delivery::WakeGate
+pub const fn ratspeak_core::delivery::WakeCause::needs_network(self) -> bool
+pub fn ratspeak_core::delivery::WakeCause::stronger(self, Self) -> Self
+pub enum ratspeak_core::delivery::WakeGate
+pub ratspeak_core::delivery::WakeGate::Broad
+pub ratspeak_core::delivery::WakeGate::Open
+pub ratspeak_core::delivery::WakeGate::Targeted
 pub struct ratspeak_core::delivery::Failure
 pub ratspeak_core::delivery::Failure::can_wait: bool
 pub ratspeak_core::delivery::Failure::entry: core::option::Option<ratspeak_core::delivery::OutboxClock>

@@ -3756,6 +3756,8 @@ pub struct OutboundMessage<'a> {
     /// FIELD_THREAD hex of its conversation; empty is Main.
     pub thread: &'a str,
     pub resend: Resend<'a>,
+    /// It is not handed to the network now: it waits behind earlier messages.
+    pub waiting: bool,
 }
 
 /// The outbox half of an [`OutboundMessage`].
@@ -3780,7 +3782,11 @@ pub fn save_outbound_message(pool: &DbPool, message: &OutboundMessage<'_>) -> Re
         message.content,
         message.title,
         message.timestamp,
-        "sending",
+        if message.waiting {
+            OutboundState::Waiting.as_str()
+        } else {
+            OutboundState::Sending.as_str()
+        },
         "outbound",
         message.identity_id,
         message.attachment_name,
@@ -4599,17 +4605,196 @@ pub fn return_woken_to_waiting(pool: &DbPool, identity_id: &str) -> Vec<String> 
     .unwrap_or_default()
 }
 
-/// Bring send times that lie after `now` back to `now`: a clock that was set
-/// back must not let a message wait longer than its limit from here on.
+/// Bring send and wake times that lie after `now` back to `now`: a clock that
+/// was set back must not let a message wait longer than its limit from here
+/// on, nor keep it from being woken.
 pub fn clamp_future_queue_times(pool: &DbPool, identity_id: &str, now: f64) -> usize {
     let Ok(conn) = pool.get() else {
         return 0;
     };
     conn.execute(
-        "UPDATE lxmf_outbox SET queued_at = ?2 WHERE identity_id = ?1 AND queued_at > ?2",
+        "UPDATE lxmf_outbox SET queued_at = MIN(queued_at, ?2), last_auto_at = MIN(last_auto_at, ?2)
+         WHERE identity_id = ?1 AND (queued_at > ?2 OR last_auto_at > ?2)",
         params![identity_id, now],
     )
     .unwrap_or(0)
+}
+
+/// The waiting messages for one recipient, sent one way, of one kind, in the
+/// order they were sent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct WaitingQueue {
+    pub destination: String,
+    pub preference: String,
+    pub profile: String,
+    /// The oldest waiting message: the only one a wake sends.
+    pub head: OutboxRow,
+    pub queued_at: f64,
+    pub auto_sends: u32,
+    pub last_auto_at: f64,
+    /// The queue's messages that are on their way.
+    pub in_flight: Vec<String>,
+}
+
+/// `identity_id`'s queues that hold a waiting message, oldest head first.
+pub fn waiting_queues(pool: &DbPool, identity_id: &str) -> Result<Vec<WaitingQueue>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let unsettled = conn
+        .prepare(&format!(
+            "SELECT m.id, m.destination, m.state, o.preference, o.profile,
+                    o.queued_at, o.auto_sends, o.last_auto_at
+             FROM lxmf_outbox o JOIN messages m
+               ON m.id = o.message_id AND m.identity_id = o.identity_id
+             WHERE o.identity_id = ?1 AND m.direction = 'outbound' AND m.state IN {}
+             ORDER BY o.queued_at ASC, o.rowid ASC",
+            sql_list(|state| matches!(state.phase(), Phase::InFlight | Phase::Waiting))
+        ))
+        .and_then(|mut stmt| {
+            stmt.query_map(params![identity_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    [
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                    ],
+                    row.get::<_, String>(2)? == OutboundState::Waiting.as_str(),
+                    row.get::<_, f64>(5)?,
+                    row.get::<_, u32>(6)?,
+                    row.get::<_, f64>(7)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| error.to_string())?;
+
+    // (queue, in flight, head): rows arrive oldest first, so a queue's first waiting row is its head.
+    type Head = (String, f64, u32, f64);
+    let mut queues: Vec<([String; 3], Vec<String>, Option<Head>)> = Vec::new();
+    for (id, key, waiting, queued_at, auto_sends, last_auto_at) in unsettled {
+        let at = match queues.iter().position(|(each, _, _)| *each == key) {
+            Some(at) => at,
+            None => {
+                queues.push((key, Vec::new(), None));
+                queues.len() - 1
+            }
+        };
+        let (_, in_flight, head) = &mut queues[at];
+        if !waiting {
+            in_flight.push(id);
+        } else if head.is_none() {
+            *head = Some((id, queued_at, auto_sends, last_auto_at));
+        }
+    }
+
+    let mut waiting = Vec::new();
+    for ([destination, preference, profile], in_flight, head) in queues {
+        let Some((message_id, queued_at, auto_sends, last_auto_at)) = head else {
+            continue;
+        };
+        let message = conn
+            .query_row(
+                "SELECT message FROM lxmf_outbox WHERE identity_id = ?1 AND message_id = ?2",
+                params![identity_id, message_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        waiting.push(WaitingQueue {
+            head: OutboxRow {
+                message_id,
+                preference: preference.clone(),
+                profile: profile.clone(),
+                message,
+            },
+            destination,
+            preference,
+            profile,
+            queued_at,
+            auto_sends,
+            last_auto_at,
+            in_flight,
+        });
+    }
+    waiting.sort_by(|a, b| a.queued_at.total_cmp(&b.queued_at));
+    Ok(waiting)
+}
+
+/// Whether a new message to `destination`, sent by `preference` and of kind
+/// `profile`, must wait its turn: an earlier one of its queue waits, or a
+/// wake of one is on its way.
+pub fn queue_blocks_new_send(
+    pool: &DbPool,
+    identity_id: &str,
+    destination: &str,
+    preference: &str,
+    profile: &str,
+) -> bool {
+    let Ok(conn) = pool.get() else {
+        return false;
+    };
+    conn.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM lxmf_outbox o JOIN messages m
+               ON m.id = o.message_id AND m.identity_id = o.identity_id
+             WHERE o.identity_id = ?1 AND m.destination = ?2 AND m.direction = 'outbound'
+               AND o.preference = ?3 AND o.profile = ?4
+               AND (m.state = 'waiting' OR (o.auto_sends > 0 AND m.state IN {})))",
+            sql_list(|state| state.phase() == Phase::InFlight)
+        ),
+        params![identity_id, destination, preference, profile],
+        |row| row.get(0),
+    )
+    .unwrap_or(false)
+}
+
+/// Take a waiting message for a new attempt: it goes back on its way, to be
+/// sent by `delivery_method`, and the wake is counted. `false` when it no
+/// longer waits; nothing is written then. Its send time and the method the
+/// user chose stay as they are.
+pub fn claim_waiting(
+    pool: &DbPool,
+    identity_id: &str,
+    msg_id: &str,
+    now: f64,
+    delivery_method: &str,
+) -> bool {
+    let Ok(mut conn) = pool.get() else {
+        return false;
+    };
+    let Ok(tx) = conn.transaction_with_behavior(TransactionBehavior::Immediate) else {
+        return false;
+    };
+    let claimed = tx
+        .execute(
+            "UPDATE messages SET state = 'sending', delivery_method = ?3, rtt_ms = NULL
+             WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state = 'waiting'",
+            params![msg_id, identity_id, delivery_method],
+        )
+        .is_ok_and(|changed| changed == 1)
+        && tx
+            .execute(
+                "UPDATE lxmf_outbox SET auto_sends = auto_sends + 1, last_auto_at = ?3
+                 WHERE identity_id = ?1 AND message_id = ?2",
+                params![identity_id, msg_id, now],
+            )
+            .is_ok_and(|changed| changed == 1);
+    claimed && tx.commit().is_ok()
+}
+
+/// The stored state of `identity_id`'s outbound message, `None` when it has no row.
+pub fn outbound_message_state(
+    pool: &DbPool,
+    identity_id: &str,
+    msg_id: &str,
+) -> Result<Option<String>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    conn.query_row(
+        "SELECT state FROM messages WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound'",
+        params![msg_id, identity_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|error| error.to_string())
 }
 
 pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str, identity_id: &str) -> bool {
@@ -10927,43 +11112,6 @@ pub fn delete_game_session(pool: &DbPool, session_id: &str, identity_id: &str) -
     tx.commit().is_ok()
 }
 
-pub fn get_failed_messages_for_contact(
-    pool: &DbPool,
-    dest_hash: &str,
-    identity_id: &str,
-) -> Vec<serde_json::Value> {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return vec![],
-    };
-    let cutoff = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64()
-        - 3600.0;
-    let mut stmt = match conn.prepare(
-        "SELECT * FROM messages WHERE destination = ?1 AND identity_id = ?2 AND state = 'failed' AND direction = 'outbound' AND timestamp > ?3 ORDER BY timestamp ASC"
-    ) { Ok(s) => s, Err(_) => return vec![] };
-
-    stmt.query_map(params![dest_hash, identity_id, cutoff], row_to_message)
-        .map(|rows| rows.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default()
-}
-
-/// Bypasses the terminal-state guard for an intentional retry.
-pub fn mark_message_resent(pool: &DbPool, msg_id: &str, identity_id: &str) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    conn.execute(
-        "UPDATE messages SET state = 'resent' \
-         WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state = 'failed'",
-        params![msg_id, identity_id],
-    )
-    .ok();
-}
-
 fn row_to_identity(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> {
     Ok(serde_json::json!({
         "hash": row.get::<_, String>(0)?,
@@ -12405,48 +12553,6 @@ mod unread_breakdown_tests {
         ));
         assert_eq!(state_of("identity-a"), "delivered");
         assert_eq!(state_of("identity-b"), "cancelled");
-    }
-
-    #[test]
-    fn mark_message_resent_is_identity_scoped() {
-        let pool = test_pool();
-        let shared_id = "resent-duplicate-id";
-        for identity in ["identity-a", "identity-b"] {
-            save_message(
-                &pool,
-                shared_id,
-                "me",
-                "peer",
-                "failed outbound",
-                "",
-                10.0,
-                "failed",
-                "outbound",
-                identity,
-                "",
-                "",
-                "",
-                "",
-                "",
-                "",
-                Some("direct"),
-            );
-        }
-
-        mark_message_resent(&pool, shared_id, "identity-a");
-
-        let state_of = |identity: &str| -> String {
-            pool.get()
-                .unwrap()
-                .query_row(
-                    "SELECT state FROM messages WHERE id = ?1 AND identity_id = ?2",
-                    params![shared_id, identity],
-                    |row| row.get(0),
-                )
-                .unwrap()
-        };
-        assert_eq!(state_of("identity-a"), "resent");
-        assert_eq!(state_of("identity-b"), "failed");
     }
 
     #[test]
@@ -14060,6 +14166,223 @@ mod migration_tests {
         assert!(return_woken_to_waiting(&pool, "identity").is_empty());
     }
 
+    /// A message to `peer`, sent by `preference`, of kind `profile`, `age` seconds before `NOW`.
+    fn queued(
+        pool: &DbPool,
+        id: &str,
+        peer: &str,
+        preference: &str,
+        profile: &str,
+        age: f64,
+        state: &str,
+    ) {
+        save_outbound_message(
+            pool,
+            &OutboundMessage {
+                msg_id: id,
+                identity_id: "identity",
+                source: "me",
+                destination: peer,
+                content: "hi",
+                timestamp: 1.0,
+                delivery_method: "direct",
+                resend: Resend {
+                    preference,
+                    profile,
+                    message: id.as_bytes(),
+                },
+                ..OutboundMessage::default()
+            },
+        )
+        .unwrap();
+        set_entry(pool, id, NOW - age, 0);
+        set_state(pool, id, state);
+    }
+
+    #[test]
+    fn a_new_message_can_be_saved_waiting() {
+        let pool = outbox_pool();
+        save_outbound_message(
+            &pool,
+            &OutboundMessage {
+                msg_id: "held",
+                identity_id: "identity",
+                source: "me",
+                destination: "peer",
+                waiting: true,
+                resend: Resend {
+                    preference: "auto",
+                    profile: "message",
+                    message: b"parts",
+                },
+                ..OutboundMessage::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(state_of(&pool, "held"), "waiting");
+        assert_eq!(outbox_ids(&pool), ["held"]);
+        outbound(&pool, "sent", "auto");
+        assert_eq!(state_of(&pool, "sent"), "sending");
+    }
+
+    #[test]
+    fn waiting_queues_are_per_recipient_method_and_kind_oldest_first() {
+        let pool = outbox_pool();
+        // (id, recipient, method, kind, age, state)
+        for (id, peer, preference, profile, age, state) in [
+            ("a1", "alice", "auto", "message", 900.0, "waiting"),
+            ("a2", "alice", "auto", "message", 800.0, "waiting"),
+            ("a3", "alice", "auto", "message", 700.0, "routing"),
+            ("a-file", "alice", "auto", "attachment", 850.0, "waiting"),
+            ("a-direct", "alice", "direct", "message", 600.0, "waiting"),
+            ("b-flying", "bob", "auto", "message", 950.0, "sent"),
+            ("b1", "bob", "auto", "message", 500.0, "waiting"),
+            ("c-flying", "carol", "auto", "message", 990.0, "routing"),
+            ("c-ended", "carol", "auto", "message", 980.0, "failed"),
+        ] {
+            queued(&pool, id, peer, preference, profile, age, state);
+        }
+        set_entry(&pool, "a1", NOW - 900.0, 3);
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE lxmf_outbox SET last_auto_at = 77.0 WHERE message_id = 'a1'",
+                [],
+            )
+            .unwrap();
+
+        let queues = waiting_queues(&pool, "identity").unwrap();
+        let summary = queues
+            .iter()
+            .map(|queue| {
+                (
+                    queue.head.message_id.as_str(),
+                    queue.destination.as_str(),
+                    queue.preference.as_str(),
+                    queue.profile.as_str(),
+                    queue.in_flight.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            summary,
+            [
+                ("a1", "alice", "auto", "message", vec!["a3".to_string()]),
+                ("a-file", "alice", "auto", "attachment", vec![]),
+                ("a-direct", "alice", "direct", "message", vec![]),
+                ("b1", "bob", "auto", "message", vec!["b-flying".to_string()]),
+            ],
+            "oldest head first; a queue with nothing waiting is not one"
+        );
+        let head = &queues[0];
+        assert_eq!(
+            (head.queued_at, head.auto_sends, head.last_auto_at),
+            (NOW - 900.0, 3, 77.0)
+        );
+        assert_eq!(
+            head.head,
+            OutboxRow {
+                message_id: "a1".into(),
+                preference: "auto".into(),
+                profile: "message".into(),
+                message: b"a1".to_vec(),
+            }
+        );
+        assert!(waiting_queues(&pool, "another").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_claim_takes_a_waiting_message_once_and_counts_the_wake() {
+        let pool = outbox_pool();
+        queued(&pool, "m", "alice", "auto", "message", 900.0, "waiting");
+        pool.get()
+            .unwrap()
+            .execute("UPDATE messages SET rtt_ms = 12.0 WHERE id = 'm'", [])
+            .unwrap();
+
+        assert!(!claim_waiting(&pool, "another", "m", NOW, "direct"));
+        assert!(claim_waiting(&pool, "identity", "m", NOW, "propagated"));
+        assert_eq!(state_of(&pool, "m"), "sending");
+        assert_eq!(entry_of(&pool, "m"), (NOW - 900.0, 1, NOW));
+        let (method, rtt, preference): (String, Option<f64>, String) = pool
+            .get()
+            .unwrap()
+            .query_row(
+                "SELECT m.delivery_method, m.rtt_ms, o.preference FROM messages m
+                 JOIN lxmf_outbox o ON o.message_id = m.id WHERE m.id = 'm'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            (method.as_str(), rtt, preference.as_str()),
+            ("propagated", None, "auto"),
+            "the method of this attempt, and the method the user chose"
+        );
+
+        assert!(
+            !claim_waiting(&pool, "identity", "m", NOW + 1.0, "direct"),
+            "a second trigger finds it taken"
+        );
+        assert_eq!(entry_of(&pool, "m"), (NOW - 900.0, 1, NOW));
+        for settled in ["failed", "cancelled", "delivered"] {
+            set_state(&pool, "m", settled);
+            assert!(
+                !claim_waiting(&pool, "identity", "m", NOW, "direct"),
+                "{settled}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_message_waits_behind_its_own_queue_only() {
+        let pool = outbox_pool();
+        let blocks = |peer: &str, preference: &str, profile: &str| {
+            queue_blocks_new_send(&pool, "identity", peer, preference, profile)
+        };
+        assert!(!blocks("alice", "auto", "message"));
+
+        queued(
+            &pool, "parked", "alice", "auto", "message", 900.0, "waiting",
+        );
+        assert!(blocks("alice", "auto", "message"));
+        assert!(
+            !blocks("alice", "auto", "attachment"),
+            "text never holds a file"
+        );
+        assert!(!blocks("alice", "direct", "message"));
+        assert!(!blocks("bob", "auto", "message"));
+        assert!(!queue_blocks_new_send(
+            &pool, "another", "alice", "auto", "message"
+        ));
+
+        // A wake's send on its way holds its queue too; an ordinary send does not.
+        queued(&pool, "fresh", "bob", "auto", "message", 800.0, "routing");
+        assert!(!blocks("bob", "auto", "message"));
+        set_entry(&pool, "fresh", NOW - 800.0, 1);
+        assert!(blocks("bob", "auto", "message"));
+        set_state(&pool, "fresh", "failed");
+        assert!(
+            !blocks("bob", "auto", "message"),
+            "what ended holds nothing"
+        );
+
+        queued(
+            &pool,
+            "file",
+            "carol",
+            "auto",
+            "attachment",
+            700.0,
+            "waiting",
+        );
+        assert!(
+            !blocks("carol", "auto", "message"),
+            "a file never holds text"
+        );
+        assert!(blocks("carol", "auto", "attachment"));
+    }
+
     #[test]
     fn a_send_time_in_the_future_is_brought_back_to_now() {
         let pool = outbox_pool();
@@ -14067,10 +14390,24 @@ mod migration_tests {
             outbound(&pool, id, "auto");
             set_entry(&pool, id, queued_at, 0);
         }
+        outbound(&pool, "woken-ahead", "auto");
+        set_entry(&pool, "woken-ahead", NOW - 60.0, 2);
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE lxmf_outbox SET last_auto_at = ?1 WHERE message_id = 'woken-ahead'",
+                params![NOW + 3_600.0],
+            )
+            .unwrap();
         assert_eq!(clamp_future_queue_times(&pool, "another", NOW), 0);
-        assert_eq!(clamp_future_queue_times(&pool, "identity", NOW), 1);
+        assert_eq!(clamp_future_queue_times(&pool, "identity", NOW), 2);
         assert_eq!(entry_of(&pool, "ahead").0, NOW);
         assert_eq!(entry_of(&pool, "past").0, NOW - 60.0);
+        assert_eq!(
+            entry_of(&pool, "woken-ahead"),
+            (NOW - 60.0, 2, NOW),
+            "a wake time ahead of the clock would keep the message from being woken"
+        );
 
         // From here it waits its limit and no longer.
         let later = NOW + policy::WAIT_LIMIT_SECS;

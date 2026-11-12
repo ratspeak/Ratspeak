@@ -250,6 +250,58 @@ fn record_lxmf_delivery_queued(
     );
 }
 
+/// The first step of a send the manager took: `sending`, or `waiting` for one
+/// held behind earlier messages to the same recipient, which that send wakes.
+fn emit_lxmf_send_taken(
+    state: &AppState,
+    fence: crate::state::ActivityRequestFence,
+    waiting: bool,
+    message: &str,
+    msg_id: &str,
+    client_msg_id: Option<&str>,
+    dest_hash: &str,
+) {
+    if !waiting {
+        state.emit_to_all(
+            "lxmf_step",
+            json!({
+                "step": "sending",
+                "message": message,
+                "msg_id": msg_id,
+                "client_msg_id": client_msg_id,
+            }),
+        );
+        return;
+    }
+    let reason = producer::DeliveryFailureReason::BehindEarlier;
+    state.emit_to_all(
+        "lxmf_step",
+        json!({
+            "step": "waiting",
+            "msg_id": msg_id,
+            "client_msg_id": client_msg_id,
+            "reason": reason.code(),
+        }),
+    );
+    state.activity.record_event_fenced(
+        || state.is_current_activity_origin_fence(fence),
+        || {
+            Ok(producer::lxmf_delivery_state_changed(
+                producer::LxmfDeliveryStateChanged {
+                    message: producer::MessageId::from_hex(msg_id)?,
+                    state: producer::LxmfDeliveryState::Waiting,
+                    method: None,
+                    rtt_ms: None,
+                    failure_reason: Some(reason),
+                },
+            ))
+        },
+    );
+    if let Some(recipient) = ratspeak_core::hex_to_array16(dest_hash) {
+        state.wake_waiting(crate::lxmf::WakeEvent::NewSend(recipient));
+    }
+}
+
 fn record_lxmf_submission_failed(
     state: &AppState,
     fence: crate::state::ActivityRequestFence,
@@ -444,6 +496,11 @@ pub struct SendLxmfArgs {
 
 #[derive(Deserialize)]
 pub struct CancelLxmfMessageArgs {
+    pub msg_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct TryWaitingNowArgs {
     pub msg_id: String,
 }
 
@@ -725,14 +782,14 @@ pub async fn send_lxmf_message(
             schedule_announce_after_user_send_from_origin(&state, &dest_hash, activity_fence);
             record_lxmf_delivery_queued(&state, activity_fence, &id, &dest_hash, queued.method);
             state.lxmf_notify.notify_one();
-            state.emit_to_all(
-                "lxmf_step",
-                json!({
-                    "step": "sending",
-                    "message": "Message queued for delivery",
-                    "msg_id": id,
-                    "client_msg_id": client_msg_id,
-                }),
+            emit_lxmf_send_taken(
+                &state,
+                activity_fence,
+                queued.waiting,
+                "Message queued for delivery",
+                &id,
+                client_msg_id.as_deref(),
+                &dest_hash,
             );
             broadcast_conversations(Arc::clone(&state));
             Ok(json!({ "msg_id": id, "client_msg_id": client_msg_id }))
@@ -946,7 +1003,7 @@ pub async fn send_lxmf_reply(
         .map(LxmfClientSendGuard::cancellation_probe);
     let msg_id = tokio::task::spawn_blocking(move || {
         queue_lxmf_client_send(&st, cancellation.as_ref(), |manager| {
-            manager.send_reply_with_preference(ReplyMessageSendRequest {
+            manager.send_reply_with_preference_report(ReplyMessageSendRequest {
                 dest_hash_hex: &dh,
                 content: &ct,
                 title: "",
@@ -965,7 +1022,8 @@ pub async fn send_lxmf_reply(
     .map_err(|_| AppError::internal("send_reply task panicked"))?;
 
     match msg_id {
-        LxmfClientSendAttempt::Queued(id) => {
+        LxmfClientSendAttempt::Queued(queued) => {
+            let id = queued.message_id;
             if finalize_lxmf_client_send(&state_arc, client_send.as_ref(), &id).await? {
                 return Ok(json!({
                     "msg_id": id,
@@ -975,14 +1033,14 @@ pub async fn send_lxmf_reply(
             }
             schedule_announce_after_user_send_from_origin(&state, &dest_hash, activity_fence);
             state.lxmf_notify.notify_one();
-            state.emit_to_all(
-                "lxmf_step",
-                json!({
-                    "step": "sending",
-                    "message": "Reply queued for delivery",
-                    "msg_id": id,
-                    "client_msg_id": client_msg_id,
-                }),
+            emit_lxmf_send_taken(
+                &state,
+                activity_fence,
+                queued.waiting,
+                "Reply queued for delivery",
+                &id,
+                client_msg_id.as_deref(),
+                &dest_hash,
             );
             broadcast_conversations(Arc::clone(&state));
             Ok(json!({ "msg_id": id, "client_msg_id": client_msg_id }))
@@ -1078,21 +1136,27 @@ pub async fn send_lxmf_propagated(
         .map(LxmfClientSendGuard::cancellation_probe);
     let msg_id = tokio::task::spawn_blocking(move || {
         queue_lxmf_client_send(&st, cancellation.as_ref(), |manager| {
-            manager.send_message_with_method(
-                &dh,
-                &ct,
-                &tt,
-                &st.db,
-                &id_c,
-                DeliveryMethod::Propagated,
-            )
+            manager
+                .send_message_with_preference_report(MessageSendRequest {
+                    dest_hash_hex: &dh,
+                    content: &ct,
+                    title: &tt,
+                    db_pool: &st.db,
+                    identity_id: &id_c,
+                    preference: DeliveryPreference::Propagated,
+                    profile: DeliveryProfile::Message,
+                    renderer: None,
+                    thread: "",
+                })
+                .ok()
         })
     })
     .await
     .map_err(|_| AppError::internal("send_propagated task panicked"))?;
 
     match msg_id {
-        LxmfClientSendAttempt::Queued(id) => {
+        LxmfClientSendAttempt::Queued(queued) => {
+            let id = queued.message_id;
             if finalize_lxmf_client_send(&state_arc, client_send.as_ref(), &id).await? {
                 return Ok(json!({
                     "msg_id": id,
@@ -1109,14 +1173,14 @@ pub async fn send_lxmf_propagated(
                 DeliveryMethod::Propagated,
             );
             state.lxmf_notify.notify_one();
-            state.emit_to_all(
-                "lxmf_step",
-                json!({
-                    "step": "sending",
-                    "message": "Message queued for propagation",
-                    "msg_id": id,
-                    "client_msg_id": client_msg_id,
-                }),
+            emit_lxmf_send_taken(
+                &state,
+                activity_fence,
+                queued.waiting,
+                "Message queued for propagation",
+                &id,
+                client_msg_id.as_deref(),
+                &dest_hash,
             );
             broadcast_conversations(Arc::clone(&state));
             Ok(json!({ "msg_id": id, "client_msg_id": client_msg_id }))
@@ -1268,8 +1332,11 @@ async fn queue_prepared_attachment(
     match send_result {
         LxmfClientSendAttempt::Queued(Ok(queued)) => {
             let id = queued.message_id;
-            state
-                .hold_attachment_delivery_lease(id.clone(), attachment_owner.into_transfer_lease());
+            // A waiting message holds no budget; its wake reserves again.
+            let lease = attachment_owner.into_transfer_lease();
+            if !queued.waiting {
+                state.hold_attachment_delivery_lease(id.clone(), lease);
+            }
             if finalize_lxmf_client_send(&state, client_send.as_ref(), &id).await? {
                 return Ok(json!({
                     "msg_id": id,
@@ -1279,14 +1346,14 @@ async fn queue_prepared_attachment(
             }
             schedule_announce_after_user_send_from_origin(&state, &dest_hash, activity_fence);
             record_lxmf_delivery_queued(&state, activity_fence, &id, &dest_hash, queued.method);
-            state.emit_to_all(
-                "lxmf_step",
-                json!({
-                    "step": "sending",
-                    "message": "Message with attachment queued for delivery",
-                    "msg_id": id,
-                    "client_msg_id": client_msg_id,
-                }),
+            emit_lxmf_send_taken(
+                &state,
+                activity_fence,
+                queued.waiting,
+                "Message with attachment queued for delivery",
+                &id,
+                client_msg_id.as_deref(),
+                &dest_hash,
             );
             broadcast_conversations(Arc::clone(&state));
             state.lxmf_notify.notify_one();
@@ -1511,12 +1578,14 @@ pub(crate) async fn queue_prepared_audio(
             )
         });
         if let LxmfClientSendAttempt::Queued(Ok(ref queued)) = send_result {
-            state.hold_attachment_delivery_lease(
-                queued.message_id.clone(),
-                clip.take()
-                    .expect("admission owns its staged clip")
-                    .into_transfer_lease(),
-            );
+            // A waiting message holds no budget; its wake reserves again.
+            let lease = clip
+                .take()
+                .expect("admission owns its staged clip")
+                .into_transfer_lease();
+            if !queued.waiting {
+                state.hold_attachment_delivery_lease(queued.message_id.clone(), lease);
+            }
         }
         let response = runtime.block_on(finish_voice_send(
             &state,
@@ -1560,14 +1629,14 @@ async fn finish_voice_send(
             }
             schedule_announce_after_user_send_from_origin(state, dest_hash, activity_fence);
             record_lxmf_delivery_queued(state, activity_fence, &id, dest_hash, queued.method);
-            state.emit_to_all(
-                "lxmf_step",
-                json!({
-                    "step": "sending",
-                    "message": "Voice message queued for delivery",
-                    "msg_id": id,
-                    "client_msg_id": client_msg_id,
-                }),
+            emit_lxmf_send_taken(
+                state,
+                activity_fence,
+                queued.waiting,
+                "Voice message queued for delivery",
+                &id,
+                client_msg_id.as_deref(),
+                dest_hash,
             );
             broadcast_conversations(Arc::clone(state));
             state.lxmf_notify.notify_one();
@@ -2281,6 +2350,8 @@ fn resolve_lxmf_message_id_for_cancel(
 struct CanonicalLxmfStopResult {
     live_owner_stopped: bool,
     row_marked_stopped: bool,
+    /// The message only waited; nothing of it was in the air.
+    only_waiting: bool,
 }
 
 impl CanonicalLxmfStopResult {
@@ -2307,32 +2378,18 @@ async fn cancel_canonical_lxmf_message(
     let activity_fence = state.activity_request_fence();
     let st = Arc::clone(state);
     let msg_id_for_cancel = msg_id.to_string();
-    let transport_cancelled = tokio::task::spawn_blocking(move || {
-        st.lxmf
-            .lock()
-            .ok()
-            .and_then(|mut lxmf| {
-                lxmf.as_mut()
-                    .map(|mgr| mgr.cancel_outbound_message(&msg_id_for_cancel))
-            })
-            .unwrap_or(false)
+    let identity_for_cancel = active_identity_id(state);
+    let stopped = tokio::task::spawn_blocking(move || {
+        ratspeak_runtime::stop_outbound_message(&st, &msg_id_for_cancel, &identity_for_cancel)
     })
     .await
     .map_err(|_| AppError::internal("cancel_lxmf_message task panicked"))?;
-
-    let msg_id_for_db = msg_id.to_string();
-    let identity_for_db = active_identity_id(state);
-    let (db_cancelled, method) = db::spawn_db(state.db.clone(), move |p| {
-        let db_cancelled = db::cancel_outbound_message_state(&p, &msg_id_for_db, &identity_for_db);
-        let method = db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db);
-        (db_cancelled, method)
-    })
-    .await
-    .map_err(|_| AppError::internal("cancel_lxmf_message db task panicked"))?;
+    let method = stopped.delivery_method;
 
     let result = CanonicalLxmfStopResult {
-        live_owner_stopped: transport_cancelled,
-        row_marked_stopped: db_cancelled,
+        live_owner_stopped: stopped.live_owner_stopped,
+        row_marked_stopped: stopped.row_marked_stopped,
+        only_waiting: stopped.only_waiting,
     };
     if result.stopped() {
         state.release_attachment_delivery_lease(msg_id);
@@ -2437,6 +2494,7 @@ pub async fn cancel_lxmf_message(
                     "preparation_stopped": false,
                     "live_owner_stopped": false,
                     "row_marked_stopped": false,
+                    "only_waiting": false,
                     "stopped_retrying": false,
                     "may_have_left_device": false,
                 }));
@@ -2455,12 +2513,49 @@ pub async fn cancel_lxmf_message(
         "preparation_stopped": false,
         "live_owner_stopped": stopped.live_owner_stopped,
         "row_marked_stopped": stopped.row_marked_stopped,
+        "only_waiting": stopped.only_waiting,
         "stopped_retrying": stopped.live_owner_stopped,
         // A canonical hash means the message crossed the preparation boundary.
         // Stopping our remaining owners and retries cannot recall bytes already
         // admitted to Reticulum or a device interface.
         "may_have_left_device": true,
     }))
+}
+
+/// Asks for a waiting message to be tried now. The oldest waiting message of
+/// its queue goes first, so messages still arrive in the order they were
+/// sent; the attempt's own `sending` step reports it.
+#[tauri::command]
+pub async fn try_waiting_now(
+    state: State<'_, Arc<AppState>>,
+    args: TryWaitingNowArgs,
+) -> AppResult<Value> {
+    wake_waiting_message(&state, &args.msg_id).await
+}
+
+async fn wake_waiting_message(state: &Arc<AppState>, msg_id: &str) -> AppResult<Value> {
+    let msg_id = sanitize_text(msg_id, 128).to_ascii_lowercase();
+    if !validate_hex(&msg_id, 64, 64) {
+        return Err(AppError::bad_request("Invalid message ID"));
+    }
+    let identity_id = active_identity_id(state);
+    let msg_for_db = msg_id.clone();
+    let recipient = db::spawn_db(state.db.clone(), move |p| {
+        db::outbound_message_state(&p, &identity_id, &msg_for_db)
+            .ok()
+            .flatten()
+            .filter(|stored| stored == "waiting")
+            .and_then(|_| db::get_outbound_message_destination(&p, &msg_for_db, &identity_id))
+    })
+    .await
+    .map_err(|_| AppError::internal("try_waiting_now db task panicked"))?
+    .and_then(|destination| ratspeak_core::hex_to_array16(&destination))
+    .ok_or_else(|| AppError::conflict("This message is no longer waiting."))?;
+    if !state.lxmf_keep_trying_enabled() {
+        return Err(AppError::conflict("Waiting messages are not being sent."));
+    }
+    state.wake_waiting(crate::lxmf::WakeEvent::TryNow(recipient));
+    Ok(json!({ "ok": true, "msg_id": msg_id }))
 }
 
 /// Sends a Not delivered or Cancelled message again, as the identical
@@ -3174,6 +3269,148 @@ mod tests {
         ))
     }
 
+    #[derive(Default)]
+    struct Steps(std::sync::Mutex<Vec<Value>>);
+
+    impl ratspeak_core::Emitter for Steps {
+        fn try_emit(&self, event: &str, payload: Value) -> Result<(), ratspeak_core::EmitError> {
+            if event == "lxmf_step" {
+                self.0.lock().unwrap().push(payload);
+            }
+            Ok(())
+        }
+    }
+
+    const PEER: &str = "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4";
+
+    fn signal(event: crate::lxmf::WakeEvent) -> crate::lxmf::WakeSignals {
+        let mut signals = crate::lxmf::WakeSignals::default();
+        signals.raise(event);
+        signals
+    }
+
+    fn peer_hash() -> [u8; 16] {
+        ratspeak_core::hex_to_array16(PEER).unwrap()
+    }
+
+    #[test]
+    fn a_send_held_behind_an_earlier_one_says_so_and_wakes_its_queue() {
+        let steps = Arc::new(Steps::default());
+        let base = make_state_with_schema();
+        let state = AppState::new(
+            DashboardConfig::from_env_and_defaults(base.config.data_root.clone()),
+            base.db.clone(),
+            steps.clone(),
+            Arc::new(ratspeak_core::NoopNotifier),
+        );
+        state
+            .lxmf_keep_trying
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let fence = state.activity_request_fence();
+        let id = "ab".repeat(32);
+
+        emit_lxmf_send_taken(
+            &state,
+            fence,
+            false,
+            "Message queued for delivery",
+            &id,
+            Some("out_1"),
+            PEER,
+        );
+        assert_eq!(
+            steps.0.lock().unwrap().pop().unwrap(),
+            json!({
+                "step": "sending",
+                "message": "Message queued for delivery",
+                "msg_id": id,
+                "client_msg_id": "out_1",
+            })
+        );
+        assert!(
+            state.take_wake_signals().is_empty(),
+            "a send on its way wakes nothing"
+        );
+
+        emit_lxmf_send_taken(
+            &state,
+            fence,
+            true,
+            "Message queued for delivery",
+            &id,
+            Some("out_2"),
+            PEER,
+        );
+        assert_eq!(
+            steps.0.lock().unwrap().pop().unwrap(),
+            json!({
+                "step": "waiting",
+                "msg_id": id,
+                "client_msg_id": "out_2",
+                "reason": "behind_earlier",
+            })
+        );
+        assert_eq!(
+            state.take_wake_signals(),
+            signal(crate::lxmf::WakeEvent::NewSend(peer_hash())),
+            "the oldest message to that recipient is tried"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn try_now_asks_for_a_waiting_message_and_refuses_any_other() {
+        let state = make_state_with_schema();
+        let identity = "11".repeat(16);
+        db::save_identity(&state.db, &identity, &"22".repeat(16), "A", "A");
+        db::set_active_identity(&state.db, &identity).unwrap();
+        let id = "cd".repeat(32);
+        db::save_outbound_message(
+            &state.db,
+            &db::OutboundMessage {
+                msg_id: &id,
+                identity_id: &identity,
+                source: "me",
+                destination: PEER,
+                waiting: true,
+                resend: db::Resend {
+                    preference: "auto",
+                    profile: "message",
+                    message: b"parts",
+                },
+                ..db::OutboundMessage::default()
+            },
+        )
+        .unwrap();
+
+        let refused = wake_waiting_message(&state, &id).await.unwrap_err();
+        assert_eq!(refused.message, "Waiting messages are not being sent.");
+        assert!(state.take_wake_signals().is_empty());
+
+        state
+            .lxmf_keep_trying
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let asked = wake_waiting_message(&state, &id.to_uppercase())
+            .await
+            .unwrap();
+        assert_eq!(asked, json!({ "ok": true, "msg_id": id }));
+        assert_eq!(
+            state.take_wake_signals(),
+            signal(crate::lxmf::WakeEvent::TryNow(peer_hash()))
+        );
+
+        assert!(db::cancel_outbound_message_state(&state.db, &id, &identity));
+        let refused = wake_waiting_message(&state, &id).await.unwrap_err();
+        assert_eq!(refused.message, "This message is no longer waiting.");
+        assert_eq!(
+            wake_waiting_message(&state, "not an id")
+                .await
+                .unwrap_err()
+                .message,
+            "Invalid message ID"
+        );
+        assert!(state.take_wake_signals().is_empty());
+    }
+
     #[test]
     fn base64_decode_upper_bound_rejects_protocol_oversize_before_decode() {
         let encoded_len = (rns_protocol::resource::MAX_RESOURCE_SIZE / 3 + 1) * 4;
@@ -3300,6 +3537,7 @@ mod tests {
         let active = CanonicalLxmfStopResult {
             live_owner_stopped: true,
             row_marked_stopped: true,
+            only_waiting: false,
         };
         assert!(active.stopped());
         assert_eq!(active.scope(), "active_and_retries");
@@ -3307,6 +3545,7 @@ mod tests {
         let record_only = CanonicalLxmfStopResult {
             live_owner_stopped: false,
             row_marked_stopped: true,
+            only_waiting: true,
         };
         assert!(record_only.stopped());
         assert_eq!(record_only.scope(), "local_record_only");
@@ -3314,6 +3553,7 @@ mod tests {
         let too_late = CanonicalLxmfStopResult {
             live_owner_stopped: false,
             row_marked_stopped: false,
+            only_waiting: false,
         };
         assert!(!too_late.stopped());
         assert_eq!(too_late.scope(), "none");

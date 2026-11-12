@@ -588,6 +588,8 @@ pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::image_data: cor
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::image_mime: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::renderer: core::option::Option<u8>
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::thread: core::option::Option<alloc::string::String>
+pub struct ratspeak_tauri::commands::messaging::TryWaitingNowArgs
+pub ratspeak_tauri::commands::messaging::TryWaitingNowArgs::msg_id: alloc::string::String
 pub async fn ratspeak_tauri::commands::messaging::api_conversation(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::api_file_metadata(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<ratspeak_tauri::commands::messaging::FileMetadata>
 pub async fn ratspeak_tauri::commands::messaging::api_file_read_chunk(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, u64, usize) -> ratspeak_tauri::error::AppResult<tauri::ipc::Response>
@@ -618,6 +620,7 @@ pub async fn ratspeak_tauri::commands::messaging::send_lxmf_reply(tauri::state::
 pub async fn ratspeak_tauri::commands::messaging::send_lxmf_with_attachment(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::SendWithAttachmentArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::send_lxmf_with_staged_attachment(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::send_reaction(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::SendReactionArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::messaging::try_waiting_now(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::TryWaitingNowArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub mod ratspeak_tauri::commands::network
 pub struct ratspeak_tauri::commands::network::NetworkLogArgs
 pub ratspeak_tauri::commands::network::NetworkLogArgs::enabled: bool

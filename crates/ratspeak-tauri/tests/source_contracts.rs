@@ -11014,6 +11014,98 @@ fn a_waiting_message_is_marked_stoppable_and_listed() {
     assert!(lxmf.contains("state: c.last_state,"));
 }
 
+/// Waiting messages are woken by one engine, called at one place in the tick,
+/// and told about from the places that can know a recipient is nearer.
+#[test]
+fn waiting_messages_are_woken_by_one_engine_under_the_manager_lock() {
+    let root = repo_root();
+    let source = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+    let production = |source: String| {
+        source
+            .split("\n#[cfg(test)]\nmod ")
+            .next()
+            .expect("production code")
+            .to_owned()
+    };
+    let runtime = source("crates/ratspeak-runtime/src/lib.rs");
+    let announces = production(source("crates/ratspeak-runtime/src/announce_handlers.rs"));
+    let messaging = production(source("crates/ratspeak-tauri/src/commands/messaging.rs"));
+    let system = source("crates/ratspeak-tauri/src/commands/system.rs");
+    let shell = source("src-tauri/src/lib.rs");
+
+    // The tick: after resumed attachments are admitted, before its own work,
+    // on full ticks only; what it did is told once the lock is released.
+    let tick = runtime
+        .split("let hold_started = std::time::Instant::now();")
+        .nth(1)
+        .and_then(|tail| tail.split("let tick_held = hold_started.elapsed();").next())
+        .expect("the tick's locked section");
+    let squeezed = tick.split_whitespace().collect::<String>();
+    assert!(squeezed.contains(
+        "if!delivery_only{admit_resumes_within_budget(&tick_state_for_lxmf,mgr);wakes=run_wakes(&tick_state_for_lxmf,mgr);}"
+    ));
+    assert!(squeezed.contains("letmutresults=std::mem::take(&mutwakes.failed);results.extend("));
+    let told = runtime
+        .find("apply_wake_outcome(&tick_state, tick_activity_origin, &wakes);")
+        .expect("the outcome is told");
+    assert!(told < runtime.find("let mut persisted:").unwrap());
+    assert_eq!(
+        runtime
+            .matches("run_wakes(&tick_state_for_lxmf, mgr)")
+            .count(),
+        1
+    );
+
+    // An interface coming up, a new path, and a heard announce, each where it is seen.
+    let edge = runtime
+        .split("if state_changed {")
+        .nth(1)
+        .expect("the interface edge");
+    assert!(
+        edge.trim_start()
+            .starts_with("if online {\n                                state.wake_waiting(lxmf::WakeEvent::InterfaceOnline);")
+    );
+    assert!(runtime.contains(
+        "for (destination, hops) in newly_reachable {\n                        state.wake_waiting(lxmf::WakeEvent::Heard(destination));"
+    ));
+    assert!(runtime.contains("state.wake_waiting(lxmf::WakeEvent::Heard(*recipient));"));
+    assert_eq!(
+        announces
+            .matches("state.wake_waiting(crate::lxmf::WakeEvent::Heard(event.destination_hash));")
+            .count(),
+        2,
+        "a recipient's announce and an Offline Inbox node's"
+    );
+    let resumed = system
+        .split("if fg && !was {")
+        .nth(1)
+        .and_then(|tail| tail.split("} else if !fg && was {").next())
+        .expect("the foreground edge");
+    assert!(resumed.contains("state.wake_waiting(ratspeak_runtime::lxmf::WakeEvent::Resumed);"));
+
+    // Every send tells its first step through one place, which knows a held send.
+    assert_eq!(messaging.matches("emit_lxmf_send_taken(").count(), 6);
+    assert_eq!(messaging.matches("\"step\": \"sending\"").count(), 1);
+    assert_eq!(messaging.matches("\"step\": \"waiting\"").count(), 1);
+    assert!(messaging.contains("state.wake_waiting(crate::lxmf::WakeEvent::NewSend(recipient));"));
+    assert!(messaging.contains("state.wake_waiting(crate::lxmf::WakeEvent::TryNow(recipient));"));
+    assert!(shell.contains("ratspeak_tauri::commands::messaging::try_waiting_now,"));
+
+    // Stop trying: the manager and the row are stopped in one place, under one lock.
+    let stop = runtime
+        .split("pub fn stop_outbound_message(")
+        .nth(1)
+        .and_then(|tail| tail.split("\n}\n").next())
+        .expect("the stop");
+    let locked = stop.find("let mut lxmf = state.lxmf.lock().ok();").unwrap();
+    let row = stop.find("db::cancel_outbound_message_state(").unwrap();
+    let unlocked = stop.find("drop(lxmf);").unwrap();
+    assert!(locked < row && row < unlocked);
+    assert!(messaging.contains("ratspeak_runtime::stop_outbound_message("));
+    assert!(!messaging.contains("db::cancel_outbound_message_state("));
+    assert!(messaging.contains("\"only_waiting\": stopped.only_waiting,"));
+}
+
 /// Activity words the wait, the new attempt, every reason the runtime can
 /// record, and every cause of a new attempt.
 #[test]
@@ -11059,17 +11151,10 @@ fn activity_words_every_delivery_reason_and_retry_cause() {
         .filter_map(|line| line.split_once("=> \""))
         .map(|(_, code)| code.trim_end_matches("\","))
         .collect::<Vec<_>>();
-    assert!(reasons.contains(&"wait_expired") && reasons.len() >= 19);
-    let causes = [
-        "wake_network",
-        "wake_recipient",
-        "wake_inbox",
-        "wake_start",
-        "wake_user",
-        "wake_timer",
-        "wake_new_send",
-        "wake_queue",
-    ];
+    assert!(reasons.contains(&"wait_expired") && reasons.len() >= 20);
+    assert!(reasons.contains(&"behind_earlier"));
+    let causes = ratspeak_core::delivery::WakeCause::ALL.map(|cause| cause.code());
+    assert_eq!(causes.len(), 8);
     for code in reasons.into_iter().chain(causes) {
         assert!(
             labels.contains(&format!("\n    {code}: ")),

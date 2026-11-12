@@ -62,6 +62,9 @@ mod packet_delivery;
 mod preparation;
 mod recovery;
 mod timing;
+mod waiting;
+
+pub use waiting::{WakeContext, WakeEvent, WakeOutcome, WakeSignals, Woken};
 const DIRECT_BACKCHANNEL_IDENTIFY_GRACE: Duration = Duration::from_secs(3);
 /// Highest stamp cost Ratspeak will generate a stamp for, recipient or
 /// propagation node; the same ceiling the settings allow for our own costs.
@@ -812,6 +815,8 @@ pub enum LxmfDeliveryProgressRepresentation {
 pub struct LxmfQueuedMessage {
     pub message_id: String,
     pub method: DeliveryMethod,
+    /// Not handed to the network: it waits behind earlier messages of its queue.
+    pub waiting: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1436,6 +1441,9 @@ pub struct LxmfManager {
     resumable: Vec<ResumableSend>,
     /// Ids of outbox records the resume could not read; the tick fails them.
     unreadable_outbox: Vec<String>,
+    /// Whether a message that fails for a network reason waits; the tick keeps it current.
+    pub keep_trying: bool,
+    wakes: waiting::Wakes,
     /// Failed sends whose earlier packets can still be proven; they fail only
     /// once the last receipt expires.
     deferred_failures: HashMap<[u8; 32], DeliveryFailureReason>,
@@ -2525,6 +2533,8 @@ impl LxmfManager {
             live_preparation: preparation::LivePreparation::default(),
             resumable: Vec::new(),
             unreadable_outbox: Vec::new(),
+            keep_trying: false,
+            wakes: waiting::Wakes::default(),
             deferred_failures: HashMap::new(),
             failure_reasons: HashMap::new(),
             active_stamp_search: None,
@@ -2959,6 +2969,14 @@ impl LxmfManager {
         &mut self,
         request: ReplyMessageSendRequest<'_>,
     ) -> Option<String> {
+        self.send_reply_with_preference_report(request)
+            .map(|queued| queued.message_id)
+    }
+
+    pub fn send_reply_with_preference_report(
+        &mut self,
+        request: ReplyMessageSendRequest<'_>,
+    ) -> Option<LxmfQueuedMessage> {
         let preference = request.preference;
         let method = self.pick_delivery_method(
             request.db_pool,
@@ -2980,7 +2998,6 @@ impl LxmfManager {
             renderer: request.renderer,
             thread: request.thread,
         })
-        .map(|queued| queued.message_id)
     }
 
     /// `DeliveryMethod::Propagated` requires `configured_propagation_node`.
@@ -3072,17 +3089,20 @@ impl LxmfManager {
             msg.timestamp(),
         );
 
-        self.preempt_opportunistic_path(&mut msg);
-        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference);
+        let held =
+            self.waits_behind_earlier(db_pool, identity_id, dest_hash_hex, preference, profile);
+        if !held {
+            self.preempt_opportunistic_path(&mut msg);
+        }
+        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference).filter(|_| !held);
         let method = msg.method;
-        let message_id = msg.message_id();
         let resend = crate::outbox::OutboxMessage::of(&msg).encode();
-        self.submit_signed(msg).ok()?;
         let source = self.lxmf_hash.clone();
-        let persisted = self.persist_outbound(
+        self.submit_or_hold(
+            msg,
+            held,
             db_pool,
-            message_id,
-            &db::OutboundMessage {
+            db::OutboundMessage {
                 msg_id: &msg_id,
                 identity_id,
                 source: &source,
@@ -3102,10 +3122,8 @@ impl LxmfManager {
                 },
                 ..db::OutboundMessage::default()
             },
-        );
-        if !persisted {
-            return None;
-        }
+        )
+        .ok()?;
         self.auto_live_fallback.extend(auto_fallback);
         if preference == DeliveryPreference::Auto && profile == DeliveryProfile::Message {
             self.live_preparation.auto_messages.extend(auto_fallback);
@@ -3114,7 +3132,32 @@ impl LxmfManager {
         Some(LxmfQueuedMessage {
             message_id: msg_id,
             method,
+            waiting: held,
         })
+    }
+
+    /// Hand a signed message to the router and write its row; one that waits
+    /// behind earlier messages gets its row alone, and a wake sends it.
+    fn submit_or_hold(
+        &mut self,
+        msg: SignedLxMessage,
+        held: bool,
+        db_pool: &DbPool,
+        record: db::OutboundMessage<'_>,
+    ) -> Result<(), LxmfSubmissionFailure> {
+        let message_id = msg.message_id();
+        if !held && self.submit_signed(msg).is_err() {
+            return Err(LxmfSubmissionFailure::PreparationFailed);
+        }
+        let record = db::OutboundMessage {
+            waiting: held,
+            ..record
+        };
+        if self.persist_outbound(db_pool, message_id, &record) {
+            Ok(())
+        } else {
+            Err(LxmfSubmissionFailure::StorageFailed)
+        }
     }
 
     /// Write the history row and outbox entry of a message the router just
@@ -3498,8 +3541,17 @@ impl LxmfManager {
             msg.timestamp(),
         );
 
-        self.preempt_opportunistic_path(&mut msg);
-        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference);
+        let held = self.waits_behind_earlier(
+            db_pool,
+            identity_id,
+            dest_hash_hex,
+            preference,
+            DeliveryProfile::Attachment,
+        );
+        if !held {
+            self.preempt_opportunistic_path(&mut msg);
+        }
+        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference).filter(|_| !held);
         let method = msg.method;
         // The file is durable before the message is queued, so its row can
         // never reference a missing file; every failure below removes it.
@@ -3514,7 +3566,6 @@ impl LxmfManager {
             (file_name, stored_name.as_str(), "", "")
         };
 
-        let message_id = msg.message_id();
         let resend = crate::outbox::OutboxMessage::referencing(
             &msg,
             Some(crate::outbox::StoredFile {
@@ -3528,15 +3579,12 @@ impl LxmfManager {
             }),
         )
         .encode();
-        if self.submit_signed(msg).is_err() {
-            let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
-            return Err(LxmfSubmissionFailure::PreparationFailed);
-        }
         let source = self.lxmf_hash.clone();
-        let persisted = self.persist_outbound(
+        let accepted = self.submit_or_hold(
+            msg,
+            held,
             db_pool,
-            message_id,
-            &db::OutboundMessage {
+            db::OutboundMessage {
                 msg_id: &msg_id,
                 identity_id,
                 source: &source,
@@ -3559,14 +3607,15 @@ impl LxmfManager {
                 ..db::OutboundMessage::default()
             },
         );
-        if !persisted {
+        if let Err(failure) = accepted {
             let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
-            return Err(LxmfSubmissionFailure::StorageFailed);
+            return Err(failure);
         }
         self.auto_live_fallback.extend(auto_fallback);
         Ok(LxmfQueuedMessage {
             message_id: msg_id,
             method,
+            waiting: held,
         })
     }
 
@@ -3664,8 +3713,17 @@ impl LxmfManager {
             msg.timestamp(),
         );
 
-        self.preempt_opportunistic_path(&mut msg);
-        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference);
+        let held = self.waits_behind_earlier(
+            db_pool,
+            identity_id,
+            dest_hash_hex,
+            preference,
+            DeliveryProfile::Attachment,
+        );
+        if !held {
+            self.preempt_opportunistic_path(&mut msg);
+        }
+        let auto_fallback = Self::auto_live_fallback_hash(&msg, preference).filter(|_| !held);
         let method = msg.method;
         let filename = if audio_mode == lxmf_core::constants::AM_CODEC2_700C {
             COMPACT_AUDIO_FILE_NAME
@@ -3678,7 +3736,6 @@ impl LxmfManager {
         }
         .map_err(|_| LxmfSubmissionFailure::StorageFailed)?;
 
-        let message_id = msg.message_id();
         let resend = crate::outbox::OutboxMessage::referencing(
             &msg,
             Some(crate::outbox::StoredFile {
@@ -3688,15 +3745,12 @@ impl LxmfManager {
             }),
         )
         .encode();
-        if self.submit_signed(msg).is_err() {
-            let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
-            return Err(LxmfSubmissionFailure::PreparationFailed);
-        }
         let source = self.lxmf_hash.clone();
-        let persisted = self.persist_outbound(
+        let accepted = self.submit_or_hold(
+            msg,
+            held,
             db_pool,
-            message_id,
-            &db::OutboundMessage {
+            db::OutboundMessage {
                 msg_id: &msg_id,
                 identity_id,
                 source: &source,
@@ -3716,14 +3770,15 @@ impl LxmfManager {
                 ..db::OutboundMessage::default()
             },
         );
-        if !persisted {
+        if let Err(failure) = accepted {
             let _ = std::fs::remove_file(self.files_dir().join(&stored_name));
-            return Err(LxmfSubmissionFailure::StorageFailed);
+            return Err(failure);
         }
         self.auto_live_fallback.extend(auto_fallback);
         Ok(LxmfQueuedMessage {
             message_id: msg_id,
             method,
+            waiting: held,
         })
     }
 
@@ -4149,6 +4204,8 @@ impl LxmfManager {
 
     fn activate_client_propagation_node(&mut self, dest: [u8; 16]) {
         self.router.set_outbound_propagation_node(Some(dest));
+        // Messages that wait for an Offline Inbox can go again.
+        self.wakes.inbox_selected = true;
         self.start_propagation_sync(dest);
 
         // Register as router peer (static_peers blocks LRU rotation).

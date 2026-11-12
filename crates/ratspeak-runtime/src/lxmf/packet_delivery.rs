@@ -32,8 +32,9 @@ impl LxmfManager {
     }
 
     /// Whether anything still works on the message: a protocol wait, the
-    /// router's queue (its attempt budget ends it), a resumed send or a
-    /// failure held for a late proof. The watchdog ends only what this is not.
+    /// router's queue (its attempt budget ends it), a stamp being computed, a
+    /// resumed send or a failure held for a late proof. The watchdog ends
+    /// only what this is not, and a wake sends only what this is not.
     pub(crate) fn still_owned(&self, msg_id: &str) -> bool {
         if self.has_bounded_protocol_wait(msg_id) {
             return true;
@@ -48,6 +49,12 @@ impl LxmfManager {
             .pending_outbound
             .iter()
             .any(|message| message.message_id() == hash)
+            || self.router.pending_deferred_stamps.contains_key(&hash)
+            || self
+                .router
+                .active_deferred_stamp
+                .as_ref()
+                .is_some_and(|job| job.message_hash == hash)
             || self.opportunistic_in_flight.contains_key(&hash)
             || self.in_flight_propagation.contains_key(&hash)
             || self.deferred_failures.contains_key(&hash)

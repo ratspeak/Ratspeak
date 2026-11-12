@@ -227,6 +227,8 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
 
     let iface = refresh_lxmf_route_cache_and_lookup_iface(state, event.destination_hash).await;
 
+    // Heard is enough to try a waiting message again; a route may follow the attempt.
+    state.wake_waiting(crate::lxmf::WakeEvent::Heard(event.destination_hash));
     let triggered = match state.lxmf.lock() {
         Ok(mut lxmf) => lxmf
             .as_mut()
@@ -454,6 +456,8 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
         crate::propagation::mark_relay_path_success(state, event.destination_hash);
         state.trim_propagation_nodes();
         crate::propagation::maybe_reselect_on_announce(state).await;
+        // The engine takes it as the Offline Inbox being reachable when this is the node in use.
+        state.wake_waiting(crate::lxmf::WakeEvent::Heard(event.destination_hash));
         let triggered = match (event.app_data.as_deref(), state.lxmf.lock()) {
             (Some(app_data), Ok(mut lxmf)) => lxmf.as_mut().map_or(0, |mgr| {
                 mgr.router.trigger_outbound_for_propagation_node_announce(
@@ -542,6 +546,50 @@ mod tests {
     fn path_responses_do_not_touch_peer_activity() {
         assert!(!should_touch_peer_activity(&event_with_path_response(true)));
         assert!(should_touch_peer_activity(&event_with_path_response(false)));
+    }
+
+    #[tokio::test]
+    async fn a_recipient_or_an_inbox_node_heard_is_a_wake_signal() {
+        use crate::lxmf::{WakeEvent, WakeSignals};
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(r2d2_sqlite::SqliteConnectionManager::memory())
+            .unwrap();
+        db::init_schema(&pool).unwrap();
+        let state = state_on(&pool);
+        state
+            .lxmf_keep_trying
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        let signal = |hash| {
+            let mut signals = WakeSignals::default();
+            signals.raise(WakeEvent::Heard(hash));
+            signals
+        };
+
+        // No route is known and no interface changed: being heard is enough.
+        let recipient = [0x71; 16];
+        process_delivery_announce(
+            &state,
+            AnnounceHandlerEvent {
+                destination_hash: recipient,
+                ..event_with_path_response(false)
+            },
+        )
+        .await;
+        assert_eq!(state.take_wake_signals(), signal(recipient));
+
+        let node = [0x72; 16];
+        process_propagation_announce(
+            &state,
+            AnnounceHandlerEvent {
+                destination_hash: node,
+                hops: 2,
+                app_data: Some(inbox_app_data("Home inbox")),
+                ..event_with_path_response(false)
+            },
+        )
+        .await;
+        assert_eq!(state.take_wake_signals(), signal(node));
     }
 
     fn state_on(pool: &db::DbPool) -> Arc<AppState> {

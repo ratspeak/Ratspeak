@@ -850,6 +850,9 @@ pub struct AppState {
     pub lxmf_limit_1mb: AtomicBool,
     /// Whether a message that fails for a network reason waits to be sent again.
     pub lxmf_keep_trying: AtomicBool,
+    /// What may have brought a waiting message's recipient within reach
+    /// since the last full tick.
+    wake_signals: Mutex<crate::lxmf::WakeSignals>,
     steady_clock: SteadyClock,
     /// Serializes read-modify-write edits to the active Reticulum config file.
     pub rns_config_lock: Mutex<()>,
@@ -1138,6 +1141,7 @@ impl AppState {
             notification_preview: Mutex::new(initial_notification_preview),
             lxmf_limit_1mb: AtomicBool::new(initial_lxmf_limit_1mb),
             lxmf_keep_trying: AtomicBool::new(false),
+            wake_signals: Mutex::new(crate::lxmf::WakeSignals::default()),
             steady_clock: SteadyClock::start(),
             rns_config_lock: Mutex::new(()),
             identity_switch_lock: IdentitySwitchLock::new(),
@@ -1347,6 +1351,30 @@ impl AppState {
 
     pub fn lxmf_keep_trying_enabled(&self) -> bool {
         self.lxmf_keep_trying.load(Ordering::Relaxed)
+    }
+
+    /// Tell the wake engine that waiting messages may be worth sending again.
+    /// What the user asked for is acted on at once; the rest at the next tick.
+    pub fn wake_waiting(&self, event: crate::lxmf::WakeEvent) {
+        if !self.lxmf_keep_trying_enabled() {
+            return;
+        }
+        if let Ok(mut signals) = self.wake_signals.lock() {
+            signals.raise(event);
+        }
+        if matches!(
+            event,
+            crate::lxmf::WakeEvent::TryNow(_) | crate::lxmf::WakeEvent::NewSend(_)
+        ) {
+            self.lxmf_notify.notify_one();
+        }
+    }
+
+    pub fn take_wake_signals(&self) -> crate::lxmf::WakeSignals {
+        self.wake_signals
+            .lock()
+            .map(|mut signals| std::mem::take(&mut *signals))
+            .unwrap_or_default()
     }
 
     /// Unix time for waits that outlive a clock change: it never runs behind
@@ -2925,6 +2953,8 @@ impl AppState {
         if let Ok(mut map) = self.msg_id_map.lock() {
             map.clear();
         }
+        // They name the last identity's recipients.
+        drop(self.take_wake_signals());
         self.clear_lxmf_client_sends();
         let staged = if let Ok(mut staging) = self.attachment_staging.lock() {
             staging
@@ -3963,6 +3993,39 @@ mod tests {
         expected.sort();
 
         assert_eq!(registered, expected);
+    }
+
+    #[test]
+    fn wake_signals_are_kept_only_with_waiting_on_and_for_one_identity() {
+        use crate::lxmf::{WakeEvent, WakeSignals};
+        let state = make_state();
+        let heard = WakeEvent::Heard([7; 16]);
+        state.wake_waiting(heard);
+        state.wake_waiting(WakeEvent::InterfaceOnline);
+        assert_eq!(
+            state.take_wake_signals(),
+            WakeSignals::default(),
+            "with waiting off nothing is collected"
+        );
+
+        state.lxmf_keep_trying.store(true, Ordering::Relaxed);
+        state.wake_waiting(heard);
+        let mut expected = WakeSignals::default();
+        expected.raise(heard);
+        assert_eq!(state.take_wake_signals(), expected);
+        assert_eq!(
+            state.take_wake_signals(),
+            WakeSignals::default(),
+            "taken once"
+        );
+
+        state.wake_waiting(heard);
+        state.clear_identity_scoped_runtime_state();
+        assert_eq!(
+            state.take_wake_signals(),
+            WakeSignals::default(),
+            "the next identity does not inherit them"
+        );
     }
 
     #[test]

@@ -2092,7 +2092,8 @@ function _stopWaitingLxmfMessage(msg) {
         if (resp && resp.cancelled) {
             _markLxmfMessageCancelled(resp.msg_id || msg.id);
         }
-        _showLxmfStopResult(resp);
+        // A message that only waited had nothing in the air: the mark says it all.
+        if (!(resp && resp.only_waiting)) _showLxmfStopResult(resp);
     }).catch(function(err) {
         showToast('Could not stop sending: ' + ((err && err.message) || 'error'), 'toast-error', 3500);
     });
