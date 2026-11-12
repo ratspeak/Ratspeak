@@ -584,9 +584,11 @@ pub async fn start_recording_format(
         *slot = Some(handle);
     }
 
+    // A recorder that died while starting counts as a failed start, so the
+    // slot is cleared and the next attempt is not refused as "already recording".
     let start_result = started_rx
         .await
-        .map_err(|_| "Voice memo recorder stopped while starting".to_string())?;
+        .unwrap_or_else(|_| Err("Voice memo recorder stopped while starting".to_string()));
     if let Err(error) = start_result {
         let failed_handle = state
             .voice_memo_recording

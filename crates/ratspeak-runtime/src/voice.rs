@@ -3964,19 +3964,21 @@ fn log_input_stream_error(_err: cpal::StreamError) {
 struct AndroidAudioContextOwner {
     // ndk-context stores the raw jobject. Keep the corresponding global JNI
     // reference alive for the entire process so CPAL/Oboe can safely attach
-    // audio workers after the Activity has been recreated.
-    _application: jni::objects::GlobalRef,
+    // audio workers after the Activity has been recreated. `None` when the
+    // window library installed the context and owns its reference.
+    _application: Option<jni::objects::GlobalRef>,
 }
 
 #[cfg(target_os = "android")]
 static ANDROID_AUDIO_CONTEXT: OnceLock<Result<AndroidAudioContextOwner, String>> = OnceLock::new();
 
 /// CPAL's Android backend calls `ndk_context::android_context()` before it can
-/// enumerate or open Oboe devices. Tauri embeds Rust in an Activity and does
-/// not initialize ndk-context for application crates, so establish the
-/// process-owned Application context before *any* `cpal::default_host()` call.
-/// Cache both success and failure: initialization is process-scoped and the
-/// ndk-context API must be invoked exactly once.
+/// enumerate or open Oboe devices, so the process-owned Application context
+/// must exist before *any* `cpal::default_host()` call. The window library
+/// installs it when the first Activity is created (tao 0.37 on); older ones
+/// did not, and then it is established here. ndk-context asserts on a second
+/// initialization, so an installed context is never initialized again.
+/// Cache both success and failure: initialization is process-scoped.
 #[cfg(target_os = "android")]
 fn ensure_android_audio_context() -> VoiceResult<()> {
     match ANDROID_AUDIO_CONTEXT.get_or_init(initialize_android_audio_context) {
@@ -3987,6 +3989,9 @@ fn ensure_android_audio_context() -> VoiceResult<()> {
 
 #[cfg(target_os = "android")]
 fn initialize_android_audio_context() -> Result<AndroidAudioContextOwner, String> {
+    if android_context_is_installed() {
+        return Ok(AndroidAudioContextOwner { _application: None });
+    }
     let vm = rns_interface::android_usb::java_vm()
         .ok_or_else(|| "JavaVM not initialized for Android microphone capture".to_string())?;
     let env = vm
@@ -4020,8 +4025,8 @@ fn initialize_android_audio_context() -> Result<AndroidAudioContextOwner, String
 
     // SAFETY: JNI_OnLoad stores this process's JavaVM before any Tauri command
     // can reach voice capture. `application` is a GlobalRef retained in the
-    // process-scoped OnceLock above, and get_or_init serializes this exactly-once
-    // initialization before any CPAL/Oboe access.
+    // process-scoped OnceLock above, get_or_init serializes this call, and no
+    // context was installed when it was checked just above.
     unsafe {
         ndk_context::initialize_android_context(
             vm.get_java_vm_pointer().cast(),
@@ -4029,8 +4034,14 @@ fn initialize_android_audio_context() -> Result<AndroidAudioContextOwner, String
         );
     }
     Ok(AndroidAudioContextOwner {
-        _application: application,
+        _application: Some(application),
     })
+}
+
+/// ndk-context has no query for this: reading an absent context panics.
+#[cfg(target_os = "android")]
+fn android_context_is_installed() -> bool {
+    std::panic::catch_unwind(ndk_context::android_context).is_ok()
 }
 
 #[cfg(target_os = "android")]

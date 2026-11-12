@@ -9038,6 +9038,16 @@ fn android_audio_initializes_process_context_before_cpal_access() {
     assert!(runtime.contains("static ANDROID_AUDIO_CONTEXT: OnceLock<"));
     assert!(runtime.contains("ndk_context::initialize_android_context("));
     assert!(runtime.contains(".new_global_ref(application)"));
+    // The window library installs the context first; a second initialization panics.
+    let initialize = runtime
+        .find("fn initialize_android_audio_context()")
+        .expect("context initialization");
+    let initialize = &runtime[initialize..];
+    assert!(
+        initialize.find("if android_context_is_installed() {")
+            < initialize.find("ndk_context::initialize_android_context("),
+        "an installed ndk-context must never be initialized again"
+    );
 
     let call_start = runtime
         .find("async fn start(\n        link_id: [u8; 16]")
