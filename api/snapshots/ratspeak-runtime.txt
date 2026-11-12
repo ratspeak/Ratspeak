@@ -284,6 +284,7 @@ pub ratspeak_runtime::activity::producer::LxmfDeliveryState::ReusingBackchannel
 pub ratspeak_runtime::activity::producer::LxmfDeliveryState::Routing
 pub ratspeak_runtime::activity::producer::LxmfDeliveryState::SendingViaLink
 pub ratspeak_runtime::activity::producer::LxmfDeliveryState::Sent
+pub ratspeak_runtime::activity::producer::LxmfDeliveryState::Waiting
 pub enum ratspeak_runtime::activity::producer::LxmfInboundRejectionReason
 pub ratspeak_runtime::activity::producer::LxmfInboundRejectionReason::AttachmentBusy
 pub ratspeak_runtime::activity::producer::LxmfInboundRejectionReason::AttachmentMemoryPressure
@@ -2353,6 +2354,7 @@ pub ratspeak_runtime::state::AppState::lrgp_msg_to_session: std::sync::poison::m
 pub ratspeak_runtime::state::AppState::lrgp_router: lrgp::router::LrgpRouter
 pub ratspeak_runtime::state::AppState::lrgp_transaction: alloc::sync::Arc<tokio::sync::mutex::Mutex<()>>
 pub ratspeak_runtime::state::AppState::lxmf: std::sync::poison::mutex::Mutex<core::option::Option<ratspeak_runtime::lxmf::LxmfManager>>
+pub ratspeak_runtime::state::AppState::lxmf_keep_trying: core::sync::atomic::AtomicBool
 pub ratspeak_runtime::state::AppState::lxmf_limit_1mb: core::sync::atomic::AtomicBool
 pub ratspeak_runtime::state::AppState::lxmf_notify: alloc::sync::Arc<tokio::sync::notify::Notify>
 pub ratspeak_runtime::state::AppState::lxmf_panic_recovery: ratspeak_runtime::state::LxmfPanicRecovery
@@ -2456,6 +2458,7 @@ pub fn ratspeak_runtime::state::AppState::is_foreground(&self) -> bool
 pub fn ratspeak_runtime::state::AppState::local_identity_public_key(&self, &str) -> core::option::Option<[u8; 64]>
 pub fn ratspeak_runtime::state::AppState::lxmf_delivery_limit_bytes(&self) -> usize
 pub fn ratspeak_runtime::state::AppState::lxmf_delivery_limit_kb(&self) -> usize
+pub fn ratspeak_runtime::state::AppState::lxmf_keep_trying_enabled(&self) -> bool
 pub fn ratspeak_runtime::state::AppState::lxmf_limit_1mb_enabled(&self) -> bool
 pub fn ratspeak_runtime::state::AppState::mark_staged_image_as_file(&self, &str) -> core::result::Result<(), ratspeak_runtime::state::ImageAttachmentStagingError>
 pub fn ratspeak_runtime::state::AppState::messaging_is_starting(&self) -> bool
@@ -2500,6 +2503,7 @@ pub fn ratspeak_runtime::state::AppState::set_rns(&self, ratspeak_runtime::rns::
 pub fn ratspeak_runtime::state::AppState::set_startup_stage(&self, &str)
 pub fn ratspeak_runtime::state::AppState::should_surface_native_notification(&self) -> bool
 pub fn ratspeak_runtime::state::AppState::stage_pending_hw_pin(&self, &str, zeroize::Zeroizing<alloc::string::String>)
+pub fn ratspeak_runtime::state::AppState::steady_now(&self) -> f64
 pub fn ratspeak_runtime::state::AppState::suppress_next_interface_reannounce(&self, &str)
 pub fn ratspeak_runtime::state::AppState::take_active_ble_rnode_activity_operation(&self, &str) -> core::option::Option<BleRnodeActivityTake>
 pub fn ratspeak_runtime::state::AppState::take_channel_hub(&self) -> core::option::Option<ratspeak_runtime::channel_hub::ChannelHubHandle>

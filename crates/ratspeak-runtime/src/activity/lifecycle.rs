@@ -1915,6 +1915,51 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_waiting_message_is_recorded_with_its_reason_and_is_not_a_failure() {
+        let sink = Arc::new(RecordingSink::default());
+        let recorder = ActivityRecorder::with_batch_sink(sink.clone());
+        recorder.start().await.unwrap();
+        assert_eq!(
+            recorder.record_event(|| {
+                Ok(producer::lxmf_delivery_state_changed(
+                    producer::LxmfDeliveryStateChanged {
+                        message: producer::MessageId::from_hex(&hex::encode([0x5e; 32]))?,
+                        state: producer::LxmfDeliveryState::Waiting,
+                        method: None,
+                        rtt_ms: None,
+                        failure_reason: Some(producer::DeliveryFailureReason::PathUnavailable),
+                    },
+                ))
+            }),
+            ActivityRecordOutcome::Accepted
+        );
+        let deferred = || {
+            sink.batches()
+                .iter()
+                .flat_map(|batch| batch.events().iter().cloned())
+                .find(|event| event.kind() == "lxmf.delivery.deferred")
+        };
+        wait_until(|| deferred().is_some()).await;
+        assert!(
+            !sink
+                .batches()
+                .iter()
+                .flat_map(|batch| batch.events())
+                .any(|event| event.kind() == "lxmf.delivery.failed")
+        );
+        let event = serde_json::to_value(deferred().unwrap()).unwrap();
+        assert_eq!(event["severity"], "info");
+        assert_eq!(event["outcome"], "none");
+        let reason = event["attributes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|attribute| attribute["key"] == "reason")
+            .expect("the reason it waits for");
+        assert_eq!(reason["value"]["value"], "path_unavailable");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_recorded_message_can_be_found_by_its_id() {
         let sink = Arc::new(RecordingSink::default());
         let recorder = ActivityRecorder::with_batch_sink(sink.clone());

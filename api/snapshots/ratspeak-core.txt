@@ -22,6 +22,15 @@ pub const ratspeak_core::config::RATSPEAK_RNS_CONFIG_DIR_ENV: &str
 pub const ratspeak_core::config::RATSPEAK_RNS_INSTANCE_CONTROL_PORT: u16
 pub const ratspeak_core::config::RATSPEAK_RNS_SHARED_INSTANCE_PORT: u16
 pub mod ratspeak_core::delivery
+pub mod ratspeak_core::delivery::policy
+pub const ratspeak_core::delivery::policy::WAIT_LIMIT_SECS: f64
+pub const ratspeak_core::delivery::policy::WAKE_CAP: u32
+pub fn ratspeak_core::delivery::policy::method_waits(&str) -> bool
+pub enum ratspeak_core::delivery::AfterFailure
+pub ratspeak_core::delivery::AfterFailure::Fail
+pub ratspeak_core::delivery::AfterFailure::FailExhausted
+pub ratspeak_core::delivery::AfterFailure::FailExpired
+pub ratspeak_core::delivery::AfterFailure::Wait
 pub enum ratspeak_core::delivery::OutboundState
 pub ratspeak_core::delivery::OutboundState::Cancelled
 pub ratspeak_core::delivery::OutboundState::Delivered
@@ -38,8 +47,9 @@ pub ratspeak_core::delivery::OutboundState::Sending
 pub ratspeak_core::delivery::OutboundState::SendingViaLink
 pub ratspeak_core::delivery::OutboundState::Sent
 pub ratspeak_core::delivery::OutboundState::Timeout
+pub ratspeak_core::delivery::OutboundState::Waiting
 impl ratspeak_core::delivery::OutboundState
-pub const ratspeak_core::delivery::OutboundState::ALL: [Self; 15]
+pub const ratspeak_core::delivery::OutboundState::ALL: [Self; 16]
 pub const fn ratspeak_core::delivery::OutboundState::as_str(self) -> &'static str
 pub const fn ratspeak_core::delivery::OutboundState::clears_outbox(self) -> bool
 pub const fn ratspeak_core::delivery::OutboundState::ends_delivery_clock(self) -> bool
@@ -52,8 +62,20 @@ pub enum ratspeak_core::delivery::Phase
 pub ratspeak_core::delivery::Phase::Done
 pub ratspeak_core::delivery::Phase::Ended
 pub ratspeak_core::delivery::Phase::InFlight
+pub ratspeak_core::delivery::Phase::Waiting
+pub struct ratspeak_core::delivery::Failure
+pub ratspeak_core::delivery::Failure::can_wait: bool
+pub ratspeak_core::delivery::Failure::entry: core::option::Option<ratspeak_core::delivery::OutboxClock>
+pub ratspeak_core::delivery::Failure::keep_trying: bool
+pub ratspeak_core::delivery::Failure::now: f64
+pub struct ratspeak_core::delivery::OutboxClock
+pub ratspeak_core::delivery::OutboxClock::auto_sends: u32
+pub ratspeak_core::delivery::OutboxClock::method_waits: bool
+pub ratspeak_core::delivery::OutboxClock::queued_at: f64
 pub const ratspeak_core::delivery::PROGRESS_STEPS: [&str; 4]
+pub fn ratspeak_core::delivery::after_failure(&ratspeak_core::delivery::Failure) -> ratspeak_core::delivery::AfterFailure
 pub fn ratspeak_core::delivery::sql_list(impl core::ops::function::Fn(ratspeak_core::delivery::OutboundState) -> bool) -> alloc::string::String
+pub fn ratspeak_core::delivery::wait_expired(f64, f64) -> bool
 pub mod ratspeak_core::emitter
 pub enum ratspeak_core::emitter::EmitError
 pub ratspeak_core::emitter::EmitError::Rejected

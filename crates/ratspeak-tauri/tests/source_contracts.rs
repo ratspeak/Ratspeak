@@ -1194,6 +1194,31 @@ fn activity_lxmf_progress_is_typed_and_content_free() {
         selected < method_write && method_write < state_write && state_write < accepted,
         "persist fallback or actual late-proof method before the accepted UI/Activity emission"
     );
+    // Whether a failed send waits is decided in one place, for the tick's
+    // failures and the watchdog's orphans and for nothing else.
+    let settle = persist_loop.find("db::settle_failure(").unwrap();
+    assert!(method_write < settle && settle < accepted);
+    let decisions = runtime
+        .split("db::settle_failure(")
+        .skip(1)
+        .map(|call| {
+            let end = call.find("OutboundState::").expect("the final state") + 24;
+            call[..end].split_whitespace().collect::<String>()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        decisions,
+        [
+            "&p,&msg_id_for_db,&identity_for_db,reason.can_wait(),keep_trying,settled_at,OutboundState::Failed,",
+            "&p,msg_id,&identity_id,orphaned.can_wait(),keep_trying,settled_at,OutboundState::Timeout,",
+        ]
+    );
+    assert!(runtime.contains("let keep_trying = tick_state.lxmf_keep_trying_enabled();"));
+    assert!(runtime.contains("let keep_trying = state.lxmf_keep_trying_enabled();"));
+    for file in ["lxmf.rs", "messaging.rs", "propagation.rs", "state.rs"] {
+        let source = read_source(root.join("crates/ratspeak-runtime/src").join(file)).expect(file);
+        assert!(!source.contains("settle_failure("), "{file}");
+    }
     assert!(runtime.contains("producer::LxmfDeliveryState::Propagating"));
     assert!(runtime.contains("producer::LxmfDeliveryState::Propagated"));
 
@@ -10888,6 +10913,7 @@ fn the_dashboard_state_table_matches_the_runtime() {
         .map(|state| {
             let phase = match state.phase() {
                 Phase::InFlight => "flight",
+                Phase::Waiting => "waiting",
                 Phase::Ended => "ended",
                 Phase::Done => "done",
             };

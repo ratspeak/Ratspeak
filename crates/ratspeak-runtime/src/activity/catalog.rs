@@ -2036,6 +2036,8 @@ pub enum LxmfDeliveryState {
     Cancelled,
     Rejected,
     Failed,
+    /// Not sent for a network reason, and kept to be sent again.
+    Waiting,
 }
 
 pub struct LxmfDeliveryStateChanged {
@@ -2114,6 +2116,12 @@ pub fn lxmf_delivery_state_changed(
             kinds::LXMF_DELIVERY_FAILED,
             ActivitySeverity::Error,
             ActivityOutcome::Failed,
+        ),
+        // Nothing has gone wrong for the user yet: the message is still to be sent.
+        LxmfDeliveryState::Waiting => (
+            kinds::LXMF_DELIVERY_DEFERRED,
+            ActivitySeverity::Info,
+            ActivityOutcome::None,
         ),
     };
     let mut draft = ActivityDraft::new(

@@ -3,13 +3,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use ratspeak_core::delivery::{OutboundState, PROGRESS_STEPS, Phase, sql_list};
+use ratspeak_core::delivery::{
+    AfterFailure, Failure, OutboundState, OutboxClock, PROGRESS_STEPS, Phase, after_failure,
+    policy, sql_list,
+};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use tokio::task::JoinError;
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-pub(crate) const SCHEMA_VERSION: i64 = 51;
+pub(crate) const SCHEMA_VERSION: i64 = 52;
 
 const VOICE_FORMAT_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS conversation_voice_formats (
@@ -99,6 +102,8 @@ CREATE TABLE IF NOT EXISTS lxmf_outbox (
     profile     TEXT NOT NULL,
     message     BLOB NOT NULL,
     queued_at   REAL NOT NULL,
+    auto_sends  INTEGER NOT NULL DEFAULT 0,
+    last_auto_at REAL NOT NULL DEFAULT 0,
     PRIMARY KEY (identity_id, message_id),
     FOREIGN KEY (message_id, identity_id)
         REFERENCES messages(id, identity_id) ON DELETE CASCADE
@@ -2158,6 +2163,28 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 52 {
+        migration_step(conn, 52, |conn| {
+            // Step 50 creates the table from the current schema, columns included.
+            if table_exists(conn, "lxmf_outbox")? {
+                let columns = get_column_names(conn, "lxmf_outbox")?;
+                if !columns.iter().any(|column| column == "auto_sends") {
+                    conn.execute_batch(
+                        "ALTER TABLE lxmf_outbox ADD COLUMN auto_sends INTEGER NOT NULL DEFAULT 0;",
+                    )?;
+                }
+                if !columns.iter().any(|column| column == "last_auto_at") {
+                    conn.execute_batch(
+                        "ALTER TABLE lxmf_outbox ADD COLUMN last_auto_at REAL NOT NULL DEFAULT 0;",
+                    )?;
+                }
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 52;")?;
+            tracing::info!("Migrated to schema version 52 (outbox wake count)");
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -3821,7 +3848,8 @@ fn outbox_ended_states() -> String {
     sql_list(|state| state.phase() == Phase::Ended)
 }
 
-/// `identity_id`'s messages still on their way, oldest first.
+/// `identity_id`'s messages still on their way, oldest first. A waiting
+/// message is not one: a wake sends it, not the start of a run.
 pub fn outbox_rows(pool: &DbPool, identity_id: &str) -> Result<Vec<OutboxRow>, String> {
     let conn = pool.get().map_err(|error| error.to_string())?;
     let mut stmt = conn
@@ -3831,7 +3859,7 @@ pub fn outbox_rows(pool: &DbPool, identity_id: &str) -> Result<Vec<OutboxRow>, S
                ON m.id = o.message_id AND m.identity_id = o.identity_id
              WHERE o.identity_id = ?1 AND m.state NOT IN {}
              ORDER BY o.queued_at ASC, o.rowid ASC",
-            outbox_ended_states()
+            sql_list(|state| matches!(state.phase(), Phase::Ended | Phase::Waiting))
         ))
         .map_err(|error| error.to_string())?;
     stmt.query_map(params![identity_id], outbox_row)
@@ -3897,7 +3925,8 @@ pub fn restart_outbound_message(
         )
         .map_err(|error| error.to_string())?;
         tx.execute(
-            "UPDATE lxmf_outbox SET preference = ?3, queued_at = ?4 WHERE identity_id = ?1 AND message_id = ?2",
+            "UPDATE lxmf_outbox SET preference = ?3, queued_at = ?4, auto_sends = 0, last_auto_at = 0 \
+             WHERE identity_id = ?1 AND message_id = ?2",
             params![identity_id, msg_id, preference, now_ts()],
         )
         .map_err(|error| error.to_string())?;
@@ -4374,11 +4403,16 @@ pub fn update_message_state(
         Err(_) => return false,
     };
     // A proof outranks every earlier outcome: a message that arrived was never
-    // undelivered. Nothing else leaves a settled state.
-    let settled = if state == "delivered" {
-        sql_list(|current| !current.yields_to_proof())
-    } else {
-        sql_list(OutboundState::is_final)
+    // undelivered. Nothing else leaves a settled state, and no step of a send
+    // that is over moves a waiting message: only a wake's claim does.
+    let settled = match OutboundState::parse(state).map(|new| (new, new.phase())) {
+        Some((OutboundState::Delivered, _)) => sql_list(|current| !current.yields_to_proof()),
+        Some((_, Phase::Ended | Phase::Done)) => sql_list(OutboundState::is_final),
+        Some((_, Phase::InFlight)) | None => {
+            sql_list(|current| current.is_final() || current == OutboundState::Waiting)
+        }
+        // Only `settle_failure` decides that a message waits.
+        Some((_, Phase::Waiting)) => return false,
     };
     let result = conn
         .execute(
@@ -4390,6 +4424,192 @@ pub fn update_message_state(
         )
         .map(|updated| updated > 0);
     result.unwrap_or(false)
+}
+
+/// What [`settle_failure`] wrote.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Settled {
+    pub state: OutboundState,
+    pub verdict: AfterFailure,
+    pub destination: String,
+}
+
+/// Decide what a send that did not go through becomes, and write it:
+/// `waiting`, or `final_state` when it may not wait. `None`, with nothing
+/// written, for a message that already settled or already waits.
+pub fn settle_failure(
+    pool: &DbPool,
+    msg_id: &str,
+    identity_id: &str,
+    can_wait: bool,
+    keep_trying: bool,
+    now: f64,
+    final_state: OutboundState,
+) -> Option<Settled> {
+    let mut conn = pool.get().ok()?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .ok()?;
+    let (current, destination, entry) = tx
+        .query_row(
+            "SELECT m.state, m.destination, o.queued_at, o.auto_sends, o.preference
+             FROM messages m LEFT JOIN lxmf_outbox o
+               ON o.identity_id = m.identity_id AND o.message_id = m.id
+             WHERE m.id = ?1 AND m.identity_id = ?2 AND m.direction = 'outbound'",
+            params![msg_id, identity_id],
+            |row| {
+                let entry = match row.get::<_, Option<f64>>(2)? {
+                    Some(queued_at) => Some(OutboxClock {
+                        queued_at,
+                        auto_sends: row.get(3)?,
+                        method_waits: policy::method_waits(&row.get::<_, String>(4)?),
+                    }),
+                    None => None,
+                };
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, entry))
+            },
+        )
+        .optional()
+        .ok()??;
+    if OutboundState::parse(&current)
+        .is_some_and(|current| current.is_final() || current == OutboundState::Waiting)
+    {
+        return None;
+    }
+    let verdict = after_failure(&Failure {
+        can_wait,
+        keep_trying,
+        now,
+        entry,
+    });
+    let state = match verdict {
+        AfterFailure::Wait => OutboundState::Waiting,
+        AfterFailure::Fail | AfterFailure::FailExpired | AfterFailure::FailExhausted => final_state,
+    };
+    tx.execute(
+        "UPDATE messages SET state = ?1 WHERE id = ?2 AND identity_id = ?3 AND direction = 'outbound'",
+        params![state.as_str(), msg_id, identity_id],
+    )
+    .ok()?;
+    tx.commit().ok()?;
+    Some(Settled {
+        state,
+        verdict,
+        destination,
+    })
+}
+
+/// A waiting message whose time ran out.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExpiredWait {
+    pub msg_id: String,
+    pub destination: String,
+    pub delivery_method: Option<String>,
+}
+
+/// End, as Not delivered, `identity_id`'s waiting messages whose time to wait
+/// has run out by `now`.
+pub fn expire_waiting(
+    pool: &DbPool,
+    identity_id: &str,
+    now: f64,
+) -> Result<Vec<ExpiredWait>, String> {
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    // The same test as `delivery::wait_expired`, so the two agree to the second.
+    let expired = tx
+        .prepare(
+            "SELECT m.id, m.destination, m.delivery_method
+             FROM messages m JOIN lxmf_outbox o
+               ON o.identity_id = m.identity_id AND o.message_id = m.id
+             WHERE m.identity_id = ?1 AND m.direction = 'outbound' AND m.state = 'waiting'
+               AND ?2 - o.queued_at >= ?3
+             ORDER BY o.queued_at ASC, o.rowid ASC",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map(params![identity_id, now, policy::WAIT_LIMIT_SECS], |row| {
+                Ok(ExpiredWait {
+                    msg_id: row.get(0)?,
+                    destination: row.get(1)?,
+                    delivery_method: row.get(2)?,
+                })
+            })?
+            .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| error.to_string())?;
+    for message in &expired {
+        tx.execute(
+            "UPDATE messages SET state = 'failed' WHERE id = ?1 AND identity_id = ?2 AND state = 'waiting'",
+            params![message.msg_id, identity_id],
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(expired)
+}
+
+/// End every identity's waiting messages as Not delivered. Returns each as
+/// `(identity_id, msg_id)`.
+pub fn fail_all_waiting(pool: &DbPool) -> Result<Vec<(String, String)>, String> {
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let waiting = tx
+        .prepare(
+            "SELECT identity_id, id FROM messages
+             WHERE direction = 'outbound' AND state = 'waiting' ORDER BY timestamp ASC",
+        )
+        .and_then(|mut stmt| {
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<Vec<(String, String)>, _>>()
+        })
+        .map_err(|error| error.to_string())?;
+    tx.execute(
+        "UPDATE messages SET state = 'failed' WHERE direction = 'outbound' AND state = 'waiting'",
+        [],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(waiting)
+}
+
+/// Put back to waiting what a wake of the last run left on its way: a wake's
+/// send is taken up again by a wake, under its gate, never by the resume.
+/// Returns the ids put back.
+pub fn return_woken_to_waiting(pool: &DbPool, identity_id: &str) -> Vec<String> {
+    let Ok(conn) = pool.get() else {
+        return Vec::new();
+    };
+    conn.prepare(&format!(
+        "UPDATE messages SET state = 'waiting'
+         WHERE identity_id = ?1 AND direction = 'outbound' AND state IN {}
+           AND EXISTS (SELECT 1 FROM lxmf_outbox o
+               WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id
+                 AND o.auto_sends > 0)
+         RETURNING id",
+        sql_list(|state| state.phase() == Phase::InFlight)
+    ))
+    .and_then(|mut stmt| {
+        stmt.query_map(params![identity_id], |row| row.get(0))?
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// Bring send times that lie after `now` back to `now`: a clock that was set
+/// back must not let a message wait longer than its limit from here on.
+pub fn clamp_future_queue_times(pool: &DbPool, identity_id: &str, now: f64) -> usize {
+    let Ok(conn) = pool.get() else {
+        return 0;
+    };
+    conn.execute(
+        "UPDATE lxmf_outbox SET queued_at = ?2 WHERE identity_id = ?1 AND queued_at > ?2",
+        params![identity_id, now],
+    )
+    .unwrap_or(0)
 }
 
 pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str, identity_id: &str) -> bool {
@@ -4690,18 +4910,18 @@ const RETIRED_IN_FLIGHT_STATES: [&str; 5] = [
     "resending",
 ];
 
-/// Every state name a run can have left on its way.
+/// Every state name a run can have left unsettled.
 fn stale_outbound_states() -> impl Iterator<Item = &'static str> {
     OutboundState::ALL
         .into_iter()
-        .filter(|state| state.phase() == Phase::InFlight)
+        .filter(|state| matches!(state.phase(), Phase::InFlight | Phase::Waiting))
         .map(OutboundState::as_str)
         .chain(PROGRESS_STEPS)
         .chain(RETIRED_IN_FLIGHT_STATES)
 }
 
-/// Fail what the last run left on its way, except what the outbox sends
-/// again and Sent messages, which already left the device.
+/// Fail what the last run left on its way or waiting, except what the outbox
+/// sends again and Sent messages, which already left the device.
 pub fn cleanup_stale_outbound(pool: &DbPool, identity_id: &str) {
     let conn = match pool.get() {
         Ok(c) => c,
@@ -13262,7 +13482,20 @@ mod migration_tests {
     ];
     const PROOF_FINAL_STATES: [&str; 3] = ["delivered", "rejected", "paper"];
     const ENDED_STATES: [&str; 3] = ["failed", "cancelled", "timeout"];
-    const STALE_STATES: [&str; 17] = [
+    // What a step of a send may not replace, and what the start of a run does not send again.
+    const STEP_GUARD_STATES: [&str; 8] = [
+        "delivered",
+        "propagated",
+        "failed",
+        "cancelled",
+        "rejected",
+        "timeout",
+        "paper",
+        "waiting",
+    ];
+    const NOT_RESUMED_STATES: [&str; 4] = ["failed", "cancelled", "timeout", "waiting"];
+    const STALE_STATES: [&str; 18] = [
+        "waiting",
         "pending",
         "outbound",
         "generating",
@@ -13342,7 +13575,7 @@ mod migration_tests {
                     .unwrap()
                     .iter()
                     .any(|row| row.message_id == id),
-                !listed(&ENDED_STATES),
+                !listed(&NOT_RESUMED_STATES),
                 "{name} resumed"
             );
             assert_eq!(
@@ -13354,8 +13587,17 @@ mod migration_tests {
             );
             assert_eq!(
                 update_message_state(&pool, &id, "identity", "routing", None),
-                !listed(&FINAL_STATES),
+                !listed(&STEP_GUARD_STATES),
                 "{name} takes a step"
+            );
+            assert_eq!(
+                update_message_state(&pool, &in_state(name), "identity", "failed", None),
+                !listed(&FINAL_STATES),
+                "{name} takes an ending"
+            );
+            assert!(
+                !update_message_state(&pool, &in_state(name), "identity", "waiting", None),
+                "{name}: only the decision parks a message"
             );
             assert_eq!(
                 update_message_state(&pool, &in_state(name), "identity", "delivered", None),
@@ -13387,6 +13629,536 @@ mod migration_tests {
                 "{name} failed at start"
             );
         }
+    }
+
+    const NOW: f64 = 2_000_000.0;
+
+    fn set_state(pool: &DbPool, id: &str, state: &str) {
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE messages SET state = ?1 WHERE id = ?2",
+                params![state, id],
+            )
+            .unwrap();
+    }
+
+    fn set_entry(pool: &DbPool, id: &str, queued_at: f64, auto_sends: u32) {
+        pool.get()
+            .unwrap()
+            .execute(
+                "UPDATE lxmf_outbox SET queued_at = ?1, auto_sends = ?2 WHERE message_id = ?3",
+                params![queued_at, auto_sends, id],
+            )
+            .unwrap();
+    }
+
+    /// `(queued_at, auto_sends, last_auto_at)` of an outbox entry.
+    fn entry_of(pool: &DbPool, id: &str) -> (f64, u32, f64) {
+        pool.get()
+            .unwrap()
+            .query_row(
+                "SELECT queued_at, auto_sends, last_auto_at FROM lxmf_outbox WHERE message_id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap()
+    }
+
+    fn outbox_pool() -> DbPool {
+        let pool = empty_pool();
+        init_schema(&pool).unwrap();
+        pool.get()
+            .unwrap()
+            .execute_batch("PRAGMA foreign_keys=ON;")
+            .unwrap();
+        pool
+    }
+
+    /// A message sent a minute before `NOW`, in `state`.
+    fn sent_a_minute_ago(pool: &DbPool, id: &str, state: &str) {
+        outbound(pool, id, "auto");
+        set_entry(pool, id, NOW - 60.0, 0);
+        set_state(pool, id, state);
+    }
+
+    fn settle(
+        pool: &DbPool,
+        id: &str,
+        can_wait: bool,
+        keep_trying: bool,
+        final_state: OutboundState,
+    ) -> Option<(OutboundState, AfterFailure)> {
+        settle_failure(
+            pool,
+            id,
+            "identity",
+            can_wait,
+            keep_trying,
+            NOW,
+            final_state,
+        )
+        .map(|settled| (settled.state, settled.verdict))
+    }
+
+    #[test]
+    fn a_network_failure_waits_and_any_other_fails() {
+        use OutboundState::{Failed, Timeout, Waiting};
+        let pool = outbox_pool();
+        sent_a_minute_ago(&pool, "network", "routing");
+        assert_eq!(
+            settle_failure(&pool, "network", "identity", true, true, NOW, Failed),
+            Some(Settled {
+                state: Waiting,
+                verdict: AfterFailure::Wait,
+                destination: "peer".into(),
+            })
+        );
+        assert_eq!(state_of(&pool, "network"), "waiting");
+        assert_eq!(
+            outbox_ids(&pool),
+            ["network"],
+            "what is sent again stays stored"
+        );
+
+        sent_a_minute_ago(&pool, "refused", "routing");
+        assert_eq!(
+            settle(&pool, "refused", false, true, Failed),
+            Some((Failed, AfterFailure::Fail))
+        );
+        assert_eq!(state_of(&pool, "refused"), "failed");
+
+        sent_a_minute_ago(&pool, "orphan", "sent");
+        assert_eq!(
+            settle(&pool, "orphan", true, true, Timeout),
+            Some((Waiting, AfterFailure::Wait))
+        );
+        sent_a_minute_ago(&pool, "unowned", "sent");
+        assert_eq!(
+            settle(&pool, "unowned", false, true, Timeout),
+            Some((Timeout, AfterFailure::Fail))
+        );
+        assert_eq!(state_of(&pool, "unowned"), "timeout");
+
+        // Nothing stored to send again, an old send, a send woken too often.
+        sent_a_minute_ago(&pool, "no-entry", "routing");
+        pool.get()
+            .unwrap()
+            .execute("DELETE FROM lxmf_outbox WHERE message_id = 'no-entry'", [])
+            .unwrap();
+        assert_eq!(
+            settle(&pool, "no-entry", true, true, Failed),
+            Some((Failed, AfterFailure::Fail))
+        );
+        sent_a_minute_ago(&pool, "old", "routing");
+        set_entry(&pool, "old", NOW - policy::WAIT_LIMIT_SECS, 0);
+        assert_eq!(
+            settle(&pool, "old", true, true, Failed),
+            Some((Failed, AfterFailure::FailExpired))
+        );
+        sent_a_minute_ago(&pool, "spent", "routing");
+        set_entry(&pool, "spent", NOW - 60.0, policy::WAKE_CAP);
+        assert_eq!(
+            settle(&pool, "spent", true, true, Failed),
+            Some((Failed, AfterFailure::FailExhausted))
+        );
+
+        assert_eq!(settle(&pool, "no such message", true, true, Failed), None);
+        assert_eq!(
+            settle_failure(
+                &pool,
+                "network",
+                "another identity",
+                true,
+                true,
+                NOW,
+                Failed
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn with_the_switch_off_every_failure_is_final() {
+        use OutboundState::{Failed, Timeout};
+        let pool = outbox_pool();
+        for (id, can_wait, final_state) in [
+            ("a", true, Failed),
+            ("b", false, Failed),
+            ("c", true, Timeout),
+        ] {
+            sent_a_minute_ago(&pool, id, "routing");
+            assert_eq!(
+                settle(&pool, id, can_wait, false, final_state),
+                Some((final_state, AfterFailure::Fail))
+            );
+            assert_eq!(state_of(&pool, id), final_state.as_str());
+        }
+    }
+
+    #[test]
+    fn the_sweep_and_the_decision_agree_at_24_hours() {
+        let pool = outbox_pool();
+        let limit = policy::WAIT_LIMIT_SECS;
+        for (n, (age, ends)) in [
+            (limit - 3_600.0, false),
+            (limit - 0.5, false),
+            (limit, true),
+            (limit + 0.5, true),
+            (limit + 3_600.0, true),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (parked, failing) = (format!("parked-{n}"), format!("failing-{n}"));
+            for id in [&parked, &failing] {
+                outbound(&pool, id, "auto");
+                set_entry(&pool, id, NOW - age, 0);
+            }
+            set_state(&pool, &parked, "waiting");
+
+            let swept = expire_waiting(&pool, "identity", NOW).unwrap();
+            assert_eq!(swept.iter().any(|message| message.msg_id == parked), ends);
+            assert_eq!(
+                state_of(&pool, &parked),
+                if ends { "failed" } else { "waiting" }
+            );
+            let verdict = settle(&pool, &failing, true, true, OutboundState::Failed)
+                .unwrap()
+                .1;
+            assert_eq!(verdict == AfterFailure::FailExpired, ends, "age {age}");
+            assert_eq!(verdict == AfterFailure::Wait, !ends, "age {age}");
+        }
+    }
+
+    #[test]
+    fn the_sweep_ends_only_this_identitys_waiting_messages() {
+        let pool = outbox_pool();
+        for (id, state) in [("parked", "waiting"), ("flying", "routing")] {
+            outbound(&pool, id, "direct");
+            set_entry(&pool, id, NOW - policy::WAIT_LIMIT_SECS, 3);
+            set_state(&pool, id, state);
+        }
+        assert!(expire_waiting(&pool, "another", NOW).unwrap().is_empty());
+        assert_eq!(
+            expire_waiting(&pool, "identity", NOW).unwrap(),
+            [ExpiredWait {
+                msg_id: "parked".into(),
+                destination: "peer".into(),
+                delivery_method: Some("direct".into()),
+            }]
+        );
+        assert_eq!(state_of(&pool, "parked"), "failed");
+        assert_eq!(state_of(&pool, "flying"), "routing");
+        assert_eq!(
+            outbox_ids(&pool),
+            ["flying", "parked"],
+            "Retry can still send it"
+        );
+        assert!(expire_waiting(&pool, "identity", NOW).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_parked_message_ignores_stale_steps_and_failure_reports() {
+        let pool = outbox_pool();
+        sent_a_minute_ago(&pool, "parked", "waiting");
+        for state in OutboundState::ALL {
+            if state.phase() == Phase::InFlight {
+                assert!(
+                    !update_message_state(&pool, "parked", "identity", state.as_str(), None),
+                    "{}",
+                    state.as_str()
+                );
+            }
+        }
+        for final_state in [OutboundState::Failed, OutboundState::Timeout] {
+            for (can_wait, keep_trying) in [(true, true), (false, true), (true, false)] {
+                assert_eq!(
+                    settle(&pool, "parked", can_wait, keep_trying, final_state),
+                    None
+                );
+            }
+        }
+        assert_eq!(state_of(&pool, "parked"), "waiting");
+        assert_eq!(entry_of(&pool, "parked"), (NOW - 60.0, 0, 0.0));
+
+        // A failure report does not reopen a message that settled either.
+        sent_a_minute_ago(&pool, "done", "propagated");
+        assert_eq!(
+            settle(&pool, "done", true, true, OutboundState::Failed),
+            None
+        );
+        assert_eq!(state_of(&pool, "done"), "propagated");
+    }
+
+    #[test]
+    fn a_proof_a_deposit_and_a_cancel_still_replace_waiting() {
+        let pool = outbox_pool();
+        for outcome in ["delivered", "propagated", "rejected"] {
+            sent_a_minute_ago(&pool, outcome, "waiting");
+            assert!(
+                update_message_state(&pool, outcome, "identity", outcome, None),
+                "{outcome}"
+            );
+            assert_eq!(state_of(&pool, outcome), outcome);
+        }
+        assert!(
+            outbox_ids(&pool).is_empty(),
+            "a settled message is not sent again"
+        );
+
+        sent_a_minute_ago(&pool, "stopped", "waiting");
+        assert!(cancel_outbound_message_state(&pool, "stopped", "identity"));
+        assert_eq!(state_of(&pool, "stopped"), "cancelled");
+        assert!(
+            retryable_outbox_row(&pool, "identity", "stopped")
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            outbound_on_its_way(&pool, "identity", None, None).is_empty(),
+            "nothing is left to stop"
+        );
+        sent_a_minute_ago(&pool, "parked", "waiting");
+        assert_eq!(
+            outbound_on_its_way(&pool, "identity", None, None),
+            ["parked"],
+            "deleting its conversation stops a waiting message"
+        );
+    }
+
+    #[test]
+    fn retry_restarts_the_24_hours_and_the_wake_count() {
+        let pool = outbox_pool();
+        outbound(&pool, "m", "auto");
+        set_entry(&pool, "m", 1.0, 7);
+        pool.get()
+            .unwrap()
+            .execute("UPDATE lxmf_outbox SET last_auto_at = 99.0", [])
+            .unwrap();
+
+        set_state(&pool, "m", "waiting");
+        assert_eq!(
+            restart_outbound_message(&pool, "identity", "m", "direct", "direct").unwrap(),
+            None,
+            "Retry is for a message that ended"
+        );
+        assert_eq!(entry_of(&pool, "m"), (1.0, 7, 99.0));
+
+        set_state(&pool, "m", "failed");
+        assert_eq!(
+            restart_outbound_message(&pool, "identity", "m", "direct", "direct").unwrap(),
+            Some("failed".into())
+        );
+        let (queued_at, auto_sends, last_auto_at) = entry_of(&pool, "m");
+        assert!(queued_at > 1.0, "the time to wait starts again");
+        assert_eq!((auto_sends, last_auto_at), (0, 0.0));
+    }
+
+    #[test]
+    fn migration_52_keeps_failed_rows_failed() {
+        let pool = outbox_pool();
+        let fresh = get_column_names(&pool.get().unwrap(), "lxmf_outbox").unwrap();
+        assert_eq!(
+            fresh[fresh.len() - 2..],
+            ["auto_sends", "last_auto_at"].map(String::from)
+        );
+        let states = [
+            "failed",
+            "timeout",
+            "cancelled",
+            "sending",
+            "routing",
+            "sent",
+        ];
+        for state in states {
+            outbound(&pool, state, "auto");
+            set_entry(&pool, state, 1_000.0, 0);
+            set_state(&pool, state, state);
+        }
+        pool.get()
+            .unwrap()
+            .execute_batch(
+                "ALTER TABLE lxmf_outbox DROP COLUMN auto_sends;
+                 ALTER TABLE lxmf_outbox DROP COLUMN last_auto_at;
+                 UPDATE schema_version SET version = 51;",
+            )
+            .unwrap();
+
+        init_schema(&pool).unwrap();
+        assert_eq!(read_schema_version(&pool), 52);
+        assert_eq!(
+            get_column_names(&pool.get().unwrap(), "lxmf_outbox").unwrap(),
+            fresh,
+            "a migrated outbox orders its columns as a fresh one does"
+        );
+        for state in states {
+            assert_eq!(state_of(&pool, state), state);
+            assert_eq!(entry_of(&pool, state), (1_000.0, 0, 0.0));
+        }
+        let resumed = outbox_rows(&pool, "identity").unwrap();
+        assert_eq!(
+            resumed
+                .iter()
+                .map(|row| row.message_id.as_str())
+                .collect::<Vec<_>>(),
+            ["sending", "routing", "sent"],
+            "what was on its way is sent again, as before"
+        );
+        for ended in ["failed", "timeout", "cancelled"] {
+            assert!(
+                retryable_outbox_row(&pool, "identity", ended)
+                    .unwrap()
+                    .is_some(),
+                "{ended} keeps Retry"
+            );
+        }
+
+        // A second start changes nothing.
+        init_schema(&pool).unwrap();
+        assert_eq!(
+            get_column_names(&pool.get().unwrap(), "lxmf_outbox").unwrap(),
+            fresh
+        );
+    }
+
+    #[test]
+    fn waiting_rows_are_not_resumed_and_a_wakes_unfinished_send_returns_to_waiting() {
+        let pool = outbox_pool();
+        // (id, state, wakes, state after the start, resumed)
+        let rows = [
+            ("parked", "waiting", 1, "waiting", false),
+            ("woken", "routing", 2, "waiting", false),
+            ("woken-sent", "sent", 1, "waiting", false),
+            ("fresh", "routing", 0, "routing", true),
+            ("ended", "failed", 3, "failed", false),
+        ];
+        for (id, state, wakes, _, _) in rows {
+            outbound(&pool, id, "auto");
+            set_entry(&pool, id, NOW - 60.0, wakes);
+            set_state(&pool, id, state);
+        }
+
+        assert!(return_woken_to_waiting(&pool, "another").is_empty());
+        let mut returned = return_woken_to_waiting(&pool, "identity");
+        returned.sort_unstable();
+        assert_eq!(returned, ["woken", "woken-sent"]);
+        let resumed = outbox_rows(&pool, "identity").unwrap();
+        for (id, _, wakes, after, is_resumed) in rows {
+            assert_eq!(state_of(&pool, id), after, "{id}");
+            assert_eq!(
+                resumed.iter().any(|row| row.message_id == id),
+                is_resumed,
+                "{id}"
+            );
+            assert_eq!(
+                entry_of(&pool, id),
+                (NOW - 60.0, wakes, 0.0),
+                "{id} keeps its clock"
+            );
+        }
+        assert!(return_woken_to_waiting(&pool, "identity").is_empty());
+    }
+
+    #[test]
+    fn a_send_time_in_the_future_is_brought_back_to_now() {
+        let pool = outbox_pool();
+        for (id, queued_at) in [("ahead", NOW + 864_000.0), ("past", NOW - 60.0)] {
+            outbound(&pool, id, "auto");
+            set_entry(&pool, id, queued_at, 0);
+        }
+        assert_eq!(clamp_future_queue_times(&pool, "another", NOW), 0);
+        assert_eq!(clamp_future_queue_times(&pool, "identity", NOW), 1);
+        assert_eq!(entry_of(&pool, "ahead").0, NOW);
+        assert_eq!(entry_of(&pool, "past").0, NOW - 60.0);
+
+        // From here it waits its limit and no longer.
+        let later = NOW + policy::WAIT_LIMIT_SECS;
+        assert_eq!(
+            settle_failure(
+                &pool,
+                "ahead",
+                "identity",
+                true,
+                true,
+                later,
+                OutboundState::Failed
+            )
+            .map(|settled| settled.verdict),
+            Some(AfterFailure::FailExpired)
+        );
+    }
+
+    #[test]
+    fn turning_waiting_off_ends_every_identitys_waiting_messages() {
+        let pool = outbox_pool();
+        save_message(
+            &pool,
+            "theirs",
+            "other-me",
+            "peer",
+            "hi",
+            "",
+            2.0,
+            "waiting",
+            "outbound",
+            "another",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some("direct"),
+        );
+        sent_a_minute_ago(&pool, "parked", "waiting");
+        sent_a_minute_ago(&pool, "flying", "routing");
+        sent_a_minute_ago(&pool, "ended", "cancelled");
+
+        assert_eq!(
+            fail_all_waiting(&pool).unwrap(),
+            [
+                ("identity".to_string(), "parked".to_string()),
+                ("another".to_string(), "theirs".to_string())
+            ]
+        );
+        assert_eq!(state_of(&pool, "parked"), "failed");
+        assert_eq!(state_of(&pool, "flying"), "routing");
+        assert_eq!(state_of(&pool, "ended"), "cancelled");
+        assert!(fail_all_waiting(&pool).unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_incoming_copy_takes_a_waiting_message_out_of_the_wait() {
+        let pool = outbox_pool();
+        sent_a_minute_ago(&pool, "to-self", "waiting");
+        set_entry(&pool, "to-self", NOW - policy::WAIT_LIMIT_SECS, 2);
+        // A message to one's own address arrives under the id it was sent with.
+        save_message(
+            &pool,
+            "to-self",
+            "me",
+            "peer",
+            "hi",
+            "",
+            1.0,
+            "received",
+            "inbound",
+            "identity",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some("direct"),
+        );
+        assert_eq!(state_of(&pool, "to-self"), "received");
+
+        assert!(expire_waiting(&pool, "identity", NOW).unwrap().is_empty());
+        assert!(fail_all_waiting(&pool).unwrap().is_empty());
+        assert!(return_woken_to_waiting(&pool, "identity").is_empty());
+        assert_eq!(state_of(&pool, "to-self"), "received");
     }
 
     #[test]

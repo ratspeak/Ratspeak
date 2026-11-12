@@ -16,6 +16,7 @@ var LXMF_OUTBOUND_STATES = {
     rejected: 'done',
     timeout: 'ended',
     paper: 'done',
+    waiting: 'waiting',
     resource_link_ready: 'progress',
     resource_advertised: 'progress',
     resource_transferring: 'progress',

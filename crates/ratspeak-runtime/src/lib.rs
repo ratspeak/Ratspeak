@@ -64,7 +64,7 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use ratspeak_core::delivery::{OutboundState, PROGRESS_STEPS};
+use ratspeak_core::delivery::{AfterFailure, OutboundState, PROGRESS_STEPS};
 use ratspeak_core::{LXMF_DELIVERY_APP_NAME, LXMF_PROPAGATION_APP_NAME};
 use rns_identity::destination::Destination;
 use serde_json::{Value, json};
@@ -3086,15 +3086,18 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                     } else {
                         helpers::active_identity_id(&tick_state)
                     };
-                    // (msg_id, state, method, destination, failure)
+                    // (msg_id, state, method, destination, failure, reason)
                     type PersistedStep = (
                         String,
                         &'static str,
                         Option<String>,
                         Option<String>,
                         Option<lxmf::LxmfDeliveryFailureUpdate>,
+                        Option<producer::DeliveryFailureReason>,
                     );
                     let mut persisted: Vec<PersistedStep> = Vec::with_capacity(results.len());
+                    let keep_trying = tick_state.lxmf_keep_trying_enabled();
+                    let settled_at = tick_state.steady_now();
                     for (msg_id, new_state) in &results {
                         let rtt_ms = (*new_state == "delivered")
                             .then(|| packet_delivery_rtts.get(msg_id))
@@ -3109,7 +3112,13 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                             .cloned();
                         let msg_id_for_db = msg_id.clone();
                         let identity_for_db = identity_for_db.clone();
-                        let new_state_for_db = new_state.to_string();
+                        let step = *new_state;
+                        let failure_reason = (step == "failed").then(|| {
+                            failure_reasons
+                                .get(msg_id)
+                                .copied()
+                                .unwrap_or(producer::DeliveryFailureReason::TransportFailed)
+                        });
                         let delivery_method_for_db = polled_delivery_method_override(
                             new_state,
                             packet_delivery_rtts.contains_key(msg_id),
@@ -3131,40 +3140,52 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                     method,
                                 );
                             }
-                            let updated = db::update_message_state(
-                                &p,
-                                &msg_id_for_db,
-                                &identity_for_db,
-                                &new_state_for_db,
-                                rtt_ms,
-                            );
+                            // A failed send waits or ends; every other step is written as it is.
+                            let written = match failure_reason {
+                                Some(reason) => db::settle_failure(
+                                    &p,
+                                    &msg_id_for_db,
+                                    &identity_for_db,
+                                    reason.can_wait(),
+                                    keep_trying,
+                                    settled_at,
+                                    OutboundState::Failed,
+                                )
+                                .map(|settled| {
+                                    (
+                                        settled.state.as_str(),
+                                        // Names the chat for a Not delivered notice.
+                                        Some(settled.destination),
+                                        Some(failure_reason_after(reason, settled.verdict)),
+                                    )
+                                }),
+                                None => db::update_message_state(
+                                    &p,
+                                    &msg_id_for_db,
+                                    &identity_for_db,
+                                    step,
+                                    rtt_ms,
+                                )
+                                .then_some((step, None, None)),
+                            };
                             let method = db::get_message_delivery_method(
                                 &p,
                                 &msg_id_for_db,
                                 &identity_for_db,
                             );
-                            // Names the chat for a Not delivered notice.
-                            let destination = (updated && new_state_for_db == "failed")
-                                .then(|| {
-                                    db::get_outbound_message_destination(
-                                        &p,
-                                        &msg_id_for_db,
-                                        &identity_for_db,
-                                    )
-                                })
-                                .flatten();
-                            (updated, method, destination)
+                            (written, method)
                         })
                         .await
                         {
-                            Ok((true, method, destination)) => persisted.push((
+                            Ok((Some((state, destination, reason)), method)) => persisted.push((
                                 msg_id.clone(),
-                                *new_state,
+                                state,
                                 method,
                                 destination,
                                 failure,
+                                reason,
                             )),
-                            Ok((false, _, _)) => tracing::debug!(
+                            Ok((None, _)) => tracing::debug!(
                                 msg_id = %short_id(msg_id),
                                 new_state = %new_state,
                                 reason = "terminal_state_preserved",
@@ -3178,7 +3199,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                             ),
                         }
                     }
-                    for (msg_id, new_state, method, destination, failure) in &persisted {
+                    for (msg_id, new_state, method, destination, failure, reason) in &persisted {
                         let rtt_ms = (*new_state == "delivered")
                             .then(|| packet_delivery_rtts.get(msg_id))
                             .flatten()
@@ -3207,6 +3228,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 "method": method,
                                 "rtt_ms": rtt_ms,
                                 "destination": destination,
+                                "reason": reason.map(producer::DeliveryFailureReason::code),
                             })
                         };
                         tick_state.emit_to_all("lxmf_step", step_payload);
@@ -3241,11 +3263,8 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                             producer::LxmfDeliveryState::Rejected => {
                                                 Some(producer::DeliveryFailureReason::Rejected)
                                             }
-                                            producer::LxmfDeliveryState::Failed => Some(
-                                                failure_reasons.get(msg_id).copied().unwrap_or(
-                                                    producer::DeliveryFailureReason::TransportFailed,
-                                                ),
-                                            ),
+                                            producer::LxmfDeliveryState::Failed
+                                            | producer::LxmfDeliveryState::Waiting => *reason,
                                             _ => None,
                                         },
                                     },
@@ -6822,14 +6841,24 @@ fn admit_resumes_within_budget(state: &Arc<AppState>, mgr: &mut lxmf::LxmfManage
 /// the message of a record that cannot be read.
 async fn resume_outbox(state: &Arc<AppState>, mgr: lxmf::LxmfManager) -> lxmf::LxmfManager {
     let identity_id = mgr.identity_hash.clone();
-    let rows =
-        match db::spawn_db(state.db.clone(), move |p| db::outbox_rows(&p, &identity_id)).await {
-            Ok(Ok(rows)) => rows,
-            _ => {
-                tracing::warn!(reason = "outbox_unreadable", "outbox not read at startup");
-                return mgr;
+    let rows = match db::spawn_db(state.db.clone(), move |p| {
+        // A wake's unfinished send waits for a wake again; resumed, it would go out in a burst.
+        let returned = db::return_woken_to_waiting(&p, &identity_id);
+        (returned, db::outbox_rows(&p, &identity_id))
+    })
+    .await
+    {
+        Ok((returned, Ok(rows))) => {
+            for msg_id in returned {
+                state.emit_to_all("lxmf_step", json!({ "step": "waiting", "msg_id": msg_id }));
             }
-        };
+            rows
+        }
+        _ => {
+            tracing::warn!(reason = "outbox_unreadable", "outbox not read at startup");
+            return mgr;
+        }
+    };
     if rows.is_empty() {
         return mgr;
     }
@@ -6850,6 +6879,18 @@ async fn resume_outbox(state: &Arc<AppState>, mgr: lxmf::LxmfManager) -> lxmf::L
 // precedence; queued, expired and abandoned owners retain this ceiling.
 const MESSAGE_TIMEOUT_SECS: f64 = 180.0;
 
+/// The reason a send ended with: the verdict's when it ended the wait, else its own.
+fn failure_reason_after(
+    reason: producer::DeliveryFailureReason,
+    verdict: AfterFailure,
+) -> producer::DeliveryFailureReason {
+    match verdict {
+        AfterFailure::Wait | AfterFailure::Fail => reason,
+        AfterFailure::FailExpired => producer::DeliveryFailureReason::WaitExpired,
+        AfterFailure::FailExhausted => producer::DeliveryFailureReason::AttemptsExhausted,
+    }
+}
+
 /// The Activity entry a step of the tick makes, if it makes one.
 fn step_activity_state(step: OutboundState) -> Option<producer::LxmfDeliveryState> {
     match step {
@@ -6868,6 +6909,7 @@ fn step_activity_state(step: OutboundState) -> Option<producer::LxmfDeliveryStat
         | OutboundState::Cancelled
         | OutboundState::Timeout
         | OutboundState::Paper => None,
+        OutboundState::Waiting => Some(producer::LxmfDeliveryState::Waiting),
     }
 }
 
@@ -7001,8 +7043,39 @@ mod delivery_timeout_policy_tests {
             "cancelled",
             "rejected",
             "timeout",
+            "waiting",
         ] {
             assert!(lxmf_step_ends_delivery_timeout(step), "{step}");
+        }
+    }
+
+    #[test]
+    fn waiting_retires_the_delivery_clock() {
+        let mut times = std::collections::HashMap::new();
+        update_message_delivery_timeout_at(&mut times, "m", "routing", 10.0);
+        assert_eq!(times.get("m"), Some(&10.0));
+        update_message_delivery_timeout_at(&mut times, "m", "waiting", 20.0);
+        assert!(
+            times.is_empty(),
+            "nothing is in the air for the watchdog to time"
+        );
+        assert!(!lxmf_step_starts_delivery_timeout("waiting"));
+    }
+
+    #[test]
+    fn the_verdict_names_why_a_wait_ended() {
+        use crate::activity::producer::DeliveryFailureReason as Reason;
+        use ratspeak_core::delivery::AfterFailure;
+        for (verdict, code) in [
+            (AfterFailure::Wait, "path_unavailable"),
+            (AfterFailure::Fail, "path_unavailable"),
+            (AfterFailure::FailExpired, "wait_expired"),
+            (AfterFailure::FailExhausted, "attempts_exhausted"),
+        ] {
+            assert_eq!(
+                super::failure_reason_after(Reason::PathUnavailable, verdict).code(),
+                code
+            );
         }
     }
 
@@ -7061,7 +7134,7 @@ mod delivery_timeout_policy_tests {
             );
             assert_eq!(
                 lxmf_step_ends_delivery_timeout(name),
-                ended.contains(&name) || name == "paper",
+                ended.contains(&name) || matches!(name, "paper" | "waiting"),
                 "{name}"
             );
             let entry = match name {
@@ -7074,6 +7147,7 @@ mod delivery_timeout_policy_tests {
                 "propagated" => Some(Entry::Propagated),
                 "rejected" => Some(Entry::Rejected),
                 "failed" => Some(Entry::Failed),
+                "waiting" => Some(Entry::Waiting),
                 _ => None,
             };
             assert!(
@@ -7152,21 +7226,30 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
     // one-way terminal-state race may emit timeout or cancel live owners.
     let identity_id = helpers::active_identity_id(state);
     let ids_for_db = timed_out.clone();
+    let keep_trying = state.lxmf_keep_trying_enabled();
+    let settled_at = state.steady_now();
+    // A message nothing holds any more got no confirmation in time.
+    let orphaned = producer::DeliveryFailureReason::ProofTimedOut;
     let transitioned = db::spawn_db(state.db.clone(), move |p| {
         ids_for_db
             .iter()
             .filter_map(|msg_id| {
-                if db::update_message_state(&p, msg_id, &identity_id, "timeout", None) {
-                    Some((
-                        msg_id.clone(),
-                        db::get_message_delivery_method(&p, msg_id, &identity_id),
-                        db::get_outbound_message_destination(&p, msg_id, &identity_id),
-                    ))
-                } else {
-                    None
-                }
+                let settled = db::settle_failure(
+                    &p,
+                    msg_id,
+                    &identity_id,
+                    orphaned.can_wait(),
+                    keep_trying,
+                    settled_at,
+                    OutboundState::Timeout,
+                )?;
+                Some((
+                    msg_id.clone(),
+                    db::get_message_delivery_method(&p, msg_id, &identity_id),
+                    settled,
+                ))
             })
-            .collect::<Vec<(String, Option<String>, Option<String>)>>()
+            .collect::<Vec<(String, Option<String>, db::Settled)>>()
     })
     .await
     .unwrap_or_default();
@@ -7181,25 +7264,38 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
         }
     }
 
-    for (msg_id, method, destination) in transitioned {
+    for (msg_id, method, settled) in transitioned {
         state.release_attachment_delivery_lease(&msg_id);
         let client_msg_id = state
             .msg_id_map
             .lock()
             .ok()
             .and_then(|mut map| map.remove(&msg_id));
-        state.emit_to_all(
-            "lxmf_step",
+        let reason = failure_reason_after(orphaned, settled.verdict);
+        let step = if settled.state == OutboundState::Waiting {
+            json!({
+                "step": "waiting",
+                "msg_id": msg_id,
+                "client_msg_id": client_msg_id,
+                "reason": reason.code(),
+                "method": method,
+                "destination": settled.destination,
+            })
+        } else {
             json!({
                 "step": "timeout",
                 "msg_id": msg_id,
                 "client_msg_id": client_msg_id,
-                "reason": "timeout",
+                "reason": match settled.verdict {
+                    AfterFailure::FailExpired | AfterFailure::FailExhausted => reason.code(),
+                    AfterFailure::Fail | AfterFailure::Wait => "timeout",
+                },
                 "method": method,
-                "destination": destination,
-            }),
-        );
-        tracing::debug!(msg_id = %short_id(&msg_id), timeout_secs = MESSAGE_TIMEOUT_SECS, "Message timed out");
+                "destination": settled.destination,
+            })
+        };
+        state.emit_to_all("lxmf_step", step);
+        tracing::debug!(msg_id = %short_id(&msg_id), timeout_secs = MESSAGE_TIMEOUT_SECS, state = settled.state.as_str(), "Message timed out");
         record_activity_if_current(state, activity_origin, || {
             let message = producer::MessageId::from_hex(&msg_id)?;
             let method = method
@@ -7208,10 +7304,14 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
             Ok(producer::lxmf_delivery_state_changed(
                 producer::LxmfDeliveryStateChanged {
                     message,
-                    state: producer::LxmfDeliveryState::Failed,
+                    state: if settled.state == OutboundState::Waiting {
+                        producer::LxmfDeliveryState::Waiting
+                    } else {
+                        producer::LxmfDeliveryState::Failed
+                    },
                     method,
                     rtt_ms: None,
-                    failure_reason: Some(producer::DeliveryFailureReason::ProofTimedOut),
+                    failure_reason: Some(reason),
                 },
             ))
         });
@@ -8317,6 +8417,16 @@ mod inbound_pipeline_tests {
     }
 
     impl RecordingEmitter {
+        pub(super) fn payloads(&self, name: &str) -> Vec<serde_json::Value> {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(event, _)| event == name)
+                .map(|(_, payload)| payload.clone())
+                .collect()
+        }
+
         pub(super) fn count(&self, name: &str) -> usize {
             self.events
                 .lock()
@@ -10244,6 +10354,195 @@ mod outbox_budget_tests {
                 .map(|reason| reason.code()),
             Some("preparation_failed")
         );
+    }
+}
+
+#[cfg(test)]
+mod waiting_send_tests {
+    use super::inbound_pipeline_tests::{RecordingEmitter, pipeline_state};
+    use super::*;
+
+    const PEER: &str = "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3";
+
+    /// A running identity, and a way to queue a message from it.
+    fn session() -> (Arc<AppState>, Arc<RecordingEmitter>, String) {
+        let (state, emitter) = pipeline_state();
+        let identity = {
+            let lxmf = state.lxmf.lock().unwrap();
+            let manager = lxmf.as_ref().unwrap();
+            db::save_identity(
+                &state.db,
+                &manager.identity_hash,
+                &manager.lxmf_hash,
+                "A",
+                "A",
+            );
+            manager.identity_hash.clone()
+        };
+        db::set_active_identity(&state.db, &identity).unwrap();
+        (state, emitter, identity)
+    }
+
+    fn send(state: &AppState, identity: &str, content: &str) -> String {
+        state
+            .lxmf
+            .lock()
+            .unwrap()
+            .as_mut()
+            .unwrap()
+            .send_message_with_preference_report(lxmf::MessageSendRequest {
+                dest_hash_hex: PEER,
+                content,
+                title: "",
+                db_pool: &state.db,
+                identity_id: identity,
+                preference: lxmf::DeliveryPreference::Direct,
+                profile: lxmf::DeliveryProfile::Message,
+                renderer: None,
+                thread: "",
+            })
+            .unwrap()
+            .message_id
+    }
+
+    fn stored_state(state: &AppState, identity: &str, msg_id: &str) -> String {
+        db::get_conversation(&state.db, PEER, identity, 50)
+            .into_iter()
+            .find(|message| message["id"] == msg_id)
+            .expect("the message has a row")["state"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    }
+
+    fn set_stored(state: &AppState, msg_id: &str, sql: &str) {
+        state
+            .db
+            .get()
+            .unwrap()
+            .execute(sql, rusqlite::params![msg_id])
+            .unwrap();
+    }
+
+    /// Leave `msg_id` with nothing holding it, three minutes after its first step.
+    fn orphan(state: &AppState, msg_id: &str) {
+        assert!(
+            state
+                .lxmf
+                .lock()
+                .unwrap()
+                .as_mut()
+                .unwrap()
+                .cancel_outbound_message(msg_id)
+        );
+        let long_ago = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+            - MESSAGE_TIMEOUT_SECS
+            - 1.0;
+        state
+            .message_send_times
+            .lock()
+            .unwrap()
+            .insert(msg_id.to_owned(), long_ago);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_orphan_waits_like_any_network_failure() {
+        let (state, emitter, identity) = session();
+        let fence = state.activity_request_fence();
+
+        // With waiting off it ends as it always has.
+        let ended = send(&state, &identity, "ends");
+        orphan(&state, &ended);
+        check_message_timeouts(&state, fence).await;
+        assert_eq!(stored_state(&state, &identity, &ended), "timeout");
+
+        state.lxmf_keep_trying.store(true, Ordering::Relaxed);
+        let parked = send(&state, &identity, "waits");
+        orphan(&state, &parked);
+        check_message_timeouts(&state, fence).await;
+        assert_eq!(stored_state(&state, &identity, &parked), "waiting");
+        assert!(state.message_send_times.lock().unwrap().is_empty());
+
+        let steps = emitter.payloads("lxmf_step");
+        let step = |msg_id: &str| {
+            steps
+                .iter()
+                .filter(|step| step["msg_id"] == msg_id)
+                .map(|step| {
+                    (
+                        step["step"].as_str().unwrap().to_owned(),
+                        step["reason"].as_str().unwrap().to_owned(),
+                        step["destination"].as_str().unwrap().to_owned(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            step(&ended),
+            [("timeout".to_owned(), "timeout".to_owned(), PEER.to_owned())]
+        );
+        assert_eq!(
+            step(&parked),
+            [(
+                "waiting".to_owned(),
+                "proof_timed_out".to_owned(),
+                PEER.to_owned()
+            )]
+        );
+
+        // Examined again, a waiting message stays as it is and says nothing.
+        orphan_clock_only(&state, &parked);
+        check_message_timeouts(&state, fence).await;
+        assert_eq!(stored_state(&state, &identity, &parked), "waiting");
+        assert_eq!(emitter.payloads("lxmf_step").len(), steps.len());
+    }
+
+    fn orphan_clock_only(state: &AppState, msg_id: &str) {
+        state
+            .message_send_times
+            .lock()
+            .unwrap()
+            .insert(msg_id.to_owned(), 0.0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_resume_leaves_waiting_and_woken_sends_to_a_wake() {
+        let (state, emitter, identity) = session();
+        let parked = send(&state, &identity, "parked");
+        let woken = send(&state, &identity, "woken");
+        let fresh = send(&state, &identity, "fresh");
+        set_stored(
+            &state,
+            &parked,
+            "UPDATE messages SET state = 'waiting' WHERE id = ?1",
+        );
+        set_stored(
+            &state,
+            &woken,
+            "UPDATE lxmf_outbox SET auto_sends = 1 WHERE message_id = ?1",
+        );
+
+        let mgr = state.lxmf.lock().unwrap().take().unwrap();
+        let root = mgr.data_dir.parent().unwrap().to_path_buf();
+        drop(mgr);
+        let mgr = lxmf::LxmfManager::load_or_create(&root, Some(&identity), None).unwrap();
+        let mut mgr = resume_outbox(&state, mgr).await;
+
+        assert_eq!(stored_state(&state, &identity, &parked), "waiting");
+        assert_eq!(stored_state(&state, &identity, &woken), "waiting");
+        assert_eq!(stored_state(&state, &identity, &fresh), "sending");
+        assert_eq!(
+            emitter.payloads("lxmf_step"),
+            [json!({ "step": "waiting", "msg_id": woken })],
+            "the one whose state changed says so"
+        );
+        // Only what the resume took can be withdrawn from the manager.
+        assert!(!mgr.cancel_outbound_message(&parked));
+        assert!(!mgr.cancel_outbound_message(&woken));
+        assert!(mgr.cancel_outbound_message(&fresh));
     }
 }
 

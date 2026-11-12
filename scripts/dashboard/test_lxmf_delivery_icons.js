@@ -108,7 +108,7 @@ var ON_ITS_WAY = ['sending', 'routing', 'propagating', 'link_establishing', 'sen
 var SETTLED = ['delivered', 'propagated', 'failed', 'cancelled', 'rejected', 'timeout', 'paper'];
 var PROGRESS = ['resource_link_ready', 'resource_advertised', 'resource_transferring', 'resource_waiting_for_proof'];
 var RETIRED = ['pending', 'outbound', 'generating', 'resolving', 'resending'];
-assert.deepStrictEqual(Object.keys(context.LXMF_OUTBOUND_STATES), ON_ITS_WAY.concat(SETTLED, PROGRESS));
+assert.deepStrictEqual(Object.keys(context.LXMF_OUTBOUND_STATES), ON_ITS_WAY.concat(SETTLED, ['waiting'], PROGRESS));
 ['terminalStates', 'inFlightSteps', 'keepStates'].forEach(function(list) {
     assert(!source.includes('var ' + list + ' = ['), list + ' is read from the table');
 });

@@ -183,6 +183,10 @@ pub ratspeak_db::db::ChannelUnreadSummary::unread_total: u64
 pub struct ratspeak_db::db::ConversationThreadLabels
 impl ratspeak_db::ConversationThreadLabels
 pub fn ratspeak_db::ConversationThreadLabels::label(&self, &str, &str) -> core::option::Option<alloc::string::String>
+pub struct ratspeak_db::db::ExpiredWait
+pub ratspeak_db::db::ExpiredWait::delivery_method: core::option::Option<alloc::string::String>
+pub ratspeak_db::db::ExpiredWait::destination: alloc::string::String
+pub ratspeak_db::db::ExpiredWait::msg_id: alloc::string::String
 pub struct ratspeak_db::db::HeardPropagationNode
 pub ratspeak_db::db::HeardPropagationNode::app_data: alloc::vec::Vec<u8>
 pub ratspeak_db::db::HeardPropagationNode::dest_hash: alloc::string::String
@@ -298,6 +302,10 @@ pub ratspeak_db::db::SavedChannelRoom::hub_destination_hash: alloc::string::Stri
 pub ratspeak_db::db::SavedChannelRoom::join_key_required: bool
 pub ratspeak_db::db::SavedChannelRoom::last_joined: f64
 pub ratspeak_db::db::SavedChannelRoom::room_name: alloc::string::String
+pub struct ratspeak_db::db::Settled
+pub ratspeak_db::db::Settled::destination: alloc::string::String
+pub ratspeak_db::db::Settled::state: ratspeak_core::delivery::OutboundState
+pub ratspeak_db::db::Settled::verdict: ratspeak_core::delivery::AfterFailure
 pub struct ratspeak_db::db::StoredChannelRoomSecret
 pub ratspeak_db::db::StoredChannelRoomSecret::ciphertext: alloc::vec::Vec<u8>
 pub ratspeak_db::db::StoredChannelRoomSecret::hub_destination_hash: alloc::string::String
@@ -347,6 +355,7 @@ pub fn ratspeak_db::db::append_game_action(&ratspeak_db::DbPool, &str, &str, &st
 pub fn ratspeak_db::db::apply_hub_ops(&ratspeak_db::DbPool, &str, &[ratspeak_db::HubRoomOp]) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::block_contact(&ratspeak_db::DbPool, &str, &str, &str)
 pub fn ratspeak_db::db::cancel_outbound_message_state(&ratspeak_db::DbPool, &str, &str) -> bool
+pub fn ratspeak_db::db::clamp_future_queue_times(&ratspeak_db::DbPool, &str, f64) -> usize
 pub fn ratspeak_db::db::cleanup_stale_outbound(&ratspeak_db::DbPool, &str)
 pub fn ratspeak_db::db::clear_all_contacts(&ratspeak_db::DbPool, &str)
 pub fn ratspeak_db::db::clear_channel_history_for_identity(&ratspeak_db::DbPool, &str) -> core::result::Result<usize, alloc::string::String>
@@ -369,6 +378,8 @@ pub fn ratspeak_db::db::delete_message_for_identity(&ratspeak_db::DbPool, &str, 
 pub fn ratspeak_db::db::delete_prunable_identity_activity(&ratspeak_db::DbPool, &[alloc::string::String], f64, &std::collections::hash::set::HashSet<alloc::string::String>) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String>
 pub fn ratspeak_db::db::delete_prunable_identity_activity_after<F>(&ratspeak_db::DbPool, &[alloc::string::String], f64, &std::collections::hash::set::HashSet<alloc::string::String>, F) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String> where F: core::ops::function::FnOnce(&[alloc::string::String]) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::enqueue_pending_blackhole(&ratspeak_db::DbPool, &str, &str, core::option::Option<&str>, core::option::Option<f64>) -> bool
+pub fn ratspeak_db::db::expire_waiting(&ratspeak_db::DbPool, &str, f64) -> core::result::Result<alloc::vec::Vec<ratspeak_db::ExpiredWait>, alloc::string::String>
+pub fn ratspeak_db::db::fail_all_waiting(&ratspeak_db::DbPool) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String>
 pub fn ratspeak_db::db::fill_unnamed_contact_names(&ratspeak_db::DbPool, &str, &[(alloc::string::String, alloc::string::String)]) -> bool
 pub fn ratspeak_db::db::find_cap_eviction_candidates(&ratspeak_db::DbPool, f64, usize, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::db::find_prune_candidates(&ratspeak_db::DbPool, f64, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
@@ -468,6 +479,7 @@ pub fn ratspeak_db::db::rename_conversation_thread(&ratspeak_db::DbPool, &str, &
 pub fn ratspeak_db::db::rename_identity_and_retire_alias(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<ratspeak_db::IdentityRenameOutcome, alloc::string::String>
 pub fn ratspeak_db::db::restart_outbound_message(&ratspeak_db::DbPool, &str, &str, &str, &str) -> core::result::Result<core::option::Option<alloc::string::String>, alloc::string::String>
 pub fn ratspeak_db::db::retryable_outbox_row(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<core::option::Option<ratspeak_db::OutboxRow>, alloc::string::String>
+pub fn ratspeak_db::db::return_woken_to_waiting(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::db::rollback_outbound_game_action(&ratspeak_db::DbPool, &str, &str, i64, core::option::Option<&lrgp::session::Session>) -> bool
 pub fn ratspeak_db::db::rsnode_updates_in_stages(&ratspeak_db::DbPool, &str, &[&str]) -> alloc::vec::Vec<ratspeak_db::RsnodeUpdateRow>
 pub fn ratspeak_db::db::save_channel_hub(&ratspeak_db::DbPool, &str, &str, &str, &str, bool) -> core::result::Result<(), alloc::string::String>
@@ -497,6 +509,7 @@ pub fn ratspeak_db::db::set_identity_lxmf_compression_support(&ratspeak_db::DbPo
 pub fn ratspeak_db::db::set_identity_propagation_node(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::set_setting(&ratspeak_db::DbPool, &str, &str)
 pub fn ratspeak_db::db::set_voice_message_format(&ratspeak_db::DbPool, &str, &str, u8) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::db::settle_failure(&ratspeak_db::DbPool, &str, &str, bool, bool, f64, ratspeak_core::delivery::OutboundState) -> core::option::Option<ratspeak_db::Settled>
 pub async fn ratspeak_db::db::spawn_db<F, R>(ratspeak_db::DbPool, F) -> core::result::Result<R, tokio::runtime::task::error::JoinError> where F: core::ops::function::FnOnce(ratspeak_db::DbPool) -> R + core::marker::Send + 'static, R: core::marker::Send + 'static
 pub async fn ratspeak_db::db::spawn_db_with_lease<F, R, L>(ratspeak_db::DbPool, L, F) -> core::result::Result<R, tokio::runtime::task::error::JoinError> where F: core::ops::function::FnOnce(ratspeak_db::DbPool) -> R + core::marker::Send + 'static, R: core::marker::Send + 'static, L: core::marker::Send + 'static
 pub fn ratspeak_db::db::stored_audio_mode(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<u8, alloc::string::String>
@@ -623,6 +636,10 @@ pub ratspeak_db::ChannelUnreadSummary::unread_total: u64
 pub struct ratspeak_db::ConversationThreadLabels
 impl ratspeak_db::ConversationThreadLabels
 pub fn ratspeak_db::ConversationThreadLabels::label(&self, &str, &str) -> core::option::Option<alloc::string::String>
+pub struct ratspeak_db::ExpiredWait
+pub ratspeak_db::ExpiredWait::delivery_method: core::option::Option<alloc::string::String>
+pub ratspeak_db::ExpiredWait::destination: alloc::string::String
+pub ratspeak_db::ExpiredWait::msg_id: alloc::string::String
 pub struct ratspeak_db::HeardPropagationNode
 pub ratspeak_db::HeardPropagationNode::app_data: alloc::vec::Vec<u8>
 pub ratspeak_db::HeardPropagationNode::dest_hash: alloc::string::String
@@ -738,6 +755,10 @@ pub ratspeak_db::SavedChannelRoom::hub_destination_hash: alloc::string::String
 pub ratspeak_db::SavedChannelRoom::join_key_required: bool
 pub ratspeak_db::SavedChannelRoom::last_joined: f64
 pub ratspeak_db::SavedChannelRoom::room_name: alloc::string::String
+pub struct ratspeak_db::Settled
+pub ratspeak_db::Settled::destination: alloc::string::String
+pub ratspeak_db::Settled::state: ratspeak_core::delivery::OutboundState
+pub ratspeak_db::Settled::verdict: ratspeak_core::delivery::AfterFailure
 pub struct ratspeak_db::StoredChannelRoomSecret
 pub ratspeak_db::StoredChannelRoomSecret::ciphertext: alloc::vec::Vec<u8>
 pub ratspeak_db::StoredChannelRoomSecret::hub_destination_hash: alloc::string::String
@@ -787,6 +808,7 @@ pub fn ratspeak_db::append_game_action(&ratspeak_db::DbPool, &str, &str, &str, &
 pub fn ratspeak_db::apply_hub_ops(&ratspeak_db::DbPool, &str, &[ratspeak_db::HubRoomOp]) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::block_contact(&ratspeak_db::DbPool, &str, &str, &str)
 pub fn ratspeak_db::cancel_outbound_message_state(&ratspeak_db::DbPool, &str, &str) -> bool
+pub fn ratspeak_db::clamp_future_queue_times(&ratspeak_db::DbPool, &str, f64) -> usize
 pub fn ratspeak_db::cleanup_stale_outbound(&ratspeak_db::DbPool, &str)
 pub fn ratspeak_db::clear_all_contacts(&ratspeak_db::DbPool, &str)
 pub fn ratspeak_db::clear_channel_history_for_identity(&ratspeak_db::DbPool, &str) -> core::result::Result<usize, alloc::string::String>
@@ -809,6 +831,8 @@ pub fn ratspeak_db::delete_message_for_identity(&ratspeak_db::DbPool, &str, &str
 pub fn ratspeak_db::delete_prunable_identity_activity(&ratspeak_db::DbPool, &[alloc::string::String], f64, &std::collections::hash::set::HashSet<alloc::string::String>) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String>
 pub fn ratspeak_db::delete_prunable_identity_activity_after<F>(&ratspeak_db::DbPool, &[alloc::string::String], f64, &std::collections::hash::set::HashSet<alloc::string::String>, F) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String> where F: core::ops::function::FnOnce(&[alloc::string::String]) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::enqueue_pending_blackhole(&ratspeak_db::DbPool, &str, &str, core::option::Option<&str>, core::option::Option<f64>) -> bool
+pub fn ratspeak_db::expire_waiting(&ratspeak_db::DbPool, &str, f64) -> core::result::Result<alloc::vec::Vec<ratspeak_db::ExpiredWait>, alloc::string::String>
+pub fn ratspeak_db::fail_all_waiting(&ratspeak_db::DbPool) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String>
 pub fn ratspeak_db::fill_unnamed_contact_names(&ratspeak_db::DbPool, &str, &[(alloc::string::String, alloc::string::String)]) -> bool
 pub fn ratspeak_db::find_cap_eviction_candidates(&ratspeak_db::DbPool, f64, usize, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::find_prune_candidates(&ratspeak_db::DbPool, f64, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
@@ -908,6 +932,7 @@ pub fn ratspeak_db::rename_conversation_thread(&ratspeak_db::DbPool, &str, &str,
 pub fn ratspeak_db::rename_identity_and_retire_alias(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<ratspeak_db::IdentityRenameOutcome, alloc::string::String>
 pub fn ratspeak_db::restart_outbound_message(&ratspeak_db::DbPool, &str, &str, &str, &str) -> core::result::Result<core::option::Option<alloc::string::String>, alloc::string::String>
 pub fn ratspeak_db::retryable_outbox_row(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<core::option::Option<ratspeak_db::OutboxRow>, alloc::string::String>
+pub fn ratspeak_db::return_woken_to_waiting(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::rollback_outbound_game_action(&ratspeak_db::DbPool, &str, &str, i64, core::option::Option<&lrgp::session::Session>) -> bool
 pub fn ratspeak_db::rsnode_updates_in_stages(&ratspeak_db::DbPool, &str, &[&str]) -> alloc::vec::Vec<ratspeak_db::RsnodeUpdateRow>
 pub fn ratspeak_db::save_channel_hub(&ratspeak_db::DbPool, &str, &str, &str, &str, bool) -> core::result::Result<(), alloc::string::String>
@@ -937,6 +962,7 @@ pub fn ratspeak_db::set_identity_lxmf_compression_support(&ratspeak_db::DbPool, 
 pub fn ratspeak_db::set_identity_propagation_node(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::set_setting(&ratspeak_db::DbPool, &str, &str)
 pub fn ratspeak_db::set_voice_message_format(&ratspeak_db::DbPool, &str, &str, u8) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::settle_failure(&ratspeak_db::DbPool, &str, &str, bool, bool, f64, ratspeak_core::delivery::OutboundState) -> core::option::Option<ratspeak_db::Settled>
 pub async fn ratspeak_db::spawn_db<F, R>(ratspeak_db::DbPool, F) -> core::result::Result<R, tokio::runtime::task::error::JoinError> where F: core::ops::function::FnOnce(ratspeak_db::DbPool) -> R + core::marker::Send + 'static, R: core::marker::Send + 'static
 pub async fn ratspeak_db::spawn_db_with_lease<F, R, L>(ratspeak_db::DbPool, L, F) -> core::result::Result<R, tokio::runtime::task::error::JoinError> where F: core::ops::function::FnOnce(ratspeak_db::DbPool) -> R + core::marker::Send + 'static, R: core::marker::Send + 'static, L: core::marker::Send + 'static
 pub fn ratspeak_db::stored_audio_mode(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<u8, alloc::string::String>

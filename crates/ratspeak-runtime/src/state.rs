@@ -848,6 +848,9 @@ pub struct AppState {
     /// Direct LXMF Resources to one decimal megabyte; disabled retains the
     /// 128 MB application maximum below Reticulum's structural ceiling.
     pub lxmf_limit_1mb: AtomicBool,
+    /// Whether a message that fails for a network reason waits to be sent again.
+    pub lxmf_keep_trying: AtomicBool,
+    steady_clock: SteadyClock,
     /// Serializes read-modify-write edits to the active Reticulum config file.
     pub rns_config_lock: Mutex<()>,
     pub identity_switch_lock: IdentitySwitchLock,
@@ -878,6 +881,38 @@ pub struct AppState {
 /// (identity-table generation, active identity (hash, lxmf_hash) at that
 /// generation — `None` when no identity is active).
 pub type CachedActiveIdentity = (u64, Option<(String, String)>);
+
+/// The wall clock, held to the suspend-counting clock since the app started.
+struct SteadyClock {
+    started_wall: f64,
+    started: ContinuousInstant,
+}
+
+impl SteadyClock {
+    fn start() -> Self {
+        Self {
+            started_wall: wall_now(),
+            started: ContinuousInstant::now(),
+        }
+    }
+
+    fn now(&self) -> f64 {
+        steady_time(wall_now(), self.started_wall, self.started.elapsed())
+    }
+}
+
+fn wall_now() -> f64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs_f64()
+}
+
+/// `wall`, unless the wall clock was set back since the start: then the start
+/// plus the time passed. A clock set forward is taken as it is.
+fn steady_time(wall: f64, started_wall: f64, elapsed: Duration) -> f64 {
+    wall.max(started_wall + elapsed.as_secs_f64())
+}
 
 /// A protected identity's auto-lock. Its deadline runs from the unlock on the
 /// suspend-counting clock, so time the system slept counts; its watcher
@@ -1102,6 +1137,8 @@ impl AppState {
             native_notifications_enabled: AtomicBool::new(initial_notifications_enabled),
             notification_preview: Mutex::new(initial_notification_preview),
             lxmf_limit_1mb: AtomicBool::new(initial_lxmf_limit_1mb),
+            lxmf_keep_trying: AtomicBool::new(false),
+            steady_clock: SteadyClock::start(),
             rns_config_lock: Mutex::new(()),
             identity_switch_lock: IdentitySwitchLock::new(),
             auto_interface_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -1306,6 +1343,16 @@ impl AppState {
 
     pub fn set_lxmf_limit_1mb_enabled(&self, enabled: bool) {
         self.lxmf_limit_1mb.store(enabled, Ordering::Relaxed);
+    }
+
+    pub fn lxmf_keep_trying_enabled(&self) -> bool {
+        self.lxmf_keep_trying.load(Ordering::Relaxed)
+    }
+
+    /// Unix time for waits that outlive a clock change: it never runs behind
+    /// the time that has passed since the app started.
+    pub fn steady_now(&self) -> f64 {
+        self.steady_clock.now()
     }
 
     pub fn lxmf_delivery_limit_kb(&self) -> usize {
@@ -3916,6 +3963,42 @@ mod tests {
         expected.sort();
 
         assert_eq!(registered, expected);
+    }
+
+    #[test]
+    fn a_clock_set_back_does_not_extend_the_wait() {
+        use ratspeak_core::delivery::{AfterFailure, Failure, OutboxClock, after_failure, policy};
+        let started = 1_700_000_000.0;
+        let hour = Duration::from_secs(3_600);
+        assert_eq!(
+            steady_time(started + 3_600.0, started, hour),
+            started + 3_600.0
+        );
+        assert_eq!(
+            steady_time(started + 3_600.0 - 86_400.0, started, hour),
+            started + 3_600.0,
+            "set back a day while running"
+        );
+        assert_eq!(
+            steady_time(started + 3_600.0 + 86_400.0, started, hour),
+            started + 3_600.0 + 86_400.0,
+            "set forward: a wait ends early, never late"
+        );
+
+        // A message sent at the start has waited its limit, whatever the wall clock says now.
+        let waited = Duration::from_secs_f64(policy::WAIT_LIMIT_SECS);
+        let wall_set_back = started + policy::WAIT_LIMIT_SECS - 43_200.0;
+        let verdict = after_failure(&Failure {
+            can_wait: true,
+            keep_trying: true,
+            now: steady_time(wall_set_back, started, waited),
+            entry: Some(OutboxClock {
+                queued_at: started,
+                auto_sends: 0,
+                method_waits: true,
+            }),
+        });
+        assert_eq!(verdict, AfterFailure::FailExpired);
     }
 
     #[test]

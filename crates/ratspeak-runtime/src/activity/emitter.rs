@@ -199,8 +199,8 @@ fn legacy_message(event: &ActivityEventV1) -> Option<&'static str> {
         "lxmf.delivery.delivered" => "Message delivered",
         "lxmf.delivery.cancelled" => "Message delivery cancelled",
         "lxmf.delivery.rejected" => "Message delivery rejected",
-        "lxmf.delivery.deferred" => "Message delivery deferred",
-        "lxmf.delivery.retrying" => "Message delivery retrying",
+        "lxmf.delivery.deferred" => "Message waiting to send",
+        "lxmf.delivery.retrying" => "Message trying again",
         "lxmf.delivery.failed" => "Message delivery failed",
         "lxmf.propagation.started" => "Storing in Offline Inbox",
         "lxmf.propagation.succeeded" => "Stored in Offline Inbox",
@@ -989,6 +989,7 @@ mod tests {
             | "lxmf.delivery.delivered"
             | "lxmf.delivery.rejected"
             | "lxmf.delivery.failed"
+            | "lxmf.delivery.deferred"
             | "lxmf.propagation.started"
             | "lxmf.propagation.succeeded"
             | "lxmf.propagation.failed"
@@ -1060,6 +1061,7 @@ mod tests {
             | "lxst.service.failed"
             | "lxst.call.failed" => ActivityOutcome::Failed,
             "interface.timed_out" => ActivityOutcome::TimedOut,
+            "lxmf.delivery.deferred" => ActivityOutcome::None,
             _ => panic!("missing expected outcome for {kind}"),
         }
     }
@@ -1896,6 +1898,23 @@ mod tests {
                 "error",
                 "Offline Inbox delivery failed",
                 "essential"
+            ),
+            projection_case!(
+                producer::lxmf_delivery_state_changed(producer::LxmfDeliveryStateChanged {
+                    message: message(17),
+                    state: LxmfDeliveryState::Waiting,
+                    method: Some(LxmfDeliveryMethod::Direct),
+                    rtt_ms: None,
+                    failure_reason: Some(DeliveryFailureReason::PathUnavailable),
+                }),
+                "lxmf.delivery.deferred",
+                Messages,
+                Info,
+                Normal,
+                [Message, Method, Reason],
+                "message",
+                "Message waiting to send",
+                "standard"
             ),
             projection_case!(
                 producer::lxmf_delivery_progress(producer::LxmfDeliveryProgress {
