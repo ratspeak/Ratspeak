@@ -2973,7 +2973,8 @@
         min-height: 34px;
     }
     .sidebar-brand,
-    .sidebar-divider {
+    .sidebar-divider,
+    .sidebar-group-divider {
         display: none;
     }
 }

@@ -377,6 +377,14 @@ html[data-native-mobile] .sidebar .nav-item[data-view="dashboard"] {
 .sidebar.collapsed .sidebar-divider {
     margin: var(--space-3) var(--space-4) var(--space-2);
 }
+.sidebar-group-divider {
+    height: 1px;
+    background: var(--border);
+    margin: var(--space-3) var(--space-8);
+}
+.sidebar.collapsed .sidebar-group-divider {
+    margin: var(--space-3) var(--space-4);
+}
 
 .sidebar-identity {
     display: flex;

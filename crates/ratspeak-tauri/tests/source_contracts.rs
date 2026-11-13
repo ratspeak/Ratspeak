@@ -7843,6 +7843,39 @@ fn contacts_tab_is_first_class_on_desktop_and_shows_full_addresses() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     assert!(index.contains(r##"class="nav-item" data-view="contacts" href="#contacts""##));
+    // The sidebar is three groups: with people, who is there, and this device.
+    let sidebar_end = index
+        .find(r#"id="sidebar-identity""#)
+        .expect("sidebar identity");
+    let sidebar = &index[..sidebar_end];
+    let mut order = Vec::new();
+    for piece in sidebar.split("<a class=\"nav-item").skip(1) {
+        let view = piece
+            .split("data-view=\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("nav item view");
+        order.push(view);
+        if piece.contains(r#"class="sidebar-group-divider""#) {
+            order.push("|");
+        }
+    }
+    assert_eq!(
+        order,
+        [
+            "dashboard",
+            "message",
+            "channels",
+            "games",
+            "|",
+            "contacts",
+            "peers",
+            "|",
+            "network",
+            "identity",
+            "settings"
+        ]
+    );
     assert!(index.contains(r#"class="contacts-standalone-header""#));
     assert!(index.contains(r#"id="contacts-count""#));
     assert!(index.contains(r#"id="contacts-add-btn""#));
