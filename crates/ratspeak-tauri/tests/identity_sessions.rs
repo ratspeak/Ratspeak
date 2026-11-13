@@ -66,6 +66,15 @@ impl Withdrawals {
     }
 }
 
+/// Sessions of one test process slow each other's restarts. A test that
+/// times a restart holds this alone; every other fixture shares it.
+static SESSIONS: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+enum Turn {
+    Shared(#[allow(dead_code)] std::sync::RwLockReadGuard<'static, ()>),
+    Alone(#[allow(dead_code)] std::sync::RwLockWriteGuard<'static, ()>),
+}
+
 struct Fixture {
     app: tauri::App<MockRuntime>,
     state: Arc<AppState>,
@@ -73,10 +82,24 @@ struct Fixture {
     withdrawals: Arc<Withdrawals>,
     runtime: tokio::runtime::Runtime,
     _root: tempfile::TempDir,
+    _turn: Turn,
 }
 
 impl Fixture {
     fn new() -> Self {
+        Self::with(Turn::Shared(
+            SESSIONS.read().unwrap_or_else(|held| held.into_inner()),
+        ))
+    }
+
+    /// A fixture with no other session alive in the process.
+    fn alone() -> Self {
+        Self::with(Turn::Alone(
+            SESSIONS.write().unwrap_or_else(|held| held.into_inner()),
+        ))
+    }
+
+    fn with(turn: Turn) -> Self {
         let root = tempfile::tempdir().unwrap();
         let data_root = root.path().to_path_buf();
         ratspeak_runtime::lxmf::initialize_storage_namespace(&data_root).unwrap();
@@ -120,6 +143,7 @@ impl Fixture {
             withdrawals,
             runtime,
             _root: root,
+            _turn: turn,
         }
     }
 
@@ -754,7 +778,7 @@ const STRANGER: &str = "0123456789abcdef0123456789abcdef";
 // for it; before, every send failed until the app was restarted.
 #[test]
 fn a_panic_under_the_messaging_lock_restarts_messaging_and_sends_work_again() {
-    let f = Fixture::new();
+    let f = Fixture::alone();
     let a = f.import("A");
     f.start(&a);
     assert!(send_to(&f, STRANGER).is_ok(), "a send before the panic");
@@ -768,8 +792,7 @@ fn a_panic_under_the_messaging_lock_restarts_messaging_and_sends_work_again() {
     .unwrap_err();
     assert!(f.state.lxmf.is_poisoned());
 
-    // A send waits for the restart. Other runtimes in this test process can
-    // hold it past the wait, and then the send says to try again.
+    // A send waits for the restart; past its wait the send says to try again.
     let asked = std::time::Instant::now();
     let sent = loop {
         match send_to(&f, STRANGER) {
