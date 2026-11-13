@@ -453,14 +453,13 @@ pub(crate) async fn hydrate_contact_identity_for_send(state: &AppState, dest_has
 
     let identity_changed = state.lxmf.lock().ok().and_then(|mut lxmf| {
         lxmf.as_mut()
-            .map(|mgr| mgr.update_remote_crypto(&dest_hash, &public_key, None).0)
+            .map(|mgr| mgr.update_remote_identity(&dest_hash, &public_key))
     });
     if let Some(identity_changed) = identity_changed {
         if identity_changed
             && let Err(error) = ratspeak_runtime::lxmf_persistence::persist_current_delta(
                 state,
                 true,
-                &[],
                 false,
                 "contact_hydration",
             )

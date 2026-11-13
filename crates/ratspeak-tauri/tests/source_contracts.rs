@@ -5151,6 +5151,32 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
     assert!(!runtime_rs.contains("announce waited on lxmf manager lock"));
 }
 
+/// A destination restored without its announce's facts carries a zero hop
+/// count and name hash as placeholders: no consumer reads them as facts.
+#[test]
+fn restored_announce_placeholders_are_never_read_as_hops_or_aspects() {
+    let root = repo_root();
+    let source =
+        |file: &str| read_source(root.join("crates/ratspeak-runtime/src").join(file)).unwrap();
+    let runtime = source("lib.rs");
+    let channels = source("channels.rs");
+    let voice = source("voice.rs");
+    let update = source("rsnode/update.rs");
+
+    assert!(!runtime.contains("\"hops\": a.hops"));
+    assert!(!runtime.contains("hops: a.hops"));
+    assert!(runtime.contains("a.facts_known && !a.is_path_response"));
+    assert!(runtime.contains("transport_observation::announce_name_hash("));
+    assert!(!channels.contains("entry.name_hash == aspect_hash"));
+    assert!(!channels.contains("hops: entry.hops"));
+    assert!(!channels.contains("announce.hops"));
+    assert!(channels.contains("transport_observation::path_hops(&transport_tx, destination_hash)"));
+    assert!(!voice.contains("announce.hops == 0"));
+    assert!(voice.contains("transport_observation::announce_hops(&announce) == Some(0)"));
+    assert!(!update.contains("recalled.hops"));
+    assert!(update.contains("transport_observation::path_hops(&transport_tx, self.destination)"));
+}
+
 #[test]
 fn lxmf_persistence_and_announce_dispatch_do_not_conflate_ownership_boundaries() {
     let root = repo_root();
@@ -5174,11 +5200,14 @@ fn lxmf_persistence_and_announce_dispatch_do_not_conflate_ownership_boundaries()
     assert!(persistence.contains("manager.checkpoint_snapshot()"));
     assert!(persistence.contains("run_blocking(reason, 2"));
     assert!(persistence.contains("blocked_checkpoint_io_never_holds_live_lxmf_manager"));
-    assert!(persistence.contains("failed_identity_and_ratchet_delta_remain_dirty_for_retry"));
-    assert!(persistence.contains("delete_expired_received_ratchets"));
-    assert!(lxmf.contains("pending_expired_received_ratchets"));
-    assert!(!lxmf.contains("clean_received_ratchets_dir"));
-    assert!(!lxmf.contains("purge_expired_ratchets_in_memory"));
+    assert!(persistence.contains("failed_identity_delta_remains_dirty_for_retry"));
+    // Reticulum alone keeps received ratchets: no file, map, or sweep of them here.
+    assert!(!persistence.contains("dirty_received_ratchets"));
+    assert!(!persistence.contains("delete_expired_received_ratchets"));
+    assert!(!lxmf.contains("ReceivedRatchet"));
+    assert!(!lxmf.contains("received_ratchets_dir"));
+    assert!(lxmf.contains("hand_received_ratchets_to_reticulum"));
+    assert!(runtime.contains("refresh_outbound_ratchets(&tick_state).await"));
     assert!(runtime.contains("TransportMessage::SendPacket"));
     assert!(runtime.contains("OutboundDispatchResult::Sent"));
     assert!(runtime.contains("announce accepted by Reticulum interface layer"));
@@ -8367,9 +8396,7 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     );
     assert!(contact_card_rs.contains("Identity::from_public_key(&public_key)"));
     assert!(contact_card_rs.contains("Destination::hash_from_name_and_identity(LXMF_APP_NAME"));
-    assert!(
-        contact_card_rs.contains("mgr.update_remote_crypto(&dest_hash, &card.public_key, None)")
-    );
+    assert!(contact_card_rs.contains("mgr.update_remote_identity(&dest_hash, &card.public_key)"));
     assert!(contact_card_rs.contains("lxmf_persistence::persist_current_delta("));
     assert!(!contact_card_rs.contains("mgr.save_crypto_state()"));
     assert!(contact_card_rs.contains("save_contact_with_identity_pubkey"));
@@ -10155,7 +10182,7 @@ fn propagated_send_paths_run_relay_readiness_preflight() {
     assert!(messaging.contains("Recipient identity key is not known yet"));
     assert!(shared.contains("hydrate_contact_identity_for_send"));
     assert!(shared.contains("db::get_contact(&p, &dest_for_db, &identity_id)"));
-    assert!(shared.contains("mgr.update_remote_crypto(&dest_hash, &public_key, None)"));
+    assert!(shared.contains("mgr.update_remote_identity(&dest_hash, &public_key)"));
     assert!(
         announce_handlers
             .contains("trigger_outbound_for_delivery_announce(event.destination_hash)")

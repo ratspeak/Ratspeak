@@ -5,13 +5,63 @@
 
 use std::time::Duration;
 
+use rns_identity::destination::Destination;
 use rns_runtime::reticulum::ReticulumHandle;
 use rns_transport::messages::{
-    PathTableRpcEntry, TransportMessage, TransportQuery, TransportQueryResponse,
+    AnnounceRpcEntry, PathTableRpcEntry, TransportMessage, TransportQuery, TransportQueryResponse,
 };
 use tokio::sync::mpsc;
 
 pub const PATH_TABLE_OBSERVATION_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The hops a listed announce arrived with. Reticulum's store has no column
+/// for them, so a destination restored without them has none to show.
+pub fn announce_hops(entry: &AnnounceRpcEntry) -> Option<u8> {
+    entry.facts_known.then_some(entry.hops)
+}
+
+/// The name hash of a listed announce, when it is known or is one of
+/// `aspects`. A destination restored without its name hash is matched through
+/// its destination hash, which is derived from the name hash and the identity.
+pub fn announce_name_hash(entry: &AnnounceRpcEntry, aspects: &[&str]) -> Option<[u8; 10]> {
+    if entry.facts_known {
+        return Some(entry.name_hash);
+    }
+    let identity = rns_crypto::sha::truncated_hash(entry.public_key.as_ref()?);
+    aspects
+        .iter()
+        .find(|aspect| {
+            Destination::hash_from_name_and_identity(aspect, Some(&identity)) == entry.dest_hash
+        })
+        .map(|aspect| rns_identity::name_hash::name_hash(aspect))
+}
+
+/// The hops of the current path (`Transport.hops_to`); `None` without a path
+/// or an answer. A remembered announce's hops may be older than the path.
+pub async fn path_hops(
+    transport_tx: &mpsc::Sender<TransportMessage>,
+    destination: [u8; 16],
+) -> Option<u8> {
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    let transaction = async {
+        transport_tx
+            .send(TransportMessage::Rpc {
+                query: TransportQuery::HopsTo { dest: destination },
+                response_tx,
+            })
+            .await
+            .ok()?;
+        match response_rx.await.ok()? {
+            TransportQueryResponse::IntResult(hops) => u8::try_from(hops).ok(),
+            _ => None,
+        }
+    };
+    tokio::time::timeout(PATH_TABLE_OBSERVATION_TIMEOUT, transaction)
+        .await
+        .ok()
+        .flatten()
+        .filter(|hops| *hops < rns_transport::constants::PATHFINDER_M)
+}
 
 pub async fn local_path_table(
     transport_tx: &mpsc::Sender<TransportMessage>,
@@ -75,6 +125,78 @@ async fn authoritative_path_table_with_timeout(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn listed(
+        dest_hash: [u8; 16],
+        identity: &rns_identity::identity::Identity,
+    ) -> AnnounceRpcEntry {
+        let mut entry = AnnounceRpcEntry::default();
+        entry.dest_hash = dest_hash;
+        entry.public_key = Some(identity.get_public_key());
+        entry
+    }
+
+    #[test]
+    fn a_destination_restored_without_its_facts_has_no_hops_and_is_matched_by_its_hash() {
+        let identity = rns_identity::identity::Identity::new();
+        let delivery =
+            Destination::hash_from_name_and_identity("lxmf.delivery", Some(&identity.hash));
+        let aspects = ["lxmf.propagation", "lxmf.delivery"];
+        let delivery_name = rns_identity::name_hash::name_hash("lxmf.delivery");
+
+        // Placeholders only: zero hops and a zero name hash.
+        let restored = listed(delivery, &identity);
+        assert!(!restored.facts_known);
+        assert_eq!(announce_hops(&restored), None);
+        assert_eq!(announce_name_hash(&restored, &aspects), Some(delivery_name));
+        assert_eq!(announce_name_hash(&restored, &["rrc.hub"]), None);
+        // Another destination of the same identity, and one with no key.
+        assert_eq!(
+            announce_name_hash(&listed([0x31; 16], &identity), &aspects),
+            None
+        );
+        let mut keyless = listed(delivery, &identity);
+        keyless.public_key = None;
+        assert_eq!(announce_name_hash(&keyless, &aspects), None);
+
+        // A heard announce is taken at its word, whatever the aspects asked for.
+        let mut heard = listed([0x32; 16], &identity);
+        heard.facts_known = true;
+        heard.name_hash = [7; 10];
+        assert_eq!(announce_hops(&heard), Some(0));
+        assert_eq!(announce_name_hash(&heard, &aspects), Some([7; 10]));
+    }
+
+    #[tokio::test]
+    async fn path_hops_are_the_transports_or_none_without_a_path() {
+        for (answer, expected) in [
+            (Some(0), Some(0)),
+            (Some(3), Some(3)),
+            (
+                Some(i64::from(rns_transport::constants::PATHFINDER_M)),
+                None,
+            ),
+            (None, None),
+        ] {
+            let (tx, mut rx) = mpsc::channel::<TransportMessage>(1);
+            let responder = tokio::spawn(async move {
+                match rx.recv().await {
+                    Some(TransportMessage::Rpc {
+                        query: TransportQuery::HopsTo { dest },
+                        response_tx,
+                    }) => {
+                        assert_eq!(dest, [0x41; 16]);
+                        if let Some(hops) = answer {
+                            let _ = response_tx.send(TransportQueryResponse::IntResult(hops));
+                        }
+                    }
+                    other => panic!("expected a hop query, got {other:?}"),
+                }
+            });
+            assert_eq!(path_hops(&tx, [0x41; 16]).await, expected);
+            responder.await.unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn local_observation_deadline_includes_channel_submission() {

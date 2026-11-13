@@ -637,7 +637,8 @@ pub struct DiscoveredChannelHub {
     pub destination_hash: String,
     pub identity_hash: Option<String>,
     pub announced_name: Option<String>,
-    pub hops: u8,
+    /// Hops of the hub's last announce; `None` for a hub restored without them.
+    pub hops: Option<u8>,
     pub last_seen: f64,
     pub is_path_response: bool,
 }
@@ -2074,7 +2075,7 @@ struct ConnectedSession {
     destination_hash: [u8; 16],
     hub_identity: [u8; 16],
     announced_name: Option<String>,
-    hops: u8,
+    hops: Option<u8>,
     nickname: String,
     welcome: WelcomeInfo,
     buffered: Vec<(Envelope, u32)>,
@@ -2344,7 +2345,8 @@ enum ConnectUpdate {
         attempt: u64,
         hub_identity: [u8; 16],
         announced_name: Option<String>,
-        hops: u8,
+        /// Hops of the path to the hub; `None` while no path is known.
+        hops: Option<u8>,
     },
     AwaitingWelcome {
         attempt: u64,
@@ -3399,7 +3401,7 @@ async fn connect_to_hub(input: ConnectToHubInput) -> Result<ConnectedSession, Co
             known.public_key,
             known.identity_hash,
             known.announced_name,
-            known.hops.max(1),
+            Some(known.hops.max(1)),
         )
     } else {
         let announce = rns_runtime::link_session::discover_destination(
@@ -3427,7 +3429,11 @@ async fn connect_to_hub(input: ConnectToHubInput) -> Result<ConnectedSession, Co
             public_key,
             hub_identity,
             parse_announce_hub_name(announce.app_data.as_deref()),
-            announce.hops.max(1),
+            // Link.py takes the hops from `Transport.hops_to`; the remembered
+            // announce's may be older than the path, or unknown.
+            crate::transport_observation::path_hops(&transport_tx, destination_hash)
+                .await
+                .map(|hops| hops.max(1)),
         )
     };
     let _ = update_tx
@@ -3451,7 +3457,7 @@ async fn connect_to_hub(input: ConnectToHubInput) -> Result<ConnectedSession, Co
         LinkSessionConfig {
             destination_hash,
             remote_public_key: public_key,
-            hops,
+            hops: hops.unwrap_or(rns_transport::constants::PATHFINDER_M),
             establishment_timeout: CONNECT_PATH_TIMEOUT,
             client_label: "ratspeak.channels".into(),
             identify: true,
@@ -4013,7 +4019,7 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
                 if let Some(hub) = state.hub.as_mut() {
                     hub.identity_hash = Some(hex::encode(hub_identity));
                     hub.announced_name = announced_name;
-                    hub.hops = Some(hops);
+                    hub.hops = hops;
                 }
             });
         }
@@ -4129,7 +4135,7 @@ async fn handle_connect_update(update: ConnectUpdate, context: ConnectUpdateCont
                     announced_name: announced_name.clone(),
                     name: welcome.hub_name,
                     version: welcome.hub_version,
-                    hops: Some(hops),
+                    hops,
                     link_mdu: Some(live.handle.mdu()),
                     connected_at_ms: Some(now_ms()),
                     capabilities,
@@ -6207,9 +6213,13 @@ async fn discover_hubs(
 ) -> Result<Vec<DiscoveredChannelHub>, ChannelsError> {
     let entries = query_announces(transport_tx).await?;
     let aspect_hash = rns_identity::name_hash::name_hash(rrc::RRC_HUB_ASPECT);
+    // A hub restored without its name hash is still a hub by its destination hash.
     Ok(entries
         .into_iter()
-        .filter(|entry| entry.name_hash == aspect_hash)
+        .filter(|entry| {
+            crate::transport_observation::announce_name_hash(entry, &[rrc::RRC_HUB_ASPECT])
+                == Some(aspect_hash)
+        })
         .map(discovered_hub_from_announce)
         .collect())
 }
@@ -6243,7 +6253,7 @@ fn discovered_hub_from_announce(entry: AnnounceRpcEntry) -> DiscoveredChannelHub
         destination_hash: hex::encode(entry.dest_hash),
         identity_hash,
         announced_name: parse_announce_hub_name(entry.app_data.as_deref()),
-        hops: entry.hops,
+        hops: crate::transport_observation::announce_hops(&entry),
         last_seen: entry.timestamp,
         is_path_response: entry.is_path_response,
     }
@@ -7789,6 +7799,65 @@ mod tests {
         assert!(parse_destination_hash("zz112233445566778899aabbccddeeff").is_err());
     }
 
+    /// A hub restored from a store that does not carry its announce's facts
+    /// has a placeholder name hash and hop count. It is still a hub by its
+    /// destination hash, and its distance is unknown, not zero.
+    #[tokio::test]
+    async fn a_hub_restored_without_its_announce_facts_is_listed_without_hops() {
+        let hub = Identity::new();
+        let other = Identity::new();
+        let hub_destination =
+            Destination::hash_from_name_and_identity(rrc::RRC_HUB_ASPECT, Some(&hub.hash));
+        let entry = |dest_hash: [u8; 16], identity: &Identity| {
+            let mut entry = AnnounceRpcEntry::default();
+            entry.dest_hash = dest_hash;
+            entry.public_key = Some(identity.get_public_key());
+            entry.timestamp = 1_700_000_000.0;
+            entry
+        };
+        let mut heard = entry([0x21; 16], &other);
+        heard.name_hash = rns_identity::name_hash::name_hash(rrc::RRC_HUB_ASPECT);
+        heard.hops = 2;
+        heard.facts_known = true;
+        let mut heard_elsewhere = entry([0x22; 16], &other);
+        heard_elsewhere.name_hash = rns_identity::name_hash::name_hash("lxmf.delivery");
+        heard_elsewhere.facts_known = true;
+        let listed = vec![
+            entry(hub_destination, &hub),
+            // Not a hub destination of its identity.
+            entry([0x23; 16], &other),
+            heard,
+            heard_elsewhere,
+        ];
+
+        let (transport_tx, mut transport_rx) = mpsc::channel(4);
+        let responder = tokio::spawn(async move {
+            match transport_rx.recv().await {
+                Some(TransportMessage::Rpc {
+                    query: TransportQuery::GetRecentAnnounces,
+                    response_tx,
+                }) => {
+                    let _ = response_tx.send(TransportQueryResponse::Announces(listed));
+                }
+                other => panic!("expected the announce list to be asked, got {other:?}"),
+            }
+        });
+        let hubs = discover_hubs(&transport_tx).await.unwrap();
+        responder.await.unwrap();
+
+        let found: Vec<(String, Option<u8>)> = hubs
+            .into_iter()
+            .map(|hub| (hub.destination_hash, hub.hops))
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (hex::encode(hub_destination), None),
+                (hex::encode([0x21; 16]), Some(2)),
+            ]
+        );
+    }
+
     #[tokio::test]
     async fn a_known_hub_identity_must_match_its_destination() {
         let client_identity = Identity::new();
@@ -8422,6 +8491,19 @@ mod tests {
                 entry
             }]))
             .unwrap();
+
+        // The path is longer than the remembered announce's one hop.
+        match timeout_transport(&mut transport_rx).await {
+            TransportMessage::Rpc {
+                query: TransportQuery::HopsTo { dest },
+                response_tx,
+            } if dest == hub_destination => {
+                response_tx
+                    .send(TransportQueryResponse::IntResult(3))
+                    .unwrap();
+            }
+            other => panic!("expected the path's hop count to be asked, got {other:?}"),
+        }
 
         let delivery_tx = match timeout_transport(&mut transport_rx).await {
             TransportMessage::RegisterDestination {
@@ -9127,6 +9209,19 @@ mod tests {
             }]))
             .unwrap();
 
+        // The path is longer than the remembered announce's one hop.
+        match timeout_transport(&mut transport_rx).await {
+            TransportMessage::Rpc {
+                query: TransportQuery::HopsTo { dest },
+                response_tx,
+            } if dest == hub_destination => {
+                response_tx
+                    .send(TransportQueryResponse::IntResult(3))
+                    .unwrap();
+            }
+            other => panic!("expected the path's hop count to be asked, got {other:?}"),
+        }
+
         let delivery_tx = match timeout_transport(&mut transport_rx).await {
             TransportMessage::RegisterDestination {
                 delivery_tx: Some(delivery_tx),
@@ -9239,6 +9334,11 @@ mod tests {
         assert_eq!(
             connected.hub.as_ref().and_then(|hub| hub.name.as_deref()),
             Some("Test relay")
+        );
+        assert_eq!(
+            connected.hub.as_ref().and_then(|hub| hub.hops),
+            Some(3),
+            "the path's hops, not the remembered announce's"
         );
         assert!(
             connected

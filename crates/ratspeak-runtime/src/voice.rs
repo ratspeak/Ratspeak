@@ -693,7 +693,13 @@ async fn remote_announce_info(state: &AppState, remote_identity: [u8; 16]) -> Re
     else {
         return RemoteAnnounceInfo::default();
     };
+    announce_info_for(announces, remote_identity)
+}
 
+fn announce_info_for(
+    announces: Vec<rns_transport::messages::AnnounceRpcEntry>,
+    remote_identity: [u8; 16],
+) -> RemoteAnnounceInfo {
     let mut info = RemoteAnnounceInfo::default();
     for announce in announces {
         let Some(public_key) = announce.public_key else {
@@ -702,7 +708,8 @@ async fn remote_announce_info(state: &AppState, remote_identity: [u8; 16]) -> Re
         if rns_crypto::sha::truncated_hash(&public_key) != remote_identity {
             continue;
         }
-        if announce.hops == 0 {
+        // A destination restored without its hops is not known to be direct.
+        if crate::transport_observation::announce_hops(&announce) == Some(0) {
             info.direct = true;
         }
         if info.public_key.is_none() {
@@ -826,7 +833,7 @@ fn cache_remote_lxmf_crypto(state: &AppState, remote_lxmf_destination: &str, pub
     if let Ok(mut lxmf) = state.lxmf.lock()
         && let Some(mgr) = lxmf.as_mut()
     {
-        mgr.update_remote_crypto(remote_lxmf_destination, &public_key, None);
+        mgr.update_remote_identity(remote_lxmf_destination, &public_key);
     }
 }
 
@@ -4655,6 +4662,27 @@ mod tests {
         assert_eq!(config.announce_interval, None);
         assert_eq!(config.startup_announce_retry_interval, None);
         assert_eq!(config.startup_announce_retries, 0);
+    }
+
+    /// The contacts-only gate lets a directly heard caller through. A caller
+    /// whose destination was restored without its hops is not known to be direct.
+    #[test]
+    fn a_caller_restored_without_its_hops_is_not_a_direct_caller() {
+        let caller = rns_identity::identity::Identity::new();
+        let entry = |hops: u8, facts_known: bool| {
+            let mut entry = rns_transport::messages::AnnounceRpcEntry::default();
+            entry.dest_hash = [0x51; 16];
+            entry.public_key = Some(caller.get_public_key());
+            entry.hops = hops;
+            entry.facts_known = facts_known;
+            entry
+        };
+        let restored = announce_info_for(vec![entry(0, false)], caller.hash);
+        assert!(!restored.direct);
+        assert_eq!(restored.public_key, Some(caller.get_public_key()));
+        assert!(announce_info_for(vec![entry(0, true)], caller.hash).direct);
+        assert!(!announce_info_for(vec![entry(1, true)], caller.hash).direct);
+        assert!(!announce_info_for(vec![entry(0, true)], [0x52; 16]).direct);
     }
 
     #[test]

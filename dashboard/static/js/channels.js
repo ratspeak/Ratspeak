@@ -4421,6 +4421,9 @@ function _channelsPresentSharedTarget(target) {
             ? 'Heard directly'
             : 'Heard at ' + discovered.hops +
                 (discovered.hops === 1 ? ' hop' : ' hops');
+    } else if (discovered) {
+        // Known from an earlier session; no announce heard since says how far.
+        availability = 'Heard earlier; distance not known yet';
     } else if (saved) {
         availability = 'Saved on this device; not currently connected';
     } else {

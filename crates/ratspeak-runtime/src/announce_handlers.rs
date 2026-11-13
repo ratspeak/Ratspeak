@@ -182,19 +182,16 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
     // The announce payload is already validated by Reticulum. Mutate all
     // related in-memory state in one short manager critical section, then
     // persist its immutable delta through the serialized writer.
-    let (identity_changed, ratchet_changed, router_changed) = state
+    let (identity_changed, router_changed) = state
         .lxmf
         .lock()
         .ok()
         .and_then(|mut lxmf| {
             lxmf.as_mut().map(|mgr| {
-                let (identity_changed, ratchet_changed) = event
+                let identity_changed = event
                     .public_key
                     .as_ref()
-                    .map(|public_key| {
-                        mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref())
-                    })
-                    .unwrap_or((false, false));
+                    .is_some_and(|public_key| mgr.update_remote_identity(&hash_hex, public_key));
                 let router_changed = event.app_data.as_deref().is_some_and(|bytes| {
                     mgr.update_lxmf_announce_app_data(
                         event.destination_hash,
@@ -202,27 +199,20 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
                         Some(bytes),
                     )
                 });
-                (identity_changed, ratchet_changed, router_changed)
+                (identity_changed, router_changed)
             })
         })
-        .unwrap_or((false, false, false));
-    if identity_changed || ratchet_changed || router_changed {
-        let ratchet_hashes = if ratchet_changed {
-            vec![hash_hex.clone()]
-        } else {
-            Vec::new()
-        };
-        if let Err(error) = crate::lxmf_persistence::persist_current_delta(
+        .unwrap_or((false, false));
+    if (identity_changed || router_changed)
+        && let Err(error) = crate::lxmf_persistence::persist_current_delta(
             state,
             identity_changed,
-            &ratchet_hashes,
             router_changed,
             "delivery_announce",
         )
         .await
-        {
-            tracing::warn!(%error, "delivery announce persistence failed");
-        }
+    {
+        tracing::warn!(%error, "delivery announce persistence failed");
     }
 
     let iface = refresh_lxmf_route_cache_and_lookup_iface(state, event.destination_hash).await;
@@ -380,47 +370,37 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
         },
     };
 
-    let (identity_changed, ratchet_changed, router_changed) = state
+    let (identity_changed, router_changed) = state
         .lxmf
         .lock()
         .ok()
         .and_then(|mut lxmf| {
             lxmf.as_mut().map(|mgr| {
-                let (identity_changed, ratchet_changed) = event
+                let identity_changed = event
                     .public_key
                     .as_ref()
-                    .map(|public_key| {
-                        mgr.update_remote_crypto(&hash_hex, public_key, event.ratchet.as_ref())
-                    })
-                    .unwrap_or((false, false));
+                    .is_some_and(|public_key| mgr.update_remote_identity(&hash_hex, public_key));
                 let router_changed = mgr.update_lxmf_announce_app_data(
                     event.destination_hash,
                     rns_identity::name_hash::name_hash(LXMF_PROPAGATION_APP_NAME),
                     event.app_data.as_deref(),
                 );
-                (identity_changed, ratchet_changed, router_changed)
+                (identity_changed, router_changed)
             })
         })
-        .unwrap_or((false, false, false));
+        .unwrap_or((false, false));
     // Link requests to the node recall the link cost this announce carries.
     refresh_lxmf_route_cache_and_lookup_iface(state, event.destination_hash).await;
-    if identity_changed || ratchet_changed || router_changed {
-        let ratchet_hashes = if ratchet_changed {
-            vec![hash_hex.clone()]
-        } else {
-            Vec::new()
-        };
-        if let Err(error) = crate::lxmf_persistence::persist_current_delta(
+    if (identity_changed || router_changed)
+        && let Err(error) = crate::lxmf_persistence::persist_current_delta(
             state,
             identity_changed,
-            &ratchet_hashes,
             router_changed,
             "propagation_announce",
         )
         .await
-        {
-            tracing::warn!(%error, "propagation announce persistence failed");
-        }
+    {
+        tracing::warn!(%error, "propagation announce persistence failed");
     }
 
     let inserted = if let (Some(app_data), Ok(mut registry)) = (

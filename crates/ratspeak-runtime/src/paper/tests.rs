@@ -146,7 +146,7 @@ fn learn(state: &AppState, peer_lxmf: &str, peer_key: &[u8; 64]) {
         .unwrap()
         .as_mut()
         .unwrap()
-        .update_remote_crypto(peer_lxmf, peer_key, None);
+        .update_remote_identity(peer_lxmf, peer_key);
 }
 
 type Local = (
@@ -226,7 +226,15 @@ async fn create_reports_empty_unknown_and_too_long() {
 
     let build = |len: usize| {
         let lxmf = a.lxmf.lock().unwrap();
-        build_paper_message(lxmf.as_ref().unwrap(), &b_lxmf, &"x".repeat(len), "", "").map(|_| ())
+        build_paper_message(
+            lxmf.as_ref().unwrap(),
+            &b_lxmf,
+            &"x".repeat(len),
+            "",
+            "",
+            None,
+        )
+        .map(|_| ())
     };
     let (mut fits, mut over) = (1, PAPER_MDU);
     while over - fits > 1 {

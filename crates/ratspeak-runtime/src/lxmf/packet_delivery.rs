@@ -513,6 +513,7 @@ mod tests {
             .unwrap();
         let hash = message.message_id();
         mgr.router.try_send(message).unwrap();
+        crate::lxmf::tests::answered_without_ratchets(&mut mgr);
         mgr.tick();
         (mgr, hash, rx)
     }

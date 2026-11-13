@@ -383,17 +383,14 @@ pub async fn import_contact_card(
         .lock()
         .ok()
         .and_then(|mut lxmf| {
-            lxmf.as_mut().map(|mgr| {
-                mgr.update_remote_crypto(&dest_hash, &card.public_key, None)
-                    .0
-            })
+            lxmf.as_mut()
+                .map(|mgr| mgr.update_remote_identity(&dest_hash, &card.public_key))
         })
         .unwrap_or(false);
     if identity_changed
         && let Err(error) = ratspeak_runtime::lxmf_persistence::persist_current_delta(
             &state,
             true,
-            &[],
             false,
             "contact_import",
         )

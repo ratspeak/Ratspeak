@@ -1373,16 +1373,20 @@ impl NodeConnector {
             .ok_or(LinkError::Suspended)?;
         let mut options = DestinationResolveOptions::new(CONNECT_TIMEOUT);
         options.refresh_cached_path = true;
-        let recalled = resolve_destination_on_transport(&transport_tx, self.destination, options)
+        resolve_destination_on_transport(&transport_tx, self.destination, options)
             .await
             .map_err(|_| LinkError::Lost)?;
+        // Link.py takes the hops from `Transport.hops_to`, not the remembered announce.
+        let hops = crate::transport_observation::path_hops(&transport_tx, self.destination)
+            .await
+            .map_or(rns_transport::constants::PATHFINDER_M, |hops| hops.max(1));
         let session = LinkSession::connect(
             transport_tx,
             identity,
             LinkSessionConfig {
                 destination_hash: self.destination,
                 remote_public_key: self.public_key,
-                hops: recalled.hops.max(1),
+                hops,
                 establishment_timeout: CONNECT_TIMEOUT,
                 client_label: "ratspeak.rsnode".into(),
                 identify: true,

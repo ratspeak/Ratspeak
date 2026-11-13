@@ -655,7 +655,7 @@ mod tests {
         )
         .unwrap();
         super::register(&data_dir, &pool, &hash, &identity.hash, "Restored hardware").unwrap();
-        assert!(directory.join("ratchets/received").is_dir());
+        assert!(directory.join("ratchets").is_dir());
         assert!(ratspeak_db::get_identity(&pool, &hash).is_some());
     }
 

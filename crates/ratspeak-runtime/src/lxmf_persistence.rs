@@ -1,7 +1,6 @@
 //! Serialized LXMF persistence outside the live protocol-manager lock.
 
 use std::io;
-use std::path::PathBuf;
 use std::time::Instant;
 
 use crate::lxmf::{KnownIdentitiesSnapshot, LxmfCheckpointSnapshot};
@@ -41,14 +40,12 @@ where
 pub async fn persist_current_delta(
     state: &AppState,
     identities_changed: bool,
-    changed_ratchet_hashes: &[String],
     router_changed: bool,
     reason: &'static str,
 ) -> io::Result<bool> {
     persist_current_delta_with(
         state,
         identities_changed,
-        changed_ratchet_hashes,
         router_changed,
         reason,
         |snapshot| snapshot.persist(),
@@ -59,7 +56,6 @@ pub async fn persist_current_delta(
 async fn persist_current_delta_with<F>(
     state: &AppState,
     identities_changed: bool,
-    changed_ratchet_hashes: &[String],
     router_changed: bool,
     reason: &'static str,
     persist: F,
@@ -71,13 +67,9 @@ where
     let _owner = state.lxmf_persistence_lock.lock().await;
     let queued = queued_at.elapsed();
     let snapshot = state.lxmf.lock().ok().and_then(|manager| {
-        manager.as_ref().map(|manager| {
-            manager.persistence_delta_snapshot(
-                identities_changed,
-                changed_ratchet_hashes,
-                router_changed,
-            )
-        })
+        manager
+            .as_ref()
+            .map(|manager| manager.persistence_delta_snapshot(identities_changed, router_changed))
     });
     let Some(snapshot) = snapshot else {
         return Ok(false);
@@ -105,117 +97,12 @@ where
     Ok(true)
 }
 
-/// Persist the current periodic/shutdown checkpoint without replaying received
-/// ratchet files. Changed ratchets are write-through deltas.
+/// Persist the current periodic/shutdown checkpoint.
 pub async fn persist_current_checkpoint(
     state: &AppState,
     reason: &'static str,
 ) -> io::Result<bool> {
-    // Retry any failed per-destination writes before the compact checkpoint.
-    // A failed ratchet remains dirty and will be attempted again on the next
-    // periodic/shutdown pass. Its failure must not prevent the independent
-    // known-identity/router checkpoint from advancing.
-    let delta_result = persist_current_dirty_received_ratchets(state, reason).await;
-    let checkpoint_result =
-        persist_current_checkpoint_with(state, reason, |snapshot| snapshot.persist()).await;
-    match (delta_result, checkpoint_result) {
-        (Err(error), _) | (_, Err(error)) => Err(error),
-        (Ok(delta_present), Ok(checkpoint_present)) => Ok(delta_present || checkpoint_present),
-    }
-}
-
-async fn persist_current_dirty_received_ratchets(
-    state: &AppState,
-    reason: &'static str,
-) -> io::Result<bool> {
-    let _owner = state.lxmf_persistence_lock.lock().await;
-    let snapshot = state.lxmf.lock().ok().and_then(|manager| {
-        manager
-            .as_ref()
-            .map(|manager| manager.dirty_received_ratchets_snapshot())
-    });
-    let Some(snapshot) = snapshot else {
-        return Ok(false);
-    };
-    if snapshot.is_empty() {
-        return Ok(true);
-    }
-    let artifacts = snapshot.artifact_count();
-    let persisted = run_blocking(reason, artifacts, move || {
-        snapshot.persist()?;
-        Ok(snapshot)
-    })
-    .await?;
-    if let Ok(mut manager) = state.lxmf.lock()
-        && let Some(manager) = manager.as_mut()
-    {
-        manager.acknowledge_persistence_delta(&persisted);
-    }
-    Ok(true)
-}
-
-/// Remove only ratchet files whose destinations are still absent after this
-/// cleanup job acquires the serialized persistence turn. A ratchet learned
-/// while the job was queued is preserved; one learned after validation queues
-/// its write behind this owner and therefore lands after the old file removal.
-pub async fn delete_expired_received_ratchets(
-    state: &AppState,
-    hashes: &[String],
-) -> io::Result<usize> {
-    let _owner = state.lxmf_persistence_lock.lock().await;
-    let cleanup = state.lxmf.lock().ok().and_then(|manager| {
-        manager.as_ref().map(|manager| {
-            (
-                manager.identity_hash.clone(),
-                hashes
-                    .iter()
-                    .filter(|hash| {
-                        crate::helpers::is_protocol_hash_16(hash)
-                            && !manager.received_ratchets.contains_key(*hash)
-                    })
-                    .map(|hash| {
-                        (
-                            hash.clone(),
-                            manager
-                                .received_ratchets_dir
-                                .join(format!("{hash}.ratchet")),
-                        )
-                    })
-                    .collect::<Vec<(String, PathBuf)>>(),
-            )
-        })
-    });
-    let Some((identity_hash, paths)) = cleanup else {
-        return Ok(0);
-    };
-    if paths.is_empty() {
-        return Ok(0);
-    }
-    let artifacts = paths.len();
-    let (removed, failed) = run_blocking("ratchet_cleanup", artifacts, move || {
-        let mut removed = 0usize;
-        let mut failed = Vec::new();
-        for (hash, path) in paths {
-            match std::fs::remove_file(&path) {
-                Ok(()) => removed += 1,
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    tracing::warn!(%error, "failed to remove expired received ratchet");
-                    failed.push(hash);
-                }
-            }
-        }
-        Ok((removed, failed))
-    })
-    .await?;
-    if !failed.is_empty()
-        && let Ok(mut manager) = state.lxmf.lock()
-        && let Some(manager) = manager.as_mut()
-        && manager.identity_hash == identity_hash
-    {
-        manager.requeue_expired_received_ratchets(failed);
-    }
-    Ok(removed)
+    persist_current_checkpoint_with(state, reason, |snapshot| snapshot.persist()).await
 }
 
 async fn persist_current_checkpoint_with<F>(
@@ -361,7 +248,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_identity_and_ratchet_delta_remain_dirty_for_retry() {
+    async fn failed_identity_delta_remains_dirty_for_retry() {
         let state = make_state();
         let hash = "11".repeat(16);
         {
@@ -369,15 +256,14 @@ mod tests {
             manager
                 .as_mut()
                 .unwrap()
-                .update_remote_crypto(&hash, &[7; 64], Some(&[1; 32]));
+                .update_remote_identity(&hash, &[7; 64]);
         }
 
-        let error =
-            persist_current_delta_with(&state, false, &[], false, "test_failure", |_snapshot| {
-                Err(io::Error::other("injected"))
-            })
-            .await
-            .unwrap_err();
+        let error = persist_current_delta_with(&state, false, false, "test_failure", |_snapshot| {
+            Err(io::Error::other("injected"))
+        })
+        .await
+        .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Other);
         let still_dirty = state
             .lxmf
@@ -385,10 +271,10 @@ mod tests {
             .unwrap()
             .as_ref()
             .unwrap()
-            .persistence_delta_snapshot(false, &[], false);
-        assert_eq!(still_dirty.artifact_count(), 2);
+            .persistence_delta_snapshot(false, false);
+        assert_eq!(still_dirty.artifact_count(), 1);
 
-        persist_current_delta_with(&state, false, &[], false, "test_retry", |_snapshot| Ok(()))
+        persist_current_delta_with(&state, false, false, "test_retry", |_snapshot| Ok(()))
             .await
             .unwrap();
         let clean = state
@@ -397,150 +283,223 @@ mod tests {
             .unwrap()
             .as_ref()
             .unwrap()
-            .persistence_delta_snapshot(false, &[], false);
+            .persistence_delta_snapshot(false, false);
         assert_eq!(clean.artifact_count(), 0);
     }
-
-    #[tokio::test]
-    async fn newer_ratchet_version_is_not_cleared_by_older_write_ack() {
-        let state = make_state();
-        let hash = "22".repeat(16);
-        {
-            let mut manager = state.lxmf.lock().unwrap();
-            manager
-                .as_mut()
-                .unwrap()
-                .update_remote_crypto(&hash, &[8; 64], Some(&[1; 32]));
-        }
-
-        let started = Arc::new(AtomicBool::new(false));
-        let release = Arc::new((Mutex::new(false), Condvar::new()));
-        let task_state = state.clone();
-        let task_started = started.clone();
-        let task_release = release.clone();
-        let task = tokio::spawn(async move {
-            persist_current_delta_with(
-                &task_state,
-                false,
-                &[],
-                false,
-                "test_superseded",
-                move |_snapshot| {
-                    task_started.store(true, Ordering::Release);
-                    let (lock, wake) = &*task_release;
-                    let released = lock.lock().unwrap();
-                    drop(wake.wait_while(released, |released| !*released).unwrap());
-                    Ok(())
-                },
-            )
+    /// Feed `announce` to Reticulum as heard on a new interface.
+    async fn hear(
+        rns: &crate::rns::RnsManager,
+        announce: &[u8],
+    ) -> tokio::sync::mpsc::Receiver<bytes::Bytes> {
+        use rns_transport::messages::{InboundPacket, InterfaceEntry, TransportMessage};
+        let (driver_tx, driver_rx) = tokio::sync::mpsc::channel(64);
+        let entry = InterfaceEntry::new(
+            "heard".into(),
+            rns_transport::constants::InterfaceMode::Full,
+            rns_transport::constants::InterfaceDirection::bidirectional(),
+            10_000_000,
+            500,
+            driver_tx,
+        );
+        let owner = entry.owner.clone();
+        let transport = &rns.handle.transport_tx;
+        transport
+            .send(TransportMessage::RegisterInterface { id: 9001, entry })
             .await
-        });
-        while !started.load(Ordering::Acquire) {
-            tokio::task::yield_now().await;
+            .unwrap();
+        transport
+            .send(TransportMessage::InterfaceEvent {
+                interface_id: 9001,
+                owner,
+                message: Box::new(TransportMessage::Inbound(InboundPacket {
+                    raw: bytes::Bytes::copy_from_slice(announce),
+                    interface_id: 9001,
+                    rssi: None,
+                    snr: None,
+                    q: None,
+                })),
+            })
+            .await
+            .unwrap();
+        driver_rx
+    }
+
+    async fn reticulum(dir: &std::path::Path) -> crate::rns::RnsManager {
+        std::fs::create_dir_all(dir).unwrap();
+        std::fs::write(
+            dir.join("config"),
+            "[reticulum]\nshare_instance = No\nenable_transport = No\n\n[interfaces]\n",
+        )
+        .unwrap();
+        crate::rns::RnsManager::init(
+            dir.to_str().unwrap(),
+            Some(dir.join("cache")),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap()
+    }
+
+    /// Reticulum hears the recipient's announce and stops. After a restart in
+    /// which nothing is heard, the runtime must encrypt for the recipient with
+    /// `ratchet`. With `earlier_release_file`, Reticulum heard no ratchet and
+    /// only an earlier release's file in the identity's profile holds it.
+    async fn encrypts_with_the_ratchet_after_a_restart(earlier_release_file: bool) {
+        use rns_identity::destination::{DestType, Destination, Direction};
+        use rns_transport::messages::{TransportQuery, TransportQueryResponse};
+
+        let state = make_state();
+        let (data_dir, identity_hash) = {
+            let lxmf = state.lxmf.lock().unwrap();
+            let manager = lxmf.as_ref().unwrap();
+            (manager.data_dir.clone(), manager.identity_hash.clone())
+        };
+        let rns_dir = data_dir.join("reticulum-under-test");
+        let recipient = rns_identity::identity::Identity::new();
+        let ratchet_key = rns_crypto::x25519::X25519PrivateKey::generate().to_bytes();
+        let ratchet = rns_identity::ratchet::ratchet_public_bytes(&ratchet_key);
+        let mut destination = Destination::new(
+            Some(&recipient),
+            Direction::In,
+            DestType::Single,
+            "lxmf.delivery",
+        )
+        .unwrap();
+        let heard = (!earlier_release_file).then_some(&ratchet);
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let announce = destination
+            .announce_packet(&recipient, None, heard, false, None, now)
+            .unwrap();
+        let recipient_hash = destination.hash;
+        let recipient_hex = hex::encode(recipient_hash);
+
+        let rns = reticulum(&rns_dir).await;
+        let _driver = hear(&rns, &announce).await;
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while !matches!(
+            rns.handle
+                .query_transport(TransportQuery::RecallDestination {
+                    dest: recipient_hash
+                })
+                .await,
+            Some(TransportQueryResponse::RecalledDestination(Some(_)))
+        ) {
+            assert!(
+                Instant::now() < deadline,
+                "Reticulum validates the announce"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        rns.shutdown().await;
+
+        let received = data_dir
+            .join("identities")
+            .join(&identity_hash)
+            .join("ratchets/received");
+        if earlier_release_file {
+            std::fs::create_dir_all(&received).unwrap();
+            rns_identity::ratchet::ReceivedRatchet::new(ratchet)
+                .save(&received.join(format!("{recipient_hex}.ratchet")))
+                .unwrap();
+            crate::lxmf::hand_received_ratchets_to_reticulum(&data_dir, &identity_hash, &rns_dir)
+                .unwrap();
+        }
+        assert!(!received.exists());
+
+        state.set_rns(reticulum(&rns_dir).await);
+        if earlier_release_file {
+            // Reticulum, owning its storage, imports the files as it starts.
+            assert_eq!(
+                std::fs::read_dir(rns_dir.join("storage/ratchets"))
+                    .unwrap()
+                    .count(),
+                0
+            );
         }
         {
-            let mut manager = state.lxmf.lock().unwrap();
-            manager
-                .as_mut()
-                .unwrap()
-                .update_remote_crypto(&hash, &[8; 64], Some(&[2; 32]));
+            let mut lxmf = state.lxmf.lock().unwrap();
+            let manager = lxmf.as_mut().unwrap();
+            manager.update_remote_identity(&recipient_hex, &recipient.get_public_key());
+            let message = manager
+                .create_message(
+                    &recipient_hex,
+                    "after the restart",
+                    "",
+                    lxmf_core::constants::DeliveryMethod::Opportunistic,
+                )
+                .unwrap();
+            manager.router.submit_signed(message).unwrap();
+            // Before Reticulum has answered for this tick nothing is encrypted.
+            assert!(
+                manager
+                    .encrypt_for_destination(&recipient_hex, b"x")
+                    .is_none()
+            );
         }
-        let (lock, wake) = &*release;
-        *lock.lock().unwrap() = true;
-        wake.notify_all();
-        assert!(task.await.unwrap().unwrap());
 
-        let newer_is_dirty = state
+        crate::refresh_outbound_ratchets(&state).await;
+
+        let ciphertext = state
             .lxmf
             .lock()
             .unwrap()
             .as_ref()
             .unwrap()
-            .persistence_delta_snapshot(false, &[], false);
-        assert_eq!(newer_is_dirty.artifact_count(), 1);
-        persist_current_delta_with(&state, false, &[], false, "test_newer_retry", |_snapshot| {
-            Ok(())
-        })
-        .await
-        .unwrap();
-        let clean = state
-            .lxmf
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .persistence_delta_snapshot(false, &[], false);
-        assert_eq!(clean.artifact_count(), 0);
+            .encrypt_for_destination(&recipient_hex, b"after the restart")
+            .expect("Reticulum answered for the recipient");
+        // Enforcing ratchets, the recipient opens it only with that ratchet key.
+        let opened = recipient
+            .decrypt_with_ratchet_id(&ciphertext, Some(&[&ratchet_key]), true)
+            .unwrap();
+        assert_eq!(opened.plaintext, b"after the restart");
+        assert!(opened.ratchet_id.is_some());
+        let rns = state.rns.write().unwrap().take().unwrap();
+        rns.shutdown().await;
     }
 
     #[tokio::test]
-    async fn ratchet_cleanup_revalidates_live_memory_before_file_removal() {
-        let state = make_state();
-        let hash = "44".repeat(16);
-        let ratchet = rns_identity::ratchet::ReceivedRatchet::new([4; 32]);
-        let path = {
-            let mut manager = state.lxmf.lock().unwrap();
-            let manager = manager.as_mut().unwrap();
-            manager.received_ratchets.insert(hash.clone(), ratchet);
-            manager
-                .received_ratchets_dir
-                .join(format!("{hash}.ratchet"))
-        };
-        ratchet.save(&path).unwrap();
-
-        assert_eq!(
-            delete_expired_received_ratchets(&state, std::slice::from_ref(&hash))
-                .await
-                .unwrap(),
-            0
-        );
-        assert!(path.exists());
-        state
-            .lxmf
-            .lock()
-            .unwrap()
-            .as_mut()
-            .unwrap()
-            .received_ratchets
-            .remove(&hash);
-        assert_eq!(
-            delete_expired_received_ratchets(&state, &[hash])
-                .await
-                .unwrap(),
-            1
-        );
-        assert!(!path.exists());
+    async fn a_ratchet_learned_before_a_restart_encrypts_the_next_message() {
+        encrypts_with_the_ratchet_after_a_restart(false).await;
     }
 
     #[tokio::test]
-    async fn failed_ratchet_file_removal_is_requeued() {
-        let state = make_state();
-        let hash = "66".repeat(16);
-        let path = state
-            .lxmf
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .received_ratchets_dir
-            .join(format!("{hash}.ratchet"));
-        std::fs::create_dir(&path).unwrap();
+    async fn a_ratchet_only_an_earlier_release_file_held_encrypts_after_the_hand_over() {
+        encrypts_with_the_ratchet_after_a_restart(true).await;
+    }
 
+    #[test]
+    fn received_ratchet_files_of_earlier_releases_are_handed_to_reticulum() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join(".ratspeak");
+        let identity = "ab".repeat(16);
+        let ratchets = data_dir.join("identities").join(&identity).join("ratchets");
+        let received = ratchets.join("received");
+        std::fs::create_dir_all(&received).unwrap();
+        // The identity's own ratchet keys sit beside the directory and stay.
+        std::fs::write(ratchets.join("ring"), b"own keys").unwrap();
+        let rns = temp.path().join("rns");
+        let import_dir = rns.join("storage/ratchets");
+        std::fs::create_dir_all(&import_dir).unwrap();
+        let (moved, kept) = ("11".repeat(16), "22".repeat(16));
+        std::fs::write(received.join(format!("{moved}.ratchet")), b"moved").unwrap();
+        std::fs::write(received.join(format!("{kept}.ratchet")), b"older copy").unwrap();
+        std::fs::write(received.join("human-label.ratchet"), b"not a destination").unwrap();
+        std::fs::write(import_dir.join(&kept), b"reticulum's own").unwrap();
+
+        crate::lxmf::hand_received_ratchets_to_reticulum(&data_dir, &identity, &rns).unwrap();
+
+        assert_eq!(std::fs::read(import_dir.join(&moved)).unwrap(), b"moved");
         assert_eq!(
-            delete_expired_received_ratchets(&state, std::slice::from_ref(&hash))
-                .await
-                .unwrap(),
-            0
+            std::fs::read(import_dir.join(&kept)).unwrap(),
+            b"reticulum's own"
         );
-        assert_eq!(
-            state
-                .lxmf
-                .lock()
-                .unwrap()
-                .as_mut()
-                .unwrap()
-                .take_expired_received_ratchets(),
-            vec![hash]
-        );
+        assert_eq!(std::fs::read_dir(&import_dir).unwrap().count(), 2);
+        assert!(!received.exists());
+        assert_eq!(std::fs::read(ratchets.join("ring")).unwrap(), b"own keys");
+        // Nothing left to hand over.
+        crate::lxmf::hand_received_ratchets_to_reticulum(&data_dir, &identity, &rns).unwrap();
     }
 }

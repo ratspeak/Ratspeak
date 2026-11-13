@@ -185,14 +185,16 @@ pub struct BuiltPaperMessage {
     pub timestamp: f64,
 }
 
-/// Sign and encrypt a paper message for `dest_hash_hex`. No ticket or stamp:
-/// receivers skip stamp enforcement for paper, as upstream senders do.
+/// Sign and encrypt a paper message for `dest_hash_hex`, with `ratchet` if
+/// Reticulum holds one for it. No ticket or stamp: receivers skip stamp
+/// enforcement for paper, as upstream senders do.
 pub fn build_paper_message(
     manager: &LxmfManager,
     dest_hash_hex: &str,
     content: &str,
     title: &str,
     thread: &str,
+    ratchet: Option<[u8; 32]>,
 ) -> Result<BuiltPaperMessage, PaperError> {
     if content.trim().is_empty() {
         return Err(PaperError::Empty);
@@ -247,7 +249,7 @@ pub fn build_paper_message(
     let paper_uri = message
         .to_paper_uri(|plaintext| {
             let ciphertext = manager
-                .encrypt_for_destination(dest_hash_hex, plaintext)
+                .encrypt_with_ratchet(dest_hash_hex, plaintext, ratchet.as_ref())
                 .ok_or_else(|| MessageError::PackFailed("recipient key unavailable".into()))?;
             encrypted_len = Some(ciphertext.len());
             Ok(ciphertext)
@@ -283,11 +285,22 @@ pub async fn create_paper_message(
     title: &str,
     thread: &str,
 ) -> Result<CreatedPaperMessage, PaperError> {
+    // `Destination.encrypt` reads the recipient's ratchet from Reticulum.
+    let ratchet = match hex::decode(dest_hash_hex)
+        .ok()
+        .and_then(|b| b.try_into().ok())
+    {
+        Some(destination) => crate::recall_ratchets(state, vec![destination])
+            .await
+            .remove(&destination)
+            .flatten(),
+        None => None,
+    };
     let (built, identity_id, source) = {
         let lxmf = state.lxmf.lock().map_err(|_| PaperError::Unavailable)?;
         let manager = lxmf.as_ref().ok_or(PaperError::Unavailable)?;
         (
-            build_paper_message(manager, dest_hash_hex, content, title, thread)?,
+            build_paper_message(manager, dest_hash_hex, content, title, thread, ratchet)?,
             manager.identity_hash.clone(),
             manager.lxmf_hash.clone(),
         )

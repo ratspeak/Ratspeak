@@ -1046,7 +1046,8 @@ pub enum ChannelSessionTransition {
     Cancelled,
     PathRequested,
     PathDiscovered {
-        hops: u8,
+        /// `None` when the hub's identity is known but no path to it is.
+        hops: Option<u8>,
     },
     PathTimedOut,
     LinkRequested,
@@ -1261,7 +1262,7 @@ pub fn channels_session_activity(
         draft = draft.operational_code(ActivityAttributeKey::Reason, reason)?;
     }
     match input.transition {
-        ChannelSessionTransition::PathDiscovered { hops } => {
+        ChannelSessionTransition::PathDiscovered { hops: Some(hops) } => {
             draft = draft.exact(
                 ActivityAttributeKey::Hops,
                 ExactValue::Unsigned(u64::from(hops)),
@@ -1345,6 +1346,7 @@ pub fn channels_session_activity(
         ChannelSessionTransition::ConnectRequested
         | ChannelSessionTransition::Cancelled
         | ChannelSessionTransition::PathRequested
+        | ChannelSessionTransition::PathDiscovered { hops: None }
         | ChannelSessionTransition::PathTimedOut
         | ChannelSessionTransition::LinkRequested
         | ChannelSessionTransition::WelcomeRejected { .. }

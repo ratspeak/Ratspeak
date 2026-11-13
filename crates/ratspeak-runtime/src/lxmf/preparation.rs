@@ -31,10 +31,7 @@ impl LxmfManager {
         });
         if profile == DeliveryProfile::Message
             && !has_link
-            && self
-                .received_ratchets
-                .get(dest_hex)
-                .is_some_and(|ratchet| !ratchet.is_expired())
+            && self.outbound_ratchet(dest_hex).flatten().is_some()
         {
             DeliveryMethod::Opportunistic
         } else {
@@ -153,6 +150,21 @@ impl LxmfManager {
                 }
                 if request {
                     self.request_path_recovery(dest, None);
+                }
+                continue;
+            }
+            // Reticulum answers for the recipient's ratchet before each tick; a
+            // message queued since the last answers waits for the next ones.
+            if (method == DeliveryMethod::Opportunistic || auto)
+                && self.outbound_ratchet(&dest_hex).is_none()
+            {
+                if let Some(message) = self
+                    .router
+                    .pending_outbound
+                    .iter_mut()
+                    .find(|m| m.message_id() == hash)
+                {
+                    message.next_delivery_attempt = now + 0.5;
                 }
                 continue;
             }
@@ -336,10 +348,7 @@ mod tests {
             learned(&mut mgr, 1001.0);
             mgr.peer_lxmf_compression_support
                 .insert([9; 16], CompressionSupport::Unsupported);
-            if ratchet {
-                mgr.received_ratchets
-                    .insert(hex::encode([9; 16]), ReceivedRatchet::new([6; 32]));
-            }
+            mgr.set_outbound_ratchets(HashMap::from([([9; 16], ratchet.then_some([6; 32]))]));
             assert!(
                 mgr.prepare_live_outbound(1001.0, at + Duration::from_secs(1))
                     .is_empty()
@@ -362,8 +371,7 @@ mod tests {
         mgr.prepare_live_outbound(1000.0, at);
         mgr.prepare_live_outbound(1028.0, at + Duration::from_secs(28));
         learned(&mut mgr, 1030.0);
-        mgr.received_ratchets
-            .insert(hex::encode([9; 16]), ReceivedRatchet::new([6; 32]));
+        mgr.set_outbound_ratchets(HashMap::from([([9; 16], Some([6; 32]))]));
         mgr.prepare_live_outbound(1030.0, at + Duration::from_secs(30));
         assert_eq!(
             mgr.router.pending_outbound[0].method,
@@ -379,12 +387,11 @@ mod tests {
     }
 
     #[test]
-    fn usable_link_precedes_ratchet_but_expired_ratchet_never_selects_auto_packet() {
+    fn usable_link_precedes_ratchet_and_no_live_ratchet_never_selects_auto_packet() {
         let mut mgr = test_manager();
         let dest = [9; 16];
         let dest_hex = hex::encode(dest);
-        mgr.received_ratchets
-            .insert(dest_hex.clone(), ReceivedRatchet::new([6; 32]));
+        mgr.set_outbound_ratchets(HashMap::from([(dest, Some([6; 32]))]));
         assert_eq!(
             mgr.auto_live_method(&dest_hex, DeliveryProfile::Message),
             DeliveryMethod::Opportunistic
@@ -409,8 +416,8 @@ mod tests {
             "explicit packet needs identity discovery despite an unrelated usable Link"
         );
         mgr.link_delivery = None;
-        mgr.received_ratchets
-            .insert(dest_hex.clone(), ReceivedRatchet::new_at([6; 32], 0.0));
+        // Reticulum reports no ratchet once the one it held has expired.
+        mgr.set_outbound_ratchets(HashMap::from([(dest, None)]));
         assert_eq!(
             mgr.auto_live_method(&dest_hex, DeliveryProfile::Message),
             DeliveryMethod::Direct

@@ -39,7 +39,6 @@ use rns_identity::persistence::{
     DurableFileReceipt, durable_create_dir_all, durable_reconcile, durable_remove,
     durable_rename_directory, durable_write, read_file_bounded, validate_durable_storage_directory,
 };
-use rns_identity::ratchet::ReceivedRatchet;
 
 use rns_transport::messages::{PathTableRpcEntry, TransportMessage};
 use tokio::sync::{mpsc, oneshot};
@@ -1364,12 +1363,11 @@ pub struct LxmfManager {
     propagation_destination: Destination,
     propagation_stamps: AnnounceStamps,
     announce_cache_started: Instant,
-    pub received_ratchets: HashMap<String, ReceivedRatchet>,
-    /// Remote ratchets whose current value has not yet been acknowledged by
-    /// the serialized persistence owner. Persistence failures leave entries
-    /// here so a later delta/periodic pass retries them without replaying the
-    /// complete received-ratchet store.
-    dirty_received_ratchets: HashSet<String>,
+    /// What Reticulum answered before this tick for the ratchet of each
+    /// destination with a pending message (`RNS.Identity.get_ratchet`, read by
+    /// `Destination.encrypt`). Reticulum alone keeps received ratchets; a
+    /// destination without an entry has not been answered for yet.
+    outbound_ratchets: HashMap<[u8; 16], Option<[u8; 32]>>,
     pub known_identities: HashMap<String, [u8; 64]>,
     known_identities_revision: u64,
     known_identities_persisted_revision: u64,
@@ -1421,10 +1419,7 @@ pub struct LxmfManager {
     propagation_envelopes: HashMap<[u8; 32], PropagationEnvelope>,
     pending_propagation_envelopes: HashMap<[u8; 32], PendingPropagationEnvelope>,
     propagation_preparation_tasks: Vec<tokio::task::JoinHandle<()>>,
-    last_ratchet_clean: f64,
     last_router_cull: f64,
-    pub received_ratchets_dir: PathBuf,
-    pending_expired_received_ratchets: Vec<String>,
     /// Outbound message hashes routed via propagation. `LinkDeliveryManager`
     /// reports `Complete` for both propagation deposits and large-message
     /// direct sends; this map lets `tick()` map completion to the right state
@@ -1542,7 +1537,6 @@ impl LxmfCheckpointSnapshot {
 pub struct LxmfPersistenceDelta {
     identity_hash: String,
     known_identities: Option<KnownIdentitiesSnapshot>,
-    received_ratchets: Vec<(String, PathBuf, ReceivedRatchet)>,
     router_state: Option<(PathBuf, RouterStateSnapshot)>,
     node_policies: Option<(PathBuf, HashMap<[u8; 16], AdvertisedNodePolicy>)>,
 }
@@ -1550,15 +1544,11 @@ pub struct LxmfPersistenceDelta {
 impl LxmfPersistenceDelta {
     pub fn is_empty(&self) -> bool {
         self.known_identities.is_none()
-            && self.received_ratchets.is_empty()
             && self.router_state.is_none()
             && self.node_policies.is_none()
     }
 
     pub fn persist(&self) -> std::io::Result<()> {
-        for (_, path, ratchet) in &self.received_ratchets {
-            ratchet.save_durable(path)?;
-        }
         if let Some(snapshot) = self.known_identities.as_ref() {
             snapshot.persist()?;
         }
@@ -1573,15 +1563,8 @@ impl LxmfPersistenceDelta {
 
     pub fn artifact_count(&self) -> usize {
         usize::from(self.known_identities.is_some())
-            + self.received_ratchets.len()
             + usize::from(self.router_state.is_some())
             + usize::from(self.node_policies.is_some())
-    }
-
-    fn persisted_ratchets(&self) -> impl Iterator<Item = (&str, ReceivedRatchet)> {
-        self.received_ratchets
-            .iter()
-            .map(|(hash, _, ratchet)| (hash.as_str(), *ratchet))
     }
 }
 
@@ -1660,6 +1643,60 @@ fn received_ratchet_hash_from_path(path: &Path) -> Option<&str> {
     path.file_stem()
         .and_then(|name| name.to_str())
         .filter(|name| crate::helpers::is_protocol_hash_16(name))
+}
+
+/// Hand the received ratchets earlier releases kept under an identity's
+/// `ratchets/received` to Reticulum, which alone keeps them now. The files
+/// have upstream's layout, so each moves to the directory Reticulum's store
+/// imports (`Identity.ratchetpath`) with upstream's filter: a 32-byte
+/// ratchet, not expired, for a destination it knows. A file is removed here
+/// only once its copy is durable there; Reticulum removes that copy after its
+/// own commit. The identity's own ratchet keys (`ratchets/ring`) are not touched.
+///
+/// Call before Reticulum starts on `rns_config_dir`: the instance that owns
+/// the storage imports the files as it starts
+/// (`Identity.load_known_destinations`). `data_dir` is the process's
+/// `.ratspeak` directory.
+pub fn hand_received_ratchets_to_reticulum(
+    data_dir: &Path,
+    identity_hash: &str,
+    rns_config_dir: &Path,
+) -> std::io::Result<()> {
+    if !crate::helpers::is_protocol_hash_16(identity_hash) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid identity namespace hash",
+        ));
+    }
+    let received = data_dir
+        .join("identities")
+        .join(identity_hash)
+        .join("ratchets/received");
+    if !received.is_dir() {
+        return Ok(());
+    }
+    let import_dir = rns_runtime::platform::StoragePaths::from_config_dir(rns_config_dir)
+        .storage_dir
+        .join("ratchets");
+    for entry in std::fs::read_dir(&received)? {
+        let path = entry?.path();
+        if !path.is_file() {
+            continue;
+        }
+        if let Some(destination) = received_ratchet_hash_from_path(&path)
+            .filter(|_| path.extension().is_some_and(|ext| ext == "ratchet"))
+        {
+            let target = import_dir.join(destination);
+            // A file already there is Reticulum's own and is not replaced.
+            if !target.try_exists()? {
+                std::fs::create_dir_all(&import_dir)?;
+                let bytes = std::fs::read(&path)?;
+                durable_write(&target, &bytes).map_err(std::io::Error::other)?;
+            }
+        }
+        std::fs::remove_file(&path)?;
+    }
+    std::fs::remove_dir(&received)
 }
 
 /// Read a local identity's public key without borrowing the live LXMF manager.
@@ -1981,7 +2018,6 @@ fn established_identity_namespace(ratspeak_dir: &Path, hash: &str) -> std::io::R
         directory.clone(),
         directory.join("lxmf"),
         directory.join("ratchets"),
-        directory.join("ratchets/received"),
     ] {
         require_real_directory(&path)?;
     }
@@ -2042,7 +2078,6 @@ fn prepare_identity_namespace(
         directory.clone(),
         directory.join("lxmf"),
         directory.join("ratchets"),
-        directory.join("ratchets/received"),
     ] {
         durable_create_dir_all(&path, witness).map_err(std::io::Error::other)?;
     }
@@ -2393,38 +2428,6 @@ impl LxmfManager {
         )?;
         propagation_destination.set_link_cost(PROPAGATION_LINK_COST);
 
-        // Validate, expire and load each file exactly once. The former
-        // clean-then-load sequence decoded every ratchet twice at startup.
-        let received_dir = ratchet_dir.join("received");
-        let mut received_ratchets = HashMap::new();
-        let mut removed = 0usize;
-        if let Ok(entries) = std::fs::read_dir(&received_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if !path.is_file() {
-                    continue;
-                }
-                match received_ratchet_hash_from_path(&path)
-                    .zip(ReceivedRatchet::load(&path).ok())
-                    .filter(|(_, ratchet)| !ratchet.is_expired())
-                {
-                    Some((name, ratchet)) => {
-                        received_ratchets.insert(name.to_string(), ratchet);
-                    }
-                    None => match std::fs::remove_file(&path) {
-                        Ok(()) => removed += 1,
-                        Err(error) => tracing::warn!(
-                            %error,
-                            "failed to remove expired or corrupt received ratchet"
-                        ),
-                    },
-                }
-            }
-        }
-        if removed > 0 {
-            tracing::info!(removed, "swept expired received-ratchet files at startup");
-        }
-
         // Binary: repeated [dest_hash:16][pubkey:64] records.
         let ki_path = ratchet_dir.join("known_identities");
         let mut known_identities: HashMap<String, [u8; 64]> = HashMap::new();
@@ -2446,7 +2449,6 @@ impl LxmfManager {
 
         tracing::info!(
             ratchet_keys = delivery_ratchets.ring().len(),
-            received_ratchets = received_ratchets.len(),
             known_identities = known_identities.len(),
             "Crypto state loaded"
         );
@@ -2476,8 +2478,7 @@ impl LxmfManager {
             propagation_destination,
             propagation_stamps: AnnounceStamps::default(),
             announce_cache_started: Instant::now(),
-            received_ratchets,
-            dirty_received_ratchets: HashSet::new(),
+            outbound_ratchets: HashMap::new(),
             known_identities,
             known_identities_revision: 0,
             known_identities_persisted_revision: 0,
@@ -2525,12 +2526,6 @@ impl LxmfManager {
             propagation_envelopes: HashMap::new(),
             pending_propagation_envelopes: HashMap::new(),
             propagation_preparation_tasks: Vec::new(),
-            last_ratchet_clean: SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64(),
-            received_ratchets_dir: received_dir,
-            pending_expired_received_ratchets: Vec::new(),
             in_flight_propagation: std::collections::HashMap::new(),
             completed_propagation_deposits: Vec::new(),
             failed_propagation_deposits: Vec::new(),
@@ -4856,32 +4851,12 @@ impl LxmfManager {
     pub fn persistence_delta_snapshot(
         &self,
         identities_changed: bool,
-        changed_ratchet_hashes: &[String],
         router_changed: bool,
     ) -> LxmfPersistenceDelta {
-        let received_dir = self.ratchets_dir().join("received");
-        let ratchet_hashes = self
-            .dirty_received_ratchets
-            .iter()
-            .chain(changed_ratchet_hashes.iter())
-            .collect::<HashSet<_>>();
-        let received_ratchets = ratchet_hashes
-            .into_iter()
-            .filter_map(|hash| {
-                self.received_ratchets.get(hash).copied().map(|ratchet| {
-                    (
-                        hash.clone(),
-                        received_dir.join(format!("{hash}.ratchet")),
-                        ratchet,
-                    )
-                })
-            })
-            .collect();
         LxmfPersistenceDelta {
             identity_hash: self.identity_hash.clone(),
             known_identities: (identities_changed || self.known_identities_dirty())
                 .then(|| self.known_identities_snapshot()),
-            received_ratchets,
             router_state: router_changed
                 .then(|| (self.lxmf_storage_dir.clone(), self.router.state_snapshot())),
             node_policies: router_changed.then(|| {
@@ -4893,47 +4868,12 @@ impl LxmfManager {
         }
     }
 
-    pub fn dirty_received_ratchets_snapshot(&self) -> LxmfPersistenceDelta {
-        let received_dir = self.ratchets_dir().join("received");
-        let received_ratchets = self
-            .dirty_received_ratchets
-            .iter()
-            .filter_map(|hash| {
-                self.received_ratchets.get(hash).copied().map(|ratchet| {
-                    (
-                        hash.clone(),
-                        received_dir.join(format!("{hash}.ratchet")),
-                        ratchet,
-                    )
-                })
-            })
-            .collect();
-        LxmfPersistenceDelta {
-            identity_hash: self.identity_hash.clone(),
-            known_identities: None,
-            received_ratchets,
-            router_state: None,
-            node_policies: None,
-        }
-    }
-
-    /// Clear only ratchet versions that the persistence owner actually wrote.
-    /// If the live value changed while disk I/O was in flight, the dirty bit is
-    /// retained and the newer value is handled by the next serialized pass.
     pub fn acknowledge_persistence_delta(&mut self, delta: &LxmfPersistenceDelta) {
         if self.identity_hash != delta.identity_hash {
             return;
         }
         if let Some(snapshot) = delta.known_identities.as_ref() {
             self.acknowledge_known_identities_snapshot(snapshot);
-        }
-        for (hash, persisted) in delta.persisted_ratchets() {
-            if self.received_ratchets.get(hash).is_some_and(|current| {
-                current.ratchet_pub == persisted.ratchet_pub
-                    && current.received_at == persisted.received_at
-            }) {
-                self.dirty_received_ratchets.remove(hash);
-            }
         }
     }
 
@@ -4994,16 +4934,6 @@ impl LxmfManager {
     pub fn save_crypto_state(&self) -> std::io::Result<()> {
         established_identity_namespace(&self.data_dir, &self.identity_hash)?;
         self.delivery_ratchets.save_durable(&self.identity)?;
-        let received_dir = self.ratchets_dir().join("received");
-        for (hash_hex, ratchet) in &self.received_ratchets {
-            if !crate::helpers::is_protocol_hash_16(hash_hex) {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "invalid received ratchet destination",
-                ));
-            }
-            ratchet.save_durable(&received_dir.join(format!("{hash_hex}.ratchet")))?;
-        }
         self.known_identities_snapshot().persist()?;
         self.router.save_state(&self.lxmf_storage_dir)?;
         lxmf_core::persist::save_node_policies(
@@ -5012,33 +4942,47 @@ impl LxmfManager {
         )
     }
 
-    /// Returns `(identity_changed, ratchet_changed)`. No-op updates are
-    /// skipped so callers persist only real deltas, and an unchanged
-    /// ratchet keeps its original `received_at` (Python `_remember_ratchet`).
-    pub fn update_remote_crypto(
-        &mut self,
-        dest_hash_hex: &str,
-        pk: &[u8; 64],
-        ratchet: Option<&[u8; 32]>,
-    ) -> (bool, bool) {
+    /// Keep an announced identity key; returns whether it changed, so callers
+    /// persist only real deltas. An announced ratchet is not kept here:
+    /// Reticulum remembers it (`Identity._remember_ratchet`).
+    pub fn update_remote_identity(&mut self, dest_hash_hex: &str, pk: &[u8; 64]) -> bool {
         let identity_changed = self.known_identities.get(dest_hash_hex) != Some(pk);
         if identity_changed {
             self.known_identities.insert(dest_hash_hex.to_string(), *pk);
             self.known_identities_revision = self.known_identities_revision.wrapping_add(1);
         }
-        let mut ratchet_changed = false;
-        if let Some(r) = ratchet.filter(|ratchet| {
-            self.received_ratchets
-                .get(dest_hash_hex)
-                .is_none_or(|received| received.ratchet_pub != **ratchet)
-        }) {
-            self.received_ratchets
-                .insert(dest_hash_hex.to_string(), ReceivedRatchet::new(*r));
-            self.dirty_received_ratchets
-                .insert(dest_hash_hex.to_string());
-            ratchet_changed = true;
-        }
-        (identity_changed, ratchet_changed)
+        identity_changed
+    }
+
+    /// Destinations a pending message may be encrypted for on the next tick.
+    pub fn outbound_ratchet_targets(&self) -> Vec<[u8; 16]> {
+        let targets: HashSet<[u8; 16]> = self
+            .router
+            .pending_outbound
+            .iter()
+            .map(|message| message.destination_hash())
+            // A message leaves the stamp queue and is sent within one tick.
+            .chain(
+                self.router
+                    .pending_deferred_stamps
+                    .values()
+                    .map(|message| message.destination_hash()),
+            )
+            .collect();
+        targets.into_iter().collect()
+    }
+
+    /// Install Reticulum's answers for [`Self::outbound_ratchet_targets`],
+    /// replacing those of the previous tick.
+    pub fn set_outbound_ratchets(&mut self, answers: HashMap<[u8; 16], Option<[u8; 32]>>) {
+        self.outbound_ratchets = answers;
+    }
+
+    /// Reticulum's answer for `destination`: `None` until it has answered,
+    /// `Some(None)` when it holds no live ratchet.
+    pub(crate) fn outbound_ratchet(&self, dest_hash_hex: &str) -> Option<Option<[u8; 32]>> {
+        let destination: [u8; 16] = hex::decode(dest_hash_hex).ok()?.try_into().ok()?;
+        self.outbound_ratchets.get(&destination).copied()
     }
 
     pub fn replace_route_hops_from_path_table(
@@ -5692,21 +5636,29 @@ impl LxmfManager {
         false
     }
 
-    /// Prefers ratchet pubkey, falls back to identity pubkey.
+    /// Encrypts with the ratchet Reticulum holds for the destination, else with
+    /// its identity key. `None` also while Reticulum has not answered for it.
     pub fn encrypt_for_destination(
         &self,
         dest_hash_hex: &str,
         plaintext: &[u8],
     ) -> Option<Vec<u8>> {
+        let ratchet = self.outbound_ratchet(dest_hash_hex)?;
+        self.encrypt_with_ratchet(dest_hash_hex, plaintext, ratchet.as_ref())
+    }
+
+    /// Encrypts with `ratchet`, the one Reticulum reported for the destination,
+    /// else with the destination's identity key (`Destination.encrypt`).
+    pub fn encrypt_with_ratchet(
+        &self,
+        dest_hash_hex: &str,
+        plaintext: &[u8],
+        ratchet: Option<&[u8; 32]>,
+    ) -> Option<Vec<u8>> {
         let pub_key = self.known_identities.get(dest_hash_hex)?;
         tracing::info!(dest = %crate::short_id(dest_hash_hex), "encrypting for destination — key found");
         let remote = Identity::from_public_key(pub_key).ok()?;
-        let ratchet_pub = self
-            .received_ratchets
-            .get(dest_hash_hex)
-            .filter(|rr| !rr.is_expired())
-            .map(|rr| &rr.ratchet_pub);
-        remote.encrypt(plaintext, ratchet_pub).ok()
+        remote.encrypt(plaintext, ratchet).ok()
     }
 
     pub fn decrypt_inbound(&self, ciphertext: &[u8]) -> Option<Vec<u8>> {
@@ -5803,26 +5755,6 @@ impl LxmfManager {
         Some(proof_raw)
     }
 
-    /// Defer ratchet cleanup +900s on foreground resume.
-    pub fn mark_foreground_resume(&mut self) {
-        self.last_ratchet_clean = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs_f64();
-    }
-
-    pub fn take_expired_received_ratchets(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.pending_expired_received_ratchets)
-    }
-
-    pub fn requeue_expired_received_ratchets(&mut self, hashes: Vec<String>) {
-        for hash in hashes {
-            if !self.pending_expired_received_ratchets.contains(&hash) {
-                self.pending_expired_received_ratchets.push(hash);
-            }
-        }
-    }
-
     pub fn auto_propagation_check_due(&self, network_available: bool) -> bool {
         if !network_available || !self.client_propagation_enabled {
             return false;
@@ -5894,31 +5826,10 @@ impl LxmfManager {
     ) -> Vec<(String, &'static str)> {
         let mut results = Vec::new();
 
-        // 15-min ratchet cleanup cadence (matches reference). Only inspect
-        // coherent in-memory metadata here. The serialized persistence owner
-        // revalidates and removes files after this manager lock is released.
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        if now - self.last_ratchet_clean > 900.0 {
-            let expired = self
-                .received_ratchets
-                .iter()
-                .filter(|(_, ratchet)| ratchet.is_expired())
-                .map(|(hash, _)| hash.clone())
-                .collect::<Vec<_>>();
-            for hash in &expired {
-                self.received_ratchets.remove(hash);
-                self.dirty_received_ratchets.remove(hash);
-            }
-            if !expired.is_empty() {
-                let removed = expired.len();
-                self.pending_expired_received_ratchets.extend(expired);
-                tracing::debug!(removed, "ratchet cleanup pass: expired in-memory entries");
-            }
-            self.last_ratchet_clean = now;
-        }
 
         self.poll_opportunistic_proofs(&mut results);
         self.retry_due_opportunistic_deliveries(now);
@@ -6469,11 +6380,10 @@ impl LxmfManager {
                 "recipient key missing".into(),
             ));
         };
-        let ratchet = self
-            .received_ratchets
-            .get(&dest)
-            .filter(|r| !r.is_expired())
-            .map(|r| r.ratchet_pub);
+        // Reticulum answers for the recipient's ratchet before the next tick.
+        let Some(ratchet) = self.outbound_ratchet(&dest) else {
+            return PreparedPropagation::Pending;
+        };
         let mut binding_data = key.to_vec();
         if let Some(ratchet) = ratchet {
             binding_data.extend_from_slice(&ratchet);
@@ -7843,6 +7753,17 @@ mod tests {
 
     use lxmf_core::constants::MAX_PATHLESS_TRIES;
 
+    /// Reticulum has answered for every pending destination and holds no
+    /// ratchet for it, as the runtime asks before each tick.
+    pub(super) fn answered_without_ratchets(mgr: &mut LxmfManager) {
+        let answers = mgr
+            .outbound_ratchet_targets()
+            .into_iter()
+            .map(|destination| (destination, None))
+            .collect();
+        mgr.set_outbound_ratchets(answers);
+    }
+
     /// A current one-hop path, so the router sends Opportunistic messages at once.
     pub(super) fn known_route(mgr: &mut LxmfManager, dest: [u8; 16]) {
         let now = unix_now_for_test();
@@ -7930,6 +7851,7 @@ mod tests {
                 for msg in &mut mgr.router.pending_outbound {
                     msg.next_delivery_attempt = 0.;
                 }
+                answered_without_ratchets(mgr);
                 states.extend(mgr.tick());
             }
             states
@@ -8494,8 +8416,12 @@ mod tests {
             .insert(destination_hex.clone(), peer.get_public_key());
         let private = rns_crypto::x25519::X25519PrivateKey::generate();
         let public = private.public_key().to_bytes();
-        mgr.received_ratchets
-            .insert(destination_hex.clone(), ReceivedRatchet::new(public));
+        // Not answered for yet: nothing is encrypted without Reticulum's word.
+        assert!(
+            mgr.encrypt_for_destination(&destination_hex, b"x")
+                .is_none()
+        );
+        mgr.set_outbound_ratchets(HashMap::from([(destination, Some(public))]));
 
         let ciphertext = mgr
             .encrypt_for_destination(&destination_hex, b"prefer peer ratchet")
@@ -9178,7 +9104,7 @@ mod tests {
         let hash = first.identity_hash.clone();
         let key = first.delivery_ratchets.ring().current_public_key();
         assert!(key.is_some());
-        assert!(first.received_ratchets_dir.is_dir());
+        assert!(first.ratchets_dir().is_dir());
         assert!(identity_namespace_marker(&root.join(".ratspeak"), &hash).is_file());
         first.save_crypto_state().unwrap();
         drop(first);
@@ -9262,8 +9188,7 @@ mod tests {
         initialize_storage_namespace(temp.path()).unwrap();
         let manager = LxmfManager::load_or_create(temp.path(), None, None).unwrap();
         let identity = manager.identity.clone();
-        let ring = std::fs::read(manager.delivery_ratchets.ring_path()).unwrap();
-        std::fs::remove_dir(&manager.received_ratchets_dir).unwrap();
+        std::fs::remove_dir_all(manager.ratchets_dir()).unwrap();
         assert!(LxmfManager::from_loaded_identity(temp.path(), identity.clone(), false).is_err());
         assert!(manager.save_crypto_state().is_err());
         drop(manager);
@@ -9272,11 +9197,7 @@ mod tests {
             .path()
             .join(".ratspeak/identities")
             .join(hex::encode(identity.hash));
-        assert!(!directory.join("ratchets/received").exists());
-        assert_eq!(
-            std::fs::read(directory.join("ratchets/ring")).unwrap(),
-            ring
-        );
+        assert!(!directory.join("ratchets").exists());
     }
 
     #[test]
@@ -12961,6 +12882,7 @@ mod tests {
         mgr.router.set_outbound_propagation_node(Some(relay_hash));
         let message_id = hex::encode(message.message_id());
         mgr.router.try_send(message).unwrap();
+        answered_without_ratchets(&mut mgr);
         let results = mgr.run_router_outbound(unix_now_for_test());
         assert_eq!(results, vec![(message_id, "failed")]);
         assert!(mgr.pending_propagation_envelopes.is_empty());
@@ -12993,6 +12915,7 @@ mod tests {
 
         let states = tokio::time::timeout(std::time::Duration::from_secs(15), async {
             let mut states = Vec::new();
+            answered_without_ratchets(&mut mgr);
             loop {
                 states.extend(mgr.tick());
                 if states

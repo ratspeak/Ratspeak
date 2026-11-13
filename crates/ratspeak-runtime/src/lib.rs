@@ -1084,8 +1084,7 @@ pub fn projected_enabled_public_tcp_server_ids(
         .filter_map(|group| ifaces.get(group).and_then(Value::as_array))
         .flatten()
         .filter(|entry| {
-            !replace_name
-                .is_some_and(|name| entry.get("name").and_then(Value::as_str) == Some(name))
+            replace_name.is_none_or(|name| entry.get("name").and_then(Value::as_str) != Some(name))
                 && crate::rns_config::interface_entry_enabled(entry)
         });
     for id in entries
@@ -1291,6 +1290,54 @@ async fn finish_shutdown_inner(
     tokio::time::sleep(Duration::from_millis(300)).await;
     state.set_startup_stage("stopped");
     state.emit_to_all("system_status", json!({"status": "stopped"}));
+}
+
+/// Ask Reticulum which ratchet it holds for each destination
+/// (`RNS.Identity.get_ratchet`). A destination it gave no answer for is left out.
+pub(crate) async fn recall_ratchets(
+    state: &AppState,
+    destinations: Vec<[u8; 16]>,
+) -> std::collections::HashMap<[u8; 16], Option<[u8; 32]>> {
+    let mut answers = std::collections::HashMap::new();
+    let handle = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|rns| rns.as_ref().map(|mgr| mgr.handle.clone()));
+    let Some(handle) = handle else {
+        return answers;
+    };
+    for dest in destinations {
+        let query = rns_transport::messages::TransportQuery::RecallDestination { dest };
+        if let Ok(Some(rns_transport::messages::TransportQueryResponse::RecalledDestination(
+            recalled,
+        ))) =
+            tokio::time::timeout(Duration::from_millis(250), handle.query_transport(query)).await
+        {
+            answers.insert(dest, recalled.and_then(|recalled| recalled.ratchet));
+        }
+    }
+    answers
+}
+
+/// Before a tick, give the manager Reticulum's current ratchet for every
+/// destination a pending message may be encrypted for, as `Destination.encrypt`
+/// reads it at each send. Reticulum alone keeps received ratchets.
+async fn refresh_outbound_ratchets(state: &AppState) {
+    let pending = state.lxmf.lock().ok().and_then(|lxmf| {
+        lxmf.as_ref()
+            .map(|mgr| (mgr.identity_hash.clone(), mgr.outbound_ratchet_targets()))
+    });
+    let Some((identity, targets)) = pending else {
+        return;
+    };
+    let answers = recall_ratchets(state, targets).await;
+    if let Ok(mut lxmf) = state.lxmf.lock()
+        && let Some(mgr) = lxmf.as_mut()
+        && mgr.identity_hash == identity
+    {
+        mgr.set_outbound_ratchets(answers);
+    }
 }
 
 async fn teardown_rns_runtime_interfaces(handle: &rns_runtime::reticulum::ReticulumHandle) {
@@ -2005,6 +2052,18 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
     } else {
         state.config.rns_config_dir.clone()
     };
+    // Reticulum keeps received ratchets; hand it the files earlier releases
+    // kept per identity before it starts, so its store imports them.
+    if let Some(identity_hash) = active_runtime_identity.as_deref()
+        && let Err(error) = lxmf::hand_received_ratchets_to_reticulum(
+            &state.config.data_dir,
+            identity_hash,
+            &config_dir,
+        )
+    {
+        // Left in place, the files are handed over at the next start.
+        tracing::warn!(%error, "could not hand earlier received ratchets to Reticulum");
+    }
     if state.config.uses_app_private_rns_config_dir() {
         match rns_config::ensure_app_private_shared_instance(&config_dir) {
             Ok(rns_config::RatspeakRnsPortConfigChange::Created) => {
@@ -2840,20 +2899,12 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                             };
                             interval = tokio::time::interval(period);
                             interval.tick().await;
-                            // Defer ratchet cleanup +900s to avoid a large
-                            // purge in the first post-resume tick.
-                            if is_fg
-                                && !was_foreground
-                                && let Ok(mut lxmf) = tick_state.lxmf.lock()
-                                && let Some(mgr) = lxmf.as_mut()
-                            {
-                                mgr.mark_foreground_resume();
-                            }
                             was_foreground = is_fg;
                         }
                     }
                     if !delivery_only {
                         download_coordinator.synchronize(&tick_state).await;
+                        refresh_outbound_ratchets(&tick_state).await;
                     }
                     let network_available =
                         crate::any_interface_online_cached(&tick_state).unwrap_or(false);
@@ -2893,7 +2944,6 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                     Vec::new(),
                                     Vec::new(),
                                     std::collections::HashMap::new(),
-                                    Vec::new(),
                                     Vec::new(),
                                     Vec::new(),
                                     Vec::new(),
@@ -2960,7 +3010,6 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 completed_syncs,
                                 failed_syncs,
                             ) = mgr.take_propagation_health();
-                            let expired_received_ratchets = mgr.take_expired_received_ratchets();
                             (
                                 results,
                                 delivery_progress,
@@ -2971,7 +3020,6 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 failed_deposits,
                                 completed_syncs,
                                 failed_syncs,
-                                expired_received_ratchets,
                                 mgr.take_packet_delivery_rtts(),
                                 wakes,
                             )
@@ -2988,7 +3036,6 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                         failed_propagation_deposits,
                         completed_propagation_syncs,
                         failed_propagation_syncs,
-                        expired_received_ratchets,
                         packet_delivery_rtts,
                         wakes,
                     ) = match tick_result {
@@ -3006,7 +3053,6 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 Vec::new(),
                                 Vec::new(),
                                 Vec::new(),
-                                Vec::new(),
                                 lxmf::WakeOutcome::default(),
                             )
                         }
@@ -3015,20 +3061,6 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                     let packet_delivery_rtts = packet_delivery_rtts
                         .into_iter()
                         .collect::<std::collections::HashMap<_, _>>();
-                    if !expired_received_ratchets.is_empty() {
-                        let cleanup_state = tick_state.clone();
-                        tokio::spawn(async move {
-                            if let Err(error) =
-                                crate::lxmf_persistence::delete_expired_received_ratchets(
-                                    &cleanup_state,
-                                    &expired_received_ratchets,
-                                )
-                                .await
-                            {
-                                tracing::warn!(%error, "received-ratchet cleanup failed");
-                            }
-                        });
-                    }
                     // Capture and persist the current identity/router checkpoint
                     // outside the protocol-manager lock. Changed received
                     // ratchets are already write-through deltas, so the
@@ -6542,7 +6574,6 @@ async fn poll_stats_loop(
                 let mut delivery_trigger_hashes: Vec<[u8; 16]> = Vec::new();
                 let mut identities_changed = false;
                 let mut router_changed = false;
-                let mut changed_ratchet_hashes = Vec::new();
                 // Aspect-agnostic: crypto cache, announce_history, contact-name refresh.
                 if processed_generation != Some(poll_generation) {
                     processed_announces.clear();
@@ -6566,17 +6597,12 @@ async fn poll_stats_loop(
                             dest = %short_id(&dest_hex),
                             has_pk = a.public_key.is_some(),
                             has_ratchet = a.ratchet.is_some(),
-                            hops = a.hops,
+                            hops = ?crate::transport_observation::announce_hops(a),
                             "processing announce entry"
                         );
                         if let Some(ref pk) = a.public_key {
                             let is_new = !mgr.known_identities.contains_key(&dest_hex);
-                            let (id_changed, ratchet_changed) =
-                                mgr.update_remote_crypto(&dest_hex, pk, a.ratchet.as_ref());
-                            identities_changed |= id_changed;
-                            if ratchet_changed {
-                                changed_ratchet_hashes.push(dest_hex.clone());
-                            }
+                            identities_changed |= mgr.update_remote_identity(&dest_hex, pk);
                             if is_new {
                                 tracing::debug!(
                                     dest = %short_id(&dest_hex),
@@ -6585,24 +6611,30 @@ async fn poll_stats_loop(
                                 );
                             }
                         }
-                        router_changed |= mgr.update_lxmf_announce_app_data(
-                            a.dest_hash,
-                            a.name_hash,
-                            a.app_data.as_deref(),
-                        );
+                        // `Identity.recall_app_data` serves a restored
+                        // destination too; its aspect is read from its hash.
+                        if let Some(name_hash) = crate::transport_observation::announce_name_hash(
+                            a,
+                            &[LXMF_DELIVERY_APP_NAME, LXMF_PROPAGATION_APP_NAME],
+                        ) {
+                            router_changed |= mgr.update_lxmf_announce_app_data(
+                                a.dest_hash,
+                                name_hash,
+                                a.app_data.as_deref(),
+                            );
+                        }
                     }
                     processed_announces = announces
                         .iter()
                         .map(|a| (a.dest_hash, a.timestamp))
                         .collect();
                 }
-                if identities_changed || !changed_ratchet_hashes.is_empty() || router_changed {
+                if identities_changed || router_changed {
                     let persistence_state = state.clone();
                     tokio::spawn(async move {
                         if let Err(error) = crate::lxmf_persistence::persist_current_delta(
                             &persistence_state,
                             identities_changed,
-                            &changed_ratchet_hashes,
                             router_changed,
                             "announce_ingress",
                         )
@@ -6644,12 +6676,16 @@ async fn poll_stats_loop(
                             .and_then(crate::lxmf::ratspeak_status_from_app_data);
                         let announce_timestamp_changed =
                             announce_is_newer(&applied_announces, &a.dest_hash, a.timestamp);
+                        // Null, not zero, for a destination restored without them.
+                        let announce_hops = crate::transport_observation::announce_hops(a);
                         let is_new = if let Ok(mut seen) = state.seen_announce_hashes.lock() {
                             seen.insert(hash_hex.clone())
                         } else {
                             false
                         };
-                        if announce_timestamp_changed && !a.is_path_response {
+                        // Without its facts an entry is a restored row, not an
+                        // announce heard now: peers stay as the database has them.
+                        if announce_timestamp_changed && a.facts_known && !a.is_path_response {
                             if a.name_hash == lxmf_delivery_name_hash {
                                 let mut services = vec![db::PEER_SERVICE_LXMF_DELIVERY.to_string()];
                                 let lxmf_compression_support = a
@@ -6721,7 +6757,7 @@ async fn poll_stats_loop(
                                 existing["status"] = json!(status);
                             }
                             existing["timestamp"] = json!(a.timestamp);
-                            existing["hops"] = json!(a.hops);
+                            existing["hops"] = json!(announce_hops);
                         } else if announce_timestamp_changed {
                             if history.len() >= ANNOUNCE_HISTORY_CAP {
                                 history.shift_remove_index(0);
@@ -6733,11 +6769,14 @@ async fn poll_stats_loop(
                                     "display_name": display_name.clone(),
                                     "status": status.clone().unwrap_or_default(),
                                     "timestamp": a.timestamp,
-                                    "hops": a.hops,
+                                    "hops": announce_hops,
                                 }),
                             );
                         }
-                        if announce_activity_ready && is_new {
+                        if announce_activity_ready
+                            && is_new
+                            && let Some(hops) = announce_hops
+                        {
                             state.emit_to_all(
                                 "announce_received",
                                 json!({
@@ -6745,12 +6784,12 @@ async fn poll_stats_loop(
                                     "display_name": display_name,
                                     "status": status.unwrap_or_default(),
                                     "timestamp": a.timestamp,
-                                    "hops": a.hops,
+                                    "hops": hops,
                                 }),
                             );
                             activity_observations.push(PollActivityObservation::AnnounceObserved {
                                 destination: a.dest_hash,
-                                hops: a.hops,
+                                hops,
                             });
                         }
                     }
