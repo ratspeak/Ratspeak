@@ -333,6 +333,15 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
             "<button class=\"bottom-sheet-item\" type=\"button\" data-view=\"contacts\">"
         )
     );
+    let more = index
+        .split("<button class=\"bottom-sheet-item\" type=\"button\" data-view=\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        more,
+        ["contacts", "games", "network", "identity", "settings"]
+    );
     assert!(!index.contains("data-message-mode="));
     assert!(nav_js.contains("item.setAttribute('aria-current', 'page')"));
     assert!(nav_js.contains("'Channels' + (_messageUnreadSources.channels > 0"));
