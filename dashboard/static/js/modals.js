@@ -63,8 +63,13 @@ var PUBLIC_TCP_SERVERS = [
     { id: 'washmesh', group: 'community', name: 'Washmesh', host: 'reticulum.washmesh.net', port: 7242, place: 'Washington, US' },
 ];
 
+// The host is brought to the form the Rust transport limit matches on.
 function _tcpServerKey(host, port) {
-    return String(host || '').trim().toLowerCase() + ':' + (parseInt(port, 10) || 4242);
+    var value = String(host || '').trim().toLowerCase();
+    var scheme = value.indexOf('://');
+    if (scheme >= 0) value = value.slice(scheme + 3);
+    value = value.split('/')[0].replace(/\.+$/, '');
+    return value + ':' + (parseInt(port, 10) || 4242);
 }
 
 function _publicServerEndpointKeys(server) {
@@ -1841,19 +1846,24 @@ function setConnectTab(tab) {
     if (body) body.scrollTop = 0;
 }
 
+// A public server is reached by a TCP client or a Backbone client alike. Of
+// several saved interfaces to one server, one that is online is the match.
 function _connectMatchingPublicInterface(server, ifaces) {
     ifaces = ifaces || window._hubInterfacesData || window._cachedConfigIfaces || {};
-    var clients = Array.isArray(ifaces.tcp_client) ? ifaces.tcp_client : [];
-    for (var i = 0; i < clients.length; i++) {
-        var iface = clients[i] || {};
-        if (!_publicServerMatchesEndpoint(server, iface.target_host, iface.target_port)) continue;
-        var live = (typeof getInterfaceLiveStatus === 'function') ? getInterfaceLiveStatus(iface.name || '') : null;
-        return {
-            iface: iface,
-            online: live ? live.online !== false : false,
-        };
-    }
-    return null;
+    var match = null;
+    ['tcp_client', 'backbone_client'].forEach(function(ifaceType) {
+        var clients = Array.isArray(ifaces[ifaceType]) ? ifaces[ifaceType] : [];
+        for (var i = 0; i < clients.length; i++) {
+            var iface = clients[i] || {};
+            if (!_publicServerMatchesEndpoint(server, iface.target_host, iface.target_port)) continue;
+            var live = (typeof getInterfaceLiveStatus === 'function') ? getInterfaceLiveStatus(iface.name || '') : null;
+            var online = live ? live.online !== false : false;
+            if (!match || (online && !match.online)) {
+                match = { iface: iface, ifaceType: ifaceType, online: online };
+            }
+        }
+    });
+    return match;
 }
 
 function _publicServerState(server, ifaces) {
@@ -1994,7 +2004,7 @@ function resumePublicServerInterface(server, match) {
     RS.invoke('resume_interface', {
         args: {
             name: iface.name,
-            iface_type: 'tcp_client'
+            iface_type: match.ifaceType || 'tcp_client'
         }
     }).then(function() {
         if (typeof refreshConfigInterfaces === 'function') refreshConfigInterfaces();

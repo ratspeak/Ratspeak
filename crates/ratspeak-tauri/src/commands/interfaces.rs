@@ -54,6 +54,10 @@ use crate::state::{
     ActivityRequestFence, AppState, InterfaceLifecycleOperationLease, RNodeLifecycleOperationLease,
 };
 use crate::window_prefs::{CLOSE_BUTTON_SETTING, CloseButtonAction};
+// The runtime lists the public servers once, for the limit here and the one at startup.
+use ratspeak_runtime::{
+    projected_enabled_public_tcp_server_ids, public_tcp_server_id, public_tcp_server_id_from_entry,
+};
 
 const DEFAULT_PEERS_SORT: &str = "last_seen";
 const DEFAULT_THEME_FAMILY: &str = "nord";
@@ -567,81 +571,6 @@ const PUBLIC_TCP_TRANSPORT_CONNECT_LIMIT_MESSAGE: &str =
     "Disable Transport Mode before connecting to more than 1 public server.";
 const PUBLIC_TCP_TRANSPORT_ENABLE_LIMIT_MESSAGE: &str =
     "Transport Mode can't be enabled while connected to more than 1 public server.";
-
-const PUBLIC_TCP_ENDPOINTS: &[(&str, u16, &str)] = &[
-    ("1.ratspeak.org", 4141, "ratspeak-ruby"),
-    ("2.ratspeak.org", 4242, "ratspeak-emerald"),
-    ("rns.ratspeak.org", 4242, "ratspeak-emerald"),
-    ("3.ratspeak.org", 4343, "ratspeak-diamond"),
-    ("rns.not-a-number.io", 4242, "apollo-rns"),
-    ("rns.beleth.net", 4242, "beleth"),
-    ("rns.michmesh.net", 7822, "michmesh"),
-    ("rns.one-big.network", 4242, "one-big-network"),
-    ("rmap.world", 4242, "rmap"),
-    ("swiss-rns.cl0ud.ch", 4242, "swiss-rns"),
-    ("rns.utn.lol", 4965, "utn-oregon"),
-    ("reticulum.washmesh.net", 7242, "washmesh"),
-];
-
-fn normalise_public_tcp_host(host: &str) -> String {
-    let mut value = host.trim().to_ascii_lowercase();
-    if let Some((_, tail)) = value.split_once("://") {
-        value = tail.to_string();
-    }
-    if let Some((head, _)) = value.split_once('/') {
-        value = head.to_string();
-    }
-    value.trim_end_matches('.').to_string()
-}
-
-fn public_tcp_server_id(host: &str, port: u16) -> Option<&'static str> {
-    let host = normalise_public_tcp_host(host);
-    PUBLIC_TCP_ENDPOINTS
-        .iter()
-        .find_map(|(public_host, public_port, id)| {
-            (host == *public_host && port == *public_port).then_some(*id)
-        })
-}
-
-fn public_tcp_server_id_from_entry(entry: &Value) -> Option<&'static str> {
-    public_tcp_server_id(
-        &cfg_str(entry, "target_host")?,
-        cfg_u16(entry, "target_port")?,
-    )
-}
-
-fn push_unique_public_server_id(ids: &mut Vec<&'static str>, id: &'static str) {
-    if !ids.contains(&id) {
-        ids.push(id);
-    }
-}
-
-fn projected_enabled_public_tcp_server_ids(
-    ifaces: &Value,
-    replace_name: Option<&str>,
-    candidate: Option<&'static str>,
-) -> Vec<&'static str> {
-    let mut ids = Vec::new();
-    if let Some(entries) = ifaces.get("tcp_client").and_then(Value::as_array) {
-        for entry in entries {
-            if replace_name
-                .is_some_and(|name| entry.get("name").and_then(Value::as_str) == Some(name))
-            {
-                continue;
-            }
-            if !crate::rns_config::interface_entry_enabled(entry) {
-                continue;
-            }
-            if let Some(id) = public_tcp_server_id_from_entry(entry) {
-                push_unique_public_server_id(&mut ids, id);
-            }
-        }
-    }
-    if let Some(id) = candidate {
-        push_unique_public_server_id(&mut ids, id);
-    }
-    ids
-}
 
 fn enabled_public_tcp_server_count(ifaces: &Value) -> usize {
     projected_enabled_public_tcp_server_ids(ifaces, None, None).len()
@@ -5074,7 +5003,7 @@ pub async fn resume_interface(
         if group == "rnode" {
             let _ = crate::commands::shared::mark_lora_add_freshness(&config_dir, &name, false);
         }
-        if group == "tcp_client" {
+        if group == "tcp_client" || group == "backbone_client" {
             let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
             enforce_public_tcp_transport_connect_limit(
                 &state_arc,
@@ -8208,8 +8137,16 @@ pub async fn add_backbone_connection(
     };
 
     let config_dir = active_rns_config_dir(&state_arc);
+    let candidate_public_server = public_tcp_server_id(&host, port as u16);
     if !with_rns_config_lock(&state_arc, || {
-        crate::rns_config::add_backbone_client(
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+        enforce_public_tcp_transport_connect_limit(
+            &state_arc,
+            &ifaces,
+            Some(&iface_name),
+            candidate_public_server,
+        )?;
+        Ok::<_, AppError>(crate::rns_config::add_backbone_client(
             &config_dir,
             crate::rns_config::BackboneClientArgs {
                 name: &iface_name,
@@ -8221,8 +8158,8 @@ pub async fn add_backbone_connection(
                 i2p_tunneled: args.i2p_tunneled,
                 ifac: ifac.config_args(),
             },
-        )
-    }) {
+        ))
+    })? {
         emit_op_status_broadcast(
             &state_arc,
             "add_backbone",
@@ -8370,14 +8307,22 @@ pub async fn update_backbone_connection(
     };
 
     let config_dir = active_rns_config_dir(&state_arc);
+    let candidate_public_server = public_tcp_server_id(&host, port as u16);
     let (old_runtime, old_config_content, config_written, ifac) =
         with_rns_config_lock(&state_arc, || {
+            let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
             let old_entry = find_config_interface(&config_dir, "backbone_client", &old_name)
                 .ok_or_else(|| AppError::bad_request("Interface not found"))?;
             let old_runtime = backbone_client_config_from_entry(&old_entry)
                 .ok_or_else(|| AppError::bad_request("Invalid Backbone config"))?;
             let old_ifac = ifac_settings_from_entry(&old_entry);
             let ifac = ifac_settings_from_args(&args.ifac, Some(&old_ifac))?;
+            enforce_public_tcp_transport_connect_limit(
+                &state_arc,
+                &ifaces,
+                Some(&old_name),
+                candidate_public_server,
+            )?;
             let old_config_content =
                 crate::rns_config::read_config(&config_dir).unwrap_or_default();
             let config_written = crate::rns_config::update_backbone_client(
@@ -9184,6 +9129,13 @@ mod backbone_args_tests {
             Some("ratspeak-emerald")
         );
         assert_eq!(public_tcp_server_id("example.net", 4242), None);
+        // The commands match on the runtime's list, both of Emerald's names included.
+        for (host, port, id) in [
+            ("2.ratspeak.org", 4242, "ratspeak-emerald"),
+            ("rns.ratspeak.org", 4242, "ratspeak-emerald"),
+        ] {
+            assert_eq!(public_tcp_server_id(host, port), Some(id));
+        }
         assert_eq!(
             public_tcp_server_id("RNS.MichMesh.net", 7822),
             Some("michmesh")
@@ -9241,6 +9193,83 @@ mod backbone_args_tests {
 
         assert!(auto_transport_base_enabled_for_interfaces(&ifaces, "wifi"));
         assert!(!auto_transport_enabled_for_interfaces(&ifaces, "wifi"));
+    }
+
+    #[test]
+    fn a_public_server_saved_as_backbone_counts_for_the_transport_limit() {
+        let ifaces = serde_json::json!({
+            "rnode": [],
+            "auto": [],
+            "tcp_client": [
+                { "name": "Ruby", "type": "TCPClientInterface", "target_host": "1.ratspeak.org", "target_port": "4141", "enabled": true }
+            ],
+            "tcp_server": [],
+            "backbone_client": [
+                { "name": "Backbone to Ruby", "type": "BackboneInterface", "target_host": "1.ratspeak.org", "target_port": "4141", "enabled": true },
+                { "name": "Backbone to Emerald", "type": "BackboneInterface", "target_host": "rns.ratspeak.org", "target_port": "4242", "enabled": true },
+                { "name": "Paused Diamond", "type": "BackboneInterface", "target_host": "3.ratspeak.org", "target_port": "4343", "enabled": false }
+            ],
+            "backbone_server": []
+        });
+        assert_eq!(
+            enabled_public_tcp_server_count(&ifaces),
+            2,
+            "Ruby saved both ways is one server"
+        );
+        assert!(auto_transport_base_enabled_for_interfaces(&ifaces, "wifi"));
+        assert!(!auto_transport_enabled_for_interfaces(&ifaces, "wifi"));
+
+        let pool = r2d2::Pool::builder()
+            .max_size(2)
+            .build(r2d2_sqlite::SqliteConnectionManager::memory())
+            .unwrap();
+        db::init_schema(&pool).unwrap();
+        db::set_setting(&pool, "transport_mode", "on");
+        let state = AppState::new(
+            crate::config::DashboardConfig::from_env_and_defaults(std::env::temp_dir()),
+            pool,
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        );
+        let allowed = |ifaces: &Value, replace: &str, candidate: Option<&'static str>| {
+            enforce_public_tcp_transport_connect_limit(&state, ifaces, Some(replace), candidate)
+                .is_ok()
+        };
+        let emerald_as_backbone = serde_json::json!({
+            "backbone_client": [
+                { "name": "Backbone to Emerald", "target_host": "2.ratspeak.org", "target_port": "4242", "enabled": true }
+            ]
+        });
+        let ruby = public_tcp_server_id("1.ratspeak.org", 4141);
+        assert!(
+            !allowed(&emerald_as_backbone, "Ruby", ruby),
+            "a second public server is refused beside one saved as Backbone"
+        );
+        assert!(
+            allowed(
+                &emerald_as_backbone,
+                "Emerald",
+                public_tcp_server_id("rns.ratspeak.org", 4242)
+            ),
+            "the same server saved another way is not a second one"
+        );
+        assert!(
+            allowed(&emerald_as_backbone, "Backbone to Emerald", ruby),
+            "the entry being edited makes room for what it becomes"
+        );
+        assert!(allowed(&emerald_as_backbone, "Private", None));
+
+        // Resuming a paused Backbone entry is a connect like any other.
+        let paused = &ifaces["backbone_client"][2];
+        assert_eq!(
+            public_tcp_server_id_from_entry(paused),
+            Some("ratspeak-diamond")
+        );
+        assert!(!allowed(
+            &emerald_as_backbone,
+            "Paused Diamond",
+            public_tcp_server_id_from_entry(paused)
+        ));
     }
 
     #[test]

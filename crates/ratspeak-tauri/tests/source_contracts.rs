@@ -5298,6 +5298,30 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
     assert!(modals_js.contains("quickConnect(server.host, server.port, server.name"));
     assert!(modals_js.contains("if (bbCheckbox && opts.publicServer) bbCheckbox.checked = false;"));
 
+    // A public server is one however it is saved: the sheet matches a
+    // Backbone client too, and every way to connect one holds the limit.
+    assert!(modals_js.contains("['tcp_client', 'backbone_client'].forEach(function(ifaceType) {"));
+    assert!(modals_js.contains("iface_type: match.ifaceType || 'tcp_client'"));
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interfaces commands");
+    for command in [
+        "add_tcp_connection",
+        "update_tcp_connection",
+        "add_backbone_connection",
+        "update_backbone_connection",
+        "resume_interface",
+    ] {
+        assert!(
+            rust_function_block(&interfaces_rs, command)
+                .contains("enforce_public_tcp_transport_connect_limit("),
+            "{command} must hold the public server limit"
+        );
+    }
+    assert!(
+        rust_function_block(&interfaces_rs, "resume_interface")
+            .contains(r#"if group == "tcp_client" || group == "backbone_client" {"#)
+    );
+
     let modals_css =
         read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
     assert!(modals_css.contains(".sheet-segmented-tabs"));
@@ -5386,11 +5410,15 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
     assert!(views_css.contains(".peer-details-toggle,\n.public-server-more-toggle {"));
     assert!(views_css.contains(".peer-details-region,\n.public-server-more-region {"));
 
-    // The transport limits count the same servers.
-    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
-        .expect("interface commands");
+    // The transport limits count the same servers, from one list in the
+    // runtime that the commands and the startup check both read.
     let runtime_rs =
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
+    assert_eq!(runtime_rs.matches("TCP_ENDPOINTS: &[").count(), 1);
+    assert!(!interfaces_rs.contains("TCP_ENDPOINTS: &["));
+    assert!(runtime_rs.contains(
+        r#"const PUBLIC_TCP_CLIENT_GROUPS: [&str; 2] = ["tcp_client", "backbone_client"];"#
+    ));
     for endpoint in [
         "(\"1.ratspeak.org\", 4141, \"ratspeak-ruby\")",
         "(\"2.ratspeak.org\", 4242, \"ratspeak-emerald\")",
@@ -5406,12 +5434,8 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
         "(\"reticulum.washmesh.net\", 7242, \"washmesh\")",
     ] {
         assert!(
-            interfaces_rs.contains(endpoint),
-            "connect limit misses {endpoint}"
-        );
-        assert!(
             runtime_rs.contains(endpoint),
-            "startup limit misses {endpoint}"
+            "the transport limit misses {endpoint}"
         );
     }
     let public_servers_test =
@@ -9630,7 +9654,8 @@ fn transport_mode_defaults_and_auto_policy_are_explicit() {
         interfaces_rs
             .contains("Disable Transport Mode before connecting to more than 1 public server.")
     );
-    assert!(interfaces_rs.contains("rns.ratspeak.org\", 4242, \"ratspeak-emerald"));
+    // The servers themselves are listed once, in the runtime.
+    assert!(interfaces_rs.contains("projected_enabled_public_tcp_server_ids("));
     assert!(interfaces_rs.contains("has_enabled_non_lora_transport_interface"));
     assert!(interfaces_rs.contains("reconcile_auto_transport_after_interface_change"));
     assert!(interfaces_rs.contains("transport_network_type"));

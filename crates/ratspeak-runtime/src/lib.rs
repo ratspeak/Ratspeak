@@ -1021,7 +1021,9 @@ fn startup_has_enabled_non_lora_transport_interface(ifaces: &Value) -> bool {
     .any(|key| startup_interface_group_has_enabled(ifaces, key))
 }
 
-const STARTUP_PUBLIC_TCP_ENDPOINTS: &[(&str, u16, &str)] = &[
+/// The public servers, by endpoint: the Transport Mode limit counts them, and
+/// the dashboard's Connect sheet lists the same ones.
+const PUBLIC_TCP_ENDPOINTS: &[(&str, u16, &str)] = &[
     ("1.ratspeak.org", 4141, "ratspeak-ruby"),
     ("2.ratspeak.org", 4242, "ratspeak-emerald"),
     ("rns.ratspeak.org", 4242, "ratspeak-emerald"),
@@ -1036,7 +1038,10 @@ const STARTUP_PUBLIC_TCP_ENDPOINTS: &[(&str, u16, &str)] = &[
     ("reticulum.washmesh.net", 7242, "washmesh"),
 ];
 
-fn startup_normalise_public_tcp_host(host: &str) -> String {
+/// The interface groups whose entries connect out to a `target_host`.
+const PUBLIC_TCP_CLIENT_GROUPS: [&str; 2] = ["tcp_client", "backbone_client"];
+
+fn normalise_public_tcp_host(host: &str) -> String {
     let mut value = host.trim().to_ascii_lowercase();
     if let Some((_, tail)) = value.split_once("://") {
         value = tail.to_string();
@@ -1047,44 +1052,58 @@ fn startup_normalise_public_tcp_host(host: &str) -> String {
     value.trim_end_matches('.').to_string()
 }
 
-fn startup_public_tcp_server_id(host: &str, port: u16) -> Option<&'static str> {
-    let host = startup_normalise_public_tcp_host(host);
-    STARTUP_PUBLIC_TCP_ENDPOINTS
+/// The public server at `host:port`, when it is one.
+pub fn public_tcp_server_id(host: &str, port: u16) -> Option<&'static str> {
+    let host = normalise_public_tcp_host(host);
+    PUBLIC_TCP_ENDPOINTS
         .iter()
         .find_map(|(public_host, public_port, id)| {
             (host == *public_host && port == *public_port).then_some(*id)
         })
 }
 
-fn startup_public_tcp_server_id_from_entry(entry: &Value) -> Option<&'static str> {
-    startup_public_tcp_server_id(
+/// The public server a TCP or Backbone client entry connects to.
+pub fn public_tcp_server_id_from_entry(entry: &Value) -> Option<&'static str> {
+    public_tcp_server_id(
         &startup_cfg_str(entry, "target_host")?,
         startup_cfg_u16(entry, "target_port")?,
     )
 }
 
-fn startup_enabled_public_tcp_server_count(ifaces: &Value) -> usize {
+/// The public servers the enabled entries of `ifaces` connect to, each once
+/// however many entries of either type reach it, with the entry
+/// `replace_name` left out and `candidate` added.
+pub fn projected_enabled_public_tcp_server_ids(
+    ifaces: &Value,
+    replace_name: Option<&str>,
+    candidate: Option<&'static str>,
+) -> Vec<&'static str> {
     let mut ids = Vec::new();
-    if let Some(entries) = ifaces.get("tcp_client").and_then(Value::as_array) {
-        for entry in entries {
-            if !crate::rns_config::interface_entry_enabled(entry) {
-                continue;
-            }
-            if let Some(id) =
-                startup_public_tcp_server_id_from_entry(entry).filter(|id| !ids.contains(id))
-            {
-                ids.push(id);
-            }
+    let entries = PUBLIC_TCP_CLIENT_GROUPS
+        .into_iter()
+        .filter_map(|group| ifaces.get(group).and_then(Value::as_array))
+        .flatten()
+        .filter(|entry| {
+            !replace_name
+                .is_some_and(|name| entry.get("name").and_then(Value::as_str) == Some(name))
+                && crate::rns_config::interface_entry_enabled(entry)
+        });
+    for id in entries
+        .filter_map(public_tcp_server_id_from_entry)
+        .chain(candidate)
+    {
+        if !ids.contains(&id) {
+            ids.push(id);
         }
     }
-    ids.len()
+    ids
 }
 
 fn startup_auto_transport_enabled_for_interfaces(ifaces: &Value, network_type: &str) -> bool {
     startup_transport_auto_network_allows(network_type)
         && startup_has_enabled_non_lora_transport_interface(ifaces)
         && !startup_has_enabled_lora_interface(ifaces)
-        && startup_enabled_public_tcp_server_count(ifaces) <= 1
+        && projected_enabled_public_tcp_server_ids(ifaces, None, None).len() <= 1
 }
 
 fn reconcile_persisted_transport_mode_for_startup(state: &AppState, config_dir: &std::path::Path) {
@@ -10407,20 +10426,137 @@ mod transport_startup_tests {
         std::fs::remove_dir_all(root).ok();
     }
 
+    // A Backbone client reaches the same public servers a TCP client does.
     #[test]
-    fn startup_public_servers_include_community_presets_on_their_own_ports() {
+    fn startup_transport_auto_counts_a_public_server_saved_as_backbone() {
+        for (ruby_type, emerald_type, emerald_host, transport) in [
+            (
+                "TCPClientInterface",
+                "BackboneInterface",
+                "2.ratspeak.org",
+                false,
+            ),
+            (
+                "BackboneInterface",
+                "BackboneInterface",
+                "rns.ratspeak.org",
+                false,
+            ),
+            // One server saved both ways is one server.
+            (
+                "TCPClientInterface",
+                "BackboneInterface",
+                "1.ratspeak.org:4141",
+                true,
+            ),
+        ] {
+            let root = temp_root("public-limit-backbone");
+            let state = state_for_root(root.clone());
+            let config_dir = state.config.rns_config_dir.clone();
+            let (host, port) = emerald_host
+                .split_once(':')
+                .unwrap_or((emerald_host, "4242"));
+            rns_config::write_config(
+                &config_dir,
+                &format!(
+                    "[reticulum]\nenable_transport = True\n\n[interfaces]\n\
+                     [[Ruby]]\n\
+                     type = {ruby_type}\n\
+                     enabled = true\n\
+                     target_host = 1.ratspeak.org\n\
+                     target_port = 4141\n\
+                     [[Second]]\n\
+                     type = {emerald_type}\n\
+                     enabled = true\n\
+                     target_host = {host}\n\
+                     target_port = {port}\n"
+                ),
+            );
+            db::set_setting(&state.db, "transport_mode", "auto");
+            db::set_setting(&state.db, "transport_network_type", "wifi");
+
+            reconcile_persisted_transport_mode_for_startup(&state, &config_dir);
+
+            assert_eq!(
+                rns_config::transport_mode_enabled(&config_dir),
+                transport,
+                "{ruby_type} + {emerald_type} to {emerald_host}"
+            );
+            std::fs::remove_dir_all(root).ok();
+        }
+    }
+
+    #[test]
+    fn public_servers_include_community_presets_on_their_own_ports() {
         assert_eq!(
-            startup_public_tcp_server_id("RNS.MichMesh.net", 7822),
+            public_tcp_server_id("RNS.MichMesh.net", 7822),
             Some("michmesh")
         );
-        assert_eq!(startup_public_tcp_server_id("rns.michmesh.net", 4242), None);
+        assert_eq!(public_tcp_server_id("rns.michmesh.net", 4242), None);
+        let count =
+            |ifaces: &Value| projected_enabled_public_tcp_server_ids(ifaces, None, None).len();
         let ifaces = serde_json::json!({
             "tcp_client": [
                 { "name": "UTN", "target_host": "rns.utn.lol", "target_port": "4965", "enabled": true },
                 { "name": "Washmesh", "target_host": "reticulum.washmesh.net", "target_port": "7242", "enabled": true }
             ]
         });
-        assert_eq!(startup_enabled_public_tcp_server_count(&ifaces), 2);
+        assert_eq!(count(&ifaces), 2);
+    }
+
+    #[test]
+    fn a_public_server_counts_once_however_it_is_saved() {
+        let ids = projected_enabled_public_tcp_server_ids;
+        let ifaces = serde_json::json!({
+            "tcp_client": [
+                { "name": "Ruby", "target_host": "1.ratspeak.org", "target_port": "4141", "enabled": true },
+                { "name": "Emerald", "target_host": "2.ratspeak.org", "target_port": "4242", "enabled": true }
+            ],
+            "backbone_client": [
+                { "name": "Backbone to Emerald", "target_host": "RNS.Ratspeak.org.", "target_port": "4242", "enabled": true },
+                { "name": "Backbone to RMAP", "target_host": "rmap.world", "target_port": "4242", "enabled": true },
+                { "name": "Paused", "target_host": "rns.utn.lol", "target_port": "4965", "enabled": false },
+                { "name": "Private", "target_host": "hub.example", "target_port": "4242", "enabled": true }
+            ],
+            // A server listens; it connects to nothing.
+            "backbone_server": [
+                { "name": "Listener", "target_host": "3.ratspeak.org", "target_port": "4343", "enabled": true }
+            ]
+        });
+        assert_eq!(
+            ids(&ifaces, None, None),
+            ["ratspeak-ruby", "ratspeak-emerald", "rmap"]
+        );
+        assert_eq!(
+            ids(&ifaces, Some("Backbone to RMAP"), None),
+            ["ratspeak-ruby", "ratspeak-emerald"],
+            "an entry being replaced is left out, whichever type it is"
+        );
+        assert_eq!(
+            ids(&ifaces, Some("Emerald"), None),
+            ["ratspeak-ruby", "ratspeak-emerald", "rmap"],
+            "its Backbone copy still reaches Emerald"
+        );
+        assert_eq!(
+            ids(&ifaces, Some("Backbone to RMAP"), Some("ratspeak-emerald")),
+            ["ratspeak-ruby", "ratspeak-emerald"]
+        );
+        assert_eq!(
+            ids(&ifaces, None, Some("washmesh")),
+            ["ratspeak-ruby", "ratspeak-emerald", "rmap", "washmesh"]
+        );
+
+        let backbone_only = serde_json::json!({
+            "backbone_client": [
+                { "name": "A", "target_host": "1.ratspeak.org", "target_port": "4141", "enabled": true },
+                { "name": "B", "target_host": "3.ratspeak.org", "target_port": "4343", "enabled": true }
+            ]
+        });
+        assert_eq!(ids(&backbone_only, None, None).len(), 2);
+        assert_eq!(
+            public_tcp_server_id_from_entry(&backbone_only["backbone_client"][1]),
+            Some("ratspeak-diamond")
+        );
     }
 
     #[test]

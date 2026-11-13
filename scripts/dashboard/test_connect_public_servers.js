@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // The Connect to Network sheet's Public tab: three Ratspeak servers up front,
 // community servers inside a closed disclosure, and one list of endpoints
-// shared with the Rust transport limits. Runs the shipped card and disclosure
-// code against a small DOM model that parses the markup it writes.
+// shared with the Rust transport limits, matched for TCP and Backbone clients
+// alike. Runs the shipped card and disclosure code against a small DOM model
+// that parses the markup it writes.
 
 'use strict';
 
@@ -411,6 +412,60 @@ function testOpensForSavedOrConnected() {
     assert.strictEqual(official.isOpen(), false);
 }
 
+// A public server saved as a Backbone client is the same server.
+function testSavedAsBackbone() {
+    var h = createHarness();
+    h.live['Backbone to Ruby'] = { online: false };
+    h.render({
+        tcp_client: [],
+        backbone_client: [
+            { name: 'Backbone to Ruby', target_host: '1.RATSPEAK.org.', target_port: '4141' },
+            { name: 'Private', target_host: 'hub.example', target_port: '4141' }
+        ],
+        // A listener connects to nothing.
+        backbone_server: [{ name: 'Listener', target_host: '3.ratspeak.org', target_port: '4343' }]
+    });
+    var ruby = h.card('ratspeak-ruby');
+    assert(ruby.hasClass('is-added') && !ruby.hasClass('is-connected'));
+    assert(!h.card('ratspeak-diamond').hasClass('is-added'));
+    ruby.click();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(h.invoked)), [{
+        name: 'resume_interface', args: { args: { name: 'Backbone to Ruby', iface_type: 'backbone_client' } }
+    }], 'the saved Backbone interface resumes; no TCP copy is added beside it');
+    assert.strictEqual(h.quickConnects.length, 0);
+
+    var connected = createHarness();
+    connected.live['Backbone to RMAP'] = { online: true };
+    connected.render({
+        backbone_client: [{ name: 'Backbone to RMAP', target_host: 'rmap.world', target_port: 4242 }]
+    });
+    assert.strictEqual(connected.isOpen(), true, 'a community server connected by Backbone opens the list');
+    var rmap = connected.card('rmap');
+    assert(rmap.hasClass('is-connected'));
+    assert.strictEqual(rmap.disabled, true);
+
+    // Saved both ways, the one that is online decides, whichever type it is.
+    [['Emerald', 'Backbone to Emerald'], ['Backbone to Emerald', 'Emerald']].forEach(function(pair) {
+        var both = createHarness();
+        both.live[pair[0]] = { online: true };
+        both.live[pair[1]] = { online: false };
+        both.render({
+            tcp_client: [{ name: 'Emerald', target_host: '2.ratspeak.org', target_port: 4242 }],
+            backbone_client: [{ name: 'Backbone to Emerald', target_host: 'rns.ratspeak.org', target_port: 4242 }]
+        });
+        assert(both.card('ratspeak-emerald').hasClass('is-connected'), pair[0] + ' is online');
+    });
+    var paused = createHarness();
+    paused.render({
+        tcp_client: [{ name: 'Emerald', target_host: '2.ratspeak.org', target_port: 4242 }],
+        backbone_client: [{ name: 'Backbone to Emerald', target_host: 'rns.ratspeak.org', target_port: 4242 }]
+    });
+    paused.card('ratspeak-emerald').click();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(paused.invoked)), [{
+        name: 'resume_interface', args: { args: { name: 'Emerald', iface_type: 'tcp_client' } }
+    }], 'with neither online the first saved resumes, and only that one');
+}
+
 function testConnect() {
     var h = createHarness();
     h.render({});
@@ -476,19 +531,27 @@ function testEndpoints() {
         'a preset is its host and its own port');
     assert.strictEqual(h.context._isPublicTcpServer('example.net', 4242), false);
 
-    // The transport limits count public servers from the same list, in Rust.
-    [
-        ['crates/ratspeak-tauri/src/commands/interfaces.rs', 'const PUBLIC_TCP_ENDPOINTS'],
-        ['crates/ratspeak-runtime/src/lib.rs', 'const STARTUP_PUBLIC_TCP_ENDPOINTS']
-    ].forEach(function(pair) {
-        var block = sourceRange(read(pair[0]), pair[1], '];');
-        endpoints.forEach(function(endpoint) {
-            var tuple = '("' + endpoint.host + '", ' + endpoint.port + ', "' + endpoint.id + '")';
-            assert(block.indexOf(tuple) !== -1, pair[0] + ' must list ' + tuple);
-        });
-        assert.strictEqual(block.split('\n    ("').length - 1, endpoints.length,
-            pair[0] + ' must list exactly the dashboard endpoints');
+    assert.strictEqual(h.context._isPublicTcpServer('https://2.Ratspeak.org./', 4242), true,
+        'a host is matched in the form the Rust limit matches it');
+
+    // The transport limits count public servers from one list in Rust, which
+    // the commands and the startup check both read.
+    var runtime = read('crates/ratspeak-runtime/src/lib.rs');
+    var block = sourceRange(runtime, 'const PUBLIC_TCP_ENDPOINTS', '];');
+    endpoints.forEach(function(endpoint) {
+        var tuple = '("' + endpoint.host + '", ' + endpoint.port + ', "' + endpoint.id + '")';
+        assert(block.indexOf(tuple) !== -1, 'the runtime must list ' + tuple);
     });
+    assert.strictEqual(block.split('\n    ("').length - 1, endpoints.length,
+        'the runtime must list exactly the dashboard endpoints');
+    assert.strictEqual(runtime.split('TCP_ENDPOINTS: &[').length - 1, 1, 'one list in the runtime');
+    assert(runtime.indexOf('const PUBLIC_TCP_CLIENT_GROUPS: [&str; 2] = ["tcp_client", "backbone_client"];') !== -1,
+        'a server counts whether a TCP client or a Backbone client reaches it');
+    var commands = read('crates/ratspeak-tauri/src/commands/interfaces.rs');
+    assert.strictEqual(commands.indexOf('TCP_ENDPOINTS: &['), -1, 'the commands keep no second list');
+    assert(/use ratspeak_runtime::\{[^}]*\bpublic_tcp_server_id\b[^}]*\};/.test(commands) &&
+        /use ratspeak_runtime::\{[^}]*\bprojected_enabled_public_tcp_server_ids\b[^}]*\};/.test(commands),
+        'the commands match and count with the runtime list');
 }
 
 // The sheet's focus trap must wrap at the last control a keyboard can reach.
@@ -555,6 +618,7 @@ function testSources() {
 testGrouping();
 testToggle();
 testOpensForSavedOrConnected();
+testSavedAsBackbone();
 testConnect();
 testEndpoints();
 testFocusTrapSkipsClosedList();
