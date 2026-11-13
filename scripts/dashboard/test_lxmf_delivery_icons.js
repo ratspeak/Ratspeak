@@ -139,8 +139,6 @@ var handlers = {};
 var events = {
     RS: { listen: function(event, handler) { handlers[event] = handler; } },
     lxmfConversation: [],
-    lxmfConversations: [],
-    _renderConversationsFromCache: function() {},
     _pendingLxmfCancelByClientId: {},
     _flushPendingLxmfCancel: function() {},
     _cacheActiveConversation: function() {},
@@ -150,7 +148,7 @@ var events = {
 };
 vm.createContext(events);
 vm.runInContext(source.slice(0, source.indexOf('var lxmfIdentity')), events);
-vm.runInContext(functionSource('_messageStateAfterStep') + functionSource('_applyStepToConversationList') +
+vm.runInContext(functionSource('_messageStateAfterStep') +
     listenerSource('lxmf_step') + listenerSource('lxmf_delivery_progress'), events);
 function after(event, from, step) {
     events.lxmfConversation = [{ id: 'm', direction: 'outbound', state: from }];
@@ -295,34 +293,7 @@ handlers.lxmf_step({ step: 'waiting', msg_id: id, client_msg_id: 'out_1', method
 assert.deepStrictEqual(Object.assign({}, events.lxmfConversation[0]),
     { id: id, direction: 'outbound', state: 'waiting', delivery_method: 'direct' });
 
-// The conversation list follows the step for a chat's last message, and only that message.
-var listRenders = 0;
-events._renderConversationsFromCache = function() { listRenders++; };
-var lastRow = { hash: 'peer', last_direction: 'outbound', last_msg_id: 'm2', last_state: 'sending' };
-var inboundRow = { hash: 'other', last_direction: 'inbound', last_msg_id: 'm9', last_state: null };
-events.lxmfConversations = [inboundRow, lastRow];
-events.lxmfConversation = [];
-function listStep(msgId, step, extra) {
-    handlers.lxmf_step(Object.assign({ msg_id: msgId, step: step }, extra || {}));
-    return lastRow.last_state;
-}
-assert.strictEqual(listStep('m2', 'waiting'), 'waiting');
-assert.strictEqual(listRenders, 1, 'the list is drawn again when its mark changes');
-assert.strictEqual(listStep('m2', 'waiting'), 'waiting');
-assert.strictEqual(listRenders, 1, 'and not when nothing changed');
-assert.strictEqual(listStep('m1', 'failed', { destination: 'peer' }), 'waiting', 'an older message in the same chat is not the row');
-assert.strictEqual(listStep('m2', 'routing'), 'waiting');
-assert.strictEqual(listStep('m2', 'sending', { wake: 'wake_user' }), 'sending');
-assert.strictEqual(listStep('m2', 'sent'), 'sent');
-assert.strictEqual(listStep('m2', 'delivered'), 'delivered');
-assert.strictEqual(listStep('m2', 'waiting'), 'delivered', 'the row keeps a bubble\'s precedence');
-assert.strictEqual(listStep('m2', 'failed'), 'delivered');
-assert.strictEqual(listRenders, 4);
-handlers.lxmf_step({ msg_id: 'm9', step: 'waiting' });
-assert.strictEqual(inboundRow.last_state, null, 'a received message has no delivery mark');
-events.lxmfConversations = [];
-
-// The list draws the same mark as the bubble, before the preview.
+// The conversation list shows no delivery mark, whatever the last message's state; the bubble keeps its own.
 var listContainer = { innerHTML: '', _convSwipeAttached: true, querySelectorAll: function() { return []; } };
 var list = {
     document: { getElementById: function() { return listContainer; } },
@@ -342,20 +313,36 @@ var list = {
 };
 vm.createContext(list);
 vm.runInContext(functionSource('_messageStateIconHtml') + functionSource('_renderConversationsFromCache'), list);
-list._renderConversationsFromCache([
-    { hash: 'a', display_name: 'Mara', last_message: 'Back by six', last_direction: 'outbound', last_state: 'waiting', last_msg_id: 'm2' },
-    { hash: 'b', display_name: 'Ivy', last_message: 'Bring the charger', last_direction: 'inbound', last_state: null, last_msg_id: 'm9' },
-    { hash: 'c', display_name: 'Tess', last_message: 'Saturday?', last_direction: 'outbound', last_state: 'rejected', last_msg_id: 'm4' }
-]);
+var LIST_STATES = Object.keys(context.LXMF_OUTBOUND_STATES);
+['sent', 'delivered', 'waiting', 'failed'].forEach(function(state) {
+    assert(LIST_STATES.indexOf(state) !== -1, state + ' is a state the list is checked for');
+});
+list._renderConversationsFromCache(LIST_STATES.map(function(state) {
+    return { hash: 'out-' + state, display_name: 'Mara', last_message: 'Back by six', last_direction: 'outbound',
+        last_state: state, last_delivery_method: 'direct', last_msg_id: 'm-' + state, timestamp: 1 };
+}).concat([
+    { hash: 'in', display_name: 'Ivy', last_message: 'Bring the charger', last_direction: 'inbound',
+        last_state: null, last_msg_id: 'm9', timestamp: 1, unread: 2 }
+]));
 var listRows = listContainer.innerHTML.split('<div role="button"').slice(1);
-assert.strictEqual(listRows.length, 3);
-assert(listRows[0].includes('msg-state-waiting') && listRows[0].includes(HOURGLASS) &&
-    listRows[0].indexOf('msg-state-waiting') < listRows[0].indexOf('You: Back by six'), 'the hourglass sits before the preview');
-assert(!listRows[0].includes('Waiting to send</') && !listRows[0].includes('conv-unread-badge'), 'no status words and no badge');
-assert(!listRows[1].includes('msg-state-icon'), 'a chat that ends on a received message shows no mark');
-assert(listRows[2].includes('msg-state-rejected') && !listRows[2].includes('msg-state-label'),
-    'the list shows a mark, never a word');
+assert.strictEqual(listRows.length, LIST_STATES.length + 1);
+LIST_STATES.forEach(function(state, index) {
+    var row = listRows[index];
+    assert(row.includes('data-hash="out-' + state + '"'));
+    assert(!row.includes('msg-state') && !row.includes('<svg'), 'the list shows no delivery mark for ' + state);
+    assert(row.includes('<div class="conv-row-bottom"><span class="conv-preview">' +
+        '<span class="conv-preview-text">You: Back by six</span></span></div>'), state + ' previews as You: and the text alone');
+    assert(row.includes('<span class="conv-time">now</span>'));
+});
+var inboundListRow = listRows[LIST_STATES.length];
+assert(!inboundListRow.includes('msg-state') && !inboundListRow.includes('You: '));
+assert(inboundListRow.includes('<span class="conv-preview-text">Bring the charger</span></span>' +
+    '<span class="conv-unread-badge">2</span>'), 'the unread badge follows the preview');
+assert(!/\.conv-preview[^{]*msg-state/.test(css), 'no list rule styles a delivery mark');
 assert(icon('rejected', 'direct').includes('<span class="msg-state-label">Rejected</span>'), 'the bubble keeps its word');
+LIST_STATES.forEach(function(state) {
+    assert(icon(state, 'direct').includes('class="msg-state-icon '), 'the bubble keeps its mark for ' + state);
+});
 
 // The notice: 24 hours is named when that is why; turning the setting off says nothing.
 var noticeToasts = [];

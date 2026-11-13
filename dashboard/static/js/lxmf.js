@@ -1795,9 +1795,8 @@ function _messageBodyHtml(msg, hasRenderedAudio) {
 }
 
 // One check is Sent, two are Delivered (the recipient's proof). The envelope
-// is a confirmed Offline Inbox deposit, not recipient delivery. The
-// conversation list asks for the mark alone: it has no room for a word.
-function _messageStateIconHtml(msg, markOnly) {
+// is a confirmed Offline Inbox deposit, not recipient delivery.
+function _messageStateIconHtml(msg) {
     var state = msg.state;
     var SVG_OPEN = '<svg viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
     var ICON = {
@@ -1819,7 +1818,7 @@ function _messageStateIconHtml(msg, markOnly) {
     // "!" as other messengers mark a send that needs you; ✕ is for what you cancelled.
     if (state === 'failed' || state === 'timeout') return wrap('msg-state-failed', 'Not delivered', ICON.bang);
     if (state === 'cancelled') return wrap('msg-state-cancelled', 'Sending cancelled', ICON.x);
-    if (state === 'rejected') return wrap('msg-state-rejected', 'Rejected', ICON.rejected) + (markOnly ? '' : ' <span class="msg-state-label">Rejected</span>');
+    if (state === 'rejected') return wrap('msg-state-rejected', 'Rejected', ICON.rejected) + ' <span class="msg-state-label">Rejected</span>';
     if (state === 'propagated') return wrap('msg-state-propagated', 'Stored in Offline Inbox', ICON.envelope);
     if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.double);
     if (state === 'sent') return wrap('msg-state-sent', 'Sent', ICON.check);
@@ -2792,8 +2791,6 @@ function _optimisticConversationPayload() {
         is_contact: false,
         last_message: _conversationPreviewForMessage(last),
         last_direction: last.direction || 'outbound',
-        last_state: last.state || '',
-        last_delivery_method: last.delivery_method || null,
         timestamp: last.timestamp || (Date.now() / 1000),
         unread: 0,
     };
@@ -3019,18 +3016,6 @@ function _renderConversationsFromCache(convos) {
             var convPeer = _peerInfo(c.hash);
             if (convPeer) statusClass = _peerPresenceClass(convPeer);
 
-            var previewStateHtml = '';
-            if (c.last_direction === 'outbound' && c.last_state) {
-                // Conversation list uses the same icon helper as the message
-                // bubble. `last_delivery_method` is not in the conversations
-                // payload yet, so unknown messages render as opportunistic
-                // (muted ✓ for delivered/sent) by default.
-                previewStateHtml = _messageStateIconHtml({
-                    state: c.last_state,
-                    delivery_method: c.last_delivery_method || null,
-                }, true);
-            }
-
             html += '<div role="button" tabindex="0" class="conv-row' + activeClass + unreadClass + '" data-hash="' + escapeHtml(c.hash) + '">' +
                 '<div class="conv-avatar-wrap"><span class="conv-avatar">' + avatarHtml + '</span><span class="conv-status-dot ' + statusClass + '"></span></div>' +
                 '<div class="conv-row-content">' +
@@ -3041,7 +3026,7 @@ function _renderConversationsFromCache(convos) {
                     '<div class="conv-row-bottom">' +
                         '<span class="conv-preview">' +
                             (c.thread_label ? '<span class="conv-thread-pill">' + escapeHtml(c.thread_label) + '</span>' : '') +
-                            previewStateHtml + '<span class="conv-preview-text">' + escapeHtml(preview) + '</span></span>' +
+                            '<span class="conv-preview-text">' + escapeHtml(preview) + '</span></span>' +
                         unreadBadge +
                     '</div>' +
                 '</div>' +
@@ -6799,20 +6784,6 @@ function _messageStateAfterStep(current, step) {
     return _isInFlightStep(resolvedState) ? resolvedState : null;
 }
 
-// The list's mark for a chat's last message follows the same steps as its bubble.
-function _applyStepToConversationList(data) {
-    if (!data.msg_id) return;
-    for (var i = 0; i < lxmfConversations.length; i++) {
-        var row = lxmfConversations[i];
-        if (!row || row.last_direction !== 'outbound' || row.last_msg_id !== data.msg_id) continue;
-        var next = _messageStateAfterStep(row.last_state, data.step);
-        if (!next || next === row.last_state) return;
-        row.last_state = next;
-        _renderConversationsFromCache(lxmfConversations);
-        return;
-    }
-}
-
 RS.listen('lxmf_step', function(data) {
     // Remap optimistic client_msg_id to canonical server msg_id.
     if (data.client_msg_id && data.msg_id) {
@@ -6884,7 +6855,6 @@ RS.listen('lxmf_step', function(data) {
             renderConversation();
         }
     }
-    _applyStepToConversationList(data);
 
     if (data.step === 'failed' || data.step === 'timeout') {
         _noticeUndeliveredMessage(data.destination, data.reason);

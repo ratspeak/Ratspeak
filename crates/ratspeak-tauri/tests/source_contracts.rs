@@ -11358,9 +11358,9 @@ fn identity_keys_leave_only_through_authorized_exports() {
 // ---------------------------------------------------------------------------
 
 /// A waiting message has one mark, Try now and Stop trying ahead of the usual
-/// menu rows, a notice only when 24 hours ran out, and its own row in the list.
+/// menu rows, a notice only when 24 hours ran out, and no mark in the list.
 #[test]
-fn a_waiting_message_is_marked_stoppable_and_listed() {
+fn a_waiting_message_is_marked_and_stoppable_and_the_list_shows_no_mark() {
     let root = repo_root();
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("messaging js");
     let css =
@@ -11409,8 +11409,9 @@ fn a_waiting_message_is_marked_stoppable_and_listed() {
 
     assert!(list.contains("\"last_state\": (direction == \"outbound\").then_some(last_state),"));
     assert!(list.contains("\"last_msg_id\": last_msg_id,"));
-    assert!(lxmf.contains("row.last_msg_id !== data.msg_id"));
-    assert!(lxmf.contains("state: c.last_state,"));
+    // Delivery marks live on the bubbles; the conversation list reads neither field.
+    assert!(!lxmf.contains("last_state") && !lxmf.contains("last_msg_id"));
+    assert!(!css.contains(".conv-preview .msg-state"));
 }
 
 /// Waiting messages are woken by one engine, called at one place in the tick,
