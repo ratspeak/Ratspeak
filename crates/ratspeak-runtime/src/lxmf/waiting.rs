@@ -418,7 +418,8 @@ impl LxmfManager {
         profile: DeliveryProfile,
         method: lxmf_core::message_api::DeliveryMethod,
     ) -> Option<DeliveryFailureReason> {
-        if !self.keep_trying {
+        // A message to one's own address is delivered by being stored.
+        if !self.keep_trying || destination == self.lxmf_hash {
             return None;
         }
         if db::queue_blocks_new_send(
@@ -1921,6 +1922,88 @@ mod tests {
         let text = b.waiting(&peer(35), Auto, "text");
         b.wake(&[Bench::try_now(&peer(35))]);
         assert!(b.reserved.iter().all(|(id, _)| *id != text));
+    }
+
+    /// One tick, its steps written as the runtime's tick loop writes them.
+    fn tick(b: &mut Bench) -> Vec<(String, &'static str)> {
+        let steps = b.mgr.tick();
+        for (id, step) in &steps {
+            assert!(
+                db::update_message_state(&b.pool, id, &b.identity, step, None),
+                "{id} {step}"
+            );
+        }
+        steps
+    }
+
+    fn outbox_len(b: &Bench) -> i64 {
+        b.pool
+            .get()
+            .unwrap()
+            .query_row("SELECT count(*) FROM lxmf_outbox", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn a_message_to_ones_own_address_is_delivered_once_it_is_stored() {
+        let mut b = Bench::new();
+        let me = b.mgr.lxmf_hash.clone();
+        // No node is in use: an Offline Inbox send to anyone else is held for one.
+        b.mgr.client_propagation_enabled = true;
+        assert!(b.send(&peer(40), Propagated, "held").waiting.is_some());
+
+        let preferences = [Auto, Direct, DeliveryPreference::Opportunistic, Propagated];
+        for preference in preferences {
+            let note = b.send(&me, preference, preference.as_str());
+            assert!(note.waiting.is_none(), "{preference:?}");
+            assert!(
+                b.mgr.router.pending_outbound.is_empty(),
+                "{preference:?}: nothing carries it"
+            );
+            assert_eq!(tick(&mut b), [(note.message_id.clone(), "delivered")]);
+            assert_eq!(b.state(&note.message_id), "delivered");
+        }
+        let file = b.send_file(&me, "note.txt").message_id;
+        assert_eq!(tick(&mut b), [(file, "delivered")]);
+
+        assert_eq!(outbox_len(&b), 1, "only the held message can be sent again");
+        assert!(db::outbox_rows(&b.pool, &b.identity).unwrap().is_empty());
+        assert_eq!(
+            db::waiting_queues(&b.pool, &b.identity)
+                .unwrap()
+                .into_iter()
+                .map(|queue| queue.destination)
+                .collect::<Vec<_>>(),
+            [peer(40)],
+            "no wake has anything of its own address to send"
+        );
+        assert_eq!(
+            db::get_conversation(&b.pool, &me, &b.identity, 20).len(),
+            preferences.len() + 1,
+            "one row a message"
+        );
+        assert!(tick(&mut b).is_empty());
+    }
+
+    #[test]
+    fn a_retry_delivers_a_message_to_ones_own_address_that_once_failed() {
+        let mut b = Bench::new();
+        let me = b.mgr.lxmf_hash.clone();
+        b.mgr.client_propagation_enabled = true;
+        let note = b.send(&me, Propagated, "from an earlier build").message_id;
+        b.mgr.delivered_to_self.clear();
+        b.sql("UPDATE messages SET state = 'failed' WHERE id = ?1", &note);
+
+        // By the Offline Inbox, with no node in use: anyone else's message would wait for one.
+        let row = db::retryable_outbox_row(&b.pool, &b.identity, &note)
+            .unwrap()
+            .unwrap();
+        b.mgr
+            .retry_outbound(&b.pool, &b.identity.clone(), &row, Propagated)
+            .unwrap();
+        assert_eq!(tick(&mut b), [(note.clone(), "delivered")]);
+        assert_eq!(b.state(&note), "delivered");
+        assert_eq!(outbox_len(&b), 0);
     }
 
     #[test]

@@ -4258,7 +4258,8 @@ pub fn conversation_threads(
                  SELECT thread, content, title, timestamp, direction, renderer,
                         ROW_NUMBER() OVER (PARTITION BY thread ORDER BY timestamp DESC, rowid DESC) AS rn
                  FROM messages
-                 WHERE identity_id = ?1 AND (source = ?2 OR destination = ?2)
+                 WHERE identity_id = ?1 AND ((source = ?2 AND direction != 'outbound')
+                    OR (destination = ?2 AND direction = 'outbound'))
              ) WHERE rn = 1",
         )
         .map_err(map_err)?
@@ -4618,6 +4619,31 @@ pub fn return_woken_to_waiting(pool: &DbPool, identity_id: &str) -> Vec<String> 
     .unwrap_or_default()
 }
 
+/// Settle, as delivered, `identity_id`'s unsettled messages to `own_address`,
+/// its own: no route leads there, so none of them is on its way. Returns
+/// their ids.
+pub fn deliver_messages_to_self(
+    pool: &DbPool,
+    identity_id: &str,
+    own_address: &str,
+) -> Vec<String> {
+    let Ok(conn) = pool.get() else {
+        return Vec::new();
+    };
+    conn.prepare(&format!(
+        "UPDATE messages SET state = 'delivered'
+         WHERE identity_id = ?1 AND direction = 'outbound' AND destination = ?2
+           AND state NOT IN {}
+         RETURNING id",
+        sql_list(OutboundState::is_final)
+    ))
+    .and_then(|mut stmt| {
+        stmt.query_map(params![identity_id, own_address], |row| row.get(0))?
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
 /// Bring send and wake times that lie after `now` back to `now`: a clock that
 /// was set back must not let a message wait longer than its limit from here
 /// on, nor keep it from being woken.
@@ -4860,13 +4886,14 @@ fn get_conversation_scoped(
         Err(_) => return vec![],
     };
     // UNION ALL preserves index use (OR would defeat it). Pull the newest
-    // rows first, then restore chronological order for rendering.
+    // rows first, then restore chronological order for rendering. Direction
+    // tells the two halves apart: one's own address is on both sides of every row.
     let mut stmt = match conn.prepare(
         "SELECT * FROM (
             SELECT * FROM (
-                SELECT *, rowid AS _rw, EXISTS(SELECT 1 FROM lxmf_outbox o WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) AS retryable FROM messages WHERE source = ?1 AND identity_id = ?2 AND (?4 IS NULL OR thread = ?4)
+                SELECT *, rowid AS _rw, EXISTS(SELECT 1 FROM lxmf_outbox o WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) AS retryable FROM messages WHERE source = ?1 AND direction != 'outbound' AND identity_id = ?2 AND (?4 IS NULL OR thread = ?4)
                 UNION ALL
-                SELECT *, rowid AS _rw, EXISTS(SELECT 1 FROM lxmf_outbox o WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) AS retryable FROM messages WHERE destination = ?1 AND identity_id = ?2 AND source != ?1 AND (?4 IS NULL OR thread = ?4)
+                SELECT *, rowid AS _rw, EXISTS(SELECT 1 FROM lxmf_outbox o WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) AS retryable FROM messages WHERE destination = ?1 AND direction = 'outbound' AND identity_id = ?2 AND (?4 IS NULL OR thread = ?4)
             ) ORDER BY timestamp DESC, _rw DESC LIMIT ?3
         ) ORDER BY timestamp ASC, _rw ASC"
     ) { Ok(s) => s, Err(_) => return vec![] };
@@ -4926,9 +4953,9 @@ pub fn next_conversation_observed_timestamp(
     let latest: Option<f64> = conn
         .query_row(
             "SELECT MAX(timestamp) FROM (
-                SELECT timestamp FROM messages WHERE source = ?1 AND identity_id = ?2
+                SELECT timestamp FROM messages WHERE source = ?1 AND direction != 'outbound' AND identity_id = ?2
                 UNION ALL
-                SELECT timestamp FROM messages WHERE destination = ?1 AND identity_id = ?2 AND source != ?1
+                SELECT timestamp FROM messages WHERE destination = ?1 AND direction = 'outbound' AND identity_id = ?2
             )",
             params![dest_hash, identity_id],
             |row| row.get::<_, Option<f64>>(0),
@@ -5230,12 +5257,12 @@ pub fn delete_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) ->
 
     let file_refs = query_message_file_refs(
         &conn,
-        "SELECT attachment_stored_name, image_stored_name, audio_stored_name FROM messages WHERE (source = ?1 OR destination = ?1) AND identity_id = ?2",
+        "SELECT attachment_stored_name, image_stored_name, audio_stored_name FROM messages WHERE ((source = ?1 AND direction != 'outbound') OR (destination = ?1 AND direction = 'outbound')) AND identity_id = ?2",
         params![dest_hash, identity_id],
     );
 
     conn.execute(
-        "DELETE FROM messages WHERE (source = ?1 OR destination = ?1) AND identity_id = ?2",
+        "DELETE FROM messages WHERE ((source = ?1 AND direction != 'outbound') OR (destination = ?1 AND direction = 'outbound')) AND identity_id = ?2",
         params![dest_hash, identity_id],
     )
     .ok();
@@ -13439,7 +13466,7 @@ mod migration_tests {
             .is_err()
         );
         drop(conn);
-        let messages = get_conversation(&pool, "source", "identity", 10);
+        let messages = get_conversation(&pool, "destination", "identity", 10);
         assert!(messages[0]["renderer"].is_null());
     }
 
@@ -14511,6 +14538,166 @@ mod migration_tests {
         assert_eq!(state_of(&pool, "to-self"), "received");
     }
 
+    /// A message of "identity", whose address is "me", to `destination`.
+    fn sent_to(pool: &DbPool, id: &str, destination: &str, state: &str) {
+        save_outbound_message(
+            pool,
+            &OutboundMessage {
+                msg_id: id,
+                identity_id: "identity",
+                source: "me",
+                destination,
+                content: id,
+                timestamp: 1.0,
+                delivery_method: "direct",
+                resend: Resend {
+                    preference: "auto",
+                    profile: "message",
+                    message: b"parts",
+                },
+                ..OutboundMessage::default()
+            },
+        )
+        .unwrap();
+        set_state(pool, id, state);
+    }
+
+    #[test]
+    fn unsettled_messages_to_ones_own_address_are_delivered_and_leave_the_outbox() {
+        let pool = outbox_pool();
+        // "received" is what a copy back from the Offline Inbox once wrote over the row.
+        for state in ["sending", "routing", "sent", "waiting", "received"] {
+            sent_to(&pool, state, "me", state);
+        }
+        for state in ["failed", "cancelled", "timeout"] {
+            sent_to(&pool, state, "me", state);
+        }
+        sent_to(&pool, "to-peer", "peer", "routing");
+        sent_to(&pool, "peer-waits", "peer", "waiting");
+        save_message(
+            &pool,
+            "theirs",
+            "other-me",
+            "other-me",
+            "hi",
+            "",
+            2.0,
+            "routing",
+            "outbound",
+            "another",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            Some("direct"),
+        );
+        save_message(
+            &pool, "from-me", "me", "me", "hi", "", 2.0, "received", "inbound", "identity", "", "",
+            "", "", "", "", None,
+        );
+
+        let mut delivered = deliver_messages_to_self(&pool, "identity", "me");
+        delivered.sort();
+        assert_eq!(
+            delivered,
+            ["received", "routing", "sending", "sent", "waiting"]
+        );
+        for id in &delivered {
+            assert_eq!(state_of(&pool, id), "delivered", "{id}");
+        }
+        assert_eq!(
+            outbox_ids(&pool),
+            ["cancelled", "failed", "peer-waits", "timeout", "to-peer"],
+            "what ended can still be retried; nothing else to itself is sent again"
+        );
+        for kept in ["failed", "cancelled", "timeout"] {
+            assert_eq!(state_of(&pool, kept), kept);
+        }
+        assert_eq!(state_of(&pool, "to-peer"), "routing");
+        assert_eq!(state_of(&pool, "peer-waits"), "waiting");
+        let state_in = |identity: &str, id: &str| -> String {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT state FROM messages WHERE id = ?1 AND identity_id = ?2",
+                    params![id, identity],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(state_in("another", "theirs"), "routing");
+        assert_eq!(state_in("identity", "from-me"), "received");
+        let resumed = outbox_rows(&pool, "identity").unwrap();
+        assert_eq!(
+            resumed
+                .iter()
+                .map(|row| row.message_id.as_str())
+                .collect::<Vec<_>>(),
+            ["to-peer"]
+        );
+        assert!(deliver_messages_to_self(&pool, "identity", "me").is_empty());
+    }
+
+    #[test]
+    fn the_conversation_with_ones_own_address_holds_only_its_own_messages() {
+        let pool = outbox_pool();
+        sent_to(&pool, "to-peer", "peer", "delivered");
+        sent_to(&pool, "note", "me", "delivered");
+        // The newest rows are the peer's, so one leaking into "me" would show.
+        for (id, source, destination, timestamp, direction) in [
+            ("from-my-device", "me", "me", 60.0, "inbound"),
+            ("later-to-peer", "me", "peer", 70.0, "outbound"),
+            ("from-peer", "peer", "me", 80.0, "inbound"),
+        ] {
+            let state = if direction == "inbound" {
+                "received"
+            } else {
+                "delivered"
+            };
+            save_message(
+                &pool,
+                id,
+                source,
+                destination,
+                "hi",
+                "",
+                timestamp,
+                state,
+                direction,
+                "identity",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                None,
+            );
+        }
+        let ids = |peer: &str| {
+            get_conversation(&pool, peer, "identity", 10)
+                .iter()
+                .map(|message| message["id"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
+        let newest = |peer: &str| {
+            conversation_threads(&pool, "identity", peer).unwrap()[0]["timestamp"].clone()
+        };
+        let clock =
+            |peer: &str| next_conversation_observed_timestamp(&pool, peer, "identity", 10.0);
+        assert_eq!(ids("me"), ["note", "from-my-device"]);
+        assert_eq!(ids("peer"), ["to-peer", "later-to-peer", "from-peer"]);
+        assert_eq!((newest("me"), newest("peer")), (60.0.into(), 80.0.into()));
+        assert_eq!((clock("me"), clock("peer")), (60.001, 80.001));
+        assert_eq!(clock("nobody"), 10.0);
+
+        delete_conversation(&pool, "me", "identity");
+        assert_eq!(ids("peer"), ["to-peer", "later-to-peer", "from-peer"]);
+        assert!(ids("me").is_empty());
+    }
+
     #[test]
     fn the_outbox_trigger_matches_the_table() {
         assert!(OUTBOX_SCHEMA_SQL.contains(&format!(
@@ -14898,7 +15085,7 @@ mod migration_tests {
         assert!(table_exists(&conn, "conversation_threads").unwrap());
         assert!(table_exists(&conn, "conversation_thread_counters").unwrap());
         drop(conn);
-        let main = get_conversation_in_thread(&pool, "source", "", "identity", 10);
+        let main = get_conversation_in_thread(&pool, "destination", "", "identity", 10);
         assert_eq!(main.len(), 1);
         assert_eq!(main[0]["thread"], "");
     }
@@ -14937,7 +15124,7 @@ mod migration_tests {
         assert_eq!(columns.len(), MESSAGE_THREAD_COLUMN_INDEX + 2);
         assert_eq!(columns.last().map(String::as_str), Some("client_msg_id"));
         drop(conn);
-        let messages = get_conversation(&pool, "source", "identity", 10);
+        let messages = get_conversation(&pool, "destination", "identity", 10);
         assert_eq!(messages[0]["content"], "kept");
         assert!(messages[0]["paper_uri"].is_null());
     }

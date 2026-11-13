@@ -1453,6 +1453,8 @@ pub struct LxmfManager {
     resumable: Vec<ResumableSend>,
     /// Ids of outbox records the resume could not read; the tick fails them.
     unreadable_outbox: Vec<String>,
+    /// Ids of messages to this identity's own address; the tick reports them delivered.
+    delivered_to_self: Vec<String>,
     /// Whether a message that fails for a network reason waits; the tick keeps it current.
     pub keep_trying: bool,
     wakes: waiting::Wakes,
@@ -2547,6 +2549,7 @@ impl LxmfManager {
             inbox_waits: HashMap::new(),
             resumable: Vec::new(),
             unreadable_outbox: Vec::new(),
+            delivered_to_self: Vec::new(),
             keep_trying: false,
             wakes: waiting::Wakes::default(),
             deferred_failures: HashMap::new(),
@@ -3383,7 +3386,11 @@ impl LxmfManager {
     fn queue_resumed(&mut self, send: &ResumableSend, now: f64) -> Resumed {
         let dest_hex = hex::encode(send.message.destination());
         let method = self.delivery_method_for(&dest_hex, send.preference, send.profile);
-        if method == DeliveryMethod::Propagated && self.router.outbound_propagation_node.is_none() {
+        // A message to one's own address needs no node: it is delivered by being stored.
+        if method == DeliveryMethod::Propagated
+            && self.router.outbound_propagation_node.is_none()
+            && send.message.destination() != self.lxmf_dest_hash
+        {
             // With waiting on it waits as any message does, and a node coming into use wakes it.
             return if self.client_propagation_enabled
                 && !self.keep_trying
@@ -5271,8 +5278,15 @@ impl LxmfManager {
     }
 
     /// Queue a signed message with the router, refusing a proof-of-work cost
-    /// above [`MAX_STAMP_COST`].
+    /// above [`MAX_STAMP_COST`]. A message to this identity's own address is
+    /// delivered by being stored: no route leads to a local destination.
     fn submit_signed(&mut self, msg: SignedLxMessage) -> Result<(), MessageError> {
+        if msg.destination_hash() == self.lxmf_dest_hash {
+            let id = msg.message_id();
+            self.ephemeral_outbound.remove(&id);
+            self.delivered_to_self.push(hex::encode(id));
+            return Ok(());
+        }
         if msg.outbound_ticket().is_none()
             && let Some(cost) = msg.stamp_cost()
             && !stamp_cost_affordable(cost)
@@ -6014,7 +6028,13 @@ impl LxmfManager {
         }
         self.downloaded_propagation_messages.extend(downloaded);
 
-        self.filter_repeated_steps(results)
+        let mut results = self.filter_repeated_steps(results);
+        results.extend(
+            std::mem::take(&mut self.delivered_to_self)
+                .into_iter()
+                .map(|id| (id, OutboundState::Delivered.as_str())),
+        );
+        results
     }
 
     fn filter_repeated_steps(

@@ -7049,15 +7049,29 @@ fn admit_resumes_within_budget(state: &Arc<AppState>, mgr: &mut lxmf::LxmfManage
 /// the message of a record that cannot be read.
 async fn resume_outbox(state: &Arc<AppState>, mgr: lxmf::LxmfManager) -> lxmf::LxmfManager {
     let identity_id = mgr.identity_hash.clone();
+    let own_address = mgr.lxmf_hash.clone();
     let rows = match db::spawn_db(state.db.clone(), move |p| {
+        // Nothing carries a message to one's own address: one still unsettled is delivered.
+        let to_self = db::deliver_messages_to_self(&p, &identity_id, &own_address);
         // A wake's unfinished send waits for a wake again; resumed, it would go out in a burst.
         let returned = db::return_woken_to_waiting(&p, &identity_id);
         let waiting = db::has_waiting(&p, &identity_id);
-        (returned, waiting, db::outbox_rows(&p, &identity_id))
+        (
+            to_self,
+            returned,
+            waiting,
+            db::outbox_rows(&p, &identity_id),
+        )
     })
     .await
     {
-        Ok((returned, waiting, Ok(rows))) => {
+        Ok((to_self, returned, waiting, Ok(rows))) => {
+            for msg_id in to_self {
+                state.emit_to_all(
+                    "lxmf_step",
+                    json!({ "step": "delivered", "msg_id": msg_id }),
+                );
+            }
             for msg_id in returned {
                 state.emit_to_all("lxmf_step", json!({ "step": "waiting", "msg_id": msg_id }));
             }
@@ -10615,6 +10629,79 @@ mod outbox_budget_tests {
                 .get(&msg_id)
                 .map(|reason| reason.code()),
             Some("preparation_failed")
+        );
+    }
+
+    // Earlier builds kept a message to one's own address on its way and sent it again at every start.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_to_ones_own_address_left_unsettled_is_delivered_at_start() {
+        let (state, mut mgr) = state_and_manager();
+        let identity_id = mgr.identity_hash.clone();
+        let me = mgr.lxmf_hash.clone();
+        let peer = "d3".repeat(16);
+        let mut send = |to: &str, text: &str| {
+            mgr.send_message_with_preference_report(lxmf::MessageSendRequest {
+                dest_hash_hex: to,
+                content: text,
+                title: "",
+                db_pool: &state.db,
+                identity_id: &identity_id,
+                preference: lxmf::DeliveryPreference::Direct,
+                profile: lxmf::DeliveryProfile::Message,
+                renderer: None,
+                thread: "",
+            })
+            .unwrap()
+            .message_id
+        };
+        // As they were left: rewritten by the copy that came back, waiting, on its way, ended.
+        let left = ["received", "waiting", "routing", "failed"];
+        let to_self = left.map(|was| send(&me, was));
+        let to_peer = send(&peer, "to someone else");
+        for (id, was) in to_self.iter().zip(left) {
+            state
+                .db
+                .get()
+                .unwrap()
+                .execute(
+                    "UPDATE messages SET state = ?1 WHERE id = ?2",
+                    rusqlite::params![was, id],
+                )
+                .unwrap();
+        }
+        let root = mgr.data_dir.parent().unwrap().to_path_buf();
+        drop(mgr);
+        let mgr = lxmf::LxmfManager::load_or_create(&root, Some(&identity_id), None).unwrap();
+
+        let mut mgr = resume_outbox(&state, mgr).await;
+        let stored = |id: &str| {
+            db::outbound_message_state(&state.db, &identity_id, id)
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(
+            to_self.each_ref().map(|id| stored(id)),
+            ["delivered", "delivered", "delivered", "failed"],
+            "what ended stays as the user saw it"
+        );
+        assert!(!db::has_waiting(&state.db, &identity_id));
+        let resumed = db::outbox_rows(&state.db, &identity_id).unwrap();
+        assert_eq!(
+            resumed
+                .iter()
+                .map(|row| &row.message_id)
+                .collect::<Vec<_>>(),
+            [&to_peer],
+            "only the message to someone else is sent again"
+        );
+        assert_eq!(
+            mgr.tick(),
+            [(to_peer, "routing")],
+            "nothing to its own address reached the queue"
+        );
+        assert_eq!(
+            db::get_conversation(&state.db, &me, &identity_id, 10).len(),
+            4
         );
     }
 }

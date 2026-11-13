@@ -869,7 +869,8 @@ impl DurableInboundStore {
         ids: Option<&str>,
         now: u64,
     ) -> Result<(MessageDeletionArtifacts, Vec<String>), AdmissionDbError> {
-        const SCOPE: &str = "identity_id=?1 AND (?2 IS NULL OR source=?2 OR destination=?2) AND (?3 IS NULL OR id IN (SELECT value FROM json_each(?3))) AND (?4 IS NULL OR thread=?4)";
+        // Direction, not the address alone, places a row: one's own address is on every row.
+        const SCOPE: &str = "identity_id=?1 AND (?2 IS NULL OR (source=?2 AND direction<>'outbound') OR (destination=?2 AND direction='outbound')) AND (?3 IS NULL OR id IN (SELECT value FROM json_each(?3))) AND (?4 IS NULL OR thread=?4)";
         fn text(row: &rusqlite::Row<'_>, column: usize, limit: usize) -> rusqlite::Result<String> {
             let value = row.get_ref(column)?.as_str()?;
             if value.len() > limit {
@@ -1620,6 +1621,58 @@ mod tests {
             crate::db::get_reactions_for_message(&pool, &m1, &b).len(),
             1
         );
+        drop(store);
+        drop(pool);
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[test]
+    fn deleting_the_conversation_with_ones_own_address_keeps_every_other() {
+        let _serial = SERIAL.lock().unwrap();
+        let (path, pool, store) = fixture();
+        let identity = "11".repeat(16);
+        let [received, sent, note, from_other_device] =
+            [1u8, 2, 3, 4].map(|n| hex::encode([n; 32]));
+        message(&pool, &identity, "peer", &received, ("received", None), "");
+        message(&pool, &identity, "peer", &sent, ("delivered", None), "");
+        // "local" is on both sides of a message to itself, sent or received.
+        message(&pool, &identity, "local", &note, ("delivered", None), "");
+        message(
+            &pool,
+            &identity,
+            "local",
+            &from_other_device,
+            ("received", None),
+            "",
+        );
+        let left = || {
+            let conn = pool.get().unwrap();
+            let mut ids = conn
+                .prepare("SELECT id FROM messages ORDER BY id")
+                .unwrap()
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            ids.sort();
+            ids
+        };
+
+        let guard = try_reserve_admission().unwrap();
+        let (_, deleted) = store
+            .delete_selected_messages_guarded(&guard, &identity, "local", &[sent.clone()], 1000)
+            .unwrap();
+        assert!(deleted.is_empty(), "a message to a peer is not in it");
+        drop(guard);
+        store
+            .delete_messages(&identity, Some("local"), 1000)
+            .unwrap();
+        assert_eq!(left(), [received.clone(), sent.clone()]);
+
+        store
+            .delete_messages(&identity, Some("peer"), 1000)
+            .unwrap();
+        assert!(left().is_empty());
         drop(store);
         drop(pool);
         let _ = std::fs::remove_dir_all(path);

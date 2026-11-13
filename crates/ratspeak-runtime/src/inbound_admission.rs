@@ -1181,11 +1181,17 @@ fn commit_message(
     {
         durable_write(&files_dir.join(&item.stored), item.bytes).map_err(storage)?;
     }
+    let mut already_stored = false;
     let receipt = store.commit(guard, plan,
         |path, hash, files| verify_archive(&archive_dir, path, hash, files),
         |connection| {
             let blocked: bool = connection.query_row("SELECT EXISTS(SELECT 1 FROM blocked_contacts WHERE identity_id=?1 AND dest_hash=?2)", params![identity,source], |row| row.get(0))?;
             if blocked { return Ok(EffectCommit::PolicyDiscard); }
+            // It came live first, or it is this identity's own, back from the inbox: its row stands.
+            if matches!(projection, Projection::Chat { .. }) {
+                already_stored = connection.query_row("SELECT EXISTS(SELECT 1 FROM messages WHERE identity_id=?1 AND id=?2)", params![identity,id], |row| row.get(0))?;
+                if already_stored { return Ok(EffectCommit::Applied("service")); }
+            }
             match &mut projection {
                 Projection::Service => Ok(EffectCommit::Applied("service")),
                 Projection::Game(game) => game.apply(connection),
@@ -1212,6 +1218,9 @@ fn commit_message(
             }
         })?;
     let receipt = DurableAdmissionReceipt::commit(Committed(receipt)).map_err(storage)?;
+    if already_stored {
+        projection = Projection::Service;
+    }
     if let Projection::Game(game) = &mut projection {
         game.committed(state)?;
     }
@@ -2069,6 +2078,77 @@ mod tests {
             before,
             "a list read before the delete stays publishable"
         );
+    }
+
+    // The copy is of this identity's own message, back from the inbox, or of
+    // one that came live first.
+    #[tokio::test]
+    async fn a_downloaded_copy_of_a_stored_message_leaves_its_row_alone() {
+        let _serial = SERIAL.lock().await;
+        let (_temp, state) = fixture();
+        let identity = hex::encode([1; 16]);
+        for (transient, text, was, direction) in [
+            (5, "sent to my own address", "delivered", "outbound"),
+            (6, "came live and was read", "read", "inbound"),
+        ] {
+            let msg = message(text, false);
+            let id = hex::encode(msg.message_id());
+            db::try_save_message(
+                &state.db,
+                &id,
+                &hex::encode(msg.source_hash()),
+                &hex::encode(msg.destination_hash()),
+                text,
+                "",
+                1.0,
+                was,
+                direction,
+                &identity,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                Some("direct"),
+            )
+            .unwrap();
+            let output = commit_message(
+                &state,
+                try_reserve_admission().unwrap(),
+                scope(transient),
+                &msg,
+                Projection::prepare(&state, &msg, false).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                output.receipt.record().disposition,
+                DurableDisposition::Committed,
+                "the node's copy is not asked for again"
+            );
+            assert!(
+                matches!(output.projection, Projection::Service),
+                "{text}: nothing new is shown"
+            );
+            let stored: (String, String) = state
+                .db
+                .get()
+                .unwrap()
+                .query_row(
+                    "SELECT state, direction FROM messages WHERE id = ?1",
+                    [&id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(stored, (was.to_string(), direction.to_string()), "{text}");
+        }
+        let rows: i64 = state
+            .db
+            .get()
+            .unwrap()
+            .query_row("SELECT count(*) FROM messages", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 2);
     }
 
     // A delete whose commit is uncertain may have happened: lists read before
