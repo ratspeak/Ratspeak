@@ -561,6 +561,108 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
 }
 
 #[test]
+fn channels_first_view_follows_the_network_and_names_each_step() {
+    let root = repo_root();
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
+    let channels_js =
+        read_source(root.join("dashboard/static/js/channels.js")).expect("channels js");
+    let channels_css =
+        read_source(root.join("dashboard/static/css/09-channels.css")).expect("channels css");
+    let tauri_events =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri event bridge");
+    let first_view_test = read_source(root.join("scripts/dashboard/test_channels_first_view.js"))
+        .expect("channels first view test");
+
+    // The status card and the list say what is true for the network and hub state.
+    for copy in [
+        "'No network connection'",
+        "'Channels need a network'",
+        "'No hub connected'",
+        "'Network connected'",
+        "'Choose a hub below'",
+        "'Choose a saved hub below'",
+        "'Channels are group chats hosted on hubs'",
+        "'Connect to a network and hubs list themselves here.'",
+        "'Connect to a network'",
+        "'Open Network'",
+        "'Listening for hubs'",
+        "'Hubs list themselves here as they announce. Allow up to 15 minutes.'",
+        "'No hub has announced on this network yet.'",
+        "'Add a hub by address'",
+        "'For a private or unlisted hub'",
+        "'Saved hubs'",
+        "'Connect to a network first'",
+        "'Channels are group chats hosted on hubs. Hubs list themselves once you are online.'",
+        "'Hubs list themselves as they announce. Allow up to 15 minutes.'",
+        "'Pick a hub in the list to see its channels.'",
+    ] {
+        assert!(channels_js.contains(copy), "missing first-view copy {copy}");
+    }
+
+    // One sheet takes a link, a QR code, or the 32 characters.
+    for copy in [
+        "'Ask the hub\\u2019s host for its link, QR code, or address.'",
+        "'ratspeak:// link or 32 characters'",
+        "'Scan QR code'",
+        "'Paste'",
+        "'Enter a ratspeak:// link or a 32-character hub address.'",
+        "'Could not read the clipboard. Type or paste into the field.'",
+        "'Add by address'",
+    ] {
+        assert!(channels_js.contains(copy), "missing address copy {copy}");
+    }
+    assert!(channels_js.contains("function channelsOpenAddressSheet"));
+    assert!(channels_js.contains("setTimeout(channelsScanSharedChannel, 220)"));
+
+    // No control promises a hub before there is one to connect to.
+    for removed in [
+        "Connect to a hub",
+        "Choose a hub to begin",
+        "No channel hubs yet",
+        "No other hubs heard recently",
+        "Saved hubs remain available below",
+        "Enter a trusted hub address to begin",
+        "Connect to a trusted hub, then choose a channel.",
+        "'Nearby'",
+    ] {
+        assert!(
+            !channels_js.contains(removed),
+            "{removed} must stay removed"
+        );
+        assert!(!index.contains(removed), "{removed} must stay removed");
+    }
+    assert_eq!(
+        channels_js
+            .matches("One hub can be live at a time.")
+            .count(),
+        1,
+        "the one-hub sentence belongs to the switch confirmation alone"
+    );
+    assert!(channels_js.contains("' end; history stays on this device.'"));
+    assert!(channels_js.contains("appendHubSection('Available', model.nearby"));
+
+    // The view re-renders from the existing stats and interface events; nothing polls.
+    assert!(channels_js.contains("function channelsNetworkChanged"));
+    assert!(channels_js.contains("function _channelsFirstViewState"));
+    assert_eq!(
+        tauri_events
+            .matches("if (typeof channelsNetworkChanged === 'function') channelsNetworkChanged();")
+            .count(),
+        2
+    );
+    assert!(channels_js.contains("action === 'connect-network'"));
+    assert!(
+        channels_js.contains("if (typeof openConnectModal === 'function') openConnectModal();")
+    );
+    assert!(channels_css.contains(".channels-first-empty"));
+    assert!(channels_css.contains(".channels-layout.pane-offers-network .channels-first-action"));
+    assert!(channels_css.contains(".channel-hub-add-row"));
+    assert!(channels_css.contains(".channel-sheet-field-label-row"));
+    assert!(!channels_css.contains(".channel-hub-switcher-note"));
+    assert!(first_view_test.contains("channels first view tests passed"));
+}
+
+#[test]
 fn native_channel_share_lifecycle_uses_rust_inbox_and_requires_preview() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");

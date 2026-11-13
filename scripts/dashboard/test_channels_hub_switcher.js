@@ -298,8 +298,15 @@ assert(connectSource.indexOf('Open a shared channel') === -1,
     'link acquisition belongs in Manage Hub, not connection review');
 assert(connectSource.indexOf('Encrypted in transit') === -1,
     'connection review must not repeat transport trust copy');
-assert(connectSource.indexOf('Ends live rooms') === -1,
-    'the switch title and action are sufficient confirmation');
+assert(connectSource.indexOf('Ends live rooms') === -1);
+assert(connectSource.indexOf('One hub can be live at a time.') !== -1 &&
+    switcherSource.indexOf('One hub can be live at a time.') === -1,
+    'the one-hub sentence belongs to the switch confirmation, not to the chooser');
+assert(switcherSource.indexOf("appendHubSection('Available', model.nearby") !== -1 &&
+    switcherSource.indexOf("'Nearby'") === -1,
+    'the list holds every hub heard, at any distance');
+assert(switcherSource.indexOf('refreshNearby(true);') !== -1,
+    'the chooser reads the announce cache when it opens');
 assert(connectSource.indexOf('channel-connection-trust') === -1,
     'removed connection copy must not leave an empty layout row');
 assert(connectSource.indexOf("initialMode.kind === 'current'") !== -1 &&

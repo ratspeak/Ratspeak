@@ -479,6 +479,35 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     text-align: center;
 }
 
+.channels-first-empty {
+    flex: 0 0 auto;
+    padding: var(--space-12) var(--space-8) var(--space-8);
+}
+
+.channels-first-empty-icon {
+    display: inline-flex;
+}
+
+/* This hint carries the instruction, so it is dimmed less than the shared one. */
+.channels-first-empty .empty-state-hint {
+    max-width: 280px;
+    line-height: var(--type-leading-copy);
+    opacity: 0.8;
+}
+
+.channels-first-action {
+    min-width: 200px;
+    min-height: var(--touch-target);
+    margin-top: var(--space-4);
+}
+
+/* Beside the room pane, the pane carries the same action. */
+@media (min-width: 769px) {
+    .channels-layout.pane-offers-network .channels-first-action {
+        display: none;
+    }
+}
+
 .channels-list-section {
     display: flex;
     align-items: center;
@@ -690,6 +719,15 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 .channel-hub-row-meta,
 .channel-sheet-hub-copy span {
     font-family: var(--font-mono);
+}
+
+.channel-hub-add-row .channel-hub-row-meta {
+    font-family: var(--font-sans);
+}
+
+.channel-hub-add-row .channel-hub-row-mark {
+    font-size: var(--text-lg);
+    font-weight: var(--type-weight-regular);
 }
 
 .channel-hub-row-distance {
@@ -1035,6 +1073,10 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     color: var(--text-muted);
     font-size: var(--text-sm);
     line-height: var(--type-leading-copy);
+}
+
+.channel-welcome-state p:last-child {
+    margin-bottom: 0;
 }
 
 .channel-hub-home {
@@ -2794,6 +2836,23 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     font-size: var(--text-xs);
 }
 
+.channel-sheet-field-label-row {
+    display: flex;
+    min-height: 32px;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-5);
+}
+
+.channel-sheet-field-label-row .channel-connection-change {
+    margin-right: calc(-1 * var(--space-4));
+}
+
+.channel-address-sheet .channel-sheet-field .nr-input-sm.mono,
+.channel-address-sheet .channel-connection-change {
+    min-height: var(--touch-target);
+}
+
 .channel-room-notification-select {
     width: 100%;
 }
@@ -2821,15 +2880,6 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     display: flex;
     min-height: 96px;
     flex-direction: column;
-}
-
-.channel-hub-switcher-note {
-    margin: 0;
-    padding-top: var(--space-4);
-    border-top: 1px solid var(--border-row);
-    color: var(--text-muted);
-    font-size: var(--text-xs);
-    line-height: 1.45;
 }
 
 .channel-hub-switcher-list .channels-list-section {

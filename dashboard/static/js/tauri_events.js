@@ -289,6 +289,7 @@ RS.listen('stats_update', function(data) {
             scheduleFirstRunTooltip(600);
         }
     }
+    if (typeof channelsNetworkChanged === 'function') channelsNetworkChanged();
     renderStats(data);
 
     // path_age/hops/via change with path_table; renderer dirty-keys dedupe.
@@ -682,6 +683,7 @@ RS.listen('hub_interfaces_update', function(data) {
     if (typeof updateFirstRunInterfaceHintGate === 'function') {
         updateFirstRunInterfaceHintGate(data);
     }
+    if (typeof channelsNetworkChanged === 'function') channelsNetworkChanged();
     if (typeof updateAutoToggle === 'function') updateAutoToggle();
     if (isViewActive('network')) {
         if (typeof applyNetworkInterfacePayload !== 'function' && typeof renderMergedConnections === 'function') {

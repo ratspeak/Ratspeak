@@ -151,7 +151,7 @@ assert(sharedSource.includes('RS.ui.bindHelpPopovers = function(root)'),
     'contextual help must use the shared anchored-popover primitive');
 assert(sharedSource.includes("interactionModality !== 'touch'"),
     'touch activation must release transient button focus');
-assert(channelsSource.includes('RS.ui.focusAfterUpdate(nextRefresh)'),
+assert(channelsSource.includes('RS.ui.focusAfterUpdate(target)'),
     'rebuilt channel controls only regain focus for keyboard navigation');
 
 var drillSwipe = functionSource(navSource, 'initDrillDownSwipeBack');

@@ -646,8 +646,8 @@
                     <div class="channel-hub-strip" id="channel-hub-strip" data-phase="offline">
                         <button class="channel-hub-summary" id="channel-hub-summary" type="button" title="Hub options" aria-label="Channel hub options" aria-haspopup="menu" data-channel-action="hub-actions">
                             <span class="channel-hub-strip-copy">
-                                <strong id="channel-hub-strip-title">Not connected</strong>
-                                <span id="channel-hub-strip-meta">Choose a hub to begin</span>
+                                <strong id="channel-hub-strip-title">No hub connected</strong>
+                                <span id="channel-hub-strip-meta"></span>
                             </span>
                         </button>
                         <button class="nr-btn nr-btn-ghost channels-icon-btn channel-hub-menu-btn" id="channel-hub-menu-btn" type="button" title="Manage Hub" aria-label="Manage Hub" aria-haspopup="dialog" hidden>
@@ -679,12 +679,7 @@
                         <span class="channels-section-label" id="channels-list-label">Available hubs</span>
                         <button class="nr-btn nr-btn-ghost nr-btn-sm channels-text-btn" id="channels-join-btn" type="button" aria-label="Join a channel" hidden>Join</button>
                     </div>
-                    <div class="channels-list" id="channels-list" aria-live="polite">
-                        <div class="channels-list-empty">
-                            <span>No channel hubs yet</span>
-                            <button class="nr-btn nr-btn-sm" type="button" data-channel-action="connect">Connect to a hub</button>
-                        </div>
-                    </div>
+                    <div class="channels-list" id="channels-list" aria-live="polite"></div>
 
                 </aside>
 
@@ -715,9 +710,8 @@
                             <div class="channel-welcome-mark" aria-hidden="true">
                                 <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 16.5a6 6 0 0 1 0-9"/><path d="M15.5 7.5a6 6 0 0 1 0 9"/><path d="M5.5 19.5a10 10 0 0 1 0-15"/><path d="M18.5 4.5a10 10 0 0 1 0 15"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/></svg>
                             </div>
-                            <h3>Join a conversation</h3>
-                            <p>Connect to a trusted hub, then choose a channel.</p>
-                            <button class="nr-btn nr-btn-primary" type="button" data-channel-action="connect">Find a hub</button>
+                            <h3>Listening for hubs</h3>
+                            <p>Hubs list themselves as they announce. Allow up to 15 minutes.</p>
                         </div>
                     </div>
 
