@@ -32,9 +32,9 @@ object RatspeakBleServer {
     private val CCCD_UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
     // Ratspeak service UUIDs
-    private val RATSPEAK_SERVICE = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d")
-    private val RATSPEAK_RX     = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5e")
-    private val RATSPEAK_TX     = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5f")
+    private val RATSPEAK_SERVICE = UUID.fromString("13370001-c7cb-4de2-98de-5d87fa06443d")
+    private val RATSPEAK_RX     = UUID.fromString("13370002-c7cb-4de2-98de-5d87fa06443d")
+    private val RATSPEAK_TX     = UUID.fromString("13370003-c7cb-4de2-98de-5d87fa06443d")
 
     // Columba compatibility service UUIDs
     private val COLUMBA_SERVICE = UUID.fromString("37145b00-442d-4a94-917f-8f42c5da28e3")

@@ -59,10 +59,10 @@ class RatspeakBlePeerClient(private val context: Context) {
 
         // Service + characteristic UUIDs — must match ble_peer.rs and
         // RatspeakBleServer.kt exactly.
-        val RATSPEAK_SERVICE: UUID = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d")
-        val RATSPEAK_RX: UUID      = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5e")
-        val RATSPEAK_TX: UUID      = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5f")
-        val RATSPEAK_ID: UUID      = UUID.fromString("a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c60")
+        val RATSPEAK_SERVICE: UUID = UUID.fromString("13370001-c7cb-4de2-98de-5d87fa06443d")
+        val RATSPEAK_RX: UUID      = UUID.fromString("13370002-c7cb-4de2-98de-5d87fa06443d")
+        val RATSPEAK_TX: UUID      = UUID.fromString("13370003-c7cb-4de2-98de-5d87fa06443d")
+        val RATSPEAK_ID: UUID      = UUID.fromString("13370004-c7cb-4de2-98de-5d87fa06443d")
 
         val COLUMBA_SERVICE: UUID = UUID.fromString("37145b00-442d-4a94-917f-8f42c5da28e3")
         val COLUMBA_RX: UUID      = UUID.fromString("37145b00-442d-4a94-917f-8f42c5da28e5")
