@@ -569,7 +569,7 @@ function testListening() {
     assert.strictEqual(empty.querySelector('.empty-state-primary').textContent,
         'Listening for hubs');
     assert.strictEqual(empty.querySelector('.empty-state-hint').textContent,
-        'Hubs appear here when they announce. This can take up to 15 minutes.');
+        'Hubs appear here when they announce. Most announce every 15 minutes.');
     assert.strictEqual(empty.querySelector('.channels-first-action'), null);
     assert.deepStrictEqual(h.rows(), ['add']);
     var add = h.list.querySelector('.channel-hub-add-row');
@@ -581,7 +581,7 @@ function testListening() {
         'the address route is the last row');
     assert.strictEqual(h.pane.querySelector('h3').textContent, 'Listening for hubs');
     assert.strictEqual(h.pane.querySelector('p').textContent,
-        'Hubs appear here when they announce. This can take up to 15 minutes.');
+        'Hubs appear here when they announce. Most announce every 15 minutes.');
     var paneAction = h.pane.querySelector('button');
     assert.strictEqual(paneAction.textContent, 'Add a hub by address');
     assert(paneAction.classList.contains('nr-btn-secondary'));
@@ -788,7 +788,7 @@ function testListeningWindow() {
     h.stats(false);
     h.stats(true);
     assert.strictEqual(h.list.querySelector('.empty-state-hint').textContent,
-        'Hubs appear here when they announce. This can take up to 15 minutes.');
+        'Hubs appear here when they announce. Most announce every 15 minutes.');
 }
 
 // ---------------------------------------------------------------- address sheet
@@ -1469,7 +1469,7 @@ function testSources() {
             'no text a user sees calls a hub nearby');
     });
     assert(channelsMarkup.indexOf(
-        '<p>Hubs appear here when they announce. This can take up to 15 minutes.</p>') !== -1,
+        '<p>Hubs appear here when they announce. Most announce every 15 minutes.</p>') !== -1,
         'the placeholder matches the listening hint');
     assert.strictEqual(channelsSource.split('Only one hub can be connected at a time.').length, 2,
         'the one-hub sentence has one home');

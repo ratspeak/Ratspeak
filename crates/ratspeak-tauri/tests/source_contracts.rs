@@ -588,7 +588,7 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
         "'Connect to a network'",
         "'Open Network'",
         "'Listening for hubs'",
-        "'Hubs appear here when they announce. This can take up to 15 minutes.'",
+        "'Hubs appear here when they announce. Most announce every 15 minutes.'",
         "'No hubs heard yet.'",
         "'Add a hub by address'",
         "'Use its link, QR code, or address'",

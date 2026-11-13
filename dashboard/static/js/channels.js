@@ -2333,7 +2333,7 @@ function _channelsBuildListeningEmpty() {
         primary: 'Listening for hubs',
         hint: elapsed
             ? 'No hubs heard yet.'
-            : 'Hubs appear here when they announce. This can take up to 15 minutes.'
+            : 'Hubs appear here when they announce. Most announce every 15 minutes.'
     });
 }
 
@@ -3078,7 +3078,7 @@ function _channelsFirstViewWelcome() {
             title: 'Listening for hubs',
             text: _channelsListenWindowElapsed()
                 ? 'No hubs heard yet.'
-                : 'Hubs appear here when they announce. This can take up to 15 minutes.',
+                : 'Hubs appear here when they announce. Most announce every 15 minutes.',
             action: 'add-address',
             actionText: 'Add a hub by address',
             primary: false
