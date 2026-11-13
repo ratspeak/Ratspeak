@@ -71,6 +71,8 @@ impl RnsManager {
         // One failed interface is shown as a warning; the others still start.
         let mut options = InitOptions::default();
         options.keep_starting_after_interface_failure = true;
+        // An unreachable server costs one connect timeout in all, not one each.
+        options.start_interfaces_concurrently = true;
         let handle = reticulum::init_with_policy(
             Some(config_dir),
             socket_dir,

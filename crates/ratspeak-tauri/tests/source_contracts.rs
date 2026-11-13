@@ -2061,9 +2061,19 @@ fn all_rnode_creation_paths_use_transport_specific_startup_policy() {
 
     assert_option_calls(&runtime_rs, "reticulum::init_with_policy", 1, ble_option);
     let configured_startup = rust_call_blocks(&runtime_rs, "reticulum::init_with_policy");
-    assert!(configured_startup[0].contains("InitOptions::default()"));
-    assert!(configured_startup[0].contains("keep_starting_after_interface_failure: true"));
+    assert!(configured_startup[0].contains("options"));
     assert!(configured_startup[0].contains("policy"));
+    // One failed interface never stops the rest, and none waits for another.
+    assert!(runtime_rs.contains("let mut options = InitOptions::default();"));
+    for option in [
+        "keep_starting_after_interface_failure",
+        "start_interfaces_concurrently",
+    ] {
+        assert!(
+            runtime_rs.contains(&format!("options.{option} = true;")),
+            "configured start-up must set {option}"
+        );
+    }
     assert!(
         runtime_rs.contains("RNodeStartupOptions::default().with_persisted_bluetooth_enabled()")
     );
