@@ -7859,19 +7859,21 @@ mod tests {
     /// A current one-hop path, so the router sends Opportunistic messages at once.
     pub(super) fn known_route(mgr: &mut LxmfManager, dest: [u8; 16]) {
         let now = unix_now_for_test();
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: dest,
-            timestamp: now,
-            via: None,
-            hops: 1,
-            expires: now + 600.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "test".into(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = dest;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 1;
+            entry.expires = now + 600.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "test".into();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
     }
 
@@ -7914,19 +7916,21 @@ mod tests {
                 &announce
             ))
         ));
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: node,
-            timestamp: now,
-            via: None,
-            hops: 1,
-            expires: now + 600.,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "relay fixture".into(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = node;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 1;
+            entry.expires = now + 600.;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "relay fixture".into();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
     }
     pub(super) async fn finish_pending_propagation(
@@ -10800,19 +10804,21 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: dest,
-            timestamp: now,
-            via: None,
-            hops: 1,
-            expires: now + 60.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "Local Network".to_string(),
-            interface_id: 7,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = dest;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 1;
+            entry.expires = now + 60.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "Local Network".to_string();
+            entry.interface_id = 7;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
 
         let (tx, mut rx) = tokio::sync::mpsc::channel::<TransportMessage>(8);
@@ -10871,19 +10877,21 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: dest,
-            timestamp: now,
-            via: None,
-            hops: 1,
-            expires: now + 60.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "test".to_string(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = dest;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 1;
+            entry.expires = now + 60.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "test".to_string();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
 
         let msg = lxmf_core::message::LxMessageDraft::new(
@@ -10927,19 +10935,21 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: dest,
-            timestamp: now,
-            via: None,
-            hops: 2,
-            expires: now + 60.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "test".to_string(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = dest;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 2;
+            entry.expires = now + 60.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "test".to_string();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
 
         let msg = lxmf_core::message::LxMessageDraft::new(
@@ -11013,19 +11023,21 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: dest,
-            timestamp: now,
-            via: None,
-            hops: 2,
-            expires: now + 60.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "test".to_string(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = dest;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 2;
+            entry.expires = now + 60.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "test".to_string();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
 
         let msg = mgr
@@ -11085,19 +11097,21 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: dest,
-            timestamp: now,
-            via: None,
-            hops: 2,
-            expires: now + 60.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "test".to_string(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = dest;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 2;
+            entry.expires = now + 60.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "test".to_string();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
 
         let first = lxmf_core::message::LxMessageDraft::new(
@@ -11247,19 +11261,21 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: dest,
-            timestamp: now,
-            via: None,
-            hops: 2,
-            expires: now + 60.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "test".to_string(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = dest;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 2;
+            entry.expires = now + 60.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "test".to_string();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
 
         let msg = mgr
@@ -11327,19 +11343,21 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: dest,
-            timestamp: now,
-            via: None,
-            hops: 1,
-            expires: now + 60.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "test".to_string(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = dest;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 1;
+            entry.expires = now + 60.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "test".to_string();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
 
         let msg = mgr
@@ -11452,19 +11470,21 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: dest,
-            timestamp: now,
-            via: None,
-            hops: 1,
-            expires: now + 60.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "test".to_string(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = dest;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 1;
+            entry.expires = now + 60.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "test".to_string();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
 
         let msg = mgr
@@ -11798,19 +11818,21 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: dest,
-            timestamp: now,
-            via: None,
-            hops: 2,
-            expires: now + 60.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "test".to_string(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = dest;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 2;
+            entry.expires = now + 60.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "test".to_string();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
 
         let msg = lxmf_core::message::LxMessageDraft::new(

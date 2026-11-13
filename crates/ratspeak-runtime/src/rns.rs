@@ -257,19 +257,21 @@ mod tests {
     fn path_entry(index: usize, timestamp: f64) -> PathTableRpcEntry {
         let mut hash = [0_u8; 16];
         hash[..8].copy_from_slice(&(index as u64).to_be_bytes());
-        PathTableRpcEntry {
-            hash,
-            timestamp,
-            via: None,
-            hops: 1,
-            expires: timestamp + 60.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "test".to_string(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        {
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = hash;
+            entry.timestamp = timestamp;
+            entry.via = None;
+            entry.hops = 1;
+            entry.expires = timestamp + 60.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "test".to_string();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }
     }
 

@@ -243,19 +243,21 @@ mod tests {
     fn learned(mgr: &mut LxmfManager, now: f64) {
         mgr.known_identities
             .insert(hex::encode([9; 16]), Identity::new().get_public_key());
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: [9; 16],
-            timestamp: now,
-            via: None,
-            hops: 1,
-            expires: now + 600.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "test".into(),
-            interface_id: 7,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = [9; 16];
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 1;
+            entry.expires = now + 600.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "test".into();
+            entry.interface_id = 7;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
     }
 

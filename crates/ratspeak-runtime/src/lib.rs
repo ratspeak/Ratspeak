@@ -8485,16 +8485,18 @@ mod announce_ingest_tests {
     fn own_announces_are_not_ingested_as_peers() {
         let local = rns_identity::identity::Identity::new();
         let remote = rns_identity::identity::Identity::new();
-        let entry = |public_key: Option<[u8; 64]>| rns_transport::messages::AnnounceRpcEntry {
-            dest_hash: [0x11; 16],
-            hops: 1,
-            app_data: None,
-            timestamp: 1.0,
-            public_key,
-            ratchet: None,
-            name_hash: [0; 10],
-            is_path_response: false,
-            retained: false,
+        let entry = |public_key: Option<[u8; 64]>| {
+            let mut entry = rns_transport::messages::AnnounceRpcEntry::default();
+            entry.dest_hash = [0x11; 16];
+            entry.hops = 1;
+            entry.app_data = None;
+            entry.timestamp = 1.0;
+            entry.public_key = public_key;
+            entry.ratchet = None;
+            entry.name_hash = [0; 10];
+            entry.is_path_response = false;
+            entry.retained = false;
+            entry
         };
         let own = entry(Some(local.get_public_key()));
         assert!(is_own_announce(&own, Some(local.hash)));

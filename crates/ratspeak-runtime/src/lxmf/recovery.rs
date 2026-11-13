@@ -415,20 +415,19 @@ mod tests {
     #[test]
     fn python_reset_tombstone_wait_is_not_a_freshness_claim() {
         let dest = [0x57; 16];
-        let mut entry = PathTableRpcEntry {
-            hash: dest,
-            timestamp: 0.0,
-            via: None,
-            hops: 1,
-            expires: 1000.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "inert owner route".into(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
-        };
+        let mut entry = PathTableRpcEntry::default();
+        entry.hash = dest;
+        entry.timestamp = 0.0;
+        entry.via = None;
+        entry.hops = 1;
+        entry.expires = 1000.0;
+        entry.value = None;
+        entry.used = 0.0;
+        entry.lr_cost = None;
+        entry.interface = "inert owner route".into();
+        entry.interface_id = 1;
+        entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+        entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
         assert_eq!(owner_tombstone_pending(&[], dest), Ok(false));
         assert_eq!(
             owner_tombstone_pending(std::slice::from_ref(&entry), dest),
@@ -456,26 +455,62 @@ mod tests {
 
     impl SharedFixture {
         async fn new() -> Self {
-            use rns_transport::{constants::*, messages::*, path_table::PathEntry};
+            use rns_transport::{constants::*, messages::*};
             use rns_wire::flags::*;
             let (mut actor, transport) = rns_transport::actor::TransportActor::new();
             let handle = actor.path_recovery_handle();
             let (radio_tx, mut radio) = mpsc::channel(8);
-            actor.interfaces.insert(
-                1,
-                InterfaceEntry::new(
-                    "inert owner IPC".into(),
-                    InterfaceMode::Full,
-                    InterfaceDirection::bidirectional(),
-                    1_000_000,
-                    500,
-                    radio_tx,
-                ),
+            let entry = InterfaceEntry::new(
+                "inert owner IPC".into(),
+                InterfaceMode::Full,
+                InterfaceDirection::bidirectional(),
+                1_000_000,
+                500,
+                radio_tx,
             );
-            let dest = [0xD3; 16];
-            let mut path = PathEntry::new(None, 1, 1, InterfaceMode::Full);
-            path.packet_hash = Some([0x42; 32]);
-            actor.path_table.insert(dest, path);
+            let owner = entry.owner.clone();
+            transport
+                .try_send(TransportMessage::RegisterInterface { id: 1, entry })
+                .unwrap();
+            // A heard announce gives the actor its one-hop path.
+            let identity = rns_identity::identity::Identity::new();
+            let app = "ratspeak.test.recovery";
+            let dest = rns_identity::destination::Destination::hash_from_name_and_identity(
+                app,
+                Some(&identity.hash),
+            );
+            let mut announce = rns_wire::header::PacketHeader {
+                flags: PacketFlags {
+                    header_type: HeaderType::Header1,
+                    context_flag: false,
+                    transport_type: TransportType::Broadcast,
+                    destination_type: DestinationType::Single,
+                    packet_type: PacketType::Announce,
+                },
+                hops: 0,
+                transport_id: None,
+                destination_hash: dest,
+                context: rns_wire::context::PacketContext::None,
+            }
+            .pack();
+            announce.extend(
+                rns_identity::announce::AnnounceData::create(&identity, app, None, None)
+                    .unwrap()
+                    .pack(),
+            );
+            transport
+                .try_send(TransportMessage::InterfaceEvent {
+                    interface_id: 1,
+                    owner,
+                    message: Box::new(TransportMessage::Inbound(InboundPacket {
+                        raw: announce.into(),
+                        interface_id: 1,
+                        rssi: None,
+                        snr: None,
+                        q: None,
+                    })),
+                })
+                .unwrap();
             let task = tokio::spawn(actor.run());
             let raw = rns_wire::header::PacketHeader {
                 flags: PacketFlags {

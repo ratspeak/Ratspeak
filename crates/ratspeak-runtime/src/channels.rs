@@ -8388,16 +8388,16 @@ mod tests {
             other => panic!("expected destination recall, got {other:?}"),
         };
         response_tx
-            .send(TransportQueryResponse::RecalledDestination(Some(
-                RecalledDestinationRpcEntry {
-                    dest_hash: hub_destination,
-                    hops: 1,
-                    app_data: Some(reference_announce_data("Test relay")),
-                    timestamp: 1_700_000_000.0,
-                    public_key: hub_public,
-                    ratchet: None,
-                },
-            )))
+            .send(TransportQueryResponse::RecalledDestination(Some({
+                let mut entry = RecalledDestinationRpcEntry::default();
+                entry.dest_hash = hub_destination;
+                entry.hops = 1;
+                entry.app_data = Some(reference_announce_data("Test relay"));
+                entry.timestamp = 1_700_000_000.0;
+                entry.public_key = hub_public;
+                entry.ratchet = None;
+                entry
+            })))
             .unwrap();
 
         let response_tx = match timeout_transport(&mut transport_rx).await {
@@ -8408,16 +8408,18 @@ mod tests {
             other => panic!("expected hub discovery query, got {other:?}"),
         };
         response_tx
-            .send(TransportQueryResponse::Announces(vec![AnnounceRpcEntry {
-                dest_hash: hub_destination,
-                hops: 1,
-                app_data: Some(reference_announce_data("Test relay")),
-                timestamp: 1_700_000_000.0,
-                public_key: Some(hub_public),
-                ratchet: None,
-                name_hash: rns_identity::name_hash::name_hash(rrc::RRC_HUB_ASPECT),
-                is_path_response: false,
-                retained: false,
+            .send(TransportQueryResponse::Announces(vec![{
+                let mut entry = AnnounceRpcEntry::default();
+                entry.dest_hash = hub_destination;
+                entry.hops = 1;
+                entry.app_data = Some(reference_announce_data("Test relay"));
+                entry.timestamp = 1_700_000_000.0;
+                entry.public_key = Some(hub_public);
+                entry.ratchet = None;
+                entry.name_hash = rns_identity::name_hash::name_hash(rrc::RRC_HUB_ASPECT);
+                entry.is_path_response = false;
+                entry.retained = false;
+                entry
             }]))
             .unwrap();
 
@@ -9090,16 +9092,16 @@ mod tests {
         };
         let announce_data = reference_announce_data("Test relay");
         response_tx
-            .send(TransportQueryResponse::RecalledDestination(Some(
-                RecalledDestinationRpcEntry {
-                    dest_hash: hub_destination,
-                    hops: 1,
-                    app_data: Some(announce_data),
-                    timestamp: 1_700_000_000.0,
-                    public_key: hub_public,
-                    ratchet: None,
-                },
-            )))
+            .send(TransportQueryResponse::RecalledDestination(Some({
+                let mut entry = RecalledDestinationRpcEntry::default();
+                entry.dest_hash = hub_destination;
+                entry.hops = 1;
+                entry.app_data = Some(announce_data);
+                entry.timestamp = 1_700_000_000.0;
+                entry.public_key = hub_public;
+                entry.ratchet = None;
+                entry
+            })))
             .unwrap();
 
         let response_tx = match timeout_transport(&mut transport_rx).await {
@@ -9110,16 +9112,18 @@ mod tests {
             other => panic!("expected hub discovery query, got {other:?}"),
         };
         response_tx
-            .send(TransportQueryResponse::Announces(vec![AnnounceRpcEntry {
-                dest_hash: hub_destination,
-                hops: 1,
-                app_data: Some(reference_announce_data("Test relay")),
-                timestamp: 1_700_000_000.0,
-                public_key: Some(hub_public),
-                ratchet: None,
-                name_hash: rns_identity::name_hash::name_hash(rrc::RRC_HUB_ASPECT),
-                is_path_response: false,
-                retained: false,
+            .send(TransportQueryResponse::Announces(vec![{
+                let mut entry = AnnounceRpcEntry::default();
+                entry.dest_hash = hub_destination;
+                entry.hops = 1;
+                entry.app_data = Some(reference_announce_data("Test relay"));
+                entry.timestamp = 1_700_000_000.0;
+                entry.public_key = Some(hub_public);
+                entry.ratchet = None;
+                entry.name_hash = rns_identity::name_hash::name_hash(rrc::RRC_HUB_ASPECT);
+                entry.is_path_response = false;
+                entry.retained = false;
+                entry
             }]))
             .unwrap();
 
@@ -10192,16 +10196,16 @@ mod tests {
             }
         };
         response_tx
-            .send(TransportQueryResponse::RecalledDestination(Some(
-                RecalledDestinationRpcEntry {
-                    dest_hash: hub_destination,
-                    hops: 1,
-                    app_data: Some(reference_announce_data("Recovery relay")),
-                    timestamp: 1_700_000_000.0,
-                    public_key: hub_identity.get_public_key(),
-                    ratchet: None,
-                },
-            )))
+            .send(TransportQueryResponse::RecalledDestination(Some({
+                let mut entry = RecalledDestinationRpcEntry::default();
+                entry.dest_hash = hub_destination;
+                entry.hops = 1;
+                entry.app_data = Some(reference_announce_data("Recovery relay"));
+                entry.timestamp = 1_700_000_000.0;
+                entry.public_key = hub_identity.get_public_key();
+                entry.ratchet = None;
+                entry
+            })))
             .unwrap();
         let delivery_tx = loop {
             match timeout_transport(transport_rx).await {
@@ -10210,16 +10214,19 @@ mod tests {
                     response_tx,
                 } => {
                     response_tx
-                        .send(TransportQueryResponse::Announces(vec![AnnounceRpcEntry {
-                            dest_hash: hub_destination,
-                            hops: 1,
-                            app_data: Some(reference_announce_data("Recovery relay")),
-                            timestamp: 1_700_000_000.0,
-                            public_key: Some(hub_identity.get_public_key()),
-                            ratchet: None,
-                            name_hash: rns_identity::name_hash::name_hash(rrc::RRC_HUB_ASPECT),
-                            is_path_response: false,
-                            retained: false,
+                        .send(TransportQueryResponse::Announces(vec![{
+                            let mut entry = AnnounceRpcEntry::default();
+                            entry.dest_hash = hub_destination;
+                            entry.hops = 1;
+                            entry.app_data = Some(reference_announce_data("Recovery relay"));
+                            entry.timestamp = 1_700_000_000.0;
+                            entry.public_key = Some(hub_identity.get_public_key());
+                            entry.ratchet = None;
+                            entry.name_hash =
+                                rns_identity::name_hash::name_hash(rrc::RRC_HUB_ASPECT);
+                            entry.is_path_response = false;
+                            entry.retained = false;
+                            entry
                         }]))
                         .unwrap();
                 }

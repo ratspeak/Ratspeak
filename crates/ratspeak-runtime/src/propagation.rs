@@ -2275,19 +2275,21 @@ mod tests {
         mgr.update_route_hop(node, 1);
         assert!(!mgr.propagation_node_ready_for_send(&node));
         let now = now_f64();
-        mgr.replace_route_hops_from_path_table(&[rns_transport::messages::PathTableRpcEntry {
-            hash: node,
-            timestamp: now,
-            via: None,
-            hops: 1,
-            expires: now + 600.,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "relay fixture".into(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = rns_transport::messages::PathTableRpcEntry::default();
+            entry.hash = node;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 1;
+            entry.expires = now + 600.;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "relay fixture".into();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
         assert!(mgr.propagation_node_ready_for_send(&node));
 

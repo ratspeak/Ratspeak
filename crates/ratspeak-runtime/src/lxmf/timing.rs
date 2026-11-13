@@ -261,19 +261,21 @@ mod tests {
         mgr.known_identities
             .insert(hex::encode(dest), Identity::new().get_public_key());
         mgr.router.set_stamp_cost(dest, 0.0);
-        mgr.replace_route_hops_from_path_table(&[PathTableRpcEntry {
-            hash: dest,
-            timestamp: now,
-            via: None,
-            hops: 1,
-            expires: now + 600.0,
-            value: None,
-            used: 0.0,
-            lr_cost: None,
-            interface: "slow radio".into(),
-            interface_id: 1,
-            interface_mode: rns_transport::constants::InterfaceMode::Full,
-            interface_role: rns_transport::messages::InterfaceRole::Normal,
+        mgr.replace_route_hops_from_path_table(&[{
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = dest;
+            entry.timestamp = now;
+            entry.via = None;
+            entry.hops = 1;
+            entry.expires = now + 600.0;
+            entry.value = None;
+            entry.used = 0.0;
+            entry.lr_cost = None;
+            entry.interface = "slow radio".into();
+            entry.interface_id = 1;
+            entry.interface_mode = rns_transport::constants::InterfaceMode::Full;
+            entry.interface_role = rns_transport::messages::InterfaceRole::Normal;
+            entry
         }]);
         mgr.delivery_timing.observations.insert(
             dest,
