@@ -2917,8 +2917,7 @@ impl LxmfManager {
             }
         }
 
-        let intent = self.router.prepare_outbound(&mut msg).ok()?;
-        intent.persist(&self.lxmf_storage_dir, &mut msg).ok()?;
+        self.router.prepare_outbound(&mut msg).ok()?;
         let identity = self.identity.clone();
         msg.sign_with(|bytes| identity.sign(bytes).ok_or("identity signing unavailable"))
             .ok()
@@ -3406,10 +3405,7 @@ impl LxmfManager {
         };
         draft.auto_compress = send.auto_compress;
         self.apply_peer_lxmf_compression_support(&mut draft, None, &dest_hex);
-        let Ok(intent) = self.router.prepare_outbound(&mut draft) else {
-            return Resumed::Failed;
-        };
-        if intent.persist(&self.lxmf_storage_dir, &mut draft).is_err() {
+        if self.router.prepare_outbound(&mut draft).is_err() {
             return Resumed::Failed;
         }
         let identity = self.identity.clone();
@@ -3548,13 +3544,9 @@ impl LxmfManager {
         }
 
         msg.include_ticket = true;
-        let intent = self
-            .router
+        self.router
             .prepare_outbound(&mut msg)
             .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
-        intent
-            .persist(&self.lxmf_storage_dir, &mut msg)
-            .map_err(|_| LxmfSubmissionFailure::StorageFailed)?;
         let identity = self.identity.clone();
         let mut msg = msg
             .sign_with(|bytes| identity.sign(bytes).ok_or("identity signing unavailable"))
@@ -3723,13 +3715,9 @@ impl LxmfManager {
         );
 
         msg.include_ticket = true;
-        let intent = self
-            .router
+        self.router
             .prepare_outbound(&mut msg)
             .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
-        intent
-            .persist(&self.lxmf_storage_dir, &mut msg)
-            .map_err(|_| LxmfSubmissionFailure::StorageFailed)?;
         let identity = self.identity.clone();
         let mut msg = msg
             .sign_with(|bytes| identity.sign(bytes).ok_or("identity signing unavailable"))
@@ -3906,8 +3894,7 @@ impl LxmfManager {
         }
 
         msg.include_ticket = true;
-        let intent = self.router.prepare_outbound(&mut msg).ok()?;
-        intent.persist(&self.lxmf_storage_dir, &mut msg).ok()?;
+        self.router.prepare_outbound(&mut msg).ok()?;
         let identity = self.identity.clone();
         let mut msg = msg
             .sign_with(|bytes| identity.sign(bytes).ok_or("identity signing unavailable"))
@@ -11904,8 +11891,11 @@ mod tests {
         std::fs::write(&hub_key, b"hubkey").unwrap();
         let other_hub_key = hub_dir.join("hub_identity_ffffffffffffffffffffffffffffffff");
         std::fs::write(&other_hub_key, b"other").unwrap();
+        // Only a profile whose manager is gone is purged; its state store is closed by then.
+        let hash = mgr.identity_hash.clone();
+        drop(mgr);
 
-        LxmfManager::purge_identity_profile(&tmp, &mgr.identity_hash, false).unwrap();
+        LxmfManager::purge_identity_profile(&tmp, &hash, false).unwrap();
 
         assert!(!id_dir.join("identity").exists());
         assert!(!id_dir.join("reticulum").exists());
@@ -11936,8 +11926,10 @@ mod tests {
             .join(".ratspeak")
             .join("identities")
             .join(&mgr.identity_hash);
+        let hash = mgr.identity_hash.clone();
+        drop(mgr);
 
-        LxmfManager::purge_identity_profile(&tmp, &mgr.identity_hash, true).unwrap();
+        LxmfManager::purge_identity_profile(&tmp, &hash, true).unwrap();
 
         assert!(!id_dir.exists());
     }
@@ -12567,10 +12559,7 @@ mod tests {
             let dest = [0xCE; 16];
             let dest_hex = hex::encode(dest);
             match golden_stamp(&golden, case) {
-                (Some(token), _) => mgr
-                    .router
-                    .ticket_store
-                    .remember_outbound(lxmf_core::ticket::Ticket::new(token, dest, now + 3600.0)),
+                (Some(token), _) => mgr.router.remember_ticket(dest, token, now + 3600.0),
                 (None, Some(cost)) => mgr.router.set_stamp_cost(dest, cost),
                 (None, None) => {}
             }
@@ -12906,7 +12895,6 @@ mod tests {
         mgr.known_identities
             .insert(dest_hex.clone(), Identity::new().get_public_key());
         mgr.router.set_stamp_cost(dest, cost);
-        mgr.router.ticket_store.replace_legacy(Vec::new());
         (mgr, dest_hex)
     }
 
@@ -12998,7 +12986,6 @@ mod tests {
         let message = mgr
             .create_message(&dest_hex, "needs stamp", "", DeliveryMethod::Opportunistic)
             .expect("message created");
-        mgr.router.ticket_store.replace_legacy(Vec::new());
         let msg_id = hex::encode(message.message_id());
         mgr.router.submit_signed(message).unwrap();
 
