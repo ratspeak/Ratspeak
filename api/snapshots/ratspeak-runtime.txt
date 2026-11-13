@@ -1794,6 +1794,7 @@ pub ratspeak_runtime::lxmf::WakeContext::online: bool
 pub ratspeak_runtime::lxmf::WakeContext::release: &'a mut dyn core::ops::function::FnMut(&str)
 pub ratspeak_runtime::lxmf::WakeContext::reserve: &'a mut dyn core::ops::function::FnMut(&str, usize) -> bool
 pub ratspeak_runtime::lxmf::WakeContext::signals: ratspeak_runtime::lxmf::WakeSignals
+pub ratspeak_runtime::lxmf::WakeContext::waiting_written: bool
 pub struct ratspeak_runtime::lxmf::WakeOutcome
 pub ratspeak_runtime::lxmf::WakeOutcome::expired: alloc::vec::Vec<ratspeak_db::db::ExpiredWait>
 pub ratspeak_runtime::lxmf::WakeOutcome::failed: alloc::vec::Vec<(alloc::string::String, &'static str)>
@@ -2508,6 +2509,7 @@ pub fn ratspeak_runtime::state::AppState::mobile_platform_bridge(&self) -> alloc
 pub fn ratspeak_runtime::state::AppState::native_notifications_enabled(&self) -> bool
 pub fn ratspeak_runtime::state::AppState::network_settings(&self) -> ratspeak_core::types::NetworkSettings
 pub fn ratspeak_runtime::state::AppState::new(ratspeak_core::config::DashboardConfig, ratspeak_db::db::DbPool, alloc::sync::Arc<dyn ratspeak_core::emitter::Emitter>, alloc::sync::Arc<dyn ratspeak_core::notification::NativeNotifier>) -> Self
+pub fn ratspeak_runtime::state::AppState::note_waiting_row(&self)
 pub fn ratspeak_runtime::state::AppState::notification_preview(&self) -> ratspeak_core::notification::NotificationPreview
 pub fn ratspeak_runtime::state::AppState::propagation_host_ready(&self) -> bool
 pub fn ratspeak_runtime::state::AppState::publish_mobile_hardware_state(&self, &'static str, &'static str, core::option::Option<&'static str>)
@@ -2532,6 +2534,7 @@ pub fn ratspeak_runtime::state::AppState::set_hw_locked(&self, core::option::Opt
 pub fn ratspeak_runtime::state::AppState::set_last_hub_interfaces(&self, serde_json::value::Value)
 pub fn ratspeak_runtime::state::AppState::set_last_stats(&self, serde_json::value::Value)
 pub fn ratspeak_runtime::state::AppState::set_lxmf(&self, ratspeak_runtime::lxmf::LxmfManager)
+pub fn ratspeak_runtime::state::AppState::set_lxmf_keep_trying_enabled(&self, bool)
 pub fn ratspeak_runtime::state::AppState::set_lxmf_limit_1mb_enabled(&self, bool)
 pub fn ratspeak_runtime::state::AppState::set_native_notifications_enabled(&self, bool)
 pub fn ratspeak_runtime::state::AppState::set_notification_foreground(&self, bool)
@@ -2557,6 +2560,7 @@ pub fn ratspeak_runtime::state::AppState::take_interface_reannounce_suppression(
 pub fn ratspeak_runtime::state::AppState::take_pending_ble_rnode_activity_operation(&self, &str) -> core::option::Option<BleRnodeActivityTake>
 pub fn ratspeak_runtime::state::AppState::take_pending_hw_pin(&self) -> core::option::Option<(alloc::string::String, zeroize::Zeroizing<alloc::string::String>)>
 pub fn ratspeak_runtime::state::AppState::take_retryable_attachment_staging(&self, &str) -> core::option::Option<ratspeak_runtime::state::StagedAttachment>
+pub fn ratspeak_runtime::state::AppState::take_waiting_written(&self) -> bool
 pub fn ratspeak_runtime::state::AppState::take_wake_signals(&self) -> ratspeak_runtime::lxmf::WakeSignals
 pub fn ratspeak_runtime::state::AppState::trim_propagation_nodes(&self)
 pub async fn ratspeak_runtime::state::AppState::wait_for_mobile_platform_bridge(&self)
@@ -2863,6 +2867,7 @@ pub async fn ratspeak_runtime::send_announce_from_state(&alloc::sync::Arc<ratspe
 pub async fn ratspeak_runtime::send_manual_announce_from_origin(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, ratspeak_runtime::state::ActivityRequestFence) -> ratspeak_runtime::AnnounceSendReport
 pub async fn ratspeak_runtime::send_manual_announce_from_state(&alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> ratspeak_runtime::AnnounceSendReport
 pub async fn ratspeak_runtime::send_typed_announce_from_origin(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, ratspeak_runtime::announce::AnnounceOrigin, ratspeak_runtime::state::ActivityRequestFence) -> ratspeak_runtime::AnnounceSendReport
+pub fn ratspeak_runtime::set_lxmf_keep_trying(&ratspeak_runtime::state::AppState, bool) -> core::result::Result<usize, alloc::string::String>
 pub async fn ratspeak_runtime::shutdown_ble_peer_for_exit()
 pub async fn ratspeak_runtime::shutdown_rns_lxmf(&alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> core::result::Result<(), ratspeak_runtime::activity::ActivityRecorderError>
 pub fn ratspeak_runtime::spawn_startup_rnode_activity_monitor(alloc::sync::Arc<ratspeak_runtime::state::AppState>, rns_runtime::reticulum::RNodeRuntimeObserver, ratspeak_runtime::state::RNodeActivityOrigin)

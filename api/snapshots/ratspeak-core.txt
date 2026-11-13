@@ -26,10 +26,11 @@ pub mod ratspeak_core::delivery::policy
 pub const ratspeak_core::delivery::policy::FOLLOWERS_USE_INBOX_AFTER_DEPOSIT: bool
 pub const ratspeak_core::delivery::policy::INTERFACE_WAKE_MIN_SECS: f64
 pub const ratspeak_core::delivery::policy::LANE_LIMIT: usize
+pub const ratspeak_core::delivery::policy::OFF_ENDS_WAITING: bool
 pub const ratspeak_core::delivery::policy::TIMER_PERIOD_SECS: f64
 pub const ratspeak_core::delivery::policy::WAIT_LIMIT_SECS: f64
 pub const ratspeak_core::delivery::policy::WAKE_CAP: u32
-pub fn ratspeak_core::delivery::policy::gate_secs(ratspeak_core::delivery::WakeGate, u32) -> f64
+pub fn ratspeak_core::delivery::policy::gate_secs(ratspeak_core::delivery::WakeGate, u32, u32) -> f64
 pub fn ratspeak_core::delivery::policy::method_waits(&str) -> bool
 pub enum ratspeak_core::delivery::AfterFailure
 pub ratspeak_core::delivery::AfterFailure::Fail

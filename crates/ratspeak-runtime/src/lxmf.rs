@@ -3174,6 +3174,7 @@ impl LxmfManager {
             waiting: held.is_some(),
             ..record
         };
+        self.wakes.note_waiting(held.is_some());
         if self.persist_outbound(db_pool, message_id, &record) {
             Ok(())
         } else {
@@ -3315,6 +3316,12 @@ impl LxmfManager {
                     );
                 }
                 Ok(method)
+            }
+            // The Offline Inbox is on with no node in use, which is only said with
+            // waiting on: as a new send does, it waits for one once the tick has looked.
+            Resumed::NoInbox if self.missing_inbox_reason().can_wait() => {
+                self.resumable.push(send);
+                Ok(planned)
             }
             Resumed::AwaitingInbox | Resumed::NoInbox | Resumed::Failed => {
                 db::update_message_state(db_pool, &row.message_id, identity_id, &previous, None);

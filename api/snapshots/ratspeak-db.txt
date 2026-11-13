@@ -432,6 +432,7 @@ pub fn ratspeak_db::db::get_settings(&ratspeak_db::DbPool, &[&str]) -> core::res
 pub fn ratspeak_db::db::get_unread_breakdown(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<(alloc::string::String, core::option::Option<alloc::string::String>, i64, alloc::string::String, f64)>
 pub fn ratspeak_db::db::has_current_public_channel_consent(&ratspeak_db::DbPool) -> bool
 pub fn ratspeak_db::db::has_game_nonce(&ratspeak_db::DbPool, &str, &str, &[u8]) -> bool
+pub fn ratspeak_db::db::has_waiting(&ratspeak_db::DbPool, &str) -> bool
 pub fn ratspeak_db::db::hide_conversation(&ratspeak_db::DbPool, &str, &str)
 pub fn ratspeak_db::db::identity_generation() -> u64
 pub fn ratspeak_db::db::identity_hash_for_dest(&ratspeak_db::DbPool, &str) -> core::option::Option<alloc::string::String>
@@ -897,6 +898,7 @@ pub fn ratspeak_db::get_settings(&ratspeak_db::DbPool, &[&str]) -> core::result:
 pub fn ratspeak_db::get_unread_breakdown(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<(alloc::string::String, core::option::Option<alloc::string::String>, i64, alloc::string::String, f64)>
 pub fn ratspeak_db::has_current_public_channel_consent(&ratspeak_db::DbPool) -> bool
 pub fn ratspeak_db::has_game_nonce(&ratspeak_db::DbPool, &str, &str, &[u8]) -> bool
+pub fn ratspeak_db::has_waiting(&ratspeak_db::DbPool, &str) -> bool
 pub fn ratspeak_db::hide_conversation(&ratspeak_db::DbPool, &str, &str)
 pub fn ratspeak_db::identity_generation() -> u64
 pub fn ratspeak_db::identity_hash_for_dest(&ratspeak_db::DbPool, &str) -> core::option::Option<alloc::string::String>

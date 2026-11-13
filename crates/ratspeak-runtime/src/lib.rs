@@ -3195,14 +3195,19 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                         })
                         .await
                         {
-                            Ok((Some((state, destination, reason)), method)) => persisted.push((
-                                msg_id.clone(),
-                                state,
-                                method,
-                                destination,
-                                failure,
-                                reason,
-                            )),
+                            Ok((Some((state, destination, reason)), method)) => {
+                                if state == OutboundState::Waiting.as_str() {
+                                    tick_state.note_waiting_row();
+                                }
+                                persisted.push((
+                                    msg_id.clone(),
+                                    state,
+                                    method,
+                                    destination,
+                                    failure,
+                                    reason,
+                                ))
+                            }
                             Ok((None, _)) => tracing::debug!(
                                 msg_id = %short_id(msg_id),
                                 new_state = %new_state,
@@ -6903,6 +6908,40 @@ pub fn stop_outbound_message(state: &AppState, msg_id: &str, identity_id: &str) 
     }
 }
 
+/// Turn waiting on or off for every consumer at once. Off ends every
+/// identity's waiting messages as Not delivered; the active identity's are
+/// told to the dashboard with a reason that shows no notice. Returns how many ended.
+pub fn set_lxmf_keep_trying(state: &AppState, enabled: bool) -> Result<usize, String> {
+    // Under the manager lock, where a wake claims: none is claimed while they end.
+    let mut lxmf = state.lxmf.lock().ok();
+    state.set_lxmf_keep_trying_enabled(enabled);
+    if let Some(manager) = lxmf.as_mut().and_then(|lxmf| lxmf.as_mut()) {
+        manager.keep_trying = enabled;
+    }
+    let ended = if enabled || !ratspeak_core::delivery::policy::OFF_ENDS_WAITING {
+        Vec::new()
+    } else {
+        drop(state.take_wake_signals());
+        db::fail_all_waiting(&state.db)?
+    };
+    drop(lxmf);
+    if ended.is_empty() {
+        return Ok(0);
+    }
+    let active = helpers::active_identity_id(state);
+    for (_, msg_id) in ended.iter().filter(|(identity, _)| *identity == active) {
+        state.emit_to_all(
+            "lxmf_step",
+            json!({
+                "step": "failed",
+                "msg_id": msg_id,
+                "reason": "keep_trying_off",
+            }),
+        );
+    }
+    Ok(ended.len())
+}
+
 /// Run the wake engine; the caller holds the manager lock and applies the
 /// outcome once it is released.
 fn run_wakes(state: &Arc<AppState>, mgr: &mut lxmf::LxmfManager) -> lxmf::WakeOutcome {
@@ -6911,6 +6950,7 @@ fn run_wakes(state: &Arc<AppState>, mgr: &mut lxmf::LxmfManager) -> lxmf::WakeOu
         now: state.steady_now(),
         keep_trying: state.lxmf_keep_trying_enabled(),
         online: any_interface_online_cached(state) == Some(true),
+        waiting_written: state.take_waiting_written(),
         signals: state.take_wake_signals(),
         reserve: &mut |msg_id, bytes| match state.reserve_attachment_transfer(bytes) {
             Ok(lease) => {
@@ -7006,13 +7046,18 @@ async fn resume_outbox(state: &Arc<AppState>, mgr: lxmf::LxmfManager) -> lxmf::L
     let rows = match db::spawn_db(state.db.clone(), move |p| {
         // A wake's unfinished send waits for a wake again; resumed, it would go out in a burst.
         let returned = db::return_woken_to_waiting(&p, &identity_id);
-        (returned, db::outbox_rows(&p, &identity_id))
+        let waiting = db::has_waiting(&p, &identity_id);
+        (returned, waiting, db::outbox_rows(&p, &identity_id))
     })
     .await
     {
-        Ok((returned, Ok(rows))) => {
+        Ok((returned, waiting, Ok(rows))) => {
             for msg_id in returned {
                 state.emit_to_all("lxmf_step", json!({ "step": "waiting", "msg_id": msg_id }));
+            }
+            // The one look at start; from here the engine is told of each message left waiting.
+            if waiting {
+                state.note_waiting_row();
             }
             rows
         }
@@ -7434,6 +7479,9 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
             .ok()
             .and_then(|mut map| map.remove(&msg_id));
         let reason = failure_reason_after(orphaned, settled.verdict);
+        if settled.state == OutboundState::Waiting {
+            state.note_waiting_row();
+        }
         let step = if settled.state == OutboundState::Waiting {
             json!({
                 "step": "waiting",
@@ -10646,6 +10694,7 @@ mod waiting_send_tests {
         let fence = state.activity_request_fence();
 
         // With waiting off it ends as it always has.
+        state.set_lxmf_keep_trying_enabled(false);
         let ended = send(&state, &identity, "ends");
         orphan(&state, &ended);
         check_message_timeouts(&state, fence).await;
@@ -10751,6 +10800,7 @@ mod waiting_send_tests {
         let (state, _emitter, identity) = session();
         let id = send(&state, &identity, "proven");
 
+        state.set_lxmf_keep_trying_enabled(false);
         wake_recipient_of_proof(&state, &state.db, &identity, &id);
         assert!(state.take_wake_signals().is_empty(), "waiting is off");
 
@@ -10764,6 +10814,144 @@ mod waiting_send_tests {
         let mut heard = lxmf::WakeSignals::default();
         heard.raise(lxmf::WakeEvent::Heard(peer_hash()));
         assert_eq!(state.take_wake_signals(), heard);
+    }
+
+    fn manager_waits(state: &AppState) -> bool {
+        state.lxmf.lock().unwrap().as_ref().unwrap().keep_trying
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn turning_it_off_ends_waiting_messages_at_once_without_a_notice() {
+        let (state, emitter, identity) = session();
+        let fence = state.activity_request_fence();
+        let on_its_way = send(&state, &identity, "on its way");
+        let mine = send(&state, &identity, "waits");
+        orphan(&state, &mine);
+        check_message_timeouts(&state, fence).await;
+        assert_eq!(stored_state(&state, &identity, &mine), "waiting");
+        // Another identity's, from when it was the active one.
+        let (other, theirs) = ("77".repeat(16), "9a".repeat(32));
+        db::save_identity(&state.db, &other, &"78".repeat(16), "B", "B");
+        db::save_outbound_message(
+            &state.db,
+            &db::OutboundMessage {
+                msg_id: &theirs,
+                identity_id: &other,
+                source: "them",
+                destination: PEER,
+                waiting: true,
+                resend: db::Resend {
+                    preference: "auto",
+                    profile: "message",
+                    message: b"parts",
+                },
+                ..db::OutboundMessage::default()
+            },
+        )
+        .unwrap();
+        state.wake_waiting(lxmf::WakeEvent::TryNow(peer_hash()));
+        let told = emitter.count("lxmf_step");
+
+        assert_eq!(set_lxmf_keep_trying(&state, false), Ok(2));
+        assert!(!state.lxmf_keep_trying_enabled());
+        assert!(!manager_waits(&state), "a send made now is not held");
+        assert!(state.take_wake_signals().is_empty());
+        assert_eq!(stored_state(&state, &identity, &mine), "failed");
+        assert_eq!(
+            db::outbound_message_state(&state.db, &other, &theirs).unwrap(),
+            Some("failed".into()),
+            "every identity's, not only the one in use"
+        );
+        assert_eq!(stored_state(&state, &identity, &on_its_way), "sending");
+        assert_eq!(
+            emitter.payloads("lxmf_step")[told..],
+            [json!({ "step": "failed", "msg_id": mine, "reason": "keep_trying_off" })],
+            "one step, for the identity in use, naming no chat to give notice of"
+        );
+        assert!(
+            db::retryable_outbox_row(&state.db, &identity, &mine)
+                .unwrap()
+                .is_some(),
+            "it can be sent again by hand"
+        );
+
+        // On again takes effect at once; what ended stays ended.
+        assert_eq!(set_lxmf_keep_trying(&state, true), Ok(0));
+        assert!(state.lxmf_keep_trying_enabled());
+        assert!(manager_waits(&state));
+        assert!(wake(&state).woken.is_empty());
+        assert_eq!(stored_state(&state, &identity, &mine), "failed");
+        orphan(&state, &on_its_way);
+        check_message_timeouts(&state, fence).await;
+        assert_eq!(stored_state(&state, &identity, &on_its_way), "waiting");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_update_from_1_0_44_starts_with_waiting_on_and_leaves_ended_messages_ended() {
+        let (old, _emitter, identity) = session();
+        let ended = ["failed", "timeout", "cancelled"].map(|state| {
+            let id = send(&old, &identity, state);
+            orphan(&old, &id);
+            set_stored(
+                &old,
+                &id,
+                &format!("UPDATE messages SET state = '{state}' WHERE id = ?1"),
+            );
+            (id, state)
+        });
+        let on_its_way = send(&old, &identity, "on its way");
+        // As 1.0.44 left it: the schema before waiting, sent long ago, no choice stored.
+        old.db
+            .get()
+            .unwrap()
+            .execute_batch(
+                "UPDATE lxmf_outbox SET queued_at = queued_at - 200000.0;
+                 ALTER TABLE lxmf_outbox DROP COLUMN auto_sends;
+                 ALTER TABLE lxmf_outbox DROP COLUMN last_auto_at;
+                 UPDATE schema_version SET version = 51;",
+            )
+            .unwrap();
+        assert_eq!(db::get_setting(&old.db, "lxmf_keep_trying"), None);
+
+        db::init_schema(&old.db).unwrap();
+        let state = Arc::new(AppState::new(
+            old.config.clone(),
+            old.db.clone(),
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        ));
+        *state.lxmf.lock().unwrap() = old.lxmf.lock().unwrap().take();
+        *state.last_stats.write().unwrap() =
+            Some(json!({ "interface_stats": { "interfaces": [{ "online": true }] } }));
+        assert_eq!(any_interface_online_cached(&state), Some(true));
+        assert!(state.lxmf_keep_trying_enabled(), "on without being asked");
+
+        // The start: nothing woken by an earlier run, then the engine's first pass.
+        assert!(db::return_woken_to_waiting(&state.db, &identity).is_empty());
+        let outcome = wake(&state);
+        assert!(outcome.woken.is_empty() && outcome.expired.is_empty());
+        assert!(outcome.failed.is_empty());
+        assert!(manager_waits(&state));
+        for (id, was) in &ended {
+            assert_eq!(stored_state(&state, &identity, id), *was);
+            assert!(
+                db::retryable_outbox_row(&state.db, &identity, id)
+                    .unwrap()
+                    .is_some(),
+                "{was} keeps Retry"
+            );
+        }
+        assert_eq!(stored_state(&state, &identity, &on_its_way), "sending");
+        assert!(db::waiting_queues(&state.db, &identity).unwrap().is_empty());
+        assert_eq!(
+            db::outbox_rows(&state.db, &identity)
+                .unwrap()
+                .iter()
+                .map(|row| row.message_id.as_str())
+                .collect::<Vec<_>>(),
+            [on_its_way.as_str()],
+            "what was on its way is sent again, as before"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -10820,6 +11008,8 @@ mod waiting_send_tests {
                 &id,
                 "UPDATE messages SET state = 'waiting' WHERE id = ?1",
             );
+            // As the tick says of a message it leaves waiting.
+            state.note_waiting_row();
             id
         };
         let held = |id: &str| state.lxmf.lock().unwrap().as_ref().unwrap().still_owned(id);
@@ -10900,6 +11090,10 @@ mod waiting_send_tests {
         let mgr = lxmf::LxmfManager::load_or_create(&root, Some(&identity), None).unwrap();
         let mut mgr = resume_outbox(&state, mgr).await;
 
+        assert!(
+            state.take_waiting_written(),
+            "the start tells the engine that messages wait"
+        );
         assert_eq!(stored_state(&state, &identity, &parked), "waiting");
         assert_eq!(stored_state(&state, &identity, &woken), "waiting");
         assert_eq!(stored_state(&state, &identity, &fresh), "sending");

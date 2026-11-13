@@ -853,6 +853,8 @@ pub struct AppState {
     /// What may have brought a waiting message's recipient within reach
     /// since the last full tick.
     wake_signals: Mutex<crate::lxmf::WakeSignals>,
+    /// A message was left waiting since the last full tick: the engine has work.
+    waiting_written: AtomicBool,
     steady_clock: SteadyClock,
     /// Serializes read-modify-write edits to the active Reticulum config file.
     pub rns_config_lock: Mutex<()>,
@@ -1021,6 +1023,8 @@ impl AppState {
             .unwrap_or_default();
         let initial_lxmf_limit_1mb =
             crate::db::get_setting(&db, "lxmf_limit_1mb").is_none_or(|value| value != "false");
+        let initial_lxmf_keep_trying =
+            crate::db::get_setting(&db, "lxmf_keep_trying").is_none_or(|value| value != "false");
         let activity = ActivityRecorder::with_batch_sink(Arc::new(EmitterBatchSink::new(
             Arc::clone(&emitter),
         )));
@@ -1140,8 +1144,9 @@ impl AppState {
             native_notifications_enabled: AtomicBool::new(initial_notifications_enabled),
             notification_preview: Mutex::new(initial_notification_preview),
             lxmf_limit_1mb: AtomicBool::new(initial_lxmf_limit_1mb),
-            lxmf_keep_trying: AtomicBool::new(false),
+            lxmf_keep_trying: AtomicBool::new(initial_lxmf_keep_trying),
             wake_signals: Mutex::new(crate::lxmf::WakeSignals::default()),
+            waiting_written: AtomicBool::new(false),
             steady_clock: SteadyClock::start(),
             rns_config_lock: Mutex::new(()),
             identity_switch_lock: IdentitySwitchLock::new(),
@@ -1353,6 +1358,10 @@ impl AppState {
         self.lxmf_keep_trying.load(Ordering::Relaxed)
     }
 
+    pub fn set_lxmf_keep_trying_enabled(&self, enabled: bool) {
+        self.lxmf_keep_trying.store(enabled, Ordering::Relaxed);
+    }
+
     /// Tell the wake engine that waiting messages may be worth sending again.
     /// What the user asked for is acted on at once; the rest at the next tick.
     pub fn wake_waiting(&self, event: crate::lxmf::WakeEvent) {
@@ -1368,6 +1377,15 @@ impl AppState {
         ) {
             self.lxmf_notify.notify_one();
         }
+    }
+
+    /// Say that a message of the active identity was left waiting.
+    pub fn note_waiting_row(&self) {
+        self.waiting_written.store(true, Ordering::Relaxed);
+    }
+
+    pub fn take_waiting_written(&self) -> bool {
+        self.waiting_written.swap(false, Ordering::Relaxed)
     }
 
     pub fn take_wake_signals(&self) -> crate::lxmf::WakeSignals {
@@ -2955,6 +2973,7 @@ impl AppState {
         }
         // They name the last identity's recipients.
         drop(self.take_wake_signals());
+        self.take_waiting_written();
         self.clear_lxmf_client_sends();
         let staged = if let Ok(mut staging) = self.attachment_staging.lock() {
             staging
@@ -3999,6 +4018,7 @@ mod tests {
     fn wake_signals_are_kept_only_with_waiting_on_and_for_one_identity() {
         use crate::lxmf::{WakeEvent, WakeSignals};
         let state = make_state();
+        state.set_lxmf_keep_trying_enabled(false);
         let heard = WakeEvent::Heard([7; 16]);
         state.wake_waiting(heard);
         state.wake_waiting(WakeEvent::InterfaceOnline);
@@ -4062,6 +4082,28 @@ mod tests {
             }),
         });
         assert_eq!(verdict, AfterFailure::FailExpired);
+    }
+
+    #[test]
+    fn keep_trying_is_on_for_a_fresh_install() {
+        // (what is stored, whether messages wait)
+        for (stored, waits) in [(None, true), (Some("true"), true), (Some("false"), false)] {
+            let pool = r2d2::Pool::builder()
+                .max_size(1)
+                .build(SqliteConnectionManager::memory())
+                .unwrap();
+            crate::db::init_schema(&pool).unwrap();
+            if let Some(value) = stored {
+                crate::db::try_set_setting(&pool, "lxmf_keep_trying", value).unwrap();
+            }
+            let state = AppState::new(
+                DashboardConfig::from_env_and_defaults(std::env::temp_dir()),
+                pool,
+                Arc::new(ratspeak_core::NoopEmitter),
+                Arc::new(ratspeak_core::NoopNotifier),
+            );
+            assert_eq!(state.lxmf_keep_trying_enabled(), waits, "{stored:?}");
+        }
     }
 
     #[test]

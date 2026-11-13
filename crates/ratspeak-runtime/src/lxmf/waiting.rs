@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use ratspeak_core::delivery::{OutboundState, Phase, WakeCause, policy};
+use ratspeak_core::delivery::{OutboundState, Phase, WakeCause, WakeGate, policy};
 
 use super::{
     DeliveryFailureReason, DeliveryPreference, DeliveryProfile, LxmfManager, delivery_method_name,
@@ -75,6 +75,8 @@ pub struct WakeContext<'a> {
     pub now: f64,
     pub keep_trying: bool,
     pub online: bool,
+    /// A message was left waiting since the last run.
+    pub waiting_written: bool,
     pub signals: WakeSignals,
     /// Grants a woken attachment its transfer budget and keeps it under the id.
     pub reserve: &'a mut dyn FnMut(&str, usize) -> bool,
@@ -112,14 +114,26 @@ pub(super) struct Wakes {
     started: bool,
     /// Times set ahead of the clock have been brought back.
     clamped: bool,
+    /// A message of this identity may wait. While none does, a run reads nothing stored.
+    may_wait: bool,
     last_sweep: Option<f64>,
     last_interface_wake: Option<f64>,
-    /// Ids of the sends this engine woke and has not seen settle, with their queue.
-    woken: HashMap<String, QueueKey>,
+    /// Ids of the sends this engine woke and has not seen settle, with their
+    /// queue and what woke them.
+    woken: HashMap<String, (QueueKey, WakeCause)>,
+    /// Wakes in a row of a queue that hearing its recipient prompted and that left it waiting.
+    unanswered: HashMap<QueueKey, u32>,
     /// Queues a wake found busy: tried again each tick with the cause it had.
     held: HashMap<QueueKey, (WakeCause, bool)>,
     /// An Offline Inbox node was put in use since the last run.
     pub(super) inbox_selected: bool,
+}
+
+impl Wakes {
+    /// A message was left waiting, or not.
+    pub(super) fn note_waiting(&mut self, waits: bool) {
+        self.may_wait |= waits;
+    }
 }
 
 fn within(period: f64, since: Option<f64>, now: f64) -> bool {
@@ -137,13 +151,54 @@ impl LxmfManager {
             now,
             keep_trying,
             online,
+            waiting_written,
             mut signals,
             reserve,
             release,
         } = ctx;
         self.keep_trying = keep_trying;
+        self.wakes.note_waiting(waiting_written);
         let identity = self.identity_hash.clone();
         let mut outcome = WakeOutcome::default();
+
+        // The timer keeps its beat while idle, or the first message to wait would be tried at once.
+        let sweep = !within(policy::TIMER_PERIOD_SECS, self.wakes.last_sweep, now);
+        if sweep {
+            self.wakes.last_sweep = Some(now);
+        }
+        // A woken send that settled lets the next of its queue go at once.
+        let mut advance: HashMap<QueueKey, bool> = HashMap::new();
+        for (id, (queue, cause)) in self.wakes.woken.clone() {
+            // On its way: there is nothing to read yet.
+            if self.still_owned(&id) {
+                continue;
+            }
+            let Ok(stored) = db::outbound_message_state(db, &identity, &id) else {
+                continue;
+            };
+            let state = stored.as_deref().and_then(OutboundState::parse);
+            match state.map(OutboundState::phase) {
+                Some(Phase::InFlight) => continue,
+                // It waits again; its own gate decides when it is tried next.
+                Some(Phase::Waiting) => {
+                    if cause.gate() == WakeGate::Targeted {
+                        *self.wakes.unanswered.entry(queue).or_default() += 1;
+                    }
+                }
+                // Ended, done, deleted, or rewritten: the queue moves on.
+                Some(Phase::Ended | Phase::Done) | None => {
+                    self.wakes.unanswered.remove(&queue);
+                    advance.insert(queue, state == Some(OutboundState::Propagated));
+                }
+            }
+            self.wakes.woken.remove(&id);
+        }
+        if !self.wakes.may_wait {
+            // The start counts as made, and what was heard while nothing waited is not kept.
+            self.wakes.started = keep_trying && (self.wakes.started || online);
+            self.wakes.inbox_selected = false;
+            return outcome;
+        }
 
         if keep_trying && !self.wakes.clamped {
             self.wakes.clamped = true;
@@ -151,9 +206,7 @@ impl LxmfManager {
             db::clamp_future_queue_times(db, &identity, now);
         }
         // Expiry needs neither a network nor the setting.
-        let sweep = !within(policy::TIMER_PERIOD_SECS, self.wakes.last_sweep, now);
         if sweep {
-            self.wakes.last_sweep = Some(now);
             outcome.expired = db::expire_waiting(db, &identity, now).unwrap_or_default();
         }
         if !keep_trying {
@@ -161,6 +214,9 @@ impl LxmfManager {
             self.wakes.started = false;
             self.wakes.held.clear();
             self.wakes.inbox_selected = false;
+            if sweep {
+                self.wakes.may_wait = db::has_waiting(db, &identity);
+            }
             return outcome;
         }
 
@@ -188,31 +244,26 @@ impl LxmfManager {
                 .outbound_propagation_node
                 .is_some_and(|node| signals.peers.contains_key(&node));
 
-        // A woken send that settled lets the next of its queue go at once.
-        let mut advance: HashMap<QueueKey, bool> = HashMap::new();
-        for (id, queue) in self.wakes.woken.clone() {
-            let Ok(stored) = db::outbound_message_state(db, &identity, &id) else {
-                continue;
-            };
-            let state = stored.as_deref().and_then(OutboundState::parse);
-            match state.map(OutboundState::phase) {
-                Some(Phase::InFlight) => continue,
-                // It waits again; its own gate decides when it is tried next.
-                Some(Phase::Waiting) => {}
-                // Ended, done, deleted, or rewritten: the queue moves on.
-                Some(Phase::Ended | Phase::Done) | None => {
-                    advance.insert(queue, state == Some(OutboundState::Propagated));
-                }
-            }
-            self.wakes.woken.remove(&id);
-        }
-
-        if signals.is_empty() && !inbox_heard && advance.is_empty() && self.wakes.held.is_empty() {
+        // With each sweep the queues are read too, so that an empty one is seen.
+        if signals.is_empty()
+            && !inbox_heard
+            && advance.is_empty()
+            && self.wakes.held.is_empty()
+            && !sweep
+        {
             return outcome;
         }
         let Ok(queues) = db::waiting_queues(db, &identity) else {
             return outcome;
         };
+        self.wakes.may_wait = !queues.is_empty();
+        let woken = &self.wakes.woken;
+        self.wakes.unanswered.retain(|key, _| {
+            queues.iter().any(|queue| {
+                [&queue.destination, &queue.preference, &queue.profile]
+                    == [&key[0], &key[1], &key[2]]
+            }) || woken.values().any(|(queue, _)| queue == key)
+        });
         let held = std::mem::take(&mut self.wakes.held);
         // Whether that node can take a deposit is found out in the router, as for any inbox send.
         let inbox_in_use = self.router.outbound_propagation_node.is_some();
@@ -222,7 +273,7 @@ impl LxmfManager {
             .wakes
             .woken
             .iter()
-            .filter(|(id, queue)| {
+            .filter(|(id, (queue, _))| {
                 queue[2] != DeliveryProfile::Attachment.as_str() && self.still_owned(id)
             })
             .count();
@@ -276,7 +327,9 @@ impl LxmfManager {
                 self.wakes.held.insert(key, (cause, after_deposit));
                 continue;
             }
-            if now - queue.last_auto_at < policy::gate_secs(cause.gate(), queue.auto_sends) {
+            let unanswered = self.wakes.unanswered.get(&key).copied().unwrap_or(0);
+            let rest = policy::gate_secs(cause.gate(), queue.auto_sends, unanswered);
+            if now - queue.last_auto_at < rest {
                 continue;
             }
             if cause.needs_network() && !online {
@@ -321,7 +374,7 @@ impl LxmfManager {
                 continue;
             }
             // Its settling, however it ends, is what lets the next of its queue go.
-            self.wakes.woken.insert(id.clone(), key);
+            self.wakes.woken.insert(id.clone(), (key, cause));
             match self.resumable_send(&queue.head, cycle, db) {
                 Some(send) => {
                     if !attachment {
@@ -401,14 +454,28 @@ mod tests {
 
     use DeliveryPreference::{Auto, Direct, Propagated};
 
+    /// Counts each time the database is asked for a connection.
+    #[derive(Debug, Default)]
+    struct Checkouts(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl r2d2::HandleEvent for Checkouts {
+        fn handle_checkout(&self, _: r2d2::event::CheckoutEvent) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     /// A manager with waiting on, its database, and a clock the test moves.
     struct Bench {
         mgr: LxmfManager,
         pool: DbPool,
+        /// How often the database has been used.
+        checkouts: std::sync::Arc<std::sync::atomic::AtomicUsize>,
         identity: String,
         now: f64,
         keep_trying: bool,
         online: bool,
+        /// The tick left a message waiting since the last run.
+        written: bool,
         grant_budget: bool,
         reserved: Vec<(String, usize)>,
         released: Vec<String>,
@@ -427,8 +494,10 @@ mod tests {
 
     impl Bench {
         fn new() -> Self {
+            let checkouts = std::sync::Arc::default();
             let pool = r2d2::Pool::builder()
                 .max_size(2)
+                .event_handler(Box::new(Checkouts(std::sync::Arc::clone(&checkouts))))
                 .build(SqliteConnectionManager::memory())
                 .unwrap();
             db::init_schema(&pool).unwrap();
@@ -437,9 +506,11 @@ mod tests {
                 identity: mgr.identity_hash.clone(),
                 mgr,
                 pool,
+                checkouts,
                 now: wall(),
                 keep_trying: true,
                 online: true,
+                written: false,
                 grant_budget: true,
                 reserved: Vec::new(),
                 released: Vec::new(),
@@ -525,6 +596,12 @@ mod tests {
                 Some(OutboundState::Waiting),
                 "{id}"
             );
+            // As the tick does for a message it leaves waiting.
+            self.written = true;
+        }
+
+        fn database_uses(&self) -> usize {
+            self.checkouts.load(std::sync::atomic::Ordering::Relaxed)
         }
 
         /// `id` ends as `state`, and nothing holds it any more.
@@ -548,6 +625,7 @@ mod tests {
                 now: self.now,
                 keep_trying: self.keep_trying,
                 online: self.online,
+                waiting_written: std::mem::take(&mut self.written),
                 signals,
                 reserve: &mut |id, bytes| {
                     reserved.push((id.to_string(), bytes));
@@ -958,6 +1036,9 @@ mod tests {
             db::return_woken_to_waiting(&b.pool, &identity),
             [flying.as_str()]
         );
+        // The start's one look at whether anything waits.
+        b.written = db::has_waiting(&b.pool, &identity);
+        assert!(b.written);
         let rows = db::outbox_rows(&b.pool, &identity).unwrap();
         assert!(rows.is_empty(), "nothing is sent by the start itself");
         assert_eq!(b.mgr.resume_outbox(rows, &b.pool), 0);
@@ -998,20 +1079,170 @@ mod tests {
         // Heard again at once: the head rests, and the next is not sent in its place.
         b.now += 10.0;
         assert!(b.wake(&heard).is_empty());
-        b.now += 49.0;
-        assert!(b.wake(&heard).is_empty(), "a minute, not less");
+        b.now += 109.0;
+        assert!(
+            b.wake(&heard).is_empty(),
+            "two minutes after one unanswered"
+        );
         b.now += 1.0;
         assert_eq!(b.wake(&heard), [(head.clone(), WakeCause::Recipient)]);
         b.sent();
         b.network_failure(&head);
 
-        // The pause grows with every wake.
-        b.now += 119.0;
+        // The pause grows with every answer to its being heard that came to nothing.
+        b.now += 239.0;
         assert!(b.wake(&heard).is_empty());
         b.now += 1.0;
         assert_eq!(b.wake(&heard), [(head.clone(), WakeCause::Recipient)]);
         assert_eq!(b.entry(&head).1, 3);
         assert_eq!(b.entry(&second).1 + b.entry(&third).1, 0);
+    }
+
+    #[test]
+    fn blind_tries_do_not_slow_the_answer_to_the_recipient_being_heard() {
+        let mut b = Bench::new();
+        let to = peer(51);
+        let id = b.waiting(&to, Auto, "long away");
+        let heard = [Bench::heard(&to)];
+
+        // Hours of the timer's tries, each coming to nothing.
+        for _ in 0..8 {
+            b.now += 3_601.0;
+            assert_eq!(b.wake(&[]), [(id.clone(), WakeCause::Timer)]);
+            b.sent();
+            b.network_failure(&id);
+        }
+        assert_eq!(b.entry(&id).1, 8);
+
+        // The recipient is heard: a minute after the last try is enough.
+        b.now += 59.0;
+        assert!(b.wake(&heard).is_empty());
+        b.now += 1.0;
+        assert_eq!(b.wake(&heard), [(id, WakeCause::Recipient)]);
+    }
+
+    #[test]
+    fn the_pause_after_an_unanswered_answer_is_kept_by_other_tries_and_ends_with_any_other_outcome()
+    {
+        let mut b = Bench::new();
+        let to = peer(52);
+        let head = b.waiting(&to, Auto, "head");
+        let next = b.waiting(&to, Auto, "next");
+        let heard = [Bench::heard(&to)];
+        // Two answers to the recipient being heard come to nothing: four minutes.
+        for pause in [0.0, 120.0] {
+            b.now += pause;
+            assert_eq!(b.wake(&heard), [(head.clone(), WakeCause::Recipient)]);
+            b.sent();
+            b.network_failure(&head);
+        }
+
+        // A try the user asked for that also fails neither adds to the pause nor ends it.
+        assert_eq!(
+            b.wake(&[Bench::try_now(&to)]),
+            [(head.clone(), WakeCause::User)]
+        );
+        b.sent();
+        b.network_failure(&head);
+        b.now += 239.0;
+        assert!(b.wake(&heard).is_empty());
+        b.now += 1.0;
+        assert_eq!(b.wake(&heard), [(head.clone(), WakeCause::Recipient)]);
+        b.sent();
+
+        // It gets through: the queue's next message is answered within the minute again.
+        b.ends(&head, "delivered");
+        assert_eq!(b.wake(&[]), [(next.clone(), WakeCause::Queue)]);
+        b.sent();
+        b.network_failure(&next);
+        b.now += 60.0;
+        assert_eq!(b.wake(&heard), [(next, WakeCause::Recipient)]);
+    }
+
+    #[test]
+    fn with_nothing_waiting_a_run_does_not_touch_the_database() {
+        let mut b = Bench::new();
+        let to = peer(53);
+        let every = [
+            WakeEvent::InterfaceOnline,
+            WakeEvent::Resumed,
+            Bench::heard(&to),
+            Bench::try_now(&to),
+        ];
+        b.mgr.client_propagation_enabled = true;
+        let uses = b.database_uses();
+        for waits in [true, false, true] {
+            b.keep_trying = waits;
+            b.now += policy::TIMER_PERIOD_SECS + 1.0;
+            assert!(b.wake(&every).is_empty());
+            b.mgr.set_runtime_propagation_node(Some([0xEE; 16]));
+            assert!(b.wake(&[]).is_empty());
+        }
+        assert_eq!(b.database_uses(), uses, "not a sweep, not a queue read");
+
+        // A message left waiting is work: it is read, and sent when its recipient is heard.
+        let id = b.waiting(&to, Auto, "parked");
+        assert!(
+            b.wake(&[]).is_empty(),
+            "nothing from while it did not wait sends it: not the timer, not the node put in use"
+        );
+        let uses = b.database_uses();
+        assert_eq!(
+            b.wake(&[Bench::heard(&to)]),
+            [(id.clone(), WakeCause::Recipient)]
+        );
+        assert!(b.database_uses() > uses);
+        b.sent();
+
+        // On its way, with nothing else waiting: nothing is read until it settles.
+        assert!(b.wake(&[]).is_empty());
+        let uses = b.database_uses();
+        for _ in 0..3 {
+            assert!(b.wake(&[]).is_empty());
+        }
+        assert_eq!(b.database_uses(), uses);
+
+        // It settles: one look at how, one at the queues, and the engine is idle again.
+        b.ends(&id, "delivered");
+        let uses = b.database_uses();
+        assert!(b.wake(&[]).is_empty());
+        assert_eq!(b.database_uses(), uses + 2);
+        b.now += policy::TIMER_PERIOD_SECS + 1.0;
+        assert!(b.wake(&every).is_empty());
+        assert_eq!(b.database_uses(), uses + 2);
+
+        // With waiting off, the next sweep finds that none waits, and that is the last look.
+        let ended = b.waiting(&to, Auto, "ended by the switch");
+        b.ends(&ended, "failed");
+        b.keep_trying = false;
+        b.now += policy::TIMER_PERIOD_SECS + 1.0;
+        assert!(b.wake(&[]).is_empty());
+        let uses = b.database_uses();
+        b.now += policy::TIMER_PERIOD_SECS + 1.0;
+        assert!(b.wake(&every).is_empty());
+        assert_eq!(b.database_uses(), uses);
+    }
+
+    #[test]
+    fn a_lone_message_keeps_its_pause_while_it_is_on_its_way() {
+        let mut b = Bench::new();
+        let to = peer(54);
+        let id = b.waiting(&to, Auto, "alone in its queue");
+        let heard = [Bench::heard(&to)];
+        assert_eq!(b.wake(&heard), [(id.clone(), WakeCause::Recipient)]);
+        b.sent();
+        b.network_failure(&id);
+        b.now += 120.0;
+        assert_eq!(b.wake(&heard), [(id.clone(), WakeCause::Recipient)]);
+        b.sent();
+
+        // Heard again while the try is out: its queue has no waiting message to show.
+        assert!(b.wake(&heard).is_empty());
+        b.network_failure(&id);
+        b.now += 239.0;
+        assert!(b.wake(&heard).is_empty(), "two unanswered: four minutes");
+        b.now += 1.0;
+        assert_eq!(b.wake(&heard), [(id, WakeCause::Recipient)]);
     }
 
     #[test]
@@ -1412,7 +1643,7 @@ mod tests {
         b.network_failure(&id);
 
         // The node being heard again counts as the inbox being reachable.
-        b.now += 61.0;
+        b.now += 121.0;
         assert_eq!(b.wake(&[WakeEvent::Heard(node)]), [(id, WakeCause::Inbox)]);
     }
 
@@ -1503,6 +1734,49 @@ mod tests {
         let results = finish_pending_propagation(&mut b.mgr, Vec::new()).await;
         assert_eq!(results, [(id, "propagating")]);
         assert_eq!(b.mgr.in_flight_propagation.get(&hash), Some(&node));
+    }
+
+    #[test]
+    fn retrying_an_inbox_message_with_no_node_in_use_waits_as_a_new_send_does() {
+        let mut b = Bench::new();
+        let to = peer(44);
+        let id = b.send(&to, Direct, "not delivered").message_id;
+        b.ends(&id, "failed");
+        let row = db::retryable_outbox_row(&b.pool, &b.identity, &id)
+            .unwrap()
+            .unwrap();
+        let retry = |b: &mut Bench| {
+            b.mgr
+                .retry_outbound(&b.pool, &b.identity, &row, Propagated)
+                .map_err(str::to_owned)
+        };
+
+        // Refused where it cannot wait: the Offline Inbox off, or waiting off.
+        assert!(retry(&mut b).is_err());
+        b.mgr.client_propagation_enabled = true;
+        b.keep_trying = false;
+        b.run(&[]);
+        assert!(retry(&mut b).is_err());
+        assert_eq!(b.state(&id), "failed");
+        b.keep_trying = true;
+        b.run(&[]);
+
+        assert_eq!(retry(&mut b), Ok(DeliveryMethod::Propagated));
+        assert_eq!(b.state(&id), "sending", "taken");
+        assert!(b.mgr.router.pending_outbound.is_empty());
+
+        // The tick finds it has nowhere to go, and it waits as any such send does.
+        let hash = <[u8; 32]>::try_from(hex::decode(&id).unwrap()).unwrap();
+        let mut results = Vec::new();
+        b.mgr.queue_resumable(wall(), &mut results);
+        assert_eq!(results, [(id.clone(), "failed")]);
+        assert_eq!(failure_code(&mut b.mgr, hash), Some("inbox_unreachable"));
+        b.network_failure(&id);
+        assert_eq!(b.entry(&id).3, "propagated");
+
+        b.mgr.set_runtime_propagation_node(Some([0xEE; 16]));
+        assert_eq!(b.wake(&[]), [(id.clone(), WakeCause::Inbox)]);
+        assert_eq!(b.sent(), [id.as_str()]);
     }
 
     #[test]

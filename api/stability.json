@@ -24,8 +24,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-core.txt",
-      "itemCount": 317,
-      "sha256": "dbf789984239839520a280f7cb8a5b465746f395e6347daadfbbecc299b91418"
+      "itemCount": 318,
+      "sha256": "cb189a10ed5b87ddd0352aa0a79506d9ec701c73a67fa20adb2e8cf99419140b"
     },
     {
       "name": "ratspeak-db",
@@ -33,8 +33,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-db.txt",
-      "itemCount": 1016,
-      "sha256": "923c9d2146083275ab6b805bcab04650f3f265aed66cc63c50f6ec5b2727222b"
+      "itemCount": 1018,
+      "sha256": "ea7a30100576d805da1c2b0213161de981b5a8769bc4c1435f0fd3c4f378424f"
     },
     {
       "name": "ratspeak-runtime",
@@ -42,8 +42,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-runtime.txt",
-      "itemCount": 2872,
-      "sha256": "279570741464b6519c0053485e7c9166025d9fe62b844e08efc056da96c75db6"
+      "itemCount": 2877,
+      "sha256": "b02f3a8b1e91f5dbe0b5fd06aad05127c91bf7e60cc6929ab5af28a8b2719ff1"
     },
     {
       "name": "ratspeak-tauri",
@@ -51,8 +51,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-tauri.txt",
-      "itemCount": 908,
-      "sha256": "d7558baee4d8d2c69384eaf4f0eb4b9cb1a263da43474b76fb812e17ccdafe1c"
+      "itemCount": 909,
+      "sha256": "493223a1f8c85a70cc4d0cddea8095d586cd5e1c33a279be5b9e18c51fc86107"
     },
     {
       "name": "ratspeak",

@@ -1233,6 +1233,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         "theme_family": theme_family,
         "theme_mode": theme_mode,
         "lxmf_limit_1mb": lxmf_limit_1mb,
+        "lxmf_keep_trying": state.lxmf_keep_trying_enabled(),
         "public_channel_consent_version": public_channel_consent_version,
         "public_channel_consent_required_version": db::PUBLIC_CHANNEL_CONSENT_VERSION,
         "close_button_action": close_button_action.as_setting(),
@@ -1862,6 +1863,127 @@ pub async fn set_lxmf_limit_1mb(
     let payload = json!({ "lxmf_limit_1mb": enabled });
     state.emit_to_all("app_settings_updated", payload.clone());
     Ok(payload)
+}
+
+/// Whether a message that can't be sent is tried again for up to 24 hours.
+/// Off ends every waiting message at once.
+#[tauri::command]
+pub async fn set_lxmf_keep_trying(
+    state: State<'_, Arc<AppState>>,
+    enabled: bool,
+) -> AppResult<Value> {
+    apply_lxmf_keep_trying(&state, enabled).await
+}
+
+async fn apply_lxmf_keep_trying(state: &Arc<AppState>, enabled: bool) -> AppResult<Value> {
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(
+            &p,
+            "lxmf_keep_trying",
+            if enabled { "true" } else { "false" },
+        )
+    })
+    .await
+    .map_err(|_| AppError::internal("set_lxmf_keep_trying db task panicked"))?
+    .map_err(|error| AppError::database_unavailable(format!("Failed to save setting: {error}")))?;
+
+    let st = Arc::clone(state);
+    let ended =
+        tokio::task::spawn_blocking(move || ratspeak_runtime::set_lxmf_keep_trying(&st, enabled))
+            .await
+            .map_err(|_| AppError::internal("set_lxmf_keep_trying task panicked"))?
+            .map_err(AppError::database_unavailable)?;
+    if ended > 0 {
+        ratspeak_runtime::messaging::broadcast_conversations(Arc::clone(state));
+    }
+    // On, what waits behind nothing is looked at by the next tick.
+    state.lxmf_notify.notify_one();
+    let payload = json!({ "lxmf_keep_trying": enabled });
+    state.emit_to_all("app_settings_updated", payload.clone());
+    Ok(payload)
+}
+
+#[cfg(test)]
+mod keep_trying_setting_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Events(std::sync::Mutex<Vec<(String, Value)>>);
+
+    impl ratspeak_core::Emitter for Events {
+        fn try_emit(&self, event: &str, payload: Value) -> Result<(), ratspeak_core::EmitError> {
+            self.0.lock().unwrap().push((event.to_owned(), payload));
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_choice_is_stored_applied_and_told() {
+        let pool = r2d2::Pool::builder()
+            .max_size(2)
+            .build(r2d2_sqlite::SqliteConnectionManager::memory())
+            .unwrap();
+        db::init_schema(&pool).unwrap();
+        let events = Arc::new(Events::default());
+        let state = Arc::new(AppState::new(
+            crate::config::DashboardConfig::from_env_and_defaults(std::env::temp_dir()),
+            pool,
+            events.clone(),
+            Arc::new(ratspeak_core::NoopNotifier),
+        ));
+        assert!(state.lxmf_keep_trying_enabled());
+        let (identity, id) = ("11".repeat(16), "cd".repeat(32));
+        db::save_identity(&state.db, &identity, &"22".repeat(16), "A", "A");
+        db::set_active_identity(&state.db, &identity).unwrap();
+        db::save_outbound_message(
+            &state.db,
+            &db::OutboundMessage {
+                msg_id: &id,
+                identity_id: &identity,
+                source: "me",
+                destination: &"c4".repeat(16),
+                waiting: true,
+                resend: db::Resend {
+                    preference: "auto",
+                    profile: "message",
+                    message: b"parts",
+                },
+                ..db::OutboundMessage::default()
+            },
+        )
+        .unwrap();
+
+        let off = json!({ "lxmf_keep_trying": false });
+        assert_eq!(apply_lxmf_keep_trying(&state, false).await.unwrap(), off);
+        assert_eq!(
+            db::get_setting(&state.db, "lxmf_keep_trying").as_deref(),
+            Some("false"),
+            "kept for the next start"
+        );
+        assert!(!state.lxmf_keep_trying_enabled());
+        assert_eq!(
+            db::outbound_message_state(&state.db, &identity, &id).unwrap(),
+            Some("failed".into())
+        );
+        assert_eq!(
+            *events.0.lock().unwrap(),
+            [
+                (
+                    "lxmf_step".to_owned(),
+                    json!({ "step": "failed", "msg_id": id, "reason": "keep_trying_off" })
+                ),
+                ("app_settings_updated".to_owned(), off),
+            ]
+        );
+
+        let on = json!({ "lxmf_keep_trying": true });
+        assert_eq!(apply_lxmf_keep_trying(&state, true).await.unwrap(), on);
+        assert_eq!(
+            db::get_setting(&state.db, "lxmf_keep_trying").as_deref(),
+            Some("true")
+        );
+        assert!(state.lxmf_keep_trying_enabled());
+    }
 }
 
 /// Developer mode lives in SQLite, not WebView localStorage: WKWebView does

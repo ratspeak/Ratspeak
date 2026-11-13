@@ -4556,6 +4556,19 @@ pub fn expire_waiting(
     Ok(expired)
 }
 
+/// Whether any message of `identity_id` waits.
+pub fn has_waiting(pool: &DbPool, identity_id: &str) -> bool {
+    pool.get().is_ok_and(|conn| {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM messages
+              WHERE identity_id = ?1 AND direction = 'outbound' AND state = 'waiting')",
+            params![identity_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false)
+    })
+}
+
 /// End every identity's waiting messages as Not delivered. Returns each as
 /// `(identity_id, msg_id)`.
 pub fn fail_all_waiting(pool: &DbPool) -> Result<Vec<(String, String)>, String> {

@@ -1584,6 +1584,152 @@ fn incoming_lxmf_limit_setting_is_normal_default_on_and_backend_authoritative() 
 }
 
 #[test]
+fn keep_trying_is_default_on_and_one_switch_reaches_every_consumer() {
+    let root = repo_root();
+    let source = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+    let index = source("dashboard/index.html");
+    let row = index
+        .find("<span class=\"settings-row-label\">Keep trying to send</span>")
+        .expect("the row");
+    assert!(
+        index.contains(
+            "<span class=\"settings-row-desc\">If a message can't be sent, try again for up to 24 hours.</span>"
+        )
+    );
+    assert!(index.contains("id=\"lxmf-keep-trying-toggle\" checked"));
+    let general = index
+        .find("id=\"panel-settings-general\"")
+        .expect("the General panel");
+    let limit = index
+        .find("<span class=\"settings-row-label\">Limit incoming messages to 1 MB</span>")
+        .expect("the 1 MB row");
+    assert!(
+        general < row && row < limit,
+        "in General, above the 1 MB row"
+    );
+    assert_eq!(
+        index[row..limit].matches("class=\"settings-row\"").count(),
+        1,
+        "directly above it"
+    );
+
+    let settings = source("dashboard/static/js/settings.js");
+    assert!(settings.contains("keepTryingToggle.checked = !!data.lxmf_keep_trying;"));
+    assert!(settings.contains("RS.invoke('set_lxmf_keep_trying', { enabled: enabled })"));
+
+    // Absent means on, read once at start.
+    let state = source("crates/ratspeak-runtime/src/state.rs");
+    assert!(state.contains(
+        "crate::db::get_setting(&db, \"lxmf_keep_trying\").is_none_or(|value| value != \"false\");"
+    ));
+    assert!(state.contains("lxmf_keep_trying: AtomicBool::new(initial_lxmf_keep_trying),"));
+
+    // The command stores the choice, then one function applies it everywhere.
+    let interfaces = source("crates/ratspeak-tauri/src/commands/interfaces.rs");
+    assert!(interfaces.contains("pub async fn set_lxmf_keep_trying("));
+    let stored = interfaces
+        .find("\"lxmf_keep_trying\",\n            if enabled { \"true\" } else { \"false\" },")
+        .expect("the choice is stored");
+    let applied = interfaces
+        .find("ratspeak_runtime::set_lxmf_keep_trying(&st, enabled)")
+        .expect("the choice is applied");
+    assert!(stored < applied);
+    assert!(interfaces.contains("\"lxmf_keep_trying\": state.lxmf_keep_trying_enabled(),"));
+    let gate = source("crates/ratspeak-tauri/src/invoke_gate.rs");
+    assert_eq!(gate.matches("\"set_lxmf_keep_trying\",").count(), 2);
+    assert!(
+        source("src-tauri/src/lib.rs")
+            .contains("ratspeak_tauri::commands::interfaces::set_lxmf_keep_trying,")
+    );
+
+    // The manager hears of it at once, under the lock a wake claims under,
+    // and what waits ends there too.
+    let runtime = source("crates/ratspeak-runtime/src/lib.rs");
+    let switch = runtime
+        .split("pub fn set_lxmf_keep_trying(")
+        .nth(1)
+        .and_then(|tail| tail.split("\n}\n").next())
+        .expect("the switch");
+    let order = [
+        "let mut lxmf = state.lxmf.lock().ok();",
+        "state.set_lxmf_keep_trying_enabled(enabled);",
+        "manager.keep_trying = enabled;",
+        "db::fail_all_waiting(&state.db)?",
+        "drop(lxmf);",
+        "\"reason\": \"keep_trying_off\",",
+    ]
+    .map(|step| switch.find(step).unwrap_or_else(|| panic!("{step}")));
+    assert!(order.is_sorted());
+    assert!(!switch.contains("\"destination\""), "no notice is given");
+
+    // Every reader takes it from the one place.
+    let messaging = source("crates/ratspeak-tauri/src/commands/messaging.rs");
+    for (file, reader) in [
+        (
+            &runtime,
+            "let keep_trying = tick_state.lxmf_keep_trying_enabled();",
+        ),
+        (
+            &runtime,
+            "let keep_trying = state.lxmf_keep_trying_enabled();",
+        ),
+        (&runtime, "keep_trying: state.lxmf_keep_trying_enabled(),"),
+        (
+            &runtime,
+            "mgr.keep_trying = state.lxmf_keep_trying_enabled();",
+        ),
+        (&state, "if !self.lxmf_keep_trying_enabled() {"),
+        (
+            &messaging,
+            "send == InboxSend::Stored && state.lxmf_keep_trying_enabled(),",
+        ),
+        (&messaging, "if !state.lxmf_keep_trying_enabled() {"),
+    ] {
+        assert!(file.contains(reader), "{reader}");
+    }
+}
+
+/// The engine runs inside the tick that already runs, and reads nothing
+/// stored while no message waits.
+#[test]
+fn the_wake_engine_has_no_clock_of_its_own_and_is_told_of_each_waiting_message() {
+    let root = repo_root();
+    let source = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+    let engine = source("crates/ratspeak-runtime/src/lxmf/waiting.rs");
+    let engine = engine
+        .split("\n#[cfg(test)]\nmod ")
+        .next()
+        .expect("production code");
+    for own in [
+        "tokio",
+        "spawn",
+        "thread",
+        "sleep",
+        "interval",
+        "Instant",
+        "SystemTime",
+        "notify",
+    ] {
+        assert!(!engine.contains(own), "{own}");
+    }
+
+    // Each place that leaves a message waiting says so; the start looks once.
+    let runtime = source("crates/ratspeak-runtime/src/lib.rs");
+    let squeezed = runtime.split_whitespace().collect::<String>();
+    for told in [
+        "ifstate==OutboundState::Waiting.as_str(){tick_state.note_waiting_row();}",
+        "ifsettled.state==OutboundState::Waiting{state.note_waiting_row();}",
+        "letwaiting=db::has_waiting(&p,&identity_id);",
+        "ifwaiting{state.note_waiting_row();}",
+        "waiting_written:state.take_waiting_written(),",
+    ] {
+        assert!(squeezed.contains(told), "{told}");
+    }
+    let manager = source("crates/ratspeak-runtime/src/lxmf.rs");
+    assert!(manager.contains("self.wakes.note_waiting(held.is_some());"));
+}
+
+#[test]
 fn activity_identity_protection_is_default_on_durable_and_event_scoped() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");

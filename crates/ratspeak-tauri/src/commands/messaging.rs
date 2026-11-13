@@ -3450,6 +3450,7 @@ mod tests {
         )
         .unwrap();
 
+        state.set_lxmf_keep_trying_enabled(false);
         let refused = wake_waiting_message(&state, &id).await.unwrap_err();
         assert_eq!(refused.message, "Waiting messages are not being sent.");
         assert!(state.take_wake_signals().is_empty());

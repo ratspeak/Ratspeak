@@ -146,8 +146,8 @@ pub mod policy {
     /// How long after its send a message may wait before it ends undelivered.
     pub const WAIT_LIMIT_SECS: f64 = 86_400.0;
 
-    /// The most times one send is woken; a message that keeps failing must end.
-    pub const WAKE_CAP: u32 = 64;
+    /// A stop for a runaway only: more wakes than the gates give one message in its 24 hours.
+    pub const WAKE_CAP: u32 = 200;
 
     /// Whether a message sent with `preference` waits; each waits with its own method.
     pub fn method_waits(preference: &str) -> bool {
@@ -163,23 +163,28 @@ pub mod policy {
 
     /// How often waiting messages are checked with no other prompt, and
     /// expired ones ended.
-    pub const TIMER_PERIOD_SECS: f64 = 60.0;
+    pub const TIMER_PERIOD_SECS: f64 = 300.0;
 
     /// An interface coming online wakes at most this often: links flap.
     pub const INTERFACE_WAKE_MIN_SECS: f64 = 120.0;
+
+    /// Turning waiting off ends what waits at once, so nothing is sent later unasked.
+    pub const OFF_ENDS_WAITING: bool = true;
 
     /// After a waiting Auto message was stored in the Offline Inbox, the next
     /// of its queue goes straight there: the live path just failed for it.
     pub const FOLLOWERS_USE_INBOX_AFTER_DEPOSIT: bool = true;
 
     /// How long a message rests after a wake before `gate` lets it be woken
-    /// again, given how often it was woken.
-    pub fn gate_secs(gate: super::WakeGate, auto_sends: u32) -> f64 {
-        let doubling = 30.0 * 2f64.powi(auto_sends.min(16) as i32);
+    /// again. `wakes` counts every wake of it; `unanswered` the wakes in a
+    /// row that hearing its recipient prompted and that left it waiting, so
+    /// blind tries never slow the answer to the recipient being heard.
+    pub fn gate_secs(gate: super::WakeGate, wakes: u32, unanswered: u32) -> f64 {
+        let doubled = |base: f64, times: u32| base * 2f64.powi(times.min(16) as i32);
         match gate {
             super::WakeGate::Open => 0.0,
-            super::WakeGate::Targeted => doubling.clamp(60.0, 900.0),
-            super::WakeGate::Broad => doubling.min(3_600.0),
+            super::WakeGate::Targeted => doubled(60.0, unanswered).min(900.0),
+            super::WakeGate::Broad => doubled(30.0, wakes).min(3_600.0),
         }
     }
 }
@@ -556,24 +561,37 @@ mod tests {
         assert_eq!(Recipient.stronger(User), User);
         assert_eq!(Start.stronger(Network), Start);
 
-        // (wakes so far, targeted pause, broad pause)
-        for (wakes, targeted, broad) in [
+        // (count, targeted pause after that many unanswered, broad pause after that many wakes)
+        for (count, targeted, broad) in [
             (0, 60.0, 30.0),
-            (1, 60.0, 60.0),
-            (2, 120.0, 120.0),
-            (4, 480.0, 480.0),
+            (1, 120.0, 60.0),
+            (2, 240.0, 120.0),
+            (3, 480.0, 240.0),
+            (4, 900.0, 480.0),
             (5, 900.0, 960.0),
             (7, 900.0, 3_600.0),
-            (63, 900.0, 3_600.0),
+            (policy::WAKE_CAP - 1, 900.0, 3_600.0),
         ] {
-            assert_eq!(policy::gate_secs(WakeGate::Open, wakes), 0.0);
-            assert_eq!(
-                policy::gate_secs(WakeGate::Targeted, wakes),
-                targeted,
-                "{wakes}"
-            );
-            assert_eq!(policy::gate_secs(WakeGate::Broad, wakes), broad, "{wakes}");
+            assert_eq!(policy::gate_secs(WakeGate::Open, count, count), 0.0);
+            // Each gate counts its own tries and not the other's.
+            for other in [0, policy::WAKE_CAP] {
+                assert_eq!(
+                    policy::gate_secs(WakeGate::Targeted, other, count),
+                    targeted,
+                    "{count}"
+                );
+                assert_eq!(
+                    policy::gate_secs(WakeGate::Broad, count, other),
+                    broad,
+                    "{count}"
+                );
+            }
         }
+        assert_eq!(policy::TIMER_PERIOD_SECS, 300.0);
+        // More than the gates give one message in its 24 hours: about 100
+        // answers to its recipient being heard, and the timer's 30.
+        let (hour, day) = (3_600.0, policy::WAIT_LIMIT_SECS);
+        assert!(f64::from(policy::WAKE_CAP) > day / 900.0 + day / hour + 10.0);
     }
 
     #[test]

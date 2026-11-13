@@ -1967,6 +1967,10 @@ function applyAppSettingsPayload(data) {
     if (lxmfLimitToggle && data.lxmf_limit_1mb !== undefined) {
         lxmfLimitToggle.checked = !!data.lxmf_limit_1mb;
     }
+    var keepTryingToggle = document.getElementById('lxmf-keep-trying-toggle');
+    if (keepTryingToggle && data.lxmf_keep_trying !== undefined) {
+        keepTryingToggle.checked = !!data.lxmf_keep_trying;
+    }
     if (data.text_scale_percent !== undefined && RS.textScale) {
         RS.textScale.commit(data.text_scale_percent);
     }
@@ -2060,6 +2064,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var androidRnodeAutoResumeRow = document.getElementById('settings-row-android-rnode-auto-resume');
     var androidRnodeAutoResumeToggle = document.getElementById('android-rnode-auto-resume-toggle');
     var lxmfLimitToggle = document.getElementById('lxmf-limit-1mb-toggle');
+    var keepTryingToggle = document.getElementById('lxmf-keep-trying-toggle');
     if (androidRnodeAutoResumeRow) {
         androidRnodeAutoResumeRow.style.display = isAndroid() ? '' : 'none';
     }
@@ -2075,6 +2080,17 @@ document.addEventListener('DOMContentLoaded', function() {
                 .catch(function(error) {
                     lxmfLimitToggle.checked = !enabled;
                     showToast((error && error.message) || 'Could not update the message limit', 'toast-error', 8000);
+                });
+        });
+    }
+    if (keepTryingToggle) {
+        keepTryingToggle.addEventListener('change', function() {
+            var enabled = !!keepTryingToggle.checked;
+            RS.invoke('set_lxmf_keep_trying', { enabled: enabled })
+                .then(applyAppSettingsPayload)
+                .catch(function(error) {
+                    keepTryingToggle.checked = !enabled;
+                    showToast((error && error.message) || 'Could not update Keep trying to send', 'toast-error', 8000);
                 });
         });
     }
