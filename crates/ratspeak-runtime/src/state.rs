@@ -3928,18 +3928,17 @@ mod tests {
         name: &str,
         online: bool,
     ) -> rns_transport::messages::InterfaceStatRpcEntry {
-        rns_transport::messages::InterfaceStatRpcEntry {
-            id,
-            name: name.to_string(),
-            online,
-            bitrate: 115_200,
-            mtu: 500,
-            mode: "Full".to_string(),
-            role: "normal".to_string(),
-            announce_queue: Some(0),
-            announce_cap: 0.02,
-            ..Default::default()
-        }
+        let mut stat = rns_transport::messages::InterfaceStatRpcEntry::default();
+        stat.id = id;
+        stat.name = name.to_string();
+        stat.online = online;
+        stat.bitrate = 115_200;
+        stat.mtu = 500;
+        stat.mode = "Full".to_string();
+        stat.role = "normal".to_string();
+        stat.announce_queue = Some(0);
+        stat.announce_cap = 0.02;
+        stat
     }
 
     #[test]

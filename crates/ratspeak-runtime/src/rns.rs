@@ -68,16 +68,15 @@ impl RnsManager {
         policy: rns_runtime::shared_instance::InstancePolicy,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let shutdown = ShutdownSignal::new();
+        // One failed interface is shown as a warning; the others still start.
+        let mut options = InitOptions::default();
+        options.keep_starting_after_interface_failure = true;
         let handle = reticulum::init_with_policy(
             Some(config_dir),
             socket_dir,
             shutdown.clone(),
             is_foreground,
-            // One failed interface is shown as a warning; the others still start.
-            InitOptions {
-                keep_starting_after_interface_failure: true,
-                ..InitOptions::default()
-            },
+            options,
             ble_rnode_startup_options(),
             policy,
         )

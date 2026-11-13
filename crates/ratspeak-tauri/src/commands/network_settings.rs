@@ -511,17 +511,16 @@ mod tests {
     }
 
     fn backbone_client(id: u64, name: &str, host: &str) -> InterfaceStatRpcEntry {
-        InterfaceStatRpcEntry {
-            id,
-            name: name.to_string(),
-            online: true,
-            identity: Some(InterfaceIdentity::new(
-                rns_interface::backbone::BackboneClientConfig::new(name, host, 4242).python_name(),
-                name,
-                "BackboneClientInterface",
-            )),
-            ..InterfaceStatRpcEntry::default()
-        }
+        let mut stat = InterfaceStatRpcEntry::default();
+        stat.id = id;
+        stat.name = name.to_string();
+        stat.online = true;
+        stat.identity = Some(InterfaceIdentity::new(
+            rns_interface::backbone::BackboneClientConfig::new(name, host, 4242).python_name(),
+            name,
+            "BackboneClientInterface",
+        ));
+        stat
     }
 
     fn names(entries: &[DiscoveredEntry]) -> Vec<&str> {
