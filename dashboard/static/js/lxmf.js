@@ -7190,12 +7190,6 @@ function closeFabContactPicker() {
         handleFileSelected({ files: [file], value: '' });
     }
 
-    // WebKitGTK pastes an image as nothing at all (WebKit bug 218519), and
-    // lists no items or types even for text, so only getData tells them apart.
-    function pastesImagesAsNothing() {
-        return isTauriDesktop() && /linux/i.test(navigator.userAgent);
-    }
-
     chatArea.addEventListener('paste', function(e) {
         var data = e.clipboardData;
         var items = data && data.items;
@@ -7212,11 +7206,10 @@ function closeFabContactPicker() {
             attachPastedFile(file);
             return;
         }
-        if (!pastesImagesAsNothing() || data.getData('text/plain')) return;
+        if (!_rsPastesImagesAsNothing() || data.getData('text/plain')) return;
         e.preventDefault();
-        RS.invoke('read_clipboard_image').then(function(raw) {
-            var bytes = _rsRawIpcBytes(raw);
-            if (bytes.byteLength) attachPastedFile(new File([bytes], 'image.png', { type: 'image/png' }));
+        _rsReadNativeClipboardImage().then(function(file) {
+            if (file) attachPastedFile(file);
         }).catch(function() {
             showToast('Could not paste the image', 'toast-error', 3500);
         });

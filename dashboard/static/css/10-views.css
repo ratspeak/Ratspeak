@@ -4714,9 +4714,18 @@ body.setup-active .main-content {
 }
 
 .contact-scan-live-btn,
-.contact-scan-file-btn {
+.contact-scan-file-btn,
+.contact-scan-paste-btn {
     min-width: 0;
     gap: var(--space-2);
+}
+
+.contact-scan-paste-btn {
+    grid-column: 1 / -1;
+}
+
+.contact-scan-paste-btn[hidden] {
+    display: none;
 }
 
 .contact-scan-prefers-fallback .contact-scan-file-btn {
@@ -4724,7 +4733,8 @@ body.setup-active .main-content {
 }
 
 .contact-scan-live-btn svg,
-.contact-scan-file-btn svg {
+.contact-scan-file-btn svg,
+.contact-scan-paste-btn svg {
     width: 18px;
     height: 18px;
     flex-shrink: 0;

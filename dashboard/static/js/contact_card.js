@@ -2,6 +2,8 @@
     var CONTACT_QR_FILE = 'ratspeak-contact-card.png';
     var LEGACY_QR_FILE = 'ratspeak-contact-legacy.png';
     var CONTACT_SCAN_MAX_IMAGE_DIMENSION = 1800;
+    // The longest payload a scan accepts is a paper link.
+    var CONTACT_SCAN_MAX_TEXT_CHARS = 4096;
     var activeContactAddDial = null;
 
     function contactScanDiag(step, detail) {
@@ -23,6 +25,9 @@
         }
         if (name === 'copy') {
             return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><rect x="2" y="2" width="13" height="13" rx="2"/></svg>';
+        }
+        if (name === 'paste') {
+            return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>';
         }
         if (name === 'share') {
             return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.59 13.51l6.82 3.98"/><path d="M15.41 6.51 8.59 10.49"/></svg>';
@@ -1270,14 +1275,20 @@ z`,
         var checkingText = options.checkingText || 'Checking QR\u2026';
         var invalidText = options.invalidText || 'That QR isn\'t a contact card, paper message, or lxma:// address.';
         var invalidImageText = options.invalidImageText || invalidText;
+        var invalidPasteText = options.invalidPasteText || options.invalidText ||
+            'That isn\'t a contact card, paper message, or lxma:// address.';
         var emptyImageText = options.emptyImageText ||
             'No QR code found in that image.';
         var previewCommand = options.previewCommand || 'api_preview_contact_card';
         var built = buildSheet('contact-scan-sheet');
         var stream = null;
         var stopped = false;
+        var accepted = false;
+        // One chosen or pasted image, or one pasted link, at a time.
+        var busy = false;
         var liveActive = false;
         var liveStarting = false;
+        var liveGeneration = 0;
         var detecting = false;
         var firstDetectLogged = false;
         built.sheet.innerHTML =
@@ -1295,6 +1306,7 @@ z`,
                 '<div class="contact-scan-picker-actions">' +
                     '<button class="nr-btn contact-scan-live-btn" type="button" id="contact-scan-live">' + iconSvg('scan') + '<span>Live Scan</span></button>' +
                     '<button class="nr-btn nr-btn-ghost contact-scan-file-btn" type="button" id="contact-scan-file">' + iconSvg('image') + '<span>Scan Photo</span></button>' +
+                    '<button class="nr-btn nr-btn-ghost contact-scan-paste-btn" type="button" id="contact-scan-paste" hidden>' + iconSvg('paste') + '<span>Paste</span></button>' +
                 '</div>' +
                 '<input class="contact-scan-file-input" type="file" accept="image/*">' +
             '</div>';
@@ -1306,6 +1318,7 @@ z`,
         var fileInput = built.sheet.querySelector('.contact-scan-file-input');
         var fileButton = built.sheet.querySelector('#contact-scan-file');
         var liveButton = built.sheet.querySelector('#contact-scan-live');
+        var pasteButton = built.sheet.querySelector('#contact-scan-paste');
         var scanCanvas = document.createElement('canvas');
         var scanCtx = null;
         try {
@@ -1334,11 +1347,18 @@ z`,
             };
         }
 
+        function releaseStream(s) {
+            if (s && typeof _rsStopMediaStream === 'function') _rsStopMediaStream(s);
+            else if (s && s.getTracks) s.getTracks().forEach(function(t) { try { t.stop(); } catch (_) {} });
+        }
+
         function stopStream() {
+            // A camera start still in flight must not come up over a photo or a paste.
+            liveGeneration++;
+            liveStarting = false;
             liveActive = false;
             detecting = false;
-            if (stream && typeof _rsStopMediaStream === 'function') _rsStopMediaStream(stream);
-            else if (stream && stream.getTracks) stream.getTracks().forEach(function(t) { try { t.stop(); } catch (_) {} });
+            releaseStream(stream);
             stream = null;
             if (video) {
                 try { video.pause(); } catch (_) {}
@@ -1349,6 +1369,13 @@ z`,
         function stop() {
             stopped = true;
             stopStream();
+            endPaste();
+        }
+
+        // The sheet now shows what was scanned; nothing more is read into it.
+        function accept() {
+            accepted = true;
+            endPaste();
         }
 
         function closeAll() {
@@ -1383,8 +1410,10 @@ z`,
             var paperUri = String(payload || '').trim();
             if (/^lxm:\/\//i.test(paperUri) && window.RS.paper) {
                 return RS.paper.preview(paperUri).then(function(preview) {
+                    if (stopped || accepted) return;
                     stopStream();
                     RS.paper.renderResult(body, paperUri, preview, { close: closeAll });
+                    accept();
                 }).catch(function(err) {
                     contactScanDiag('paper_rejected', scanErrorDetail(err));
                     if (RS.paper.errorCode(err) === 'locked') {
@@ -1396,12 +1425,14 @@ z`,
                 });
             }
             return RS.invoke(previewCommand, { payload: payload }).then(function(preview) {
+                if (stopped || accepted) return;
                 stopStream();
                 if (typeof options.onPreview === 'function') {
                     options.onPreview(body, payload, preview, closeAll);
                 } else {
                     showScannedCardPreview(body, payload, preview, closeAll);
                 }
+                accept();
             }).catch(function(err) {
                 contactScanDiag('payload_rejected', scanErrorDetail(err));
                 var legacyReason = /^lxma:\/\//i.test(paperUri) && err && err.message;
@@ -1432,7 +1463,9 @@ z`,
         }
 
         function decodeImageFile(file) {
-            if (!file) return;
+            if (!file || busy) return;
+            busy = true;
+            var release = function() { busy = false; };
             stopStream();
             setFallbackReady(true);
             setScannerMode('fallback');
@@ -1445,6 +1478,7 @@ z`,
             if (typeof window.jsQR !== 'function') {
                 contactScanDiag('file_decoder_missing');
                 status.textContent = 'QR image scanning is not available in this build.';
+                release();
                 return;
             }
             var img = new Image();
@@ -1474,10 +1508,11 @@ z`,
                         if (stopped) return;
                         if (found && found.data) {
                             contactScanDiag('file_decode_success', { width: width, height: height });
-                            handleScannedPayload(found.data, 'file', invalidImageText);
+                            handleScannedPayload(found.data, 'file', invalidImageText).then(release, release);
                         } else {
                             contactScanDiag('file_decode_empty', { width: width, height: height });
                             status.textContent = emptyImageText;
+                            release();
                         }
                     };
                     if (code && code.data) {
@@ -1493,6 +1528,7 @@ z`,
                                 } catch (retryErr) {
                                     contactScanDiag('file_decode_failed', scanErrorDetail(retryErr));
                                     status.textContent = 'Could not read that QR image.';
+                                    release();
                                 }
                             }, 0);
                         });
@@ -1500,6 +1536,7 @@ z`,
                 } catch (err) {
                     contactScanDiag('file_decode_failed', scanErrorDetail(err));
                     status.textContent = err && err.message ? err.message : 'Could not read that QR image.';
+                    release();
                 } finally {
                     URL.revokeObjectURL(url);
                 }
@@ -1508,8 +1545,115 @@ z`,
                 contactScanDiag('file_image_load_failed');
                 URL.revokeObjectURL(url);
                 status.textContent = 'Could not open that image.';
+                release();
             };
             img.src = url;
+        }
+
+        function showPhotoMode() {
+            stopStream();
+            setFallbackReady(true);
+            setScannerMode('fallback');
+            setLiveButtonEnabled(true);
+        }
+
+        function usePastedText(text) {
+            if (busy) return;
+            var payload = String(text || '').trim();
+            showPhotoMode();
+            contactScanDiag('paste_text', { length: payload.length });
+            if (payload.length > CONTACT_SCAN_MAX_TEXT_CHARS) {
+                status.textContent = invalidPasteText;
+                return;
+            }
+            busy = true;
+            var release = function() { busy = false; };
+            handleScannedPayload(payload, 'paste', invalidPasteText).then(release, release);
+        }
+
+        function usePasted(found) {
+            if (stopped || accepted) return;
+            if (found && found.file) {
+                decodeImageFile(found.file);
+            } else if (found && found.text && found.text.trim()) {
+                usePastedText(found.text);
+            } else if (!busy) {
+                status.textContent = 'No QR image or link on the clipboard.';
+            }
+        }
+
+        function clipboardReadFailed(err) {
+            contactScanDiag('clipboard_read_failed', scanErrorDetail(err));
+            if (!stopped && !accepted && !busy) status.textContent = 'Clipboard access was unavailable. Use Scan Photo.';
+        }
+
+        function readClipboardText() {
+            var clipboard = navigator.clipboard;
+            if (!clipboard || typeof clipboard.readText !== 'function') return Promise.resolve(null);
+            return clipboard.readText().then(function(text) { return { text: text }; });
+        }
+
+        function readClipboard() {
+            if (_rsPastesImagesAsNothing()) {
+                return _rsReadNativeClipboardImage().then(function(file) {
+                    return file ? { file: file } : readClipboardText();
+                });
+            }
+            var clipboard = navigator.clipboard;
+            if (!clipboard || typeof clipboard.read !== 'function') return readClipboardText();
+            return clipboard.read().then(function(items) {
+                var textItem = null;
+                for (var i = 0; i < items.length; i++) {
+                    var types = items[i].types || [];
+                    for (var t = 0; t < types.length; t++) {
+                        if (/^image\//.test(types[t])) {
+                            return items[i].getType(types[t]).then(function(blob) { return { file: blob }; });
+                        }
+                        if (types[t] === 'text/plain' && !textItem) textItem = items[i];
+                    }
+                }
+                if (!textItem) return null;
+                return textItem.getType('text/plain').then(function(blob) {
+                    return blob.text();
+                }).then(function(text) { return { text: text }; });
+            });
+        }
+
+        function clipboardReadAvailable() {
+            var clipboard = navigator.clipboard;
+            return _rsPastesImagesAsNothing() ||
+                !!(clipboard && (typeof clipboard.read === 'function' || typeof clipboard.readText === 'function'));
+        }
+
+        // On the document, capturing: a paste goes to whatever has focus, often the composer behind the sheet.
+        function onPaste(e) {
+            if (stopped || accepted || !built.sheet.isConnected) {
+                endPaste();
+                return;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            var data = e.clipboardData;
+            var items = (data && data.items) || [];
+            for (var i = 0; i < items.length; i++) {
+                var file = items[i].kind === 'file' ? items[i].getAsFile() : null;
+                if (file) {
+                    usePasted({ file: file });
+                    return;
+                }
+            }
+            var text = data ? data.getData('text/plain') : '';
+            if (!text && _rsPastesImagesAsNothing()) {
+                _rsReadNativeClipboardImage().then(function(nativeFile) {
+                    usePasted({ file: nativeFile });
+                }).catch(clipboardReadFailed);
+                return;
+            }
+            usePasted({ text: text });
+        }
+
+        function endPaste() {
+            document.removeEventListener('paste', onPaste, true);
         }
 
         function startLiveScanner(reason) {
@@ -1521,8 +1665,10 @@ z`,
             setLiveButtonEnabled(true);
             status.textContent = 'Opening camera...';
             contactScanDiag('live_start_requested', { reason: reason || 'manual' });
+            var generation = ++liveGeneration;
 
             nativeQrDetectorAvailable().then(function(available) {
+                if (generation !== liveGeneration) return;
                 if (!available) {
                     liveStarting = false;
                     setFallbackReady(true);
@@ -1547,6 +1693,7 @@ z`,
                 contactScanDiag('permission_request');
                 permission.then(function(granted) {
                     contactScanDiag('permission_result', { granted: !!granted });
+                    if (generation !== liveGeneration) return null;
                     if (!granted) {
                         liveStarting = false;
                         setFallbackReady(true);
@@ -1562,7 +1709,11 @@ z`,
                     contactScanDiag('get_user_media_start', { facingMode: 'environment' });
                     return navigator.mediaDevices.getUserMedia(constraints);
                 }).then(function(s) {
-                    if (!s || stopped) return;
+                    if (!s) return;
+                    if (stopped || generation !== liveGeneration) {
+                        releaseStream(s);
+                        return;
+                    }
                     stream = s;
                     liveStarting = false;
                     liveActive = true;
@@ -1675,6 +1826,7 @@ z`,
                         contactScanDiag('video_play_failed', scanErrorDetail(err));
                     });
                 }).catch(function(err) {
+                    if (generation !== liveGeneration) return;
                     liveStarting = false;
                     stopStream();
                     setFallbackReady(true);
@@ -1693,10 +1845,7 @@ z`,
 
         function openImageInput(input, message, diagStep) {
             contactScanDiag(diagStep);
-            stopStream();
-            setFallbackReady(true);
-            setScannerMode('fallback');
-            setLiveButtonEnabled(true);
+            showPhotoMode();
             status.textContent = message;
             input.value = '';
             input.click();
@@ -1711,6 +1860,22 @@ z`,
         liveButton.addEventListener('click', function() {
             startLiveScanner('manual');
         });
+        pasteButton.hidden = !clipboardReadAvailable();
+        pasteButton.addEventListener('click', function() {
+            if (busy) return;
+            pasteButton.disabled = true;
+            contactScanDiag('clipboard_read');
+            var reading;
+            try {
+                reading = readClipboard();
+            } catch (err) {
+                reading = Promise.reject(err);
+            }
+            reading.then(usePasted).catch(clipboardReadFailed).then(function() {
+                pasteButton.disabled = false;
+            });
+        });
+        document.addEventListener('paste', onPaste, true);
 
         var env = getScannerEnvironment();
         contactScanDiag('sheet_open', env || {});
@@ -1722,7 +1887,10 @@ z`,
         } else {
             setScannerMode('live');
             setLiveButtonEnabled(true);
-            requestAnimationFrame(function() { startLiveScanner('auto'); });
+            var openedAt = liveGeneration;
+            requestAnimationFrame(function() {
+                if (liveGeneration === openedAt) startLiveScanner('auto');
+            });
         }
     }
 

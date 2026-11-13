@@ -12,8 +12,12 @@ const state = fs.readFileSync(path.join(root, 'dashboard/static/js/state.js'), '
 const start = source.indexOf("(function() {\n    var chatArea = document.getElementById('lxmf-chat-area');");
 const end = source.indexOf('function openChatHeaderDropdown');
 assert(start > 0 && end > start, 'paste block must stay extractable');
+// The raw-bytes reader and the two clipboard helpers the composer and the QR scanner share.
 const rawBytesStart = state.indexOf('function _rsRawIpcBytes(');
-const rawBytes = state.slice(rawBytesStart, state.indexOf('\n}\n', rawBytesStart) + 2);
+const nativeReadStart = state.indexOf('function _rsReadNativeClipboardImage(');
+assert(rawBytesStart > 0 && nativeReadStart > rawBytesStart, 'clipboard helpers must stay extractable');
+const rawBytes = state.slice(rawBytesStart, state.indexOf('\n}\n', nativeReadStart) + 2);
+assert(rawBytes.includes('function _rsPastesImagesAsNothing('));
 
 function harness(opts) {
     let listener = null;

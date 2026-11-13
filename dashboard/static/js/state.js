@@ -483,6 +483,20 @@ function _rsRawIpcBytes(value) {
     throw new Error('Attachment chunk response was not binary');
 }
 
+// WebKitGTK pastes an image as nothing at all (WebKit bug 218519), and
+// lists no items or types even for text, so only getData tells them apart.
+function _rsPastesImagesAsNothing() {
+    return isTauriDesktop() && /linux/i.test(navigator.userAgent);
+}
+
+// The GTK clipboard's image as a PNG file, or null when it holds none.
+function _rsReadNativeClipboardImage() {
+    return RS.invoke('read_clipboard_image').then(function(raw) {
+        var bytes = _rsRawIpcBytes(raw);
+        return bytes.byteLength ? new File([bytes], 'image.png', { type: 'image/png' }) : null;
+    });
+}
+
 // Fetch an LXMF file attachment as bounded raw IPC chunks. This deliberately
 // avoids retaining whole-file base64/JSON strings in either WebView or Rust.
 // Caller must URL.revokeObjectURL when done — `RS.saveFile` does this on a timer.

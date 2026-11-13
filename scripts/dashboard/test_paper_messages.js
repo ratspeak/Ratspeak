@@ -441,7 +441,7 @@ const PREVIEW = {
     assert(contactSource.includes("var checkingText = options.checkingText || 'Checking QR\\u2026';"));
     assert(contactSource.includes("var invalidText = options.invalidText || 'That QR isn\\'t a contact card, paper message, or lxma:// address.';"));
     assert(contactSource.includes("'No QR code found in that image.'"));
-    assert(contactSource.includes("if (/^lxm:\\/\\//i.test(paperUri) && window.RS.paper) {\n                return RS.paper.preview(paperUri).then(function(preview) {\n                    stopStream();\n                    RS.paper.renderResult(body, paperUri, preview, { close: closeAll });"));
+    assert(contactSource.includes("if (/^lxm:\\/\\//i.test(paperUri) && window.RS.paper) {\n                return RS.paper.preview(paperUri).then(function(preview) {\n                    if (stopped || accepted) return;\n                    stopStream();\n                    RS.paper.renderResult(body, paperUri, preview, { close: closeAll });"));
     // Popup copy.
     for (const copy of ['Preparing paper message&hellip;', "'<div class=\"contact-share-subtitle\">Ratspeak paper message</div>'",
         "'Only ' + name + ' can read this.'", "Paper link · ' + chars + ' characters</div>", 'aria-label="Copy paper link"',
