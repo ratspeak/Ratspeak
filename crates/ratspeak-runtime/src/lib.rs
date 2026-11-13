@@ -1026,8 +1026,14 @@ const STARTUP_PUBLIC_TCP_ENDPOINTS: &[(&str, u16, &str)] = &[
     ("2.ratspeak.org", 4242, "ratspeak-emerald"),
     ("rns.ratspeak.org", 4242, "ratspeak-emerald"),
     ("3.ratspeak.org", 4343, "ratspeak-diamond"),
+    ("rns.not-a-number.io", 4242, "apollo-rns"),
     ("rns.beleth.net", 4242, "beleth"),
+    ("rns.michmesh.net", 7822, "michmesh"),
+    ("rns.one-big.network", 4242, "one-big-network"),
     ("rmap.world", 4242, "rmap"),
+    ("swiss-rns.cl0ud.ch", 4242, "swiss-rns"),
+    ("rns.utn.lol", 4965, "utn-oregon"),
+    ("reticulum.washmesh.net", 7242, "washmesh"),
 ];
 
 fn startup_normalise_public_tcp_host(host: &str) -> String {
@@ -10385,6 +10391,22 @@ mod transport_startup_tests {
 
         assert!(!rns_config::transport_mode_enabled(&config_dir));
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn startup_public_servers_include_community_presets_on_their_own_ports() {
+        assert_eq!(
+            startup_public_tcp_server_id("RNS.MichMesh.net", 7822),
+            Some("michmesh")
+        );
+        assert_eq!(startup_public_tcp_server_id("rns.michmesh.net", 4242), None);
+        let ifaces = serde_json::json!({
+            "tcp_client": [
+                { "name": "UTN", "target_host": "rns.utn.lol", "target_port": "4965", "enabled": true },
+                { "name": "Washmesh", "target_host": "reticulum.washmesh.net", "target_port": "7242", "enabled": true }
+            ]
+        });
+        assert_eq!(startup_enabled_public_tcp_server_count(&ifaces), 2);
     }
 
     #[test]

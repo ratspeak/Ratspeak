@@ -3479,6 +3479,15 @@
         font-size: var(--mobile-list-meta-size);
     }
 
+    #connect-modal .public-server-place,
+    #connect-modal .public-server-more-note {
+        font-size: var(--mobile-list-meta-size);
+    }
+
+    #connect-modal .public-server-more-toggle {
+        font-size: var(--mobile-list-detail-size);
+    }
+
     #connect-modal .public-server-card {
         min-height: 58px;
     }

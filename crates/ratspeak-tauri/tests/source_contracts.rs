@@ -5222,8 +5222,14 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
         "1.ratspeak.org",
         "2.ratspeak.org",
         "3.ratspeak.org",
+        "rns.not-a-number.io",
         "rns.beleth.net",
+        "rns.michmesh.net",
+        "rns.one-big.network",
         "rmap.world",
+        "swiss-rns.cl0ud.ch",
+        "rns.utn.lol",
+        "reticulum.washmesh.net",
     ] {
         assert!(
             !public_panel.contains(hidden_endpoint),
@@ -5243,10 +5249,6 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
         "Diamond",
         "3.ratspeak.org",
         "4343",
-        "Beleth",
-        "rns.beleth.net",
-        "RMAP",
-        "rmap.world",
     ] {
         assert!(
             modals_js.contains(expected),
@@ -5257,7 +5259,7 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
     assert!(modals_js.contains("function _publicServerMatchesEndpoint(server, host, port)"));
     assert!(modals_js.contains("aliases: [{ host: 'rns.ratspeak.org', port: 4242 }]"));
     assert!(modals_js.contains("tags: ['OFFICIAL']"));
-    assert!(modals_js.contains("tags: ['UNOFFICIAL']"));
+    assert_eq!(modals_js.matches("group: 'official'").count(), 3);
     assert!(!modals_js.contains("tags: ['Ratspeak', 'Public']"));
     assert!(!modals_js.contains("tags: ['Community', 'Public']"));
     assert!(modals_js.contains("var PUBLIC_SERVER_ARROW_ICON"));
@@ -5274,13 +5276,120 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
     assert!(modals_css.contains(".public-server-card--ruby"));
     assert!(modals_css.contains(".public-server-card--emerald"));
     assert!(modals_css.contains(".public-server-card--diamond"));
-    assert!(modals_css.contains(".public-server-card--beleth"));
-    assert!(modals_css.contains(".public-server-card--rmap"));
     assert!(modals_css.contains("grid-template-columns: 34px minmax(0, 1fr) 38px"));
     assert!(modals_css.contains("gap: var(--space-6);"));
     assert!(modals_css.contains(".public-server-mark--gem"));
     assert!(modals_css.contains("stroke-linejoin: round;"));
     assert!(modals_css.contains(".public-server-action svg"));
+
+    // Community servers: one closed list under the three, with no tag and no favourite.
+    for (id, name, host, port, place) in [
+        (
+            "apollo-rns",
+            "Apollo RNS",
+            "rns.not-a-number.io",
+            4242,
+            "Belgium",
+        ),
+        ("beleth", "Beleth", "rns.beleth.net", 4242, ""),
+        (
+            "michmesh",
+            "MichMesh",
+            "rns.michmesh.net",
+            7822,
+            "Michigan, US",
+        ),
+        (
+            "one-big-network",
+            "One-Big-Network",
+            "rns.one-big.network",
+            4242,
+            "Germany",
+        ),
+        ("rmap", "RMAP", "rmap.world", 4242, "Italy"),
+        (
+            "swiss-rns",
+            "Swiss RNS",
+            "swiss-rns.cl0ud.ch",
+            4242,
+            "Switzerland",
+        ),
+        (
+            "utn-oregon",
+            "UTN Oregon",
+            "rns.utn.lol",
+            4965,
+            "Oregon, US",
+        ),
+        (
+            "washmesh",
+            "Washmesh",
+            "reticulum.washmesh.net",
+            7242,
+            "Washington, US",
+        ),
+    ] {
+        let place = if place.is_empty() {
+            String::new()
+        } else {
+            format!(", place: '{place}'")
+        };
+        let entry = format!(
+            "{{ id: '{id}', group: 'community', name: '{name}', host: '{host}', port: {port}{place} }},"
+        );
+        assert!(
+            modals_js.contains(&entry),
+            "missing community server {entry}"
+        );
+    }
+    assert_eq!(modals_js.matches("group: 'community'").count(), 8);
+    assert!(!modals_js.contains("UNOFFICIAL"));
+    assert!(modals_js.contains("'<span>Public servers</span>' + PEER_ICON_CHEVRON"));
+    assert!(modals_js.contains(
+        "class=\"public-server-more-toggle\" id=\"public-server-more-toggle\" aria-controls=\"public-server-more-region\""
+    ));
+    assert!(modals_js.contains("Run by the community. Their operators can see your IP address."));
+    assert!(modals_js.contains("_connectCommunityOpen = null;"));
+    assert!(modals_js.contains("a.name.localeCompare(b.name, 'en', { sensitivity: 'base' })"));
+    assert!(modals_css.contains(".public-server-card--community"));
+    assert!(!modals_css.contains(".public-server-card--beleth"));
+    assert!(!modals_css.contains(".public-server-card--rmap"));
+    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
+    assert!(views_css.contains(".peer-details-toggle,\n.public-server-more-toggle {"));
+    assert!(views_css.contains(".peer-details-region,\n.public-server-more-region {"));
+
+    // The transport limits count the same servers.
+    let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("interface commands");
+    let runtime_rs =
+        read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
+    for endpoint in [
+        "(\"1.ratspeak.org\", 4141, \"ratspeak-ruby\")",
+        "(\"2.ratspeak.org\", 4242, \"ratspeak-emerald\")",
+        "(\"rns.ratspeak.org\", 4242, \"ratspeak-emerald\")",
+        "(\"3.ratspeak.org\", 4343, \"ratspeak-diamond\")",
+        "(\"rns.not-a-number.io\", 4242, \"apollo-rns\")",
+        "(\"rns.beleth.net\", 4242, \"beleth\")",
+        "(\"rns.michmesh.net\", 7822, \"michmesh\")",
+        "(\"rns.one-big.network\", 4242, \"one-big-network\")",
+        "(\"rmap.world\", 4242, \"rmap\")",
+        "(\"swiss-rns.cl0ud.ch\", 4242, \"swiss-rns\")",
+        "(\"rns.utn.lol\", 4965, \"utn-oregon\")",
+        "(\"reticulum.washmesh.net\", 7242, \"washmesh\")",
+    ] {
+        assert!(
+            interfaces_rs.contains(endpoint),
+            "connect limit misses {endpoint}"
+        );
+        assert!(
+            runtime_rs.contains(endpoint),
+            "startup limit misses {endpoint}"
+        );
+    }
+    let public_servers_test =
+        read_source(root.join("scripts/dashboard/test_connect_public_servers.js"))
+            .expect("connect public servers test");
+    assert!(public_servers_test.contains("connect public servers tests passed"));
 }
 
 #[test]

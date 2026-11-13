@@ -48,12 +48,19 @@ function setBottomSheetTitleWithIcon(titleEl, title, iconType) {
     titleEl.appendChild(label);
 }
 
+// group 'official' is shown up front; 'community' sits in the closed Public servers list.
 var PUBLIC_TCP_SERVERS = [
-    { id: 'ratspeak-ruby', name: 'Ruby', host: '1.ratspeak.org', port: 4141, tone: 'ruby', mark_icon: 'gem', tags: ['OFFICIAL'] },
-    { id: 'ratspeak-emerald', name: 'Emerald', host: '2.ratspeak.org', port: 4242, tone: 'emerald', mark_icon: 'gem', tags: ['OFFICIAL'], aliases: [{ host: 'rns.ratspeak.org', port: 4242 }] },
-    { id: 'ratspeak-diamond', name: 'Diamond', host: '3.ratspeak.org', port: 4343, tone: 'diamond', mark_icon: 'gem', tags: ['OFFICIAL'] },
-    { id: 'beleth', name: 'Beleth', host: 'rns.beleth.net', port: 4242, tone: 'beleth', mark: 'B', tags: ['UNOFFICIAL'] },
-    { id: 'rmap', name: 'RMAP', host: 'rmap.world', port: 4242, tone: 'rmap', mark: 'R', tags: ['UNOFFICIAL'] },
+    { id: 'ratspeak-ruby', group: 'official', name: 'Ruby', host: '1.ratspeak.org', port: 4141, tone: 'ruby', mark_icon: 'gem', tags: ['OFFICIAL'] },
+    { id: 'ratspeak-emerald', group: 'official', name: 'Emerald', host: '2.ratspeak.org', port: 4242, tone: 'emerald', mark_icon: 'gem', tags: ['OFFICIAL'], aliases: [{ host: 'rns.ratspeak.org', port: 4242 }] },
+    { id: 'ratspeak-diamond', group: 'official', name: 'Diamond', host: '3.ratspeak.org', port: 4343, tone: 'diamond', mark_icon: 'gem', tags: ['OFFICIAL'] },
+    { id: 'apollo-rns', group: 'community', name: 'Apollo RNS', host: 'rns.not-a-number.io', port: 4242, place: 'Belgium' },
+    { id: 'beleth', group: 'community', name: 'Beleth', host: 'rns.beleth.net', port: 4242 },
+    { id: 'michmesh', group: 'community', name: 'MichMesh', host: 'rns.michmesh.net', port: 7822, place: 'Michigan, US' },
+    { id: 'one-big-network', group: 'community', name: 'One-Big-Network', host: 'rns.one-big.network', port: 4242, place: 'Germany' },
+    { id: 'rmap', group: 'community', name: 'RMAP', host: 'rmap.world', port: 4242, place: 'Italy' },
+    { id: 'swiss-rns', group: 'community', name: 'Swiss RNS', host: 'swiss-rns.cl0ud.ch', port: 4242, place: 'Switzerland' },
+    { id: 'utn-oregon', group: 'community', name: 'UTN Oregon', host: 'rns.utn.lol', port: 4965, place: 'Oregon, US' },
+    { id: 'washmesh', group: 'community', name: 'Washmesh', host: 'reticulum.washmesh.net', port: 7242, place: 'Washington, US' },
 ];
 
 function _tcpServerKey(host, port) {
@@ -74,6 +81,8 @@ var PUBLIC_TCP_SERVER_KEYS = PUBLIC_TCP_SERVERS.reduce(function(acc, server) {
     return acc;
 }, {});
 var _connectPendingPublicServerKey = null;
+// null follows the saved state; a tap decides until the sheet next opens.
+var _connectCommunityOpen = null;
 
 function _isPublicTcpServer(host, port) {
     return !!PUBLIC_TCP_SERVER_KEYS[_tcpServerKey(host, port)];
@@ -107,7 +116,10 @@ function _trapFocus(modalEl) {
     function focusableControls() {
         return Array.prototype.filter.call(modalEl.querySelectorAll(
             'button, [href], input:not([type="hidden"]), select, textarea, [tabindex]:not([tabindex="-1"])'
-        ), function(control) { return !control.disabled && control.getClientRects().length > 0; });
+        ), function(control) {
+            // An inert region keeps its layout boxes, so the rect test alone would count it.
+            return !control.disabled && control.getClientRects().length > 0 && !control.closest('[inert]');
+        });
     }
     var focusable = focusableControls();
     var wantsKeyboardFocus = window.RS && RS.ui && typeof RS.ui.prefersKeyboardFocus === 'function'
@@ -1844,50 +1856,119 @@ function _connectMatchingPublicInterface(server, ifaces) {
     return null;
 }
 
+function _publicServerState(server, ifaces) {
+    var match = _connectMatchingPublicInterface(server, ifaces);
+    var connected = !!(match && match.online);
+    return {
+        match: match,
+        connected: connected,
+        pending: _connectPendingPublicServerKey === _tcpServerKey(server.host, server.port) && !connected,
+        configured: !!match && !connected
+    };
+}
+
+function _buildPublicServerCard(server, ifaces) {
+    var state = _publicServerState(server, ifaces);
+    var community = server.group === 'community';
+    var action = state.pending ? 'Connecting...' : (state.connected ? 'Connected' : 'Connect');
+    var actionIcon = state.connected ? PUBLIC_SERVER_CHECK_ICON : PUBLIC_SERVER_ARROW_ICON;
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'public-server-card public-server-card--' + (community ? 'community' : server.tone) +
+        (state.pending ? ' is-pending' : '') +
+        (state.connected ? ' is-connected' : '') +
+        (state.configured ? ' is-added' : '');
+    btn.dataset.publicServer = server.id;
+    btn.disabled = state.connected || state.pending;
+    btn.setAttribute('aria-label', action + ' ' + server.name);
+    btn.title = action + ' ' + server.name;
+
+    // The community group names what its servers are; a card adds only its place.
+    var detail = community
+        ? (server.place ? '<span class="public-server-place">' + escapeHtml(server.place) + '</span>' : '')
+        : '<span class="public-server-tags">' + (server.tags || []).map(function(tag) {
+            return '<span class="public-server-tag">' + escapeHtml(tag) + '</span>';
+        }).join('') + '</span>';
+
+    btn.innerHTML =
+        _publicServerMarkHtml(server) +
+        '<span class="public-server-main">' +
+            '<span class="public-server-name">' + escapeHtml(server.name) + '</span>' +
+            detail +
+        '</span>' +
+        '<span class="public-server-action" aria-hidden="true">' + actionIcon + '</span>';
+
+    if (!state.connected && !state.pending) {
+        btn.addEventListener('click', function() {
+            if (state.match) resumePublicServerInterface(server, state.match);
+            else connectPublicServer(server);
+        });
+    }
+    return btn;
+}
+
+function _syncCommunityServers(box, open) {
+    box.setAttribute('data-open', open ? 'true' : 'false');
+    box.querySelector('.public-server-more-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
+    // Closed cards stay in the DOM for the slide; inert keeps them out of the tab order.
+    box.querySelector('.public-server-more-region').inert = !open;
+}
+
+function _buildCommunityServers(servers, ifaces) {
+    var inUse = servers.some(function(server) {
+        var state = _publicServerState(server, ifaces);
+        return !!state.match || state.pending;
+    });
+    var box = document.createElement('div');
+    box.className = 'public-server-more';
+    box.innerHTML =
+        '<button type="button" class="public-server-more-toggle" id="public-server-more-toggle" aria-controls="public-server-more-region">' +
+            '<span>Public servers</span>' + PEER_ICON_CHEVRON +
+        '</button>' +
+        '<div class="public-server-more-region" id="public-server-more-region" role="region" aria-labelledby="public-server-more-toggle">' +
+            '<div class="public-server-more-body">' +
+                '<p class="public-server-more-note">Run by the community. Their operators can see your IP address.</p>' +
+            '</div>' +
+        '</div>';
+    var body = box.querySelector('.public-server-more-body');
+    servers.forEach(function(server) {
+        body.appendChild(_buildPublicServerCard(server, ifaces));
+    });
+    // A saved or connected community server must not hide behind a closed row.
+    _syncCommunityServers(box, _connectCommunityOpen === null ? inUse : _connectCommunityOpen);
+    box.querySelector('.public-server-more-toggle').addEventListener('click', function() {
+        _connectCommunityOpen = box.getAttribute('data-open') !== 'true';
+        _syncCommunityServers(box, _connectCommunityOpen);
+    });
+    return box;
+}
+
 function renderPublicTcpServers(ifaces) {
     var container = document.getElementById('public-server-list');
     if (!container) return;
+    // A rebuild must not drop keyboard focus from the control that held it.
+    var focused = document.activeElement && container.contains(document.activeElement)
+        ? (document.activeElement.id || document.activeElement.dataset.publicServer || '')
+        : '';
     container.innerHTML = '';
 
-    PUBLIC_TCP_SERVERS.forEach(function(server) {
-        var match = _connectMatchingPublicInterface(server, ifaces);
-        var connected = !!(match && match.online);
-        var pending = _connectPendingPublicServerKey === _tcpServerKey(server.host, server.port) && !connected;
-        var configured = !!match && !connected;
-        var action = pending ? 'Connecting...' : (connected ? 'Connected' : 'Connect');
-        var actionIcon = connected ? PUBLIC_SERVER_CHECK_ICON : PUBLIC_SERVER_ARROW_ICON;
-
-        var btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'public-server-card public-server-card--' + server.tone +
-            (pending ? ' is-pending' : '') +
-            (connected ? ' is-connected' : '') +
-            (configured ? ' is-added' : '');
-        btn.disabled = connected || pending;
-        btn.setAttribute('aria-label', action + ' ' + server.name);
-        btn.title = action + ' ' + server.name;
-
-        var tags = (server.tags || []).map(function(tag) {
-            return '<span class="public-server-tag">' + escapeHtml(tag) + '</span>';
-        }).join('');
-
-        btn.innerHTML =
-            _publicServerMarkHtml(server) +
-            '<span class="public-server-main">' +
-                '<span class="public-server-name">' + escapeHtml(server.name) + '</span>' +
-                '<span class="public-server-tags">' + tags + '</span>' +
-            '</span>' +
-            '<span class="public-server-action" aria-hidden="true">' + actionIcon + '</span>';
-
-        if (!connected && !pending) {
-            btn.addEventListener('click', function() {
-                if (match) resumePublicServerInterface(server, match);
-                else connectPublicServer(server);
-            });
-        }
-
-        container.appendChild(btn);
+    PUBLIC_TCP_SERVERS.filter(function(server) {
+        return server.group !== 'community';
+    }).forEach(function(server) {
+        container.appendChild(_buildPublicServerCard(server, ifaces));
     });
+    container.appendChild(_buildCommunityServers(PUBLIC_TCP_SERVERS.filter(function(server) {
+        return server.group === 'community';
+    }).sort(function(a, b) {
+        return a.name.localeCompare(b.name, 'en', { sensitivity: 'base' });
+    }), ifaces));
+
+    if (focused) {
+        var again = container.querySelector('#' + focused) ||
+            container.querySelector('[data-public-server="' + focused + '"]');
+        if (again && !again.disabled) again.focus();
+    }
 }
 
 function connectPublicServer(server) {
@@ -2052,6 +2133,7 @@ window.addEventListener('ratspeak-developer-mode-changed', function() {
 function openConnectModal(editContext) {
     _connectEditContext = _normaliseConnectEditContext(editContext);
     _connectPendingPublicServerKey = null;
+    _connectCommunityOpen = null;
     var iface = _connectEditContext && _connectEditContext.iface ? _connectEditContext.iface : null;
     var isEdit = !!_connectEditContext;
     var isBackboneEdit = isEdit && _connectEditContext.ifaceType === 'backbone_client';

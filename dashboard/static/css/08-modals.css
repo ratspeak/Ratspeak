@@ -487,14 +487,10 @@
     --public-server-accent-rgb: var(--status-info-rgb);
 }
 
-.public-server-card--beleth {
-    --public-server-accent: var(--status-purple);
-    --public-server-accent-rgb: var(--status-purple-rgb);
-}
-
-.public-server-card--rmap {
-    --public-server-accent: var(--ble-accent);
-    --public-server-accent-rgb: var(--ble-accent-rgb);
+/* Community servers share one neutral tone: none is promoted over another. */
+.public-server-card--community {
+    --public-server-accent: var(--status-discovered);
+    --public-server-accent-rgb: var(--status-discovered-rgb);
 }
 
 .public-server-mark {
@@ -565,6 +561,38 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0;
+}
+
+.public-server-place {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.public-server-more {
+    margin-top: var(--space-2);
+}
+
+.public-server-more-body {
+    display: flex;
+    min-height: 0;
+    flex-direction: column;
+    gap: var(--space-2);
+    overflow: hidden;
+}
+
+/* The grid slide clips at the body edge, so the spacing lives inside it. */
+.public-server-more-note {
+    margin: var(--space-4) 0 var(--space-2);
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    line-height: var(--type-leading-copy);
+}
+
+.public-server-more-body > .public-server-card:last-child {
+    margin-bottom: var(--space-4);
 }
 
 .public-server-action {

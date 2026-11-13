@@ -573,8 +573,14 @@ const PUBLIC_TCP_ENDPOINTS: &[(&str, u16, &str)] = &[
     ("2.ratspeak.org", 4242, "ratspeak-emerald"),
     ("rns.ratspeak.org", 4242, "ratspeak-emerald"),
     ("3.ratspeak.org", 4343, "ratspeak-diamond"),
+    ("rns.not-a-number.io", 4242, "apollo-rns"),
     ("rns.beleth.net", 4242, "beleth"),
+    ("rns.michmesh.net", 7822, "michmesh"),
+    ("rns.one-big.network", 4242, "one-big-network"),
     ("rmap.world", 4242, "rmap"),
+    ("swiss-rns.cl0ud.ch", 4242, "swiss-rns"),
+    ("rns.utn.lol", 4965, "utn-oregon"),
+    ("reticulum.washmesh.net", 7242, "washmesh"),
 ];
 
 fn normalise_public_tcp_host(host: &str) -> String {
@@ -9178,6 +9184,19 @@ mod backbone_args_tests {
             Some("ratspeak-emerald")
         );
         assert_eq!(public_tcp_server_id("example.net", 4242), None);
+        assert_eq!(
+            public_tcp_server_id("RNS.MichMesh.net", 7822),
+            Some("michmesh")
+        );
+        assert_eq!(public_tcp_server_id("rns.michmesh.net", 4242), None);
+
+        let community_pair = serde_json::json!({
+            "tcp_client": [
+                { "name": "UTN", "target_host": "rns.utn.lol", "target_port": "4965", "enabled": true },
+                { "name": "Washmesh", "target_host": "reticulum.washmesh.net", "target_port": "7242", "enabled": true }
+            ]
+        });
+        assert_eq!(enabled_public_tcp_server_count(&community_pair), 2);
 
         let alias_pair = serde_json::json!({
             "tcp_client": [
