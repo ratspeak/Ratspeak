@@ -10,6 +10,7 @@ var _channelHubManagerDismiss = null;
 var _channelHubAdminChildDismisses = [];
 var _channelHubIdentityGeneration = 0;
 var _channelHubHomeBusy = false;
+var _channelHubSeenReady = false;
 
 function _channelHubPlural(count, singular, plural) {
     return count + ' ' + (count === 1 ? singular : (plural || singular + 's'));
@@ -76,8 +77,17 @@ function _channelHubCurrentDestination() {
     return String(channelsSnapshot.hub.destination_hash || '').toLowerCase();
 }
 
+// The Channels first view names this hub while it runs.
+function _channelHubSyncFirstView() {
+    var ready = typeof _channelsOwnedHubReady === 'function' && _channelsOwnedHubReady();
+    if (ready === _channelHubSeenReady) return;
+    _channelHubSeenReady = ready;
+    if (typeof renderChannels === 'function') renderChannels();
+}
+
 function channelHubRenderHome(overview) {
     overview = overview || channelHubOverview;
+    _channelHubSyncFirstView();
     var section = document.getElementById('channel-owned-hub');
     if (!section) return;
     var visible = _channelHubHomeVisible(overview);
@@ -211,7 +221,7 @@ function channelsOpenAddSheet() {
         var join = _channelHubChoice(
             'join',
             'Join a hub',
-            'Choose a nearby or saved hub, or enter an address'
+            'Choose a hub or enter an address'
         );
         join.addEventListener('click', function() {
             built.dismiss();
@@ -2078,7 +2088,7 @@ function channelHubOpenManager(initialOverview) {
     var discoveryLabel = document.createElement('label');
     discoveryLabel.textContent = 'Announce this hub';
     var discoveryHint = document.createElement('span');
-    discoveryHint.textContent = 'At startup and on this schedule, so nearby people can find it';
+    discoveryHint.textContent = 'At startup and on this schedule, so people can find it';
     discoveryCopy.appendChild(discoveryLabel);
     discoveryCopy.appendChild(discoveryHint);
     var announceInput = document.createElement('select');

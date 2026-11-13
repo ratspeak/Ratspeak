@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // The Channels first view: which step it offers for each network and hub
-// state, when it re-renders, what the address sheet accepts, and where the
-// one-hub sentence appears. Runs the shipped channels.js whole, with the
+// state, when it re-renders, what the address sheet accepts, where the
+// one-hub sentence appears, what Reconnect does, and what a tap does without
+// a network. Runs the shipped channels.js and channel_hub.js whole, with the
 // shipped stats and interface handlers, against a small DOM model.
 
 'use strict';
@@ -13,6 +14,7 @@ var vm = require('vm');
 
 var jsRoot = path.join(__dirname, '..', '..', 'dashboard', 'static', 'js');
 var channelsSource = fs.readFileSync(path.join(jsRoot, 'channels.js'), 'utf8');
+var channelHubSource = fs.readFileSync(path.join(jsRoot, 'channel_hub.js'), 'utf8');
 var eventsSource = fs.readFileSync(path.join(jsRoot, 'tauri_events.js'), 'utf8');
 var navSource = fs.readFileSync(path.join(jsRoot, 'nav.js'), 'utf8');
 var indexSource = fs.readFileSync(
@@ -23,6 +25,7 @@ var indexSource = fs.readFileSync(
 var HUB_A = '7f3a9c03d2e84b7795a0c6e1f3b8d2a4';
 var HUB_B = '2b7d41c9e6a05f38914cd2760be3a1f7';
 var HUB_C = 'e4c18a5a17c2d09e64b3f8a10c5d09b1';
+var OWN_HUB = '51d0c7a2be9f4f1083a6d5e2c4b7a990';
 var LISTEN_WINDOW_MS = 15 * 60 * 1000;
 
 function listenerSource(source, eventName) {
@@ -380,6 +383,7 @@ function createHarness(options) {
     vm.runInContext('Date.now = function() { return __clock.now; };',
         Object.assign(context, { __clock: clock }));
     vm.runInContext(channelsSource, context, { filename: 'channels.js' });
+    vm.runInContext(channelHubSource, context, { filename: 'channel_hub.js' });
     vm.runInContext(
         functionSource(navSource, '_firstRunInterfaceEnabled') +
             functionSource(navSource, '_firstRunConfiguredInterfaceCount') +
@@ -519,18 +523,18 @@ function testNoNetwork() {
     assert.strictEqual(empty.querySelector('.empty-state-primary').textContent,
         'Channels are group chats hosted on hubs');
     assert.strictEqual(empty.querySelector('.empty-state-hint').textContent,
-        'Connect to a network and hubs list themselves here.');
+        'Connect to a network to see hubs.');
     var action = empty.querySelector('.channels-first-action');
     assert.strictEqual(action.textContent, 'Connect to a network');
     assert.deepStrictEqual(h.rows(), [],
         'the address route must not be offered without a network');
     assert.strictEqual(h.pane.querySelector('h3').textContent, 'Connect to a network first');
     assert.strictEqual(h.pane.querySelector('p').textContent,
-        'Channels are group chats hosted on hubs. Hubs list themselves once you are online.');
+        'Channels are group chats hosted on hubs. Connect to a network to see hubs.');
     var paneAction = h.pane.querySelector('button');
     assert.strictEqual(paneAction.textContent, 'Connect to a network');
     assert(paneAction.classList.contains('nr-btn-primary'));
-    assert(h.elements['channels-layout'].classList.contains('pane-offers-network'),
+    assert(h.elements['channels-layout'].classList.contains('pane-offers-list-action'),
         'the list hides its own button only while the pane shows one');
 
     action.click();
@@ -565,23 +569,23 @@ function testListening() {
     assert.strictEqual(empty.querySelector('.empty-state-primary').textContent,
         'Listening for hubs');
     assert.strictEqual(empty.querySelector('.empty-state-hint').textContent,
-        'Hubs list themselves here as they announce. Allow up to 15 minutes.');
+        'Hubs appear here when they announce. This can take up to 15 minutes.');
     assert.strictEqual(empty.querySelector('.channels-first-action'), null);
     assert.deepStrictEqual(h.rows(), ['add']);
     var add = h.list.querySelector('.channel-hub-add-row');
     assert.strictEqual(add.querySelector('.channel-hub-row-title').textContent,
         'Add a hub by address');
     assert.strictEqual(add.querySelector('.channel-hub-row-meta').textContent,
-        'For a private or unlisted hub');
+        'Use its link, QR code, or address');
     assert.strictEqual(h.list.children[h.list.children.length - 1], add,
         'the address route is the last row');
     assert.strictEqual(h.pane.querySelector('h3').textContent, 'Listening for hubs');
     assert.strictEqual(h.pane.querySelector('p').textContent,
-        'Hubs list themselves as they announce. Allow up to 15 minutes.');
+        'Hubs appear here when they announce. This can take up to 15 minutes.');
     var paneAction = h.pane.querySelector('button');
     assert.strictEqual(paneAction.textContent, 'Add a hub by address');
     assert(paneAction.classList.contains('nr-btn-secondary'));
-    assert(!h.elements['channels-layout'].classList.contains('pane-offers-network'));
+    assert(!h.elements['channels-layout'].classList.contains('pane-offers-list-action'));
 }
 
 function testStatsNotReceived() {
@@ -610,7 +614,7 @@ function testHeard() {
     assert.strictEqual(h.list.querySelector('.channels-first-empty'), null);
     assert.strictEqual(h.pane.querySelector('h3').textContent, 'Choose a hub');
     assert.strictEqual(h.pane.querySelector('p').textContent,
-        'Pick a hub in the list to see its channels.');
+        'Choose a hub to see its channels.');
     assert.strictEqual(h.pane.querySelector('button'), null);
 }
 
@@ -773,10 +777,10 @@ function testListeningWindow() {
     assert.strictEqual(h.list.querySelector('.empty-state-primary').textContent,
         'Listening for hubs');
     assert.strictEqual(h.list.querySelector('.empty-state-hint').textContent,
-        'No hub has announced on this network yet.');
+        'No hubs heard yet.');
     assert(!h.list.querySelector('.channels-first-empty-icon').classList.contains('conn-loading-pulse'));
     assert.strictEqual(h.pane.querySelector('p').textContent,
-        'No hub has announced on this network yet.');
+        'No hubs heard yet.');
     assert.deepStrictEqual(h.rows(), ['add']);
     assert.strictEqual(h.timers().length, 0);
 
@@ -784,7 +788,7 @@ function testListeningWindow() {
     h.stats(false);
     h.stats(true);
     assert.strictEqual(h.list.querySelector('.empty-state-hint').textContent,
-        'Hubs list themselves here as they announce. Allow up to 15 minutes.');
+        'Hubs appear here when they announce. This can take up to 15 minutes.');
 }
 
 // ---------------------------------------------------------------- address sheet
@@ -977,8 +981,8 @@ async function testSwitchConfirmation() {
     var impact = review.body.querySelector('.channel-hub-switch-impact');
     assert.strictEqual(impact.hidden, false);
     assert.strictEqual(impact.textContent,
-        'One hub can be live at a time. Live channels on Ratspeak Commons end; ' +
-        'history stays on this device.');
+        'Only one hub can be connected at a time. You will leave Ratspeak Commons. ' +
+        'History stays on this device.');
     assert.strictEqual(review.footer.querySelector('.nr-btn-primary').textContent, 'Switch');
     review.dismiss();
 
@@ -987,7 +991,7 @@ async function testSwitchConfirmation() {
     await h.settle();
     var switcher = h.sheet();
     assert.strictEqual(switcher.title.textContent, 'Switch hub');
-    assert.strictEqual(switcher.sheet.textContent.indexOf('One hub can be live'), -1);
+    assert.strictEqual(switcher.sheet.textContent.indexOf('Only one hub'), -1);
     assert.deepStrictEqual(
         switcher.body.querySelectorAll('.channels-list-section').map(function(section) {
             return section.children[0].textContent;
@@ -1013,7 +1017,7 @@ async function testSwitchConfirmation() {
         'a live hub is never replaced without its confirmation');
     assert.strictEqual(
         h.sheet().body.querySelector('.channel-hub-switch-impact').textContent.indexOf(
-            'One hub can be live at a time.'), 0);
+            'Only one hub can be connected at a time.'), 0);
 }
 
 async function testFirstUseCarriesNoWarning() {
@@ -1025,7 +1029,7 @@ async function testFirstUseCarriesNoWarning() {
     h.context.channelsDiscoveredHubs = [heardHub(HUB_A, 'Ratspeak Commons', 2)];
     h.stats(true);
     var firstView = h.strip() + h.listText() + h.pane.textContent;
-    assert.strictEqual(firstView.indexOf('One hub'), -1);
+    assert.strictEqual(firstView.indexOf('one hub'), -1);
     assert.strictEqual(firstView.indexOf('Connect to a hub'), -1);
 
     h.list.querySelector('.channel-hub-row').click();
@@ -1033,7 +1037,7 @@ async function testFirstUseCarriesNoWarning() {
     var review = h.sheet();
     assert.strictEqual(review.title.textContent, 'Connect to Ratspeak Commons?');
     assert.strictEqual(review.body.querySelector('.channel-hub-switch-impact').hidden, true);
-    assert.strictEqual(review.sheet.textContent.indexOf('One hub'), -1);
+    assert.strictEqual(review.sheet.textContent.indexOf('one hub'), -1);
     assert.strictEqual(review.footer.querySelector('.nr-btn-primary').textContent, 'Connect');
     review.dismiss();
 
@@ -1042,7 +1046,7 @@ async function testFirstUseCarriesNoWarning() {
     h.context.channelsOpenHubSwitcher();
     await h.settle();
     var switcher = h.sheet();
-    assert.strictEqual(switcher.sheet.textContent.indexOf('One hub'), -1);
+    assert.strictEqual(switcher.sheet.textContent.indexOf('one hub'), -1);
     assert.strictEqual(switcher.body.querySelector('.channel-active-empty').textContent,
         'No hubs heard yet');
     switcher.dismiss();
@@ -1057,18 +1061,417 @@ async function testFirstUseCarriesNoWarning() {
         'the address route is not offered without a network');
 }
 
+// ---------------------------------------------------------------- reconnect
+
+var NETWORK_FIRST = { message: 'Connect to a network first.', tone: 'toast-warning' };
+
+function consented(h) {
+    h.context._channelsApplyPublicConsentSettings({
+        public_channel_consent_required_version: 1,
+        public_channel_consent_version: 1
+    });
+}
+
+function hubState(hash, nickname) {
+    return {
+        destination_hash: hash,
+        desired: { connected: true, nickname: nickname, rooms: [] },
+        observed: null,
+        durable: { saved: false },
+        recovery: {}
+    };
+}
+
+// The runtime clears the session nickname when a session ends.
+function endedSnapshot(hub, extra) {
+    return snapshot('error', hub, Object.assign({
+        nickname: null,
+        last_error: 'Channel link closed'
+    }, extra || {}));
+}
+
+function connectArgs(h, index) {
+    return JSON.parse(JSON.stringify(h.invoked('connect_channel_hub')[index || 0].args));
+}
+
+async function testReconnect() {
+    var h = createHarness({
+        responses: {
+            connect_channel_hub: function(args) {
+                return snapshot('resolving', { destination_hash: args.args.destination_hash }, {
+                    revision: 2, nickname: args.args.nickname
+                });
+            }
+        }
+    });
+    consented(h);
+    h.context.channelsSavedHubs = [savedHub(HUB_A, 'Ratspeak Commons')];
+    h.context.channelsSnapshot = endedSnapshot(LIVE_HUB, { hubs: [hubState(HUB_A, 'fieldrat')] });
+    h.stats(true);
+    assert.strictEqual(h.pane.querySelector('h3').textContent, 'The channel session ended');
+    assert.strictEqual(h.pane.querySelector('p').textContent, 'Channel link closed');
+    var reconnect = h.pane.querySelector('button');
+    assert.strictEqual(reconnect.textContent, 'Reconnect');
+
+    reconnect.click();
+    assert.strictEqual(h.sheets.length, 0, 'Reconnect opens neither the chooser nor a review');
+    assert.deepStrictEqual(connectArgs(h), {
+        args: { destination_hash: HUB_A, nickname: 'fieldrat' }
+    }, 'the ended session’s hub and nickname are used again');
+    assert.strictEqual(h.context.channelsPendingHubLabel, 'Ratspeak Commons');
+    reconnect.click();
+    assert.strictEqual(h.invoked('connect_channel_hub').length, 1,
+        'a second press does not start a second attempt');
+    await h.settle();
+    assert.strictEqual(h.pane.querySelector('h3').textContent, 'Finding path…',
+        'the pane goes straight to the connecting state');
+    assert.strictEqual(h.pane.querySelector('button').textContent, 'Cancel');
+    assert.strictEqual(h.sheets.length, 0);
+    assert.strictEqual(h.toasts.length, 0);
+
+    function press(ended, saved) {
+        var harness = createHarness();
+        consented(harness);
+        harness.context.channelsSavedHubs = saved || [];
+        harness.context.channelsSnapshot = ended;
+        harness.stats(true);
+        harness.pane.querySelector('button').click();
+        return harness;
+    }
+
+    // Without a session nickname the saved hub's is used; without either, the identity's.
+    assert.deepStrictEqual(
+        connectArgs(press(endedSnapshot(LIVE_HUB), [savedHub(HUB_A, 'Ratspeak Commons')])),
+        { args: { destination_hash: HUB_A, nickname: 'mara' } });
+    assert.deepStrictEqual(connectArgs(press(endedSnapshot(LIVE_HUB))),
+        { args: { destination_hash: HUB_A, nickname: 'Mara' } });
+
+    // The selected hub is enough when the hub record is gone.
+    assert.deepStrictEqual(
+        connectArgs(press(endedSnapshot(null, {
+            selected_hub_destination: HUB_B, hubs: [hubState(HUB_B, 'ridge')]
+        }))),
+        { args: { destination_hash: HUB_B, nickname: 'ridge' } });
+
+    // With no hub named anywhere, the chooser is the way back.
+    var unknown = press(endedSnapshot(null));
+    assert.strictEqual(unknown.invoked('connect_channel_hub').length, 0);
+    assert.strictEqual(unknown.sheet().title.textContent, 'Choose a hub');
+
+    // A refused command says why and leaves the button usable.
+    var refused = createHarness({
+        responses: {
+            connect_channel_hub: function() { throw new Error('Channels are unavailable'); }
+        }
+    });
+    consented(refused);
+    refused.context.channelsSnapshot = endedSnapshot(LIVE_HUB);
+    refused.stats(true);
+    var again = refused.pane.querySelector('button');
+    again.click();
+    await refused.settle();
+    assert.deepStrictEqual(refused.toasts,
+        [{ message: 'Channels are unavailable', tone: 'toast-error' }]);
+    assert.strictEqual(again.disabled, false);
+    assert.strictEqual(refused.sheets.length, 0);
+    assert.strictEqual(refused.pane.querySelector('h3').textContent, 'The channel session ended');
+}
+
+// ---------------------------------------------------------------- no network
+
+function ownHubOverview(running) {
+    return {
+        supported: true,
+        created: true,
+        destination_hash: OWN_HUB,
+        settings: { enabled: true, hub_name: 'Mara’s Den' },
+        status: {
+            running: running, destination_hash: OWN_HUB,
+            welcomed_sessions: 0, registered_rooms: 1
+        }
+    };
+}
+
+async function testNoNetworkTaps() {
+    var h = offlineHarness({
+        responses: {
+            discover_channel_hubs: function() { return [heardHub(HUB_B, 'Ridge Radio Club', 4)]; }
+        }
+    });
+    consented(h);
+    h.context.channelsSavedHubs = [savedHub(HUB_A, 'Ratspeak Commons')];
+    h.context.channelsDiscoveredHubs = [heardHub(HUB_B, 'Ridge Radio Club', 4)];
+    h.stats(false);
+    assert.deepStrictEqual(h.rows(), [HUB_B, HUB_A]);
+
+    // In the list a tap says what is missing instead of opening a review.
+    h.list.querySelectorAll('.channel-hub-row').forEach(function(row) {
+        assert.strictEqual(row.disabled, false);
+        row.click();
+    });
+    await h.settle();
+    assert.strictEqual(h.sheets.length, 0, 'no review opens for a hub that cannot be reached');
+    assert.deepStrictEqual(h.toasts, [NETWORK_FIRST, NETWORK_FIRST]);
+    assert.strictEqual(h.invoked('connect_channel_hub').length, 0);
+
+    // In the chooser one line says it and the rows are disabled; no toast under the scrim.
+    h.context.channelsOpenHubSwitcher();
+    await h.settle();
+    var switcher = h.sheet();
+    assert.strictEqual(switcher.title.textContent, 'Choose a hub');
+    var list = switcher.body.querySelector('.channel-hub-switcher-list');
+    function switcherRows() {
+        return list.querySelectorAll('.channel-hub-row');
+    }
+    function addButton() {
+        return switcher.footer.querySelectorAll('button').filter(function(button) {
+            return button.textContent === 'Add by address';
+        })[0];
+    }
+    var status = list.children[0];
+    assert(status.classList.contains('channel-directory-status'),
+        'the status line is the first thing in the list');
+    assert.strictEqual(status.dataset.tone, 'warning');
+    assert.strictEqual(status.children[0].textContent, 'No network connection');
+    assert.strictEqual(status.children[1].textContent, 'Connect to a network to join a hub');
+    assert.strictEqual(list.querySelectorAll('.channel-directory-status').length, 1);
+    assert.deepStrictEqual(
+        switcherRows().map(function(row) { return row.dataset.destinationHash; }),
+        [HUB_B, HUB_A]);
+    switcherRows().forEach(function(row) {
+        assert.strictEqual(row.disabled, true, 'a hub that cannot be reached is not offered');
+    });
+    assert.strictEqual(addButton().hidden, true);
+    assert.strictEqual(h.toasts.length, 2);
+
+    // The open chooser follows the network.
+    h.stats(true);
+    assert.strictEqual(list.querySelector('.channel-directory-status'), null);
+    switcherRows().forEach(function(row) { assert.strictEqual(row.disabled, false); });
+    assert.strictEqual(addButton().hidden, false);
+    h.stats(false);
+    assert.strictEqual(list.children[0].children[0].textContent, 'No network connection');
+    switcherRows().forEach(function(row) { assert.strictEqual(row.disabled, true); });
+    assert.strictEqual(addButton().hidden, true);
+
+    // With a network the same rows lead to the review.
+    h.stats(true);
+    switcherRows()[0].click();
+    await h.settle();
+    assert.strictEqual(h.sheet().title.textContent, 'Connect to Ridge Radio Club?');
+    h.sheet().dismiss();
+    h.list.querySelector('.channel-hub-row').click();
+    await h.settle();
+    assert.strictEqual(h.sheet().title.textContent, 'Connect to Ridge Radio Club?');
+    assert.strictEqual(h.toasts.length, 2);
+
+    // Reconnect does not start an attempt that cannot succeed.
+    var ended = createHarness();
+    consented(ended);
+    ended.context.channelsSnapshot = endedSnapshot(LIVE_HUB, { hubs: [hubState(HUB_A, 'fieldrat')] });
+    ended.stats(false);
+    var reconnect = ended.pane.querySelector('button');
+    assert.strictEqual(reconnect.textContent, 'Reconnect');
+    reconnect.click();
+    await ended.settle();
+    assert.strictEqual(ended.invoked('connect_channel_hub').length, 0);
+    assert.strictEqual(ended.sheets.length, 0);
+    assert.deepStrictEqual(ended.toasts, [NETWORK_FIRST]);
+    assert.strictEqual(reconnect.disabled, false);
+
+    // Before the first stats nothing is known to be missing, so nothing is held back.
+    var unknown = offlineHarness({
+        responses: {
+            discover_channel_hubs: function() { return [heardHub(HUB_B, 'Ridge Radio Club', 4)]; }
+        }
+    });
+    consented(unknown);
+    unknown.context.channelsDiscoveredHubs = [heardHub(HUB_B, 'Ridge Radio Club', 4)];
+    unknown.context.renderChannels();
+    unknown.list.querySelector('.channel-hub-row').click();
+    await unknown.settle();
+    assert.strictEqual(unknown.sheet().title.textContent, 'Connect to Ridge Radio Club?');
+    unknown.sheet().dismiss();
+    unknown.context.channelsOpenHubSwitcher();
+    await unknown.settle();
+    assert.strictEqual(unknown.sheet().body.querySelector('.channel-directory-status'), null);
+    assert.strictEqual(unknown.sheet().body.querySelector('.channel-hub-row').disabled, false);
+    assert.strictEqual(unknown.toasts.length, 0);
+}
+
+async function testOwnHubNeedsNoNetwork() {
+    var overview = ownHubOverview(true);
+    function ownHarness() {
+        var harness = createHarness({
+            responses: { api_channel_hub: function() { return overview; } }
+        });
+        consented(harness);
+        return harness;
+    }
+
+    // Reconnecting to this device's own hub is never held back.
+    var h = ownHarness();
+    await h.context.channelHubLoad(true);
+    h.context.channelsSnapshot = endedSnapshot(
+        { destination_hash: OWN_HUB, name: 'Mara’s Den' },
+        { hubs: [hubState(OWN_HUB, 'mara')] }
+    );
+    h.stats(false);
+    h.pane.querySelector('button').click();
+    assert.deepStrictEqual(connectArgs(h), {
+        args: { destination_hash: OWN_HUB, nickname: 'mara' }
+    });
+    assert.strictEqual(h.toasts.length, 0);
+
+    // Its review opens too; another hub's does not.
+    var review = ownHarness();
+    await review.context.channelHubLoad(true);
+    review.context.channelsSnapshot = snapshot('offline', null);
+    review.stats(false);
+    review.context.channelsOpenConnectSheet({ destination_hash: HUB_B });
+    await review.settle();
+    assert.strictEqual(review.sheets.length, 0);
+    assert.deepStrictEqual(review.toasts, [NETWORK_FIRST]);
+    review.context.channelsOpenConnectSheet({ destination_hash: OWN_HUB });
+    await review.settle();
+    assert.strictEqual(review.sheet().title.textContent.indexOf('Connect to '), 0);
+    assert.strictEqual(review.toasts.length, 1);
+}
+
+async function testOwnHubRunningNoNetwork() {
+    var overview = ownHubOverview(true);
+    var h = offlineHarness({
+        responses: { api_channel_hub: function() { return overview; } }
+    });
+    consented(h);
+    h.stats(false);
+    assert.strictEqual(h.strip(), 'No network connection / Channels need a network');
+
+    await h.context.channelHubLoad(true);
+    assert.strictEqual(h.strip(), 'No hub connected / Your hub is running',
+        'the view follows the hub as it starts');
+    var empty = h.list.querySelector('.channels-first-empty');
+    assert.strictEqual(empty.querySelector('.empty-state-primary').textContent,
+        'Your hub is running');
+    assert.strictEqual(empty.querySelector('.empty-state-hint').textContent,
+        'Other hubs need a network connection.');
+    assert.strictEqual(h.list.querySelectorAll('.channels-first-action').length, 1);
+    var open = empty.querySelector('.channels-first-action');
+    assert.strictEqual(open.textContent, 'Open hub');
+    assert.strictEqual(open.dataset.channelAction, 'open-owned-hub');
+    assert(open.classList.contains('nr-btn-primary'));
+    var network = empty.querySelector('.channels-first-secondary');
+    assert.strictEqual(network.textContent, 'Connect to a network');
+    assert(network.classList.contains('nr-btn-secondary') &&
+        !network.classList.contains('nr-btn-primary') &&
+        !network.classList.contains('channels-first-action'),
+        'the network action is not the primary one here');
+    assert.strictEqual(empty.children[empty.children.length - 1], network);
+    assert.strictEqual(h.pane.querySelector('h3').textContent, 'Open your hub');
+    assert.strictEqual(h.pane.querySelector('button').textContent, 'Open hub');
+    assert(h.elements['channels-layout'].classList.contains('pane-offers-list-action'),
+        'beside the pane the list does not repeat Open hub');
+
+    // The view returns to the network step when the hub stops, and back when it starts.
+    h.emit('channel_hub_snapshot', { running: false, destination_hash: OWN_HUB });
+    assert.strictEqual(h.strip(), 'No network connection / Channels need a network');
+    assert.strictEqual(h.list.querySelector('.empty-state-primary').textContent,
+        'Channels are group chats hosted on hubs');
+    assert.strictEqual(h.list.querySelector('.channels-first-secondary'), null);
+    assert.strictEqual(h.pane.querySelector('h3').textContent, 'Connect to a network first');
+    h.emit('channel_hub_snapshot', { running: true, destination_hash: OWN_HUB });
+    assert.strictEqual(h.strip(), 'No hub connected / Your hub is running');
+
+    network = h.list.querySelector('.channels-first-secondary');
+    network.click();
+    assert.strictEqual(h.calls.openConnectModal, 1);
+    h.list.querySelector('.channels-first-action').click();
+    await h.settle();
+    assert.deepStrictEqual(connectArgs(h), {
+        args: { destination_hash: OWN_HUB, nickname: 'Mara' }
+    }, 'the hub on this device opens without a network');
+    assert.strictEqual(h.toasts.length, 0);
+
+    // With a network the first view is the usual one.
+    var online = offlineHarness({
+        responses: { api_channel_hub: function() { return overview; } }
+    });
+    await online.context.channelHubLoad(true);
+    online.stats(true);
+    assert.strictEqual(online.strip(), 'No hub connected / Network connected');
+    assert.strictEqual(online.list.querySelector('.empty-state-primary').textContent,
+        'Listening for hubs');
+    assert.strictEqual(online.list.querySelector('.channels-first-action'), null);
+}
+
+// ---------------------------------------------------------------- wording
+
+async function testManageHubWording() {
+    var h = offlineHarness();
+    h.stats(true);
+    h.context.channelsOpenAddSheet();
+    await h.settle();
+    var sheet = h.sheet();
+    assert.strictEqual(sheet.title.textContent, 'Manage Hub');
+    var join = sheet.body.querySelector('.channel-hub-choice');
+    assert.strictEqual(join.querySelector('strong').textContent, 'Join a hub');
+    assert.strictEqual(join.querySelector('.channel-hub-choice-copy').children[1].textContent,
+        'Choose a hub or enter an address');
+    assert(!/nearby/i.test(sheet.sheet.textContent), 'a hub can be anywhere');
+}
+
+async function testConsentWording() {
+    var h = offlineHarness({
+        responses: {
+            api_app_settings: function() {
+                return {
+                    public_channel_consent_required_version: 1,
+                    public_channel_consent_version: 0
+                };
+            }
+        }
+    });
+    await h.settle();
+    h.context.channelsDiscoveredHubs = [heardHub(HUB_A, 'Ratspeak Commons', 2)];
+    h.stats(true);
+    h.list.querySelector('.channel-hub-row').click();
+    await h.settle();
+    var sheet = h.sheet();
+    assert.strictEqual(sheet.title.textContent, 'Public channels');
+    var fact = sheet.body.querySelector('.channel-consent-fact-copy');
+    assert.strictEqual(fact.children[0].textContent, 'Independent operators');
+    assert.strictEqual(fact.children[1].textContent,
+        'Each hub is run and moderated by its operator, not Ratspeak. ' +
+        'Ratspeak may not be able to remove its content.');
+    assert(!/official/i.test(sheet.sheet.textContent), 'nothing marks a hub official');
+}
+
 function testSources() {
     var removed = [
         'Choose a hub to begin', 'No channel hubs yet', 'No other hubs heard recently',
         'Saved hubs remain available below', 'Enter a trusted hub address to begin',
         'Connect to a trusted hub, then choose a channel.', 'Connect to a hub',
-        "'Nearby'", 'Find a hub'
+        "'Nearby'", 'Find a hub', 'list themselves', 'Allow up to 15 minutes',
+        'No hub has announced', 'One hub can be live', 'Unless marked official'
     ];
     removed.forEach(function(text) {
         assert.strictEqual(channelsSource.indexOf(text), -1, text + ' must be gone from channels.js');
         assert.strictEqual(indexSource.indexOf(text), -1, text + ' must be gone from index.html');
     });
-    assert.strictEqual(channelsSource.split('One hub can be live at a time.').length, 2,
+    // "nearby" stays an internal name only: never a word in a sentence or a label.
+    var channelsMarkup = indexSource.slice(
+        indexSource.indexOf('id="view-channels"'),
+        indexSource.indexOf('<div class="view"', indexSource.indexOf('id="view-channels"'))
+    );
+    assert(channelsMarkup.indexOf('id="channel-transcript"') !== -1);
+    [channelsSource, channelHubSource, channelsMarkup].forEach(function(source) {
+        assert(!/[a-z] nearby [a-z]/i.test(source) && !/\bNearby\b/.test(source),
+            'no text a user sees calls a hub nearby');
+    });
+    assert(channelsMarkup.indexOf(
+        '<p>Hubs appear here when they announce. This can take up to 15 minutes.</p>') !== -1,
+        'the placeholder matches the listening hint');
+    assert.strictEqual(channelsSource.split('Only one hub can be connected at a time.').length, 2,
         'the one-hub sentence has one home');
 }
 
@@ -1089,6 +1492,12 @@ async function main() {
     await testPasteUnavailable();
     await testSwitchConfirmation();
     await testFirstUseCarriesNoWarning();
+    await testReconnect();
+    await testNoNetworkTaps();
+    await testOwnHubNeedsNoNetwork();
+    await testOwnHubRunningNoNetwork();
+    await testManageHubWording();
+    await testConsentWording();
     testSources();
     console.log('channels first view tests passed');
 }

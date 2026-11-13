@@ -495,7 +495,8 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     opacity: 0.8;
 }
 
-.channels-first-action {
+.channels-first-action,
+.channels-first-secondary {
     min-width: 200px;
     min-height: var(--touch-target);
     margin-top: var(--space-4);
@@ -503,7 +504,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 /* Beside the room pane, the pane carries the same action. */
 @media (min-width: 769px) {
-    .channels-layout.pane-offers-network .channels-first-action {
+    .channels-layout.pane-offers-list-action .channels-first-action {
         display: none;
     }
 }
@@ -2906,6 +2907,11 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 .channel-hub-switcher-list .channel-hub-row:disabled {
     cursor: not-allowed;
     opacity: var(--opacity-disabled);
+}
+
+/* .nr-btn sets a display, which outranks the hidden attribute. */
+.channel-hub-switcher-sheet .bottom-sheet-footer .nr-btn[hidden] {
+    display: none;
 }
 
 .channel-sheet-hub {

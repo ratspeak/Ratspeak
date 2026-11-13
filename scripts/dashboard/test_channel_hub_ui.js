@@ -130,7 +130,7 @@ assert.strictEqual(configContext.settingsEqual({
 assert(source.indexOf("[0, 'When started']") === -1);
 assert(source.indexOf("[300, 'Every 5 min']") === -1);
 assert(source.indexOf("[21600, 'Every 6 hours']") === -1);
-assert(source.indexOf('At startup and on this schedule, so nearby people can find it') !== -1);
+assert(source.indexOf('At startup and on this schedule, so people can find it') !== -1);
 assert(source.indexOf('Large welcome messages') === -1);
 assert(source.indexOf('Large room notices') === -1);
 assert(source.indexOf('Operating limits') === -1);

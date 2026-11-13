@@ -265,8 +265,8 @@ assert(indexSource.indexOf('channel-live-beacon') === -1,
     'the connected perimeter replaces the redundant status dot');
 assert(channelsSource.indexOf('function channelsOpenHubSwitcher()') !== -1);
 assert(channelsSource.indexOf("hubSwitcher.addEventListener('click', channelsOpenHubSwitcher)") === -1);
-assert(channelsSource.indexOf('One hub can be live at a time.') !== -1);
-assert(channelsSource.indexOf('history stays on this device.') !== -1);
+assert(channelsSource.indexOf('Only one hub can be connected at a time.') !== -1);
+assert(channelsSource.indexOf('History stays on this device.') !== -1);
 assert(channelsSource.indexOf("list.setAttribute('aria-live', 'polite')") !== -1);
 assert(channelsSource.indexOf("list.setAttribute('aria-busy', 'true')") !== -1);
 assert(channelsSource.indexOf("titleElement.textContent = 'Switch to '") !== -1);
@@ -299,8 +299,8 @@ assert(connectSource.indexOf('Open a shared channel') === -1,
 assert(connectSource.indexOf('Encrypted in transit') === -1,
     'connection review must not repeat transport trust copy');
 assert(connectSource.indexOf('Ends live rooms') === -1);
-assert(connectSource.indexOf('One hub can be live at a time.') !== -1 &&
-    switcherSource.indexOf('One hub can be live at a time.') === -1,
+assert(connectSource.indexOf('Only one hub can be connected at a time.') !== -1 &&
+    switcherSource.indexOf('Only one hub can be connected at a time.') === -1,
     'the one-hub sentence belongs to the switch confirmation, not to the chooser');
 assert(switcherSource.indexOf("appendHubSection('Available', model.nearby") !== -1 &&
     switcherSource.indexOf("'Nearby'") === -1,

@@ -77,6 +77,7 @@ var _channelsRoomIndexRequestSeq = 0;
 var _channelsUnreadRequestSeq = 0;
 var _channelsRenderedRoomKey = '';
 var _channelsHubSwitcherDismiss = null;
+var _channelsHubSwitcherRender = null;
 var _channelsMemberDetailDismiss = null;
 var _channelsHubPulseTimer = null;
 var _channelsObservedMembersByRoom = {};
@@ -188,13 +189,13 @@ function _channelsShowPublicConsent() {
 
         var intro = document.createElement('p');
         intro.className = 'channel-consent-intro';
-        intro.textContent = 'Public channels are shared spaces hosted by Ratspeak or independent operators.';
+        intro.textContent = 'Public channels are shared spaces hosted by independent operators.';
         built.body.appendChild(intro);
 
         var facts = document.createElement('div');
         facts.className = 'channel-consent-facts';
         [
-            ['hub', 'Independent operators', 'Unless marked official, a hub is run and moderated by someone else. Ratspeak may not be able to remove its content.'],
+            ['hub', 'Independent operators', 'Each hub is run and moderated by its operator, not Ratspeak. Ratspeak may not be able to remove its content.'],
             ['privacy', 'Different privacy', 'A hub can read and relay channel messages. Direct-message encryption does not apply.'],
             ['controls', 'Your controls', 'You can block participants, report content, and leave a hub at any time.']
         ].forEach(function(fact) {
@@ -605,6 +606,21 @@ function _channelsOwnedHubReady() {
         !!channelHubOwnDestinationHash();
 }
 
+// This device's own hub needs no network; every other hub does.
+function _channelsHubNeedsNetwork(destinationHash) {
+    if (_channelsNetworkOnline() !== false) return false;
+    var own = typeof channelHubOwnDestinationHash === 'function'
+        ? channelHubOwnDestinationHash()
+        : '';
+    return !own || String(destinationHash || '').trim().toLowerCase() !== own;
+}
+
+function _channelsShowNetworkFirst() {
+    if (typeof showToast === 'function') {
+        showToast('Connect to a network first.', 'toast-warning', 3200);
+    }
+}
+
 function channelsConnectToHub(hub, options) {
     hub = hub || {};
     options = options || {};
@@ -630,6 +646,50 @@ function channelsConnectToHub(hub, options) {
         channelsActiveRoom = null;
         channelsHistorySelection = null;
         channelsApplySnapshot(snapshot);
+        return snapshot;
+    });
+}
+
+// The hub and nickname of the session that ended, while the snapshot names them.
+function _channelsEndedSessionTarget() {
+    var destination = String(
+        (channelsSnapshot.hub && channelsSnapshot.hub.destination_hash) ||
+        channelsSnapshot.selected_hub_destination ||
+        ''
+    ).trim().toLowerCase();
+    if (!/^[0-9a-f]{32}$/.test(destination)) return null;
+    var hubs = Array.isArray(channelsSnapshot.hubs) ? channelsSnapshot.hubs : [];
+    var state = hubs.find(function(hub) {
+        return String(hub.destination_hash || '').toLowerCase() === destination;
+    });
+    var saved = _channelsSavedHub(destination) || {};
+    var known = _channelsHubByDestination(destination);
+    return {
+        destination_hash: destination,
+        announced_name: saved.label || known.announced_name || known.name || '',
+        nickname: (state && state.desired && state.desired.nickname) ||
+            saved.nickname || _channelsDefaultNickname()
+    };
+}
+
+function channelsReconnect(control) {
+    var target = _channelsEndedSessionTarget();
+    if (!target) {
+        channelsOpenHubSwitcher();
+        return Promise.resolve(null);
+    }
+    if (_channelsHubNeedsNetwork(target.destination_hash)) {
+        _channelsShowNetworkFirst();
+        return Promise.resolve(null);
+    }
+    if (control) control.disabled = true;
+    return channelsConnectToHub(target).catch(function(error) {
+        if (typeof showToast === 'function') {
+            showToast((error && error.message) || 'Could not reconnect to this hub.', 'toast-error', 3500);
+        }
+        return null;
+    }).then(function(snapshot) {
+        if (control) control.disabled = false;
         return snapshot;
     });
 }
@@ -1897,6 +1957,7 @@ function channelsNetworkChanged() {
     if (online !== true) _channelsOnlineSince = 0;
     else if (cameOnline) _channelsOnlineSince = Date.now();
     renderChannels();
+    if (typeof _channelsHubSwitcherRender === 'function') _channelsHubSwitcherRender();
     if (cameOnline && !_channelsIsConnected() && _channelsViewVisible()) {
         channelsRefreshAvailableHubs();
     }
@@ -2012,7 +2073,9 @@ function _channelsRenderHubStrip() {
 function _channelsFirstViewCard() {
     var state = _channelsFirstViewState();
     if (state === 'offline') {
-        return { title: 'No network connection', meta: 'Channels need a network' };
+        return _channelsOwnedHubReady()
+            ? { title: 'No hub connected', meta: 'Your hub is running' }
+            : { title: 'No network connection', meta: 'Channels need a network' };
     }
     var meta = 'Choose a hub below';
     if (state === 'saved') meta = 'Choose a saved hub below';
@@ -2233,14 +2296,31 @@ function _channelsBuildFirstViewEmpty(options) {
         button.textContent = options.actionText;
         empty.appendChild(button);
     }
+    if (options.secondary) {
+        var secondary = document.createElement('button');
+        secondary.type = 'button';
+        secondary.className = 'nr-btn nr-btn-secondary channels-first-secondary';
+        secondary.dataset.channelAction = options.secondary.action;
+        secondary.textContent = options.secondary.text;
+        empty.appendChild(secondary);
+    }
     return empty;
 }
 
 function _channelsBuildOfflineEmpty() {
     var network = _channelsNetworkAction();
+    if (_channelsOwnedHubReady()) {
+        return _channelsBuildFirstViewEmpty({
+            primary: 'Your hub is running',
+            hint: 'Other hubs need a network connection.',
+            action: 'open-owned-hub',
+            actionText: 'Open hub',
+            secondary: network
+        });
+    }
     return _channelsBuildFirstViewEmpty({
         primary: 'Channels are group chats hosted on hubs',
-        hint: 'Connect to a network and hubs list themselves here.',
+        hint: 'Connect to a network to see hubs.',
         action: network.action,
         actionText: network.text
     });
@@ -2252,8 +2332,8 @@ function _channelsBuildListeningEmpty() {
         pulse: !elapsed,
         primary: 'Listening for hubs',
         hint: elapsed
-            ? 'No hub has announced on this network yet.'
-            : 'Hubs list themselves here as they announce. Allow up to 15 minutes.'
+            ? 'No hubs heard yet.'
+            : 'Hubs appear here when they announce. This can take up to 15 minutes.'
     });
 }
 
@@ -2274,7 +2354,7 @@ function _channelsBuildAddHubRow() {
     title.textContent = 'Add a hub by address';
     var meta = document.createElement('span');
     meta.className = 'channel-hub-row-meta';
-    meta.textContent = 'For a private or unlisted hub';
+    meta.textContent = 'Use its link, QR code, or address';
     copy.appendChild(title);
     copy.appendChild(meta);
     row.appendChild(mark);
@@ -2493,17 +2573,18 @@ function _channelsRenderRoom(scrollRestore) {
     if (RS.chatScroll) RS.chatScroll.wire(transcript);
     if (layout) layout.classList.toggle('has-active-room', !!room);
     if (layout) layout.classList.toggle('room-live', !!room && room.phase === 'joined');
-    if (layout && room) layout.classList.remove('pane-offers-network');
+    if (layout && room) layout.classList.remove('pane-offers-list-action');
 
     if (!room) {
         if (layout) layout.classList.remove('members-open');
         header.hidden = true;
         compose.hidden = true;
         var offered = _channelsRenderRoomEmpty(transcript);
-        // The list hides its own network button only while this pane shows one.
+        // The list hides its own first button only while this pane shows the same one.
         if (layout) {
-            layout.classList.toggle('pane-offers-network',
-                offered === 'connect-network' || offered === 'open-network');
+            layout.classList.toggle('pane-offers-list-action',
+                offered === 'connect-network' || offered === 'open-network' ||
+                offered === 'open-owned-hub');
         }
         _channelsRenderMembers(null);
         _channelsRenderedRoomKey = '';
@@ -2936,7 +3017,7 @@ function _channelsRenderRoomEmpty(transcript) {
     } else if (channelsSnapshot.phase === 'error') {
         title.textContent = 'The channel session ended';
         copy.textContent = channelsSnapshot.last_error || 'The channel Link closed. Reconnect when you are ready.';
-        button.dataset.channelAction = 'connect';
+        button.dataset.channelAction = 'reconnect';
         button.textContent = 'Reconnect';
     } else {
         if (_channelsOwnedHubReady()) {
@@ -2986,7 +3067,7 @@ function _channelsFirstViewWelcome() {
         var network = _channelsNetworkAction();
         return {
             title: 'Connect to a network first',
-            text: 'Channels are group chats hosted on hubs. Hubs list themselves once you are online.',
+            text: 'Channels are group chats hosted on hubs. Connect to a network to see hubs.',
             action: network.action,
             actionText: network.text,
             primary: true
@@ -2996,8 +3077,8 @@ function _channelsFirstViewWelcome() {
         return {
             title: 'Listening for hubs',
             text: _channelsListenWindowElapsed()
-                ? 'No hub has announced on this network yet.'
-                : 'Hubs list themselves as they announce. Allow up to 15 minutes.',
+                ? 'No hubs heard yet.'
+                : 'Hubs appear here when they announce. This can take up to 15 minutes.',
             action: 'add-address',
             actionText: 'Add a hub by address',
             primary: false
@@ -3005,7 +3086,7 @@ function _channelsFirstViewWelcome() {
     }
     return {
         title: 'Choose a hub',
-        text: 'Pick a hub in the list to see its channels.'
+        text: 'Choose a hub to see its channels.'
     };
 }
 
@@ -4428,6 +4509,7 @@ function channelsScanSharedChannel() {
         checkingText: 'Checking link\u2026',
         previewCommand: 'api_preview_channel_share',
         invalidText: 'That QR is not a valid Ratspeak link.',
+        invalidPasteText: 'That is not a valid Ratspeak link.',
         invalidImageText: 'That image does not contain a valid Ratspeak QR.',
         emptyImageText: 'No Ratspeak QR found in that image.',
         onPreview: function(_body, _payload, target, closeAll) {
@@ -4592,8 +4674,12 @@ function channelsOpenHubSwitcher() {
         if (_channelsHubSwitcherDismiss === built.dismiss) {
             _channelsHubSwitcherDismiss = null;
         }
+        if (_channelsHubSwitcherRender === renderForNetwork) {
+            _channelsHubSwitcherRender = null;
+        }
     });
     _channelsHubSwitcherDismiss = built.dismiss;
+    _channelsHubSwitcherRender = renderForNetwork;
     built.sheet.classList.add('channel-hub-switcher-sheet');
 
     var list = document.createElement('div');
@@ -4695,7 +4781,17 @@ function channelsOpenHubSwitcher() {
     function renderList() {
         list.textContent = '';
         var model = _channelsHubSwitcherModel();
+        var offline = _channelsNetworkOnline() === false;
         var blocked = _channelsConnectCommandBlocked();
+        add.hidden = offline;
+        // A toast would sit dimmed under this sheet's scrim.
+        if (offline) {
+            list.appendChild(_channelsDirectoryStatus(
+                'No network connection',
+                'Connect to a network to join a hub',
+                'warning'
+            ));
+        }
         if (model.current) {
             var currentStatus = _channelsHubCurrentStatus();
             appendHubSection('Current', [model.current], {
@@ -4710,7 +4806,7 @@ function channelsOpenHubSwitcher() {
             actionDisabled: refreshInFlight,
             action: function() { refreshNearby(false); },
             refreshAction: true,
-            disabled: blocked
+            disabled: blocked || offline
         });
         if (!model.nearby.length) {
             list.appendChild(_channelsActiveEmpty(refreshInFlight
@@ -4718,7 +4814,7 @@ function channelsOpenHubSwitcher() {
                 : (model.current ? 'No other hubs heard yet' : 'No hubs heard yet')));
         }
         appendHubSection('Saved', model.saved, {
-            disabled: blocked
+            disabled: blocked || offline
         });
         if (blocked && (model.nearby.length || model.saved.length)) {
             list.appendChild(_channelsDirectoryStatus(
@@ -4733,7 +4829,6 @@ function channelsOpenHubSwitcher() {
     add.type = 'button';
     add.className = 'nr-btn nr-btn-secondary';
     add.textContent = 'Add by address';
-    add.hidden = _channelsNetworkOnline() === false;
     add.addEventListener('click', function() {
         built.dismiss();
         setTimeout(function() {
@@ -4758,6 +4853,16 @@ function channelsOpenHubSwitcher() {
             list.querySelector('.channel-hub-row:not(:disabled)') ||
             (add.hidden ? done : add);
     }
+
+    // The open sheet follows the network: its rows change what they can do.
+    function renderForNetwork() {
+        if (!built.sheet.isConnected) return;
+        renderList();
+        if (!built.sheet.contains(document.activeElement) &&
+                RS.ui && typeof RS.ui.focusAfterUpdate === 'function') {
+            RS.ui.focusAfterUpdate(modelCurrentFocus());
+        }
+    }
 }
 
 function channelsOpenConnectSheet(prefill) {
@@ -4765,6 +4870,13 @@ function channelsOpenConnectSheet(prefill) {
     prefill = prefill || {};
     if (!String(prefill.destination_hash || '').trim()) {
         channelsOpenAddressSheet(prefill);
+        return;
+    }
+    // A review for a hub that cannot be reached is a dead end.
+    var requestedMode = _channelsHubConnectMode(prefill.destination_hash).kind;
+    if ((requestedMode === 'connect' || requestedMode === 'switch') &&
+            _channelsHubNeedsNetwork(prefill.destination_hash)) {
+        _channelsShowNetworkFirst();
         return;
     }
     if (!prefill.public_consent_checked) {
@@ -4865,9 +4977,9 @@ function channelsOpenConnectSheet(prefill) {
         if (mode.kind === 'switch') {
             if (titleElement) titleElement.textContent = 'Switch to ' + nextName + '?';
             switchImpact.hidden = false;
-            switchImpact.textContent = 'One hub can be live at a time. Live channels on ' +
+            switchImpact.textContent = 'Only one hub can be connected at a time. You will leave ' +
                 _channelsTimelineHubName(_channelsHubByDestination(mode.current_destination)) +
-                ' end; history stays on this device.';
+                '. History stays on this device.';
             connect.textContent = connectBusy
                 ? 'Switching\u2026'
                 : (sharedRoom ? 'Switch and review' : 'Switch');
@@ -6213,7 +6325,7 @@ function _channelsBindUI() {
             if (channelsSnapshot.hub) channelsOpenHubOptions(actionEl);
             else if (typeof channelsOpenAddSheet === 'function') channelsOpenAddSheet();
             else channelsOpenConnectSheet();
-        } else if (action === 'connect') channelsOpenHubSwitcher();
+        } else if (action === 'reconnect') channelsReconnect(actionEl);
         else if (action === 'connect-network') {
             if (typeof openConnectModal === 'function') openConnectModal();
         } else if (action === 'open-network') {

@@ -194,8 +194,8 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(
         !channels_js.contains("hubSwitcher.addEventListener('click', channelsOpenHubSwitcher)")
     );
-    assert!(channels_js.contains("One hub can be live at a time"));
-    assert!(channels_js.contains("history stays on this device"));
+    assert!(channels_js.contains("Only one hub can be connected at a time"));
+    assert!(channels_js.contains("History stays on this device"));
     assert!(channels_js.contains("list.setAttribute('aria-live', 'polite')"));
     assert!(channels_js.contains("list.setAttribute('aria-busy', 'true')"));
     assert!(channels_js.contains("? 'Switch hub'"));
@@ -566,6 +566,8 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
     let channels_js =
         read_source(root.join("dashboard/static/js/channels.js")).expect("channels js");
+    let channel_hub_js =
+        read_source(root.join("dashboard/static/js/channel_hub.js")).expect("channel hub js");
     let channels_css =
         read_source(root.join("dashboard/static/css/09-channels.css")).expect("channels css");
     let tauri_events =
@@ -582,19 +584,20 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
         "'Choose a hub below'",
         "'Choose a saved hub below'",
         "'Channels are group chats hosted on hubs'",
-        "'Connect to a network and hubs list themselves here.'",
+        "'Connect to a network to see hubs.'",
         "'Connect to a network'",
         "'Open Network'",
         "'Listening for hubs'",
-        "'Hubs list themselves here as they announce. Allow up to 15 minutes.'",
-        "'No hub has announced on this network yet.'",
+        "'Hubs appear here when they announce. This can take up to 15 minutes.'",
+        "'No hubs heard yet.'",
         "'Add a hub by address'",
-        "'For a private or unlisted hub'",
+        "'Use its link, QR code, or address'",
         "'Saved hubs'",
         "'Connect to a network first'",
-        "'Channels are group chats hosted on hubs. Hubs list themselves once you are online.'",
-        "'Hubs list themselves as they announce. Allow up to 15 minutes.'",
-        "'Pick a hub in the list to see its channels.'",
+        "'Channels are group chats hosted on hubs. Connect to a network to see hubs.'",
+        "'Choose a hub to see its channels.'",
+        "'Your hub is running'",
+        "'Other hubs need a network connection.'",
     ] {
         assert!(channels_js.contains(copy), "missing first-view copy {copy}");
     }
@@ -624,6 +627,11 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
         "Enter a trusted hub address to begin",
         "Connect to a trusted hub, then choose a channel.",
         "'Nearby'",
+        "list themselves",
+        "Allow up to 15 minutes",
+        "No hub has announced",
+        "One hub can be live",
+        "Unless marked official",
     ] {
         assert!(
             !channels_js.contains(removed),
@@ -633,13 +641,27 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
     }
     assert_eq!(
         channels_js
-            .matches("One hub can be live at a time.")
+            .matches("Only one hub can be connected at a time.")
             .count(),
         1,
         "the one-hub sentence belongs to the switch confirmation alone"
     );
-    assert!(channels_js.contains("' end; history stays on this device.'"));
+    assert!(channels_js.contains("'. History stays on this device.'"));
     assert!(channels_js.contains("appendHubSection('Available', model.nearby"));
+    assert!(channel_hub_js.contains("'Choose a hub or enter an address'"));
+    assert!(
+        !channel_hub_js.to_lowercase().contains("nearby"),
+        "a hub can be anywhere"
+    );
+
+    // Reconnect reconnects, and no tap opens a review that cannot succeed.
+    assert!(channels_js.contains("function channelsReconnect"));
+    assert!(channels_js.contains("button.dataset.channelAction = 'reconnect';"));
+    assert!(channels_js.contains("action === 'reconnect') channelsReconnect(actionEl);"));
+    assert!(!channels_js.contains("action === 'connect')"));
+    assert!(channels_js.contains("function _channelsHubNeedsNetwork"));
+    assert!(channels_js.contains("'Connect to a network first.'"));
+    assert!(channels_js.contains("'Connect to a network to join a hub'"));
 
     // The view re-renders from the existing stats and interface events; nothing polls.
     assert!(channels_js.contains("function channelsNetworkChanged"));
@@ -655,8 +677,14 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
         channels_js.contains("if (typeof openConnectModal === 'function') openConnectModal();")
     );
     assert!(channels_css.contains(".channels-first-empty"));
-    assert!(channels_css.contains(".channels-layout.pane-offers-network .channels-first-action"));
+    assert!(
+        channels_css.contains(".channels-layout.pane-offers-list-action .channels-first-action")
+    );
     assert!(channels_css.contains(".channel-hub-add-row"));
+    assert!(channels_css.contains(".channels-first-secondary"));
+    assert!(
+        channels_css.contains(".channel-hub-switcher-sheet .bottom-sheet-footer .nr-btn[hidden]")
+    );
     assert!(channels_css.contains(".channel-sheet-field-label-row"));
     assert!(!channels_css.contains(".channel-hub-switcher-note"));
     assert!(first_view_test.contains("channels first view tests passed"));
@@ -1056,7 +1084,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(hub_ui.contains("Recent activity is off"));
     assert!(hub_ui.contains("recent_activity_retention_secs"));
     assert!(hub_ui.contains("[86400, '24 hours']"));
-    assert!(hub_ui.contains("At startup and on this schedule, so nearby people can find it"));
+    assert!(hub_ui.contains("At startup and on this schedule, so people can find it"));
     for interval in [
         "[900, 'Every 15 minutes']",
         "[1800, 'Every 30 minutes']",
