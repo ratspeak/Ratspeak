@@ -244,11 +244,12 @@ function createHarness(options) {
     var elements = {};
     [
         'view-channels', 'channels-layout', 'channel-hub-strip', 'channels-list',
-        'channel-room-header', 'channel-compose', 'channel-transcript', 'node-modal'
+        'channel-room-header', 'channel-compose', 'channel-transcript', 'channel-log', 'node-modal'
     ].forEach(function(id) {
         elements[id] = new FakeElement('div');
         elements[id].isConnected = true;
     });
+    elements['channel-transcript'].appendChild(elements['channel-log']);
     // Rows the views build carry ids of their own, such as the hub strip's row.
     function findById(id) {
         if (elements[id]) return elements[id];

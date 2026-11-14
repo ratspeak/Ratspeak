@@ -3028,8 +3028,9 @@ function _channelsRenderRoom(scrollRestore) {
     var header = _channelsEl('channel-room-header');
     var compose = _channelsEl('channel-compose');
     var transcript = _channelsEl('channel-transcript');
+    var output = _channelsEl('channel-log');
     var room = _channelsSelectedRoomView();
-    if (!header || !transcript || !compose) return;
+    if (!header || !transcript || !output || !compose) return;
     RS.chatScroll.wire(transcript);
     if (layout) layout.classList.toggle('has-active-room', !!room);
     if (layout) layout.classList.toggle('room-live', !!room && room.phase === 'joined');
@@ -3040,7 +3041,7 @@ function _channelsRenderRoom(scrollRestore) {
         header.hidden = true;
         compose.hidden = true;
         _channelsRenderRoomNotice(null);
-        _channelsRenderRoomEmpty(transcript);
+        _channelsRenderRoomEmpty(output);
         _channelsRenderMembers(null);
         _channelsRenderedRoomKey = '';
         _channelsNewMarker = null;
@@ -3069,10 +3070,11 @@ function _channelsRenderRoom(scrollRestore) {
     _channelsRenderRoomNotice(room);
 
     var scrollState = RS.chatScroll.capture(transcript);
-    transcript.textContent = '';
+    // The header sits in the scroller as a sticky head; messages render below it.
+    output.textContent = '';
     var log = document.createElement('div');
     log.className = 'ch-transcript';
-    transcript.appendChild(log);
+    output.appendChild(log);
     if (!room.history_only) {
         channelsSnapshot.notices.forEach(function(item) {
             log.appendChild(_channelsBuildHubNotice(item));
@@ -3380,10 +3382,10 @@ function _channelsBuildRoomTransition(room) {
     return card;
 }
 
-function _channelsRenderRoomEmpty(transcript) {
-    transcript.textContent = '';
+function _channelsRenderRoomEmpty(output) {
+    output.textContent = '';
     if (!_channelsIsConnected()) {
-        transcript.appendChild(_channelsEmptyState(_channelsFirstView()));
+        output.appendChild(_channelsEmptyState(_channelsFirstView()));
         return;
     }
     var profile = _channelsHubProfileModel();
@@ -3403,7 +3405,7 @@ function _channelsRenderRoomEmpty(transcript) {
         ]
     }));
     if (profile.greeting) home.appendChild(_channelsBuildHubGreeting(profile.greeting));
-    transcript.appendChild(home);
+    output.appendChild(home);
 }
 
 function _channelsBuildHubGreeting(item, compact) {

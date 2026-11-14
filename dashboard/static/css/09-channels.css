@@ -25,9 +25,20 @@
     min-width: 0;
 }
 
+/* Headers sit inside their scrollers as sticky heads, so a desktop scrollbar never
+   pushes the content off the header's edges; titles start on the content's text edge. */
+.channels-sidebar > .ui-pane-scroll {
+    display: flex;
+    flex-direction: column;
+}
+
+.ch-pane-head > .ui-pane-head {
+    padding-left: 20px;
+}
+
 .channels-list {
     display: flex;
-    min-height: 100%;
+    flex: 1 0 auto;
     flex-direction: column;
 }
 
@@ -155,13 +166,16 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     --row-surface: var(--surface-panel);
 }
 
+.ch-room-head {
+    flex: 0 0 auto;
+}
+
 .channel-room-header {
     display: flex;
-    flex: 0 0 auto;
     align-items: center;
     gap: 8px;
     min-height: 64px;
-    padding: 8px 12px;
+    padding: 8px 20px 8px 16px;
     box-sizing: border-box;
     border-bottom: 1px solid var(--border-row);
 }
@@ -228,8 +242,13 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 .ch-room-notice {
-    flex: 0 0 auto;
-    margin: 12px 20px 0;
+    padding: 12px 20px 0;
+}
+
+.ch-log {
+    display: flex;
+    flex: 1 0 auto;
+    flex-direction: column;
 }
 
 .channel-transcript {
@@ -656,11 +675,10 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .ch-members-head {
     display: flex;
-    flex: 0 0 auto;
     align-items: center;
     gap: 4px;
     min-height: 64px;
-    padding: 8px 8px 8px 16px;
+    padding: 8px 8px 8px 20px;
     box-sizing: border-box;
 }
 
@@ -844,7 +862,11 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     .channel-room-header {
         min-height: 56px;
         gap: 0;
-        padding: 6px 8px 6px 4px;
+        padding: 6px 16px 6px 4px;
+    }
+
+    .ch-members-head {
+        padding-left: 16px;
     }
 
     .ch-who {
@@ -856,7 +878,11 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     }
 
     .ch-room-notice {
-        margin: 8px 12px 0;
+        padding: 8px 16px 0;
+    }
+
+    .ch-pane-head > .ui-pane-head {
+        padding-left: var(--ui-gutter);
     }
 
     .ch-day,

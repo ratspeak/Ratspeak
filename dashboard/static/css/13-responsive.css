@@ -2547,8 +2547,6 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
     .channel-room-header {
         min-height: calc(56px + var(--sat));
         padding-top: calc(6px + var(--sat));
-        margin: 0 var(--sar) 0 var(--sal);
-        background: var(--surface-page);
     }
 
     .channel-transcript {
@@ -2600,8 +2598,8 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
 
     .ch-members-head {
         min-height: 56px;
-        padding-right: calc(8px + var(--sar));
-        padding-left: calc(20px + var(--sal));
+        padding-right: calc(16px + var(--sar));
+        padding-left: calc(16px + var(--sal));
     }
 
     .channel-hub-profile-capabilities {
@@ -2824,7 +2822,6 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
 
 @media (min-width: 769px) {
     .lxmf-chat,
-    .channel-room-header,
     .channel-transcript,
     .channel-compose,
     .channel-members-pane,
@@ -2865,7 +2862,6 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
 
 /* An open people column takes the right edge only where it is a grid column. */
 @media (min-width: 1121px) {
-    html:not([data-text-scale-tier="xlarge"]) .channels-layout.room-live.members-open .channel-room-header,
     html:not([data-text-scale-tier="xlarge"]) .channels-layout.room-live.members-open .channel-transcript,
     html:not([data-text-scale-tier="xlarge"]) .channels-layout.room-live.members-open .channel-compose {
         border-right-width: 0;

@@ -389,13 +389,13 @@
         <div class="view" id="view-channels">
             <div class="channels-layout" id="channels-layout">
                 <aside class="channels-sidebar ui-pane" aria-labelledby="channels-title">
-                    <header class="ui-pane-head">
-                        <h2 class="ui-pane-title" id="channels-title">Channels</h2>
-                    </header>
-
-                    <div class="ch-hub" id="channel-hub-strip" data-phase="offline"></div>
-
                     <div class="ui-pane-scroll">
+                        <div class="ui-scroll-head ch-pane-head">
+                            <header class="ui-pane-head">
+                                <h2 class="ui-pane-title" id="channels-title">Channels</h2>
+                            </header>
+                            <div class="ch-hub" id="channel-hub-strip" data-phase="offline"></div>
+                        </div>
                         <section class="channel-owned-hub ui-list" id="channel-owned-hub" aria-labelledby="channel-owned-hub-label" hidden>
                             <p class="ui-caption" id="channel-owned-hub-label">Your hub</p>
                             <div class="ch-owned" id="channel-owned-hub-card" data-tone="offline">
@@ -414,23 +414,25 @@
                 </aside>
 
                 <main class="channel-room-pane" id="channel-room-pane">
-                    <header class="channel-room-header" id="channel-room-header" hidden>
-                        <button class="ui-icon-btn ui-phone-only" id="channel-room-back-btn" type="button" aria-label="Back to channels" title="Back"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="15 18 9 12 15 6"/></svg></button>
-                        <button class="ch-who" id="channel-room-who" type="button" aria-haspopup="menu" aria-label="Channel details">
-                            <span class="ui-tile" aria-hidden="true"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg></span>
-                            <span class="ch-who-text">
-                                <span class="ch-who-name" id="channel-room-title">Channel</span>
-                                <span class="ch-who-sub" id="channel-room-meta">Waiting for hub</span>
-                            </span>
-                        </button>
-                        <div class="ui-pane-actions">
-                            <button class="ui-icon-btn" id="channel-members-toggle" type="button" title="People here" aria-label="People here" aria-controls="channel-members-pane" aria-expanded="false" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
+                    <div class="channel-transcript" id="channel-transcript">
+                        <div class="ui-scroll-head ch-room-head">
+                            <header class="channel-room-header" id="channel-room-header" hidden>
+                                <button class="ui-icon-btn ui-phone-only" id="channel-room-back-btn" type="button" aria-label="Back to channels" title="Back"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="15 18 9 12 15 6"/></svg></button>
+                                <button class="ch-who" id="channel-room-who" type="button" aria-haspopup="menu" aria-label="Channel details">
+                                    <span class="ui-tile" aria-hidden="true"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg></span>
+                                    <span class="ch-who-text">
+                                        <span class="ch-who-name" id="channel-room-title">Channel</span>
+                                        <span class="ch-who-sub" id="channel-room-meta">Waiting for hub</span>
+                                    </span>
+                                </button>
+                                <div class="ui-pane-actions">
+                                    <button class="ui-icon-btn" id="channel-members-toggle" type="button" title="People here" aria-label="People here" aria-controls="channel-members-pane" aria-expanded="false" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
+                                </div>
+                            </header>
+                            <div class="ch-room-notice" id="channel-room-notice" hidden></div>
                         </div>
-                    </header>
-
-                    <div class="ch-room-notice" id="channel-room-notice" hidden></div>
-
-                    <div class="channel-transcript" id="channel-transcript" role="log" aria-live="polite" aria-label="Channel messages"></div>
+                        <div class="ch-log" id="channel-log" role="log" aria-live="polite" aria-label="Channel messages"></div>
+                    </div>
 
                     <div class="channel-compose message-composer" id="channel-compose" hidden>
                         <textarea id="channel-message-input" class="nr-input message-composer-input" rows="1" placeholder="Message" aria-label="Channel message" title="Enter to send, Shift+Enter for a new line"></textarea>
@@ -444,7 +446,8 @@
                 <button class="channel-members-scrim" id="channel-members-scrim" type="button" tabindex="-1" aria-label="Close people here"></button>
                 <aside class="channel-members-pane" id="channel-members-pane" aria-labelledby="channel-members-heading">
                     <span class="ch-members-handle" aria-hidden="true"></span>
-                    <header class="ch-members-head">
+                    <div class="ui-pane-scroll ch-members-scroll">
+                    <header class="ch-members-head ui-scroll-head">
                         <button class="ui-icon-btn" id="channel-members-back" type="button" aria-label="Back to people here" title="Back" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="15 18 9 12 15 6"/></svg></button>
                         <div class="ch-members-title">
                             <h2><span id="channel-members-heading">People here</span><button class="ui-icon-btn ui-icon-btn--sm" id="channel-members-info" type="button" aria-label="Who shows here" data-tooltip="The hub reports who is here now. Seen here adds people active in this channel in the last day." hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button></h2>
@@ -452,7 +455,8 @@
                         </div>
                         <button class="ui-icon-btn" id="channel-members-close" type="button" aria-label="Close people here" title="Close"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
                     </header>
-                    <div class="ui-pane-scroll channel-members-list" id="channel-members-list"></div>
+                    <div class="channel-members-list" id="channel-members-list"></div>
+                    </div>
                 </aside>
             </div>
         </div>
