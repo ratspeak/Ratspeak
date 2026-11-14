@@ -831,8 +831,8 @@ function openAddress(h) {
         assert(built, 'the address row opens a sheet');
         return {
             built: built,
-            input: built.sheet.querySelector('input.mono'),
-            connect: built.footer.querySelector('.nr-btn-primary'),
+            input: built.sheet.querySelector('input.ui-input--mono'),
+            connect: built.footer.querySelector('.ui-btn--primary'),
             error: built.body.querySelector('.channel-sheet-error'),
             paste: built.body.querySelector('.channel-sheet-field-label-row button'),
             scan: built.body.querySelector('.channel-link-method')
@@ -1033,7 +1033,7 @@ async function testSwitchConfirmation() {
     assert.strictEqual(impact.textContent,
         'Only one hub can be connected at a time. You will leave Ratspeak Commons. ' +
         'History stays on this device.');
-    assert.strictEqual(review.footer.querySelector('.nr-btn-primary').textContent, 'Switch');
+    assert.strictEqual(review.footer.querySelector('.ui-btn--primary').textContent, 'Switch');
     review.dismiss();
 
     // The hub menu itself carries no warning: the hubs, then add, share, details, and disconnect.
@@ -1057,9 +1057,9 @@ async function testSwitchConfirmation() {
     await h.settle();
     var address = h.sheet();
     assert.strictEqual(address.title.textContent, 'Add a hub by address');
-    var primary = address.footer.querySelector('.nr-btn-primary');
+    var primary = address.footer.querySelector('.ui-btn--primary');
     assert.strictEqual(primary.textContent, 'Review');
-    address.sheet.querySelector('input.mono').enter(HUB_C);
+    address.sheet.querySelector('input.ui-input--mono').enter(HUB_C);
     primary.click();
     await h.settle();
     assert.strictEqual(h.invoked('connect_channel_hub').length, 0,
@@ -1087,7 +1087,7 @@ async function testFirstUseCarriesNoWarning() {
     assert.strictEqual(review.title.textContent, 'Connect to Ratspeak Commons?');
     assert.strictEqual(review.body.querySelector('.channel-hub-switch-impact').hidden, true);
     assert.strictEqual(review.sheet.textContent.indexOf('one hub'), -1);
-    assert.strictEqual(review.footer.querySelector('.nr-btn-primary').textContent, 'Connect');
+    assert.strictEqual(review.footer.querySelector('.ui-btn--primary').textContent, 'Connect');
     review.dismiss();
 }
 

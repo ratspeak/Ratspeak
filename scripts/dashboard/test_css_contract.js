@@ -145,7 +145,7 @@ assert(/\.bottom-sheet-body > \*\s*\{[^}]*flex-shrink:\s*0;/s
     'scrolling sheet content must overflow instead of collapsing bounded controls');
 assert(/\.channel-consent-sheet\s*\{[^}]*max-height:\s*min\(760px,\s*calc\(var\(--app-height, 100dvh\) - max\(var\(--sat\), var\(--space-8\)\)\)\)/s
     .test(sourceByName['13-responsive.css']) &&
-    /\.channel-consent-sheet \.bottom-sheet-footer \.nr-btn\s*\{[^}]*min-width:\s*0;[^}]*flex:\s*1 1 0;/s
+    /\.channel-consent-sheet \.bottom-sheet-footer \.ui-btn\s*\{[^}]*min-width:\s*0;[^}]*flex:\s*1 1 0;/s
         .test(sourceByName['13-responsive.css']),
     'public-channel consent must preserve reachable actions on short and narrow phones');
 

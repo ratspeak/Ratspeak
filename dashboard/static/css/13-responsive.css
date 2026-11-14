@@ -46,7 +46,7 @@
         padding-bottom: max(var(--space-5), var(--sab));
     }
 
-    .channel-consent-sheet .bottom-sheet-footer .nr-btn {
+    .channel-consent-sheet .bottom-sheet-footer .ui-btn {
         min-width: 0;
         flex: 1 1 0;
     }

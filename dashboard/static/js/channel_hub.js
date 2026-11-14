@@ -207,15 +207,16 @@ function _channelHubToggle(labelText, detailText, checked) {
     copy.appendChild(label);
     copy.appendChild(detail);
     var toggle = document.createElement('label');
-    toggle.className = 'prop-toggle';
-    toggle.setAttribute('aria-label', labelText);
+    toggle.className = 'ui-switch';
     var input = document.createElement('input');
     input.type = 'checkbox';
+    input.setAttribute('role', 'switch');
+    input.setAttribute('aria-label', labelText);
     input.checked = !!checked;
-    var slider = document.createElement('span');
-    slider.className = 'prop-slider';
+    var track = document.createElement('span');
+    track.className = 'track';
     toggle.appendChild(input);
-    toggle.appendChild(slider);
+    toggle.appendChild(track);
     row.appendChild(copy);
     row.appendChild(toggle);
     return { row: row, input: input };
@@ -371,9 +372,9 @@ function _channelHubAdminBadge(text, tone) {
 function _channelHubAdminButton(labelText, handler, options) {
     options = options || {};
     var classes = options.primary
-        ? 'nr-btn nr-btn-primary channel-host-admin-action'
-        : 'nr-btn nr-btn-secondary channel-host-admin-action';
-    if (options.danger) classes = 'nr-btn nr-btn-danger channel-host-admin-action';
+        ? 'ui-btn ui-btn--sm ui-btn--primary channel-host-admin-action'
+        : 'ui-btn ui-btn--sm channel-host-admin-action';
+    if (options.danger) classes = 'ui-btn ui-btn--sm ui-btn--danger channel-host-admin-action';
     var button = _channelHubAdminNode('button', classes, labelText);
     button.type = 'button';
     button.disabled = !!options.disabled;
@@ -398,7 +399,7 @@ function _channelHubAdminHeader(root, titleText, detailText, refreshHandler, act
             ));
         });
         if (refreshHandler) {
-        var refresh = _channelHubAdminNode('button', 'nr-btn nr-btn-secondary channel-host-admin-refresh', 'Refresh');
+        var refresh = _channelHubAdminNode('button', 'ui-btn ui-btn--sm channel-host-admin-refresh', 'Refresh');
         refresh.type = 'button';
         refresh.setAttribute('aria-label', 'Refresh ' + titleText.toLowerCase());
         refresh.addEventListener('click', refreshHandler);
@@ -901,7 +902,7 @@ function _channelHubRenderAdminError(root, titleText, error, retryHandler) {
         'Could not load ' + titleText.toLowerCase(),
         error && error.message ? error.message : 'Try again when the local runtime is ready.'
     );
-    var retry = _channelHubAdminNode('button', 'nr-btn nr-btn-secondary', 'Try again');
+    var retry = _channelHubAdminNode('button', 'ui-btn', 'Try again');
     retry.type = 'button';
     retry.addEventListener('click', retryHandler);
     failure.appendChild(retry);
@@ -1241,7 +1242,7 @@ function _channelHubOpenChannelEditor(admin, existingRoom, mutationHandler) {
                 : 'Create durable policy without storing conversation history or a roster.')
     ));
 
-    var roomInput = _channelHubAdminNode('input', 'nr-input-sm');
+    var roomInput = _channelHubAdminNode('input', 'ui-input');
     roomInput.type = 'text';
     roomInput.maxLength = 64;
     roomInput.autocomplete = 'off';
@@ -1259,7 +1260,7 @@ function _channelHubOpenChannelEditor(admin, existingRoom, mutationHandler) {
             : 'Shown with # in the channel list · 64 UTF-8 bytes maximum'
     ));
 
-    var topicInput = _channelHubAdminNode('textarea', 'nr-input-sm channel-host-admin-topic');
+    var topicInput = _channelHubAdminNode('textarea', 'ui-input channel-host-admin-topic');
     topicInput.rows = 3;
     topicInput.maxLength = Number(admin.limits && admin.limits.max_message_body_bytes) || 350;
     topicInput.placeholder = 'What is this channel for?';
@@ -1318,7 +1319,7 @@ function _channelHubOpenChannelEditor(admin, existingRoom, mutationHandler) {
         'channel-host-admin-editor-section'
     );
     keySection.appendChild(_channelHubAdminNode('h3', '', 'Join key'));
-    var keyMode = _channelHubAdminNode('select', 'nr-select channel-host-admin-key-select');
+    var keyMode = _channelHubAdminNode('select', 'ui-input channel-host-admin-key-select');
     function addKeyMode(value, label) {
         var option = _channelHubAdminNode('option', '', label);
         option.value = value;
@@ -1339,7 +1340,7 @@ function _channelHubOpenChannelEditor(admin, existingRoom, mutationHandler) {
             : 'Keys are converted to verify-only salted digests and never recoverable.'
     ));
 
-    keyInput = _channelHubAdminNode('input', 'nr-input-sm channel-host-admin-secret');
+    keyInput = _channelHubAdminNode('input', 'ui-input channel-host-admin-secret');
     keyInput.type = 'password';
     keyInput.minLength = 8;
     keyInput.maxLength = 128;
@@ -1593,7 +1594,7 @@ function _channelHubOpenAccessEditor(admin, options, mutationHandler) {
         'Choose one explicit authority or moderation change. Complete identity hashes are required.'
     ));
 
-    var targetInput = _channelHubAdminNode('input', 'nr-input-sm mono');
+    var targetInput = _channelHubAdminNode('input', 'ui-input ui-input--mono');
     targetInput.type = 'text';
     targetInput.maxLength = 64;
     targetInput.autocomplete = 'off';
@@ -1610,7 +1611,7 @@ function _channelHubOpenAccessEditor(admin, options, mutationHandler) {
 
     var scopeSelect = _channelHubAdminNode(
         'select',
-        'nr-select channel-host-admin-scope-select'
+        'ui-input channel-host-admin-scope-select'
     );
     var hubOption = _channelHubAdminNode('option', '', 'Hub-wide access');
     hubOption.value = 'hub';
@@ -1638,7 +1639,7 @@ function _channelHubOpenAccessEditor(admin, options, mutationHandler) {
 
     var actionSelect = _channelHubAdminNode(
         'select',
-        'nr-select channel-host-admin-scope-select'
+        'ui-input channel-host-admin-scope-select'
     );
     var actionHint = _channelHubAdminNode(
         'span',
@@ -1721,8 +1722,8 @@ function _channelHubOpenAccessEditor(admin, options, mutationHandler) {
         protectedNotice.hidden = !protectedIdentity;
         submit.disabled = busy || !choice;
         submit.className = choice && choice.confirmation && choice.confirmation.danger
-            ? 'nr-btn nr-btn-danger channel-host-admin-action'
-            : 'nr-btn nr-btn-primary channel-host-admin-action';
+            ? 'ui-btn ui-btn--danger ui-btn--primary channel-host-admin-action'
+            : 'ui-btn ui-btn--primary channel-host-admin-action';
         submit.textContent = busy ? 'Applying…' : (choice ? choice.label : 'Apply change');
     }
 
@@ -1845,7 +1846,7 @@ function channelHubOpenManager(initialOverview) {
     heroCopy.appendChild(heroStatus);
     var stateButton = document.createElement('button');
     stateButton.type = 'button';
-    stateButton.className = 'nr-btn channel-host-state-btn';
+    stateButton.className = 'ui-btn channel-host-state-btn';
     hero.appendChild(heroIcon);
     hero.appendChild(heroCopy);
     hero.appendChild(stateButton);
@@ -1955,13 +1956,13 @@ function channelHubOpenManager(initialOverview) {
 
     var nameInput = document.createElement('input');
     nameInput.type = 'text';
-    nameInput.className = 'nr-input-sm';
+    nameInput.className = 'ui-input';
     nameInput.maxLength = 64;
     nameInput.value = settings.hub_name || 'Ratspeak Hub';
     profile.appendChild(_channelHubField('Hub name', nameInput, 'Shown when people discover your hub'));
 
     var greetingInput = document.createElement('textarea');
-    greetingInput.className = 'nr-input-sm channel-host-greeting';
+    greetingInput.className = 'ui-input channel-host-greeting';
     greetingInput.maxLength = 512;
     greetingInput.rows = 3;
     greetingInput.placeholder = 'Welcome people, share rules, and tell them where to begin';
@@ -1991,7 +1992,7 @@ function channelHubOpenManager(initialOverview) {
     discoveryCopy.appendChild(discoveryLabel);
     discoveryCopy.appendChild(discoveryHint);
     var announceInput = document.createElement('select');
-    announceInput.className = 'nr-select channel-host-announce-select';
+    announceInput.className = 'ui-input channel-host-announce-select';
     [
         [900, 'Every 15 minutes'],
         [1800, 'Every 30 minutes'],
@@ -2028,7 +2029,7 @@ function channelHubOpenManager(initialOverview) {
     recentActivityCopy.appendChild(recentActivityLabel);
     recentActivityCopy.appendChild(recentActivityHint);
     var recentActivityInput = document.createElement('select');
-    recentActivityInput.className = 'nr-select channel-host-recent-activity-select';
+    recentActivityInput.className = 'ui-input channel-host-recent-activity-select';
     [
         [0, 'OFF'],
         [3600, '1 hour'],
@@ -2062,12 +2063,12 @@ function channelHubOpenManager(initialOverview) {
 
     var close = document.createElement('button');
     close.type = 'button';
-    close.className = 'nr-btn nr-btn-secondary';
+    close.className = 'ui-btn ui-btn--quiet';
     close.textContent = 'Close';
     close.addEventListener('click', function() { built.dismiss(); });
     var save = document.createElement('button');
     save.type = 'button';
-    save.className = 'nr-btn nr-btn-primary';
+    save.className = 'ui-btn ui-btn--primary';
     save.textContent = 'Save changes';
     save.disabled = true;
     built.footer.appendChild(close);
@@ -2345,8 +2346,8 @@ function channelHubOpenManager(initialOverview) {
         stateButton.dataset.action = model.action;
         stateButton.textContent = model.actionLabel;
         stateButton.className = model.action === 'start'
-            ? 'nr-btn nr-btn-primary channel-host-state-btn'
-            : 'nr-btn nr-btn-secondary channel-host-state-btn';
+            ? 'ui-btn ui-btn--primary channel-host-state-btn'
+            : 'ui-btn channel-host-state-btn';
         stateButton.disabled = busy || adminMutationBusy;
         var destination = status.destination_hash || overview.destination_hash || '';
         addressValue.textContent = destination;

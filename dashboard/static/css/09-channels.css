@@ -1041,27 +1041,11 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 .channel-consent-check {
-    display: flex;
-    min-height: 46px;
-    align-items: center;
-    gap: var(--space-4);
-    padding: var(--space-3) var(--space-5);
-    color: var(--text-primary);
-    cursor: pointer;
-    font-size: var(--text-xs);
-    line-height: 1.4;
+    padding: 8px 16px;
 }
 
 .channel-consent-check + .channel-consent-check {
     border-top: 1px solid var(--border-row);
-}
-
-.channel-consent-check input {
-    width: 19px;
-    height: 19px;
-    flex: 0 0 auto;
-    margin: 0;
-    accent-color: var(--accent);
 }
 
 .channel-consent-policies {
@@ -1708,11 +1692,6 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     font-weight: var(--type-weight-semibold);
 }
 
-.channel-sheet-field .nr-input-sm.mono {
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-}
-
 .channel-sheet-field-label-row {
     display: flex;
     min-height: 32px;
@@ -1725,7 +1704,6 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     margin-right: calc(-1 * var(--space-4));
 }
 
-.channel-address-sheet .channel-sheet-field .nr-input-sm.mono,
 .channel-address-sheet .channel-connection-change {
     min-height: var(--touch-target);
 }
@@ -2364,7 +2342,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     line-height: var(--type-leading-copy);
 }
 
-.channel-host-admin-empty .nr-btn {
+.channel-host-admin-empty .ui-btn {
     margin-top: var(--space-4);
 }
 

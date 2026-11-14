@@ -225,12 +225,16 @@ function _channelsShowPublicConsent() {
         acknowledgements.className = 'channel-consent-acknowledgements';
         function acknowledgement(labelText) {
             var label = document.createElement('label');
-            label.className = 'channel-consent-check';
+            label.className = 'ui-check-row channel-consent-check';
             var input = document.createElement('input');
             input.type = 'checkbox';
+            var box = document.createElement('span');
+            box.className = 'ui-check';
+            box.innerHTML = RS.kit.icon('check');
             var copy = document.createElement('span');
             copy.textContent = labelText;
             label.appendChild(input);
+            label.appendChild(box);
             label.appendChild(copy);
             acknowledgements.appendChild(label);
             return input;
@@ -270,12 +274,12 @@ function _channelsShowPublicConsent() {
 
         var cancel = document.createElement('button');
         cancel.type = 'button';
-        cancel.className = 'nr-btn nr-btn-secondary';
+        cancel.className = 'ui-btn ui-btn--quiet';
         cancel.textContent = 'Not now';
         cancel.addEventListener('click', function() { built.dismiss(false); });
         var continueButton = document.createElement('button');
         continueButton.type = 'button';
-        continueButton.className = 'nr-btn nr-btn-primary';
+        continueButton.className = 'ui-btn ui-btn--primary';
         continueButton.textContent = 'Continue';
         continueButton.disabled = true;
         function syncContinue() {
@@ -4048,12 +4052,12 @@ function _channelsOpenReportSheet(context) {
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.className = 'nr-btn nr-btn-secondary';
+    cancel.className = 'ui-btn ui-btn--quiet';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', function() { built.dismiss(); });
     var prepare = document.createElement('button');
     prepare.type = 'button';
-    prepare.className = 'nr-btn nr-btn-primary';
+    prepare.className = 'ui-btn ui-btn--primary';
     prepare.textContent = 'Prepare email';
     prepare.addEventListener('click', function() {
         var lines = [
@@ -4725,14 +4729,14 @@ function _channelsPresentSharedTarget(target) {
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.className = 'nr-btn nr-btn-secondary';
+    cancel.className = 'ui-btn ui-btn--quiet';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', built.dismiss);
     built.footer.appendChild(cancel);
 
     var review = document.createElement('button');
     review.type = 'button';
-    review.className = 'nr-btn nr-btn-primary';
+    review.className = 'ui-btn ui-btn--primary';
     if (joinedRoom && joinedRoom.phase === 'joined') {
         review.textContent = 'Open channel';
     } else if (sameHub && target.room) {
@@ -4838,7 +4842,7 @@ function channelsOpenSharedChannel(payload) {
     built.body.appendChild(copy);
 
     var input = document.createElement('textarea');
-    input.className = 'nr-input-sm channel-share-input mono';
+    input.className = 'ui-input ui-input--mono channel-share-input';
     input.rows = 4;
     input.maxLength = 230;
     input.placeholder = 'ratspeak://channel?v=1&hub=\u2026';
@@ -4923,12 +4927,12 @@ function channelsOpenSharedChannel(payload) {
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.className = 'nr-btn nr-btn-secondary';
+    cancel.className = 'ui-btn ui-btn--quiet';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', built.dismiss);
     var open = document.createElement('button');
     open.type = 'button';
-    open.className = 'nr-btn nr-btn-primary';
+    open.className = 'ui-btn ui-btn--primary';
     open.textContent = 'Review';
     open.addEventListener('click', preview);
     built.footer.appendChild(cancel);
@@ -5027,12 +5031,12 @@ function channelsOpenConnectSheet(prefill) {
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.className = 'nr-btn nr-btn-secondary';
+    cancel.className = 'ui-btn ui-btn--quiet';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', function() { built.dismiss(); });
     var connect = document.createElement('button');
     connect.type = 'button';
-    connect.className = 'nr-btn nr-btn-primary';
+    connect.className = 'ui-btn ui-btn--primary';
     var connectBusy = false;
 
     function updateConnectionChoice() {
@@ -5153,7 +5157,7 @@ function _channelsSheetField(labelText, input, labelAction) {
 function _channelsBuildNicknameChoice(defaultNick) {
     var input = document.createElement('input');
     input.type = 'text';
-    input.className = 'nr-input-sm';
+    input.className = 'ui-input';
     input.placeholder = 'Nickname for this session';
     input.maxLength = 32;
     input.value = defaultNick;
@@ -5202,7 +5206,7 @@ function _channelsPresentSheet(built, initialFocus) {
         }
         if (event.key === 'Enter' &&
                 (event.target.tagName === 'INPUT' || event.target.tagName === 'SELECT')) {
-            var primary = built.sheet.querySelector('.nr-btn-primary:not(:disabled)');
+            var primary = built.sheet.querySelector('.ui-btn--primary:not(:disabled)');
             if (primary) {
                 event.preventDefault();
                 primary.click();
@@ -5268,7 +5272,7 @@ function channelsOpenAddressSheet(options) {
 
     var input = document.createElement('input');
     input.type = 'text';
-    input.className = 'nr-input-sm mono';
+    input.className = 'ui-input ui-input--mono';
     input.placeholder = 'ratspeak:// link or 32 characters';
     input.maxLength = 230;
     input.autocomplete = 'off';
@@ -5326,7 +5330,7 @@ function channelsOpenAddressSheet(options) {
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.className = 'nr-btn nr-btn-secondary';
+    cancel.className = 'ui-btn ui-btn--quiet';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', function() { built.dismiss(); });
     // Replacing a live hub is confirmed on the review sheet, never from here.
@@ -5334,7 +5338,7 @@ function channelsOpenAddressSheet(options) {
     var idleText = review ? 'Review' : 'Connect';
     var connect = document.createElement('button');
     connect.type = 'button';
-    connect.className = 'nr-btn nr-btn-primary';
+    connect.className = 'ui-btn ui-btn--primary';
     var busy = false;
 
     function sync() {
@@ -5480,7 +5484,7 @@ function channelsOpenJoinSheet(prefillRoom, options) {
 
     var roomInput = document.createElement('input');
     roomInput.type = 'text';
-    roomInput.className = 'nr-input-sm';
+    roomInput.className = 'ui-input';
     roomInput.placeholder = 'Channel name';
     roomInput.autocomplete = 'off';
     roomInput.setAttribute('autocorrect', 'off');
@@ -5503,21 +5507,25 @@ function channelsOpenJoinSheet(prefillRoom, options) {
     privateBody.className = 'channel-private-access-body';
     var keyInput = document.createElement('input');
     keyInput.type = 'password';
-    keyInput.className = 'nr-input-sm';
+    keyInput.className = 'ui-input';
     keyInput.placeholder = 'Access key';
     keyInput.autocomplete = 'off';
     keyInput.maxLength = 1024;
     privateBody.appendChild(_channelsSheetField('Access key', keyInput));
     var rememberRow = document.createElement('label');
-    rememberRow.className = 'rs-dialog-checkbox-row channel-key-remember';
+    rememberRow.className = 'ui-check-row channel-key-remember';
     rememberRow.hidden = true;
     var rememberKey = document.createElement('input');
     rememberKey.type = 'checkbox';
     rememberKey.checked = true;
     rememberKey.disabled = true;
+    var rememberBox = document.createElement('span');
+    rememberBox.className = 'ui-check';
+    rememberBox.innerHTML = RS.kit.icon('check');
     var rememberLabel = document.createElement('span');
     rememberLabel.textContent = 'Remember for reconnect';
     rememberRow.appendChild(rememberKey);
+    rememberRow.appendChild(rememberBox);
     rememberRow.appendChild(rememberLabel);
     privateBody.appendChild(rememberRow);
     var note = document.createElement('p');
@@ -5560,12 +5568,12 @@ function channelsOpenJoinSheet(prefillRoom, options) {
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.className = 'nr-btn nr-btn-secondary';
+    cancel.className = 'ui-btn ui-btn--quiet';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', function() { built.dismiss(); });
     var join = document.createElement('button');
     join.type = 'button';
-    join.className = 'nr-btn nr-btn-primary';
+    join.className = 'ui-btn ui-btn--primary';
     join.textContent = 'Join';
     join.addEventListener('click', function() {
         var room = roomInput.value.trim().toLowerCase();
@@ -5902,7 +5910,7 @@ function channelsOpenHubDetails() {
 
     var copyButton = document.createElement('button');
     copyButton.type = 'button';
-    copyButton.className = 'nr-btn nr-btn-secondary';
+    copyButton.className = 'ui-btn';
     copyButton.textContent = 'Copy address';
     copyButton.addEventListener('click', function() {
         RS.copyText(hub.destination_hash).then(function(ok) {
@@ -5911,7 +5919,7 @@ function channelsOpenHubDetails() {
     });
     var shareButton = document.createElement('button');
     shareButton.type = 'button';
-    shareButton.className = 'nr-btn nr-btn-secondary';
+    shareButton.className = 'ui-btn';
     shareButton.textContent = 'Share hub';
     shareButton.addEventListener('click', function() {
         built.dismiss();
@@ -5927,12 +5935,12 @@ function channelsOpenHubDetails() {
 
     var close = document.createElement('button');
     close.type = 'button';
-    close.className = 'nr-btn nr-btn-secondary';
+    close.className = 'ui-btn ui-btn--quiet';
     close.textContent = 'Close';
     close.addEventListener('click', built.dismiss);
     var disconnect = document.createElement('button');
     disconnect.type = 'button';
-    disconnect.className = 'nr-btn nr-btn-danger';
+    disconnect.className = 'ui-btn ui-btn--danger';
     disconnect.textContent = _channelsIsConnecting() ? 'Cancel connection' : 'Disconnect';
     disconnect.addEventListener('click', function() {
         var canceling = _channelsIsConnecting();
@@ -6066,7 +6074,7 @@ function channelsOpenRoomDetails() {
 
     var unread = _channelsRoomUnreadState(context.hub_destination_hash, context.room_name);
     var notificationSelect = document.createElement('select');
-    notificationSelect.className = 'nr-select channel-room-notification-select';
+    notificationSelect.className = 'ui-input channel-room-notification-select';
     [
         ['mentions', 'Mentions'],
         ['all', 'All activity'],
@@ -6122,7 +6130,7 @@ function channelsOpenRoomDetails() {
 
     var share = document.createElement('button');
     share.type = 'button';
-    share.className = 'nr-btn nr-btn-secondary';
+    share.className = 'ui-btn';
     share.textContent = 'Share';
     share.addEventListener('click', function() {
         built.dismiss();
@@ -6137,7 +6145,7 @@ function channelsOpenRoomDetails() {
     if (room.history_only) {
         var close = document.createElement('button');
         close.type = 'button';
-        close.className = 'nr-btn nr-btn-secondary';
+        close.className = 'ui-btn ui-btn--quiet';
         close.textContent = 'Close';
         close.addEventListener('click', built.dismiss);
         var activeHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;
@@ -6145,7 +6153,7 @@ function channelsOpenRoomDetails() {
             String(activeHub || '').toLowerCase() === context.hub_destination_hash;
         var open = document.createElement('button');
         open.type = 'button';
-        open.className = 'nr-btn nr-btn-primary';
+        open.className = 'ui-btn ui-btn--primary';
         open.textContent = sameHub ? 'Rejoin channel' : 'Connect to hub';
         open.addEventListener('click', function() {
             built.dismiss();
@@ -6164,7 +6172,7 @@ function channelsOpenRoomDetails() {
     if (room.phase === 'error') {
         var retry = document.createElement('button');
         retry.type = 'button';
-        retry.className = 'nr-btn nr-btn-primary';
+        retry.className = 'ui-btn ui-btn--primary';
         retry.textContent = 'Try again';
         retry.addEventListener('click', function() {
             built.dismiss();
@@ -6174,7 +6182,7 @@ function channelsOpenRoomDetails() {
     }
     var leave = document.createElement('button');
     leave.type = 'button';
-    leave.className = room.phase === 'joined' ? 'nr-btn nr-btn-danger' : 'nr-btn nr-btn-secondary';
+    leave.className = room.phase === 'joined' ? 'ui-btn ui-btn--danger' : 'ui-btn';
     leave.textContent = room.phase === 'joining' ? 'Cancel join' : (room.phase === 'parting' ? 'Leaving\u2026' : 'Leave channel');
     leave.disabled = room.phase === 'parting';
     leave.addEventListener('click', function() {
