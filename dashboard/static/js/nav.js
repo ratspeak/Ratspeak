@@ -684,8 +684,6 @@ function showAboutModal() {
         if (rows) facts.insertAdjacentHTML('afterbegin', rows);
     }).catch(function() {});
 
-    var first = built.sheet.querySelector('.ui-dialog-head .ui-icon-btn');
-    if (first && (!RS.ui || typeof RS.ui.prefersKeyboardFocus !== 'function' || RS.ui.prefersKeyboardFocus())) first.focus();
 }
 window.showAboutModal = showAboutModal;
 
