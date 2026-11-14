@@ -146,7 +146,6 @@
     tab-size: 4;
     touch-action: pan-x pan-y;
     overscroll-behavior-x: contain;
-    scrollbar-width: thin;
     border-radius: 0 0 calc(var(--radius-lg) - 1px) calc(var(--radius-lg) - 1px);
 }
 .md-pre:focus-visible {

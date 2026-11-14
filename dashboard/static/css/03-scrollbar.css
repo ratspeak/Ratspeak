@@ -16,7 +16,10 @@
     background: var(--border-light);
 }
 
-* {
-    scrollbar-width: thin;
-    scrollbar-color: var(--border) transparent;
+/* Chromium prefers these standard properties over ::-webkit-scrollbar and draws an 11 px bar. */
+@supports not selector(::-webkit-scrollbar) {
+    * {
+        scrollbar-width: thin;
+        scrollbar-color: var(--border) transparent;
+    }
 }
