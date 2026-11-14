@@ -219,17 +219,18 @@ function renderSetupAddress(hash) {
 
 // ---- Starting Ratspeak ----
 
-// Startup timing rule. Each real step ticks only when the runtime reaches it:
-// the identity is loaded once the stage passes "rns", and the network is up at
-// "ready". The playful step then holds until SETUP_PROGRESS_HOLD_MS after the
-// screen appeared, and adds nothing when the work took longer.
+// Startup timing rule. The steps run in the runtime's order and each ticks only
+// when it really completes: the identity is loaded once the stage reaches "rns",
+// and the network is up at "ready". The playful step then holds until
+// SETUP_PROGRESS_HOLD_MS after the screen appeared, and adds nothing when the
+// work took longer.
 var SETUP_START_STAGE_RANK = { lxmf: 1, rns: 2, ready: 3 };
 
 function createSetupStartTimeline(shownAt) {
     return {
         shownAt: shownAt,
-        network: 'active',
-        identity: 'pending',
+        identity: 'active',
+        network: 'pending',
         nest: 'pending',
         leaveAt: null,
         finished: false,
@@ -240,20 +241,17 @@ function createSetupStartTimeline(shownAt) {
 function advanceSetupStartTimeline(t, stage, now) {
     if (t.finished || t.failed) return t;
     if (stage === 'error') {
-        // The step that was running stops; a step that never got going is pending again.
-        t.failed = t.identity === 'active' ? 'identity' : 'network';
-        if (t.failed === 'identity') {
-            t.identity = 'failed';
-            if (t.network === 'active') t.network = 'pending';
-        } else {
-            t.network = 'failed';
-        }
+        // The step that was running stops; the steps after it stay pending.
+        t.failed = t.network === 'active' ? 'network' : 'identity';
+        t[t.failed] = 'failed';
         t.nest = 'pending';
         return t;
     }
     var rank = SETUP_START_STAGE_RANK[stage] || 0;
-    if (rank >= 1 && t.identity === 'pending') t.identity = 'active';
-    if (rank >= 2) t.identity = 'done';
+    if (rank >= 2) {
+        t.identity = 'done';
+        if (t.network === 'pending') t.network = 'active';
+    }
     if (rank >= 3) {
         t.network = 'done';
         if (t.nest === 'pending') {
@@ -290,14 +288,14 @@ var _setupStartDetail = '';
 var _setupStartVisibleAt = 0;
 
 function renderSetupStart(t) {
-    setSetupProgressStep('setup-start-network', t.network);
     setSetupProgressStep('setup-start-identity', t.identity);
+    setSetupProgressStep('setup-start-network', t.network);
     setSetupProgressStep('setup-start-nest', t.nest);
     var steps = document.getElementById('setup-start-steps');
     if (steps) steps.classList.toggle('is-running', !t.failed);
     var done = [];
-    if (t.network === 'done') done.push('Starting the network: done.');
     if (t.identity === 'done') done.push('Importing identity: done.');
+    if (t.network === 'done') done.push('Starting the network: done.');
     announceSetupProgress('setup-start-live', done.join(' '));
 }
 
