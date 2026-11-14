@@ -26,7 +26,7 @@ function functionSource(name) {
 }
 
 // The kit dialog and its parts.
-assert(source.includes("'<div class=\"ui-dialog ui-dialog--lg ng-dialog\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"ng-title\">'"),
+assert(/RS\.kit\.dialog\(\{\s*size: 'lg',\s*className: 'ng-dialog',/.test(source),
     'New game is the kit Large dialog (a bottom sheet on a phone)');
 assert(source.includes('<div class="ng-gallery" role="radiogroup" aria-labelledby="ng-gl">'),
     'the games form one radio group');
@@ -52,15 +52,14 @@ assert(source.includes("'<span class=\"ui-spin\"></span>Sending challenge\u2026'
 });
 assert(source.includes("send.disabled = state.sending || !(state.game && state.opponent);"),
     'the kit faded Primary until a game and an opponent are chosen');
-assert(source.includes("if (e.key === 'Escape')"), 'the dialog closes on Escape');
-assert(source.includes("modal.className = 'ui-modal games-modal'") &&
-    source.includes("dialog.classList.add('rs-sheet-shell', 'open');") &&
-    source.includes("modal.classList.add('is-closing');"),
-    'native Back finds the kit dialog, and the kit animates it in and out');
-assert(!/games-modal[^{]*\{[^}]*(?:transition|animation)/.test(gamesCss) && !gamesCss.includes('gameSheetUp'),
+assert(!source.includes('function _presentModal') && !source.includes("addEventListener('keydown', onKey"),
+    'one dialog shell: RS.kit.dialog owns Escape, Tab, the scrim, native Back, and the drag');
+assert(/RS\.kit\.dialog\(\{\s*className: 'game-result-dialog',/.test(source), 'the phone result sheet is the kit dialog too');
+assert(!/ui-modal|games-modal/.test(gamesCss) && !gamesCss.includes('gameSheetUp'),
     'one dialog animation: the kit\'s');
-assert(source.includes('showNewGameDialog({') && source.includes("this.getAttribute('data-new-game') || null") &&
-    source.includes("this.getAttribute('data-opponent') || null"), 'landing tiles and Play again pre-choose');
+assert(source.includes('openNewGame({') && source.includes("gameId: this.getAttribute('data-new-game') || null") &&
+    source.includes("contactHash: this.getAttribute('data-opponent') || null"), 'landing tiles and Play again pre-choose');
+assert(source.includes('window.openNewGame = openNewGame;'), 'a chat starts a game through the same entry');
 assert(!source.includes('games-sheet-') && !source.includes('bottom-sheet games-new-dialog'),
     'the old New game sheet is gone');
 

@@ -654,9 +654,9 @@
         var triggers = root.querySelectorAll('[data-new-game]');
         for (var i = 0; i < triggers.length; i++) {
             triggers[i].addEventListener('click', function() {
-                showNewGameDialog({
-                    game: this.getAttribute('data-new-game') || null,
-                    opponent: this.getAttribute('data-opponent') || null,
+                openNewGame({
+                    gameId: this.getAttribute('data-new-game') || null,
+                    contactHash: this.getAttribute('data-opponent') || null,
                 });
             });
         }
@@ -1029,20 +1029,20 @@
     function _openResultSheet(session) {
         _closeResultSheet();
         var r = _resultParts(session);
-        var sheet = _presentModal({
-            className: 'game-result-modal',
-            html: '<div class="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="game-sheet-title" aria-describedby="game-sheet-body">' +
-                '<div class="ui-dialog-handle"></div>' +
-                '<div class="ui-dialog-body"><div class="game-result-sheet">' +
+        var sheet = RS.kit.dialog({
+            className: 'game-result-dialog',
+            sheet: '<div class="ui-dialog-body"><div class="game-result-sheet">' +
                     '<span class="ui-tile ui-tile--lg ' + r.tile + '">' + r.glyph + '</span>' +
                     '<h2 class="game-result-title" id="game-sheet-title">' + escapeHtml(r.title) + '</h2>' +
                     '<p class="game-result-body" id="game-sheet-body">' + escapeHtml(r.body) + '</p></div></div>' +
-                _resultActions('ui-dialog-foot', false) + '</div>',
+                _resultActions('ui-dialog-foot', false),
             onClose: function() {
                 if (_resultSheet && _resultSheet.sessionId === session.game_id) _resultSheet = null;
                 _revealBoard(session.game_id);
             },
         });
+        sheet.dialog.setAttribute('aria-labelledby', 'game-sheet-title');
+        sheet.dialog.setAttribute('aria-describedby', 'game-sheet-body');
         sheet.sessionId = session.game_id;
         _resultSheet = sheet;
         _bindResultEvents(session, sheet.modal);
@@ -1052,96 +1052,6 @@
         var sheet = _resultSheet;
         _resultSheet = null;
         if (sheet) sheet.close();
-    }
-
-    // A kit dialog (a bottom sheet on a phone). Esc, the scrim, native Back,
-    // and a downward drag on touch all close it.
-    function _presentModal(opts) {
-        var modal = document.createElement('div');
-        modal.className = 'ui-modal games-modal' + (opts.className ? ' ' + opts.className : '');
-        modal.innerHTML = opts.html;
-        var dialog = modal.querySelector('.ui-dialog');
-        dialog.classList.add('rs-sheet-shell', 'open');
-        var previousFocus = document.activeElement;
-        var closed = false;
-
-        function onKey(e) {
-            if (!modal.isConnected) return;
-            // A dialog stacked above this one (a confirm) owns the keyboard.
-            var active = document.activeElement;
-            if (active && active !== document.body && !modal.contains(active)) return;
-            if (e.key === 'Escape') {
-                e.preventDefault();
-                e.stopPropagation();
-                close();
-                return;
-            }
-            if (e.key !== 'Tab') return;
-            var focusable = dialog.querySelectorAll('button:not([disabled]), input:not([disabled]), [tabindex="0"]');
-            if (!focusable.length) return;
-            var first = focusable[0];
-            var last = focusable[focusable.length - 1];
-            if (e.shiftKey && document.activeElement === first) {
-                e.preventDefault();
-                last.focus();
-            } else if (!e.shiftKey && document.activeElement === last) {
-                e.preventDefault();
-                first.focus();
-            } else if (!dialog.contains(document.activeElement)) {
-                e.preventDefault();
-                first.focus();
-            }
-        }
-
-        function close(done) {
-            if (closed) return;
-            closed = true;
-            document.removeEventListener('keydown', onKey, true);
-            dialog.classList.remove('open');
-            modal.classList.add('is-closing');
-            setTimeout(function() {
-                if (modal.parentNode) modal.remove();
-                if (typeof done === 'function') {
-                    done();
-                } else if (previousFocus && previousFocus.isConnected && previousFocus.focus &&
-                        (!(RS.ui && typeof RS.ui.prefersKeyboardFocus === 'function') || RS.ui.prefersKeyboardFocus())) {
-                    previousFocus.focus();
-                }
-            }, 200);
-            if (typeof opts.onClose === 'function') opts.onClose();
-        }
-
-        dialog._ratspeakDismiss = function() {
-            if (opts.canClose && !opts.canClose()) return true;
-            close();
-            return true;
-        };
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal && (!opts.canClose || opts.canClose())) close();
-        });
-        document.addEventListener('keydown', onKey, true);
-        document.body.appendChild(modal);
-        if (dialog) {
-            dialog.setAttribute('tabindex', '-1');
-            requestAnimationFrame(function() {
-                if (!dialog.contains(document.activeElement)) dialog.focus({ preventScroll: true });
-            });
-        }
-
-        if (dialog && typeof isMobile === 'function' && isMobile() && RS.gestures &&
-                typeof RS.gestures.attachDragDismiss === 'function') {
-            RS.gestures.attachDragDismiss(dialog, {
-                axis: 'y',
-                blockIfScrolled: true,
-                scrollContainerSelector: '.ui-dialog-body',
-                skipIf: function(e) {
-                    if (opts.canClose && !opts.canClose()) return true;
-                    return !!(e.target.closest('button, input, label') && !e.target.closest('.ui-dialog-handle'));
-                },
-                onCommit: function() { close(); }
-            });
-        }
-        return { modal: modal, dialog: dialog, close: close };
     }
 
     function _tttMyMarker(session) {
@@ -2049,16 +1959,20 @@
     }
 
     // Recent opponents first, then contacts by name with those who can't play last.
-    function _newGamePeople(query) {
+    function _newGamePeople(query, chosen) {
         var contacts = _getContacts().filter(function(c) { return c && c.hash; });
         var byHash = {};
         contacts.forEach(function(c) { byHash[c.hash] = c; });
         var recent = [];
         var seen = {};
+        if (chosen) {
+            seen[chosen] = true;
+            recent.push(byHash[chosen] || { hash: chosen, display_name: _contactName(chosen) });
+        }
         _allSessions.slice().sort(function(a, b) {
             return _sessionTime(b) - _sessionTime(a);
         }).forEach(function(s) {
-            if (!s.contact_hash || seen[s.contact_hash] || recent.length >= 4) return;
+            if (!s.contact_hash || seen[s.contact_hash] || recent.length >= (chosen ? 5 : 4)) return;
             seen[s.contact_hash] = true;
             recent.push(byHash[s.contact_hash] || { hash: s.contact_hash, display_name: _contactName(s.contact_hash) });
         });
@@ -2075,17 +1989,21 @@
         return { recent: recent.filter(matches), rest: rest.filter(matches), total: contacts.length + recent.length };
     }
 
-    function showNewGameDialog(opts) {
+    // The one way into New game: the header, the landing's tiles and Play again, and a chat's game button.
+    // opts: { contactHash, gameId }, each pre-chosen when given.
+    function openNewGame(opts) {
         opts = opts && typeof opts === 'object' && !opts.target ? opts : {};
         if (typeof haptic === 'function') haptic('selection');
-        if (document.querySelector('.ng-modal')) return;
+        if (document.querySelector('.ui-modal:not(.is-closing) .ng-dialog')) return;
 
         var manifests = _newGameManifests();
         var byId = {};
         manifests.forEach(function(m) { byId[m.app_id] = m; });
+        var chosen = opts.contactHash || null;
+        var chosenContact = chosen ? _getContacts().filter(function(c) { return c && c.hash === chosen; })[0] : null;
         var state = {
-            game: opts.game && byId[opts.game] ? opts.game : null,
-            opponent: opts.opponent || null,
+            game: opts.gameId && byId[opts.gameId] ? opts.gameId : null,
+            opponent: chosen && (!chosenContact || _canPlay(chosenContact)) ? chosen : null,
             query: '',
             sending: false,
         };
@@ -2133,12 +2051,12 @@
         }
 
         function peopleHtml() {
-            if (_getContacts().length === 0 && _allSessions.length === 0) {
+            if (empty) {
                 return '<div class="ui-empty"><span class="ui-tile ui-tile--lg">' + _icon('user-plus') + '</span>' +
                     '<h3 class="ui-empty-title">No contacts yet</h3><p class="ui-empty-body">Games are played with contacts. Add someone first.</p>' +
                     '<div class="ui-empty-actions"><button type="button" class="ui-btn" id="ng-open-contacts">Open Contacts</button></div></div>';
             }
-            var people = _newGamePeople(state.query);
+            var people = _newGamePeople(state.query, chosen);
             if (!people.recent.length && !people.rest.length) {
                 return '<div class="ui-empty"><h3 class="ui-empty-title">No contacts match “' + escapeHtml(state.query.trim()) + '”</h3>' +
                     '<p class="ui-empty-body">Search checks names and the start of addresses.</p>' +
@@ -2150,19 +2068,15 @@
             return html;
         }
 
-        var empty = _getContacts().length === 0 && _allSessions.length === 0;
-        var sheet = _presentModal({
-            className: 'ng-modal',
-            canClose: function() { return !state.sending; },
-            html: '<div class="ui-dialog ui-dialog--lg ng-dialog" role="dialog" aria-modal="true" aria-labelledby="ng-title">' +
-                '<div class="ui-dialog-handle"></div>' +
-                '<div class="ui-dialog-head">' +
-                    '<button type="button" class="ui-icon-btn ng-back" aria-label="Back to games" title="Back">' + _icon('chevron-left') + '</button>' +
-                    '<span class="ng-head-thumb"></span>' +
-                    '<h2 class="ui-dialog-title" id="ng-title" tabindex="-1">New game</h2>' +
-                    '<button type="button" class="ui-icon-btn ng-close" aria-label="Close" title="Close">' + _icon('x') + '</button>' +
-                '</div>' +
-                '<form class="ng-form" novalidate>' +
+        var empty = _getContacts().length === 0 && _allSessions.length === 0 && !chosen;
+        var sheet = RS.kit.dialog({
+            size: 'lg',
+            className: 'ng-dialog',
+            focus: false,
+            head: '<button type="button" class="ui-icon-btn ng-back" aria-label="Back to games" title="Back">' + _icon('chevron-left') + '</button>' +
+                '<span class="ng-head-thumb"></span>' +
+                '<h2 class="ui-dialog-title ng-title" tabindex="-1">New game</h2>',
+            sheet: '<form class="ng-form" novalidate>' +
                     '<div class="ui-dialog-body ng-body">' +
                         '<div class="ng-picks">' + manifests.map(pick).join('') + '</div>' +
                         '<section class="ng-games" aria-labelledby="ng-gl"><h3 class="ui-section-title" id="ng-gl">Game</h3>' +
@@ -2176,7 +2090,7 @@
                     '<div class="ui-dialog-foot"><p class="ng-hint" id="ng-hint" aria-live="polite"></p>' +
                         '<button type="button" class="ui-btn ui-btn--quiet ui-desk-only ng-cancel">Cancel</button>' +
                         '<button type="submit" class="ui-btn ui-btn--primary ng-send" aria-describedby="ng-hint" disabled></button></div>' +
-                '</form></div>',
+                '</form>',
         });
         var root = sheet.dialog;
         var form = root.querySelector('.ng-form');
@@ -2189,9 +2103,8 @@
             var open = peopleEl.querySelector('#ng-open-contacts');
             if (open) {
                 open.addEventListener('click', function() {
-                    sheet.close(function() {
-                        if (typeof switchView === 'function') switchView('contacts', { pushState: true });
-                    });
+                    sheet.close();
+                    if (typeof switchView === 'function') switchView('contacts', { pushState: true });
                 });
             }
             var clearLink = peopleEl.querySelector('[data-clear-search]');
@@ -2210,7 +2123,7 @@
             var step = phone && !state.game ? 'pick' : 'who';
             root.classList.toggle('ng-step-pick', step === 'pick');
             root.classList.toggle('ng-step-who', step === 'who');
-            var title = root.querySelector('#ng-title');
+            var title = root.querySelector('.ng-title');
             title.textContent = phone && state.game ? gameName(state.game) : 'New game';
             root.querySelector('.ng-head-thumb').innerHTML = phone && state.game ? _thumb(state.game) : '';
             root.querySelectorAll('input[name="ng-game"]').forEach(function(input) {
@@ -2223,7 +2136,7 @@
             });
             form.classList.toggle('is-sending', state.sending);
             if (search) search.disabled = state.sending;
-            root.querySelectorAll('.ng-close, .ng-back, .ng-cancel').forEach(function(btn) { btn.disabled = state.sending; });
+            root.querySelectorAll('[data-ui-close], .ng-back, .ng-cancel').forEach(function(btn) { btn.disabled = state.sending; });
 
             var send = root.querySelector('.ng-send');
             var opponentName = state.opponent ? _contactName(state.opponent) : '';
@@ -2260,14 +2173,13 @@
                 if (typeof haptic === 'function') haptic('selection');
                 state.game = btn.getAttribute('data-pick');
                 update();
-                root.querySelector('#ng-title').focus();
+                root.querySelector('.ng-title').focus();
             });
         });
         root.querySelector('.ng-back').addEventListener('click', function() {
             state.game = null;
             update();
         });
-        root.querySelector('.ng-close').addEventListener('click', function() { sheet.close(); });
         root.querySelector('.ng-cancel').addEventListener('click', function() { sheet.close(); });
         if (search) {
             search.addEventListener('input', function() { setQuery(search.value); update(); });
@@ -2282,7 +2194,7 @@
             startNewGame(state.game, state.opponent).then(function(ok) {
                 if (ok) {
                     state.sending = false;
-                    sheet.close(function() {});
+                    sheet.close();
                     return;
                 }
                 state.sending = false;
@@ -2327,6 +2239,10 @@
                 return false;
             }
             var selected = (ack && ack.session_id) ? ack.session_id : sessionId;
+            if (typeof currentView !== 'undefined' && currentView !== 'games' && typeof window.openGameSession === 'function') {
+                window.openGameSession(selected);
+                return true;
+            }
             RS.invoke('get_all_game_sessions').then(function(sessions) {
                 if (Array.isArray(sessions)) {
                     _allSessions = sessions;
@@ -2513,7 +2429,7 @@
     }
 
     function _initNewGameBtn() {
-        _bindBtn('games-new-btn', function() { showNewGameDialog(); });
+        _bindBtn('games-new-btn', function() { openNewGame(); });
     }
 
     window.gamesTabLoad = function() {
@@ -2555,6 +2471,7 @@
     };
 
     window.updateGamesBadge = updateGamesBadge;
+    window.openNewGame = openNewGame;
 
     window.gamesTabClear = function() {
         _allSessions = [];

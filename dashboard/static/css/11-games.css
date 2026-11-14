@@ -183,7 +183,8 @@
     .game-after .ui-status { flex: 1 0 100%; justify-content: center; }
 }
 
-.games-modal .ui-dialog:focus { outline: none; }
+/* The result sheet has no small close: swipe it down or select the dimmed board. */
+.game-result-dialog > .ui-dialog-head { display: none; }
 
 /* ---------------------------------------------------------------- New game */
 .ng-form { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; margin: 0; }

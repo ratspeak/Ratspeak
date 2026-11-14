@@ -3264,10 +3264,10 @@ fn notification_attention_uses_visibility_not_transport_settlement_or_selected_s
 fn games_new_game_uses_the_kit_large_dialog() {
     let root = repo_root();
     let games_js = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");
-    assert!(games_js.contains("ui-dialog ui-dialog--lg ng-dialog"));
-    assert!(games_js.contains("modal.className = 'ui-modal games-modal'"));
-    assert!(games_js.contains("dialog.classList.add('rs-sheet-shell', 'open');"));
-    assert!(games_js.contains("dialog._ratspeakDismiss = function()"));
+    assert!(games_js.contains("size: 'lg',\n            className: 'ng-dialog',"));
+    assert!(games_js.contains("className: 'game-result-dialog',"));
+    assert!(!games_js.contains("function _presentModal"));
+    assert!(games_js.contains("window.openNewGame = openNewGame;"));
     assert!(!games_js.contains("RS.sheetShell."));
 
     let games_css = read_source(root.join("dashboard/static/css/11-games.css")).expect("games css");
