@@ -183,7 +183,7 @@ assert(constantsSource.includes('sheet._ratspeakDismiss = function()'),
 assert(constantsSource.includes("sheet.className = 'rs-sheet-shell '"),
     'custom runtime sheets need a style-free marker for native Back');
 var kitSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'ui_kit.js'), 'utf8');
-assert(kitSource.includes("modal._ratspeakDismiss = function() { if (!opts.locked) close(null); return true; };") &&
+assert(kitSource.includes("modal._ratspeakDismiss = function() { if (dismissible()) close(null); return true; };") &&
     kitSource.includes("modal.className = 'ui-modal rs-sheet-shell open';"),
     'kit dialogs close through the native Back hook');
 assert(contactCardSource.includes('onClose: function() { stop(); }'),

@@ -460,21 +460,26 @@ function identityAvatar(hashValue, size) {
 
     // A dialog on desktop and a bottom sheet on a phone. opts: { title, size: 'md' | 'lg', className,
     // body, foot, sheet (markup in place of body and foot), onClose(value), focus: selector (false leaves
-    // focus, and a phone's keyboard, where it is), locked (no close button; only its own actions close it) }.
+    // focus, and a phone's keyboard, where it is), locked (no close button; only its own actions close it),
+    // canClose() (false while it must stay open, as during a send), closeButton: false (Escape, the scrim,
+    // a swipe, and Back still close it; with no title or head the head is left out), labelledBy (the id
+    // that names it when it has no head) }.
     // Returns { modal, dialog, body, foot, close(value), q(selector) }.
     function dialog(opts) {
         opts = opts || {};
         var titleId = 'ui-dialog-title-' + (++dialogSeq);
         var previous = document.activeElement;
         var modal = document.createElement('div');
+        var closeButton = !opts.locked && opts.closeButton !== false;
+        var head = !!(opts.head || opts.title || closeButton);
         // rs-sheet-shell + open: native Back closes the top sheet through _ratspeakDismiss.
         modal.className = 'ui-modal rs-sheet-shell open';
         modal.setAttribute('role', 'presentation');
         modal.innerHTML = '<div class="ui-dialog' + (opts.size ? ' ui-dialog--' + esc(opts.size) : '') + (opts.className ? ' ' + esc(opts.className) : '') +
-            '" role="dialog" aria-modal="true" aria-labelledby="' + titleId + '" tabindex="-1">' +
+            '" role="dialog" aria-modal="true" aria-labelledby="' + (head ? titleId : esc(opts.labelledBy || '')) + '" tabindex="-1">' +
             '<div class="ui-dialog-handle" aria-hidden="true"></div>' +
-            '<div class="ui-dialog-head">' + (opts.head || '<h2 class="ui-dialog-title">' + esc(opts.title || '') + '</h2>') +
-                (opts.locked ? '' : '<button type="button" class="ui-icon-btn" data-ui-close aria-label="Close" title="Close">' + icon('x') + '</button>') + '</div>' +
+            (head ? '<div class="ui-dialog-head">' + (opts.head || '<h2 class="ui-dialog-title">' + esc(opts.title || '') + '</h2>') +
+                (closeButton ? '<button type="button" class="ui-icon-btn" data-ui-close aria-label="Close" title="Close">' + icon('x') + '</button>' : '') + '</div>' : '') +
             (opts.sheet != null ? opts.sheet
                 : '<div class="ui-dialog-body">' + (opts.body || '') + '</div>' + (opts.foot ? '<div class="ui-dialog-foot">' + opts.foot + '</div>' : '')) +
             '</div>';
@@ -483,11 +488,15 @@ function identityAvatar(hashValue, size) {
         if (heading) heading.id = titleId;
         var closed = false;
 
+        // Every way a person can close it (Close, Escape, the scrim, a swipe, Back) asks first.
+        function allowed() { return typeof opts.canClose !== 'function' || opts.canClose() !== false; }
+        function dismissible() { return !opts.locked && allowed(); }
+
         function onKey(e) {
             if (e.key === 'Escape') {
                 e.preventDefault();
                 e.stopPropagation();
-                if (!opts.locked) close(null);
+                if (dismissible()) close(null);
             } else if (e.key === 'Tab') {
                 var items = Array.prototype.filter.call(box.querySelectorAll(FOCUSABLE), function(el) { return el.offsetParent !== null; });
                 if (!items.length) return;
@@ -513,16 +522,17 @@ function identityAvatar(hashValue, size) {
 
         modal.addEventListener('keydown', onKey);
         modal.addEventListener('click', function(e) {
-            if (e.target.closest && e.target.closest('[data-ui-close]')) close(null);
-            else if (e.target === modal && !opts.locked) close(null);
+            // A data-ui-close button is the dialog's own action, so it works in a locked dialog too.
+            if (e.target.closest && e.target.closest('[data-ui-close]')) { if (allowed()) close(null); }
+            else if (e.target === modal && dismissible()) close(null);
         });
-        modal._ratspeakDismiss = function() { if (!opts.locked) close(null); return true; };
+        modal._ratspeakDismiss = function() { if (dismissible()) close(null); return true; };
         document.body.appendChild(modal);
         if (!opts.locked && compact() && RS.gestures && typeof RS.gestures.attachDragDismiss === 'function') {
             RS.gestures.attachDragDismiss(box, {
                 axis: 'y',
                 blockIfScrolled: true,
-                skipIf: function(e) { return !!(e.target.closest && e.target.closest('button, input, textarea, select, a, video')); },
+                skipIf: function(e) { return !dismissible() || !!(e.target.closest && e.target.closest('button, input, textarea, select, a, video')); },
                 onCommit: function() { close(null); }
             });
         }

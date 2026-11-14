@@ -1031,6 +1031,8 @@
         var r = _resultParts(session);
         var sheet = RS.kit.dialog({
             className: 'game-result-dialog',
+            closeButton: false,
+            labelledBy: 'game-sheet-title',
             sheet: '<div class="ui-dialog-body"><div class="game-result-sheet">' +
                     '<span class="ui-tile ui-tile--lg ' + r.tile + '">' + r.glyph + '</span>' +
                     '<h2 class="game-result-title" id="game-sheet-title">' + escapeHtml(r.title) + '</h2>' +
@@ -1041,7 +1043,6 @@
                 _revealBoard(session.game_id);
             },
         });
-        sheet.dialog.setAttribute('aria-labelledby', 'game-sheet-title');
         sheet.dialog.setAttribute('aria-describedby', 'game-sheet-body');
         sheet.sessionId = session.game_id;
         _resultSheet = sheet;
@@ -2073,6 +2074,8 @@
             size: 'lg',
             className: 'ng-dialog',
             focus: false,
+            // A challenge on its way keeps the dialog open; it opens the game when it's sent.
+            canClose: function() { return !state.sending; },
             head: '<button type="button" class="ui-icon-btn ng-back" aria-label="Back to games" title="Back">' + _icon('chevron-left') + '</button>' +
                 '<span class="ng-head-thumb"></span>' +
                 '<h2 class="ui-dialog-title ng-title" tabindex="-1">New game</h2>',
