@@ -7610,8 +7610,8 @@ RS.listen('conversation_deleted', function(data) {
 
 // 30s re-check so identity/path changes surface without a page reload.
 setInterval(function() {
-    var view = document.getElementById('view-message');
-    if (view && view.style.display !== 'none' && lxmfContacts.length > 0) {
+    if (document.hidden || !isViewActive('message')) return;
+    if (lxmfContacts.length > 0) {
         RS.invoke('check_contact_status').catch(function() {});
     }
 }, 30000);
