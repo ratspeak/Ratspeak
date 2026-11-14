@@ -79,75 +79,25 @@ For setup help, see:
 
 ## Build From Source
 
-Advanced local-stack sharing in this source tree is described in
-[Local Reticulum ownership](docs/network-ownership.md).
-
 The full build guide is here:
 [Building from Source](https://docs.ratspeak.org/docs/reference/building-from-source).
-It covers desktop prerequisites, Android APKs, iOS signing, and the required
-sibling checkout layout.
+It covers desktop prerequisites, Android APKs, iOS signing, release bundles,
+building without voice, and packaging.
 
 After installing the desktop prerequisites and Node.js 22.22.0, use the exact
 source helper for the current release:
 
 ```bash
-git clone --branch v1.0.37 https://github.com/ratspeak/Ratspeak.git Ratspeak-source-tools
+git clone --branch v1.1.0 https://github.com/ratspeak/Ratspeak.git Ratspeak-source-tools
 node Ratspeak-source-tools/scripts/release/checkout-release-source.mjs \
-  --tag v1.0.37 --destination ratspeak-v1.0.37-source
-cd ratspeak-v1.0.37-source
+  --tag v1.1.0 --destination ratspeak-v1.1.0-source
+cd ratspeak-v1.1.0-source
 node Ratspeak/scripts/release/source-integrity.mjs verify-tags
 cd Ratspeak
 bash dashboard/build-css.sh
 cd src-tauri
 cargo tauri dev -- --locked
 ```
-
-The helper creates the required Ratspeak, rsReticulum, rsLXMF, rsLXST and lrgp-rs
-sibling directories. Use a new destination if an existing tree contains work.
-
-To reproduce a tagged Ratspeak release starting with `v1.0.29`, check out the
-Ratspeak `vX.Y.Z` tag and the matching annotated `ratspeak-vX.Y.Z` tag in each
-of `rsReticulum`, `rsLXMF`, `rsLXST`, and `lrgp-rs`. The exact commits in
-`Ratspeak/release/dependency-set.json` are authoritative; the coordinated tags
-are permanent readable aliases for that graph. From the sibling layout above,
-`node Ratspeak/scripts/release/source-integrity.mjs verify-tags` verifies every
-component version, annotated tag, and exact commit before a build.
-
-For an automated exact checkout, use
-`node scripts/release/checkout-release-source.mjs --tag vX.Y.Z --destination ../release-source`
-from a tools checkout containing the helper. See
-[Source packaging](docs/source-packaging.md) for plan mode, archive handling, and
-Nix packaging. Fetch component `commit` values from the selected release's
-manifest; component `version` values must not be used as standalone source tags.
-
-For a release bundle, run `cargo tauri build -- --locked` from
-`Ratspeak/src-tauri`.
-Desktop bundles land under `Ratspeak/src-tauri/target/release/bundle/`.
-
-To disable experimental voice, pass the Cargo flag after Tauri's separator:
-`cargo tauri build -- --locked --no-default-features`. Keep the rsLXST checkout;
-Cargo still resolves the declared path dependencies.
-
-## Voice (experimental)
-
-Voice calls run on [LXST](https://github.com/ratspeak/rsLXST) over Reticulum
-links. A call does not use a central audio service, though its Reticulum path
-can include transport nodes. The stack is experimental:
-
-- Microphone and speaker access goes through the OS: `RECORD_AUDIO` and
-  `MODIFY_AUDIO_SETTINGS` on Android, `NSMicrophoneUsageDescription` on
-  macOS/iOS, the default audio device on Linux/Windows.
-- Incoming callers must be a contact **or** a recognized direct peer.
-  Ratspeak recognizes a direct peer from a recent zero-hop announce or a cached
-  zero-hop path.
-  Blocked callers are rejected. Being eligible does not establish a usable
-  audio connection; the recipient still needs to answer the call.
-- The `lxst-voice` Cargo feature is on by default. Disable it with
-  `cargo tauri dev -- --locked --no-default-features` if you want to build Ratspeak
-  without the voice stack.
-
-Voice is experimental — expect rough edges. Codec quality, call setup,
-ringtones, and platform audio routing are all subject to change.
 
 ## Platform Notes
 
