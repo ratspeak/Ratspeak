@@ -1683,6 +1683,7 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::propagation_transfer_status(&self) -
 pub fn ratspeak_runtime::lxmf::LxmfManager::purge_identity_profile(&std::path::Path, &str, bool) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn ratspeak_runtime::lxmf::LxmfManager::ratchets_dir(&self) -> std::path::PathBuf
 pub fn ratspeak_runtime::lxmf::LxmfManager::recall_identity_hash(&self, &[u8; 16]) -> core::option::Option<[u8; 16]>
+pub fn ratspeak_runtime::lxmf::LxmfManager::recall_lxmf_announce_app_data(&mut self, [u8; 16], [u8; 10], core::option::Option<&[u8]>, f64) -> bool
 pub fn ratspeak_runtime::lxmf::LxmfManager::remember_committed_download(&mut self, &lxmf_core::admission::DurableAdmissionReceipt) -> bool
 pub fn ratspeak_runtime::lxmf::LxmfManager::remove_contact(&self, &str, &ratspeak_db::db::DbPool, &str)
 pub fn ratspeak_runtime::lxmf::LxmfManager::remove_known_identities(&mut self, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<(alloc::string::String, [u8; 64])>
@@ -1824,7 +1825,6 @@ pub fn ratspeak_runtime::lxmf::contact_card_public_key_from_profile(&std::path::
 pub fn ratspeak_runtime::lxmf::decode_ratspeak_chat_extension(&lxmf_core::message::LxMessage) -> core::option::Option<ratspeak_runtime::lxmf::RatspeakChatExtension>
 pub fn ratspeak_runtime::lxmf::delivery_method_name(lxmf_core::constants::DeliveryMethod) -> &'static str
 pub fn ratspeak_runtime::lxmf::get_ratspeak_announce_app_data(core::option::Option<&str>, core::option::Option<f64>, core::option::Option<&str>, bool) -> alloc::vec::Vec<u8>
-pub fn ratspeak_runtime::lxmf::hand_received_ratchets_to_reticulum(&std::path::Path, &str, &std::path::Path) -> core::io::error::Result<()>
 pub fn ratspeak_runtime::lxmf::initialize_storage_namespace(&std::path::Path) -> core::io::error::Result<()>
 pub fn ratspeak_runtime::lxmf::lxmf_compression_support_db_value(lxmf_core::handlers::CompressionSupport) -> core::option::Option<&'static str>
 pub fn ratspeak_runtime::lxmf::lxmf_compression_support_db_value_from_app_data(&[u8]) -> core::option::Option<&'static str>
@@ -1832,6 +1832,7 @@ pub fn ratspeak_runtime::lxmf::make_private(&std::path::Path) -> core::io::error
 pub fn ratspeak_runtime::lxmf::ratspeak_capability_services_from_app_data(&[u8]) -> alloc::vec::Vec<&'static str>
 pub fn ratspeak_runtime::lxmf::ratspeak_chat_custom_fields(&ratspeak_runtime::lxmf::RatspeakChatExtension) -> core::option::Option<alloc::vec::Vec<(u8, alloc::vec::Vec<u8>)>>
 pub fn ratspeak_runtime::lxmf::ratspeak_status_from_app_data(&[u8]) -> core::option::Option<alloc::string::String>
+pub fn ratspeak_runtime::lxmf::remove_earlier_received_ratchets(&std::path::Path, &str) -> core::io::error::Result<()>
 pub fn ratspeak_runtime::lxmf::sanitize_stored_file_name(&str) -> core::option::Option<alloc::string::String>
 pub type ratspeak_runtime::lxmf::PropagationHealth = (alloc::vec::Vec<[u8; 16]>, alloc::vec::Vec<([u8; 16], alloc::string::String)>, alloc::vec::Vec<[u8; 16]>, alloc::vec::Vec<([u8; 16], alloc::string::String)>)
 pub mod ratspeak_runtime::lxmf_persistence
@@ -2044,6 +2045,7 @@ pub async fn ratspeak_runtime::rns::RnsManager::init(&str, core::option::Option<
 pub async fn ratspeak_runtime::rns::RnsManager::init_with_policy(&str, core::option::Option<std::path::PathBuf>, alloc::sync::Arc<core::sync::atomic::AtomicBool>, rns_runtime::shared_instance::InstancePolicy) -> core::result::Result<Self, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub async fn ratspeak_runtime::rns::RnsManager::request_path(&self, [u8; 16])
 pub async fn ratspeak_runtime::rns::RnsManager::shutdown(&self)
+pub fn ratspeak_runtime::rns::RnsManager::started(&self) -> rns_link::clock::ContinuousInstant
 pub fn ratspeak_runtime::rns::RnsManager::startup_rnode_runtimes(&self) -> &[rns_runtime::reticulum::StartupRNodeRuntime]
 pub const ratspeak_runtime::rns::UI_PATH_TABLE_LIMIT: usize
 pub fn ratspeak_runtime::rns::ble_rnode_startup_options() -> rns_interface::rnode::RNodeStartupOptions
@@ -2146,6 +2148,7 @@ pub fn ratspeak_runtime::rns_config::ensure_app_private_shared_instance_ports(&s
 pub fn ratspeak_runtime::rns_config::get_all_interfaces(&std::path::Path) -> serde_json::value::Value
 pub fn ratspeak_runtime::rns_config::interface_entry_enabled(&serde_json::value::Value) -> bool
 pub fn ratspeak_runtime::rns_config::migrate_ifac_units(&std::path::Path, &str, rns_runtime::config::ifac::IfacSourceUnits, &[u8; 32]) -> core::io::error::Result<bool>
+pub fn ratspeak_runtime::rns_config::network_settings_from_config(&std::path::Path) -> core::option::Option<ratspeak_core::types::NetworkSettings>
 pub fn ratspeak_runtime::rns_config::normalize_rnode_interface_mode(core::option::Option<&str>) -> core::option::Option<&'static str>
 pub fn ratspeak_runtime::rns_config::read_config(&std::path::Path) -> core::option::Option<zeroize::Zeroizing<alloc::string::String>>
 pub fn ratspeak_runtime::rns_config::remove_interface(&std::path::Path, &str) -> bool
@@ -2522,6 +2525,7 @@ pub fn ratspeak_runtime::state::AppState::restore_attachment_staging(&self, rats
 pub fn ratspeak_runtime::state::AppState::retain_unlocked_identity(&self, rns_identity::identity::Identity, &str, u64) -> bool
 pub fn ratspeak_runtime::state::AppState::rnode_activity_handle_for_origin(&self, rns_interface::traits::InterfaceId, ratspeak_runtime::state::RNodeActivityOrigin) -> core::option::Option<rns_runtime::reticulum::ReticulumHandle>
 pub fn ratspeak_runtime::state::AppState::rnode_activity_runtime_context_for_identity(&self, u64) -> core::option::Option<ratspeak_runtime::RNodeActivityRuntimeContext>
+pub fn ratspeak_runtime::state::AppState::seed_network_settings(&self, &std::path::Path) -> bool
 pub fn ratspeak_runtime::state::AppState::set_android_ble_rnode_auto_resume_enabled(&self, bool)
 pub fn ratspeak_runtime::state::AppState::set_announce_ratspeak_usage_enabled(&self, bool)
 pub fn ratspeak_runtime::state::AppState::set_channel_hub(&self, ratspeak_runtime::channel_hub::ChannelHubHandle)
