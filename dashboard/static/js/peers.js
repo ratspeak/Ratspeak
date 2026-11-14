@@ -395,15 +395,7 @@ function renderPeersList(scrollOnly) {
             var hb = b.hops !== null && b.hops !== undefined ? b.hops : 999;
             return ha - hb;
         }
-        if (peersSort === 'last_seen') {
-            // Prefer persisted last_seen; fall back to transient path_age.
-            var lsa = a.last_seen != null ? a.last_seen : -Infinity;
-            var lsb = b.last_seen != null ? b.last_seen : -Infinity;
-            if (lsa !== lsb) return lsb - lsa;
-            var ta = a.path_age != null ? a.path_age : 999999;
-            var tb = b.path_age != null ? b.path_age : 999999;
-            return ta - tb;
-        }
+        if (peersSort === 'last_seen') return PeersCache.compareByLastSeen(a, b);
         return 0;
     });
 

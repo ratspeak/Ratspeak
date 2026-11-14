@@ -65,14 +65,8 @@ function renderDashboardPeersList() {
         return;
     }
 
-    // Reachable first, then stale, then offline; within a group, by name.
-    var SP = { reachable: 0, direct: 0, stale: 1, offline: 2, unreachable: 3, unknown: 4 };
-    peers.sort(function(a, b) {
-        var sa = SP[a.status] !== undefined ? SP[a.status] : 3;
-        var sb = SP[b.status] !== undefined ? SP[b.status] : 3;
-        if (sa !== sb) return sa - sb;
-        return (a.display_name || a.hash || '').localeCompare(b.display_name || b.hash || '');
-    });
+    // Same order as Peers' default: most recently heard first.
+    peers.sort(PeersCache.compareByLastSeen);
 
     var MAX_DISPLAY = 50;
     var html = '';

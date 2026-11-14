@@ -400,6 +400,16 @@ var PeersCache = (function() {
         _notify();
     }
 
+    // Most recently heard first, then the freshest path; Peers and Home share it.
+    function compareByLastSeen(a, b) {
+        var lsa = a.last_seen != null ? a.last_seen : -Infinity;
+        var lsb = b.last_seen != null ? b.last_seen : -Infinity;
+        if (lsa !== lsb) return lsb - lsa;
+        var ta = a.path_age != null ? a.path_age : 999999;
+        var tb = b.path_age != null ? b.path_age : 999999;
+        return ta - tb;
+    }
+
     // Cache rows overlaid with the live path index. `path_table` is capped for
     // render cost; `path_index` stays compact but covers the full route set.
     // Same row shape as connections.js/lxmf.js/health.js expect.
@@ -513,6 +523,7 @@ var PeersCache = (function() {
         hideKnownSpamPeersEnabled: hideKnownSpamPeersEnabled,
         visibilityContextChanged: visibilityContextChanged,
         enriched: enriched,
+        compareByLastSeen: compareByLastSeen,
         isInitialized: isInitialized,
     };
 })();
