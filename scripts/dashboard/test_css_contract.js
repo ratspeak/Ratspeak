@@ -24,6 +24,7 @@ var modules = [
     '09-messaging.css',
     '09-channels.css',
     '10-views.css',
+    '10-network-settings.css',
     '11-games.css',
     '12-animations.css',
     '13-responsive.css'
@@ -108,13 +109,11 @@ assert(settingsFieldRule && /min-height:\s*34px/.test(settingsFieldRule[1]) && /
     'settings fields must grow with scaled text');
 assert(/data-text-scale-tier="xlarge"[\s\S]*?\.channels-layout/.test(sourceByName['13-responsive.css']),
     'the largest text tier must simplify the Channels layout');
-assert(/\.settings-type-presets\s*\{[\s\S]*?repeat\(7,/.test(sourceByName['10-views.css']),
+assert(/\.settings-choices--sizes\s*\{[^}]*repeat\(7,/.test(sourceByName['10-network-settings.css']),
     'text sizing must expose seven deliberate presets (90-150%) instead of a continuous slider');
-assert(/data-scale="90"\][\s\S]*?--type-preview-size:\s*15px/.test(sourceByName['10-views.css']) &&
-    /data-scale="150"\][\s\S]*?--type-preview-size:\s*33px/.test(sourceByName['10-views.css']),
+assert(/data-scale="90"\][^{]*\{[^}]*font-size:\s*14\.4px/.test(sourceByName['10-network-settings.css']) &&
+    /data-scale="150"\][^{]*\{[^}]*font-size:\s*24px/.test(sourceByName['10-network-settings.css']),
     'text-size specimens must make the preset progression visually distinct');
-assert(/data-text-scale-tier="large"\] \.settings-text-scale-row \.settings-row-info,\s*html\[data-text-scale-tier="xlarge"\] \.settings-text-scale-row \.settings-row-info\s*\{[^}]*flex:\s*0 0 auto/s.test(sourceByName['10-views.css']),
-    'the 130% tier must not stretch the text-size introduction away from its presets');
 assert(/\.channel-join-sheet \.channel-private-access\s*\{[^}]*border-top:\s*0;[^}]*border-bottom:\s*0;/s
     .test(sourceByName['09-channels.css']),
     'join-channel details must rely on the preview and footer dividers instead of drawing duplicate rules');
@@ -179,10 +178,10 @@ var safeEdges = responsiveCss.slice(responsiveCss.lastIndexOf('/* Safe-area edge
 var wideEdges = safeEdges.slice(safeEdges.indexOf('@media (min-width: 769px)'));
 var rightEdges = wideEdges.split('border-right: var(--sar) solid transparent;')[0];
 var bottomEdges = wideEdges.split('border-right: var(--sar) solid transparent;')[1].split('border-bottom: var(--sab) solid transparent;')[0];
-['.lxmf-chat,', '.people-split > .ui-detail,', '.games-detail,', '.channel-members-pane,', '.channel-room-pane > .cmp,', '.settings-page {'].forEach(function(selector) {
+['.lxmf-chat,', '.people-split > .ui-detail,', '.games-detail,', '.channel-members-pane,', '.channel-room-pane > .cmp,', '.settings-page > .ui-detail {'].forEach(function(selector) {
     assert(rightEdges.includes(selector), selector + ' must paint under the right inset where it meets the screen edge');
 });
-['.lxmf-sidebar,', '.lxmf-chat,', '.people-split > .ui-pane,', '.people-split > .ui-detail,', '.settings-page {'].forEach(function(selector) {
+['.lxmf-sidebar,', '.lxmf-chat,', '.people-split > .ui-pane,', '.people-split > .ui-detail,', '.settings-page > .ui-pane,', '.settings-page > .ui-detail {'].forEach(function(selector) {
     assert(bottomEdges.includes(selector), selector + ' must paint under the bottom inset');
 });
 assert(/\.shell-sidebar\s*\{\s*padding-bottom:\s*max\(8px, var\(--sab\)\);/.test(safeEdges),
@@ -328,13 +327,11 @@ assert(/data-theme-family', family/.test(themeSource) &&
     'family, preference, and resolved mode must remain independent appearance axes');
 assert(/ratspeak-theme-changed/.test(themeSource),
     'appearance changes must publish one shared frontend event');
-assert(/\.theme-family-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/
-    .test(sourceByName['13-responsive.css']),
-    'mobile theme families must form a compact three-column grid');
-assert(/\.theme-family-card\s*\{[\s\S]*?min-height:\s*72px/.test(sourceByName['13-responsive.css']),
-    'mobile theme cards must remain compact full-card touch targets');
-assert(/\.theme-family-grid\s*\{[\s\S]*?grid-template-columns:\s*repeat\(6,\s*minmax\(0,\s*1fr\)\)/
-    .test(sourceByName['10-views.css']),
-    'wide desktop theme families must form one balanced six-card row');
+assert(/\.settings-choices\s*\{[^}]*grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(140px,\s*1fr\)\)/
+    .test(sourceByName['10-network-settings.css']),
+    'theme families must form a wrapping grid of choice tiles');
+assert(/@media \(max-width: 768px\)[\s\S]*?\.settings-choices\s*\{\s*grid-template-columns:\s*repeat\(2,/
+    .test(sourceByName['10-network-settings.css']),
+    'phone theme families must form a two-column grid');
 
 console.log('CSS contract tests passed');

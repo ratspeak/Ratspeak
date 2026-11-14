@@ -1350,11 +1350,13 @@ fn activity_lxmf_progress_is_typed_and_content_free() {
 fn privacy_announce_usage_setting_is_wired() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains("data-settings-title=\"Privacy\""));
-    assert!(index.contains("Activity identity protection and presence sharing."));
-    assert!(index.contains("Announce Ratspeak usage"));
-    assert!(index.contains("Let others know you support games, calls, and extra features."));
-    assert!(index.contains("id=\"announce-ratspeak-usage-toggle\" checked"));
+    assert!(index.contains("data-settings-title=\"Privacy and blocking\""));
+    assert!(index.contains("Blocked people, spam, and links"));
+    assert!(index.contains("Announce Ratspeak features"));
+    assert!(index.contains("Tells others you can play games and take calls."));
+    assert!(index.contains(
+        "id=\"announce-ratspeak-usage-toggle\" aria-labelledby=\"announce-ratspeak-usage-toggle-label\" aria-describedby=\"announce-ratspeak-usage-toggle-desc\" checked"
+    ));
 
     let settings_js =
         read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
@@ -1404,23 +1406,18 @@ fn android_ble_rnode_auto_resume_is_persisted_adapter_aware_and_single_owned() {
     let general_panel = index
         .split("id=\"panel-settings-general\"")
         .nth(1)
-        .and_then(|tail| tail.split("id=\"panel-settings-channels\"").next())
+        .and_then(|tail| tail.split("id=\"panel-settings-appearance\"").next())
         .expect("General settings panel");
-    let privacy_panel = index
-        .split("id=\"panel-settings-privacy\"")
+    let network_panel = index
+        .split("id=\"panel-settings-network\"")
         .nth(1)
-        .and_then(|tail| tail.split("id=\"panel-settings-network\"").next())
-        .expect("Privacy settings panel");
-    assert!(
-        privacy_panel
-            .contains("id=\"settings-row-android-rnode-auto-resume\" style=\"display:none;\"")
-    );
+        .and_then(|tail| tail.split("id=\"panel-settings-offline-inbox\"").next())
+        .expect("Network settings panel");
+    assert!(network_panel.contains("id=\"settings-row-android-rnode-auto-resume\" hidden"));
     assert!(!general_panel.contains("settings-row-android-rnode-auto-resume"));
-    assert!(privacy_panel.contains("Auto-reconnect radios"));
-    assert!(privacy_panel.contains("Reconnect Bluetooth RNodes automatically."));
-    assert!(
-        settings.contains("androidRnodeAutoResumeRow.style.display = isAndroid() ? '' : 'none'")
-    );
+    assert!(network_panel.contains("Reconnect radios"));
+    assert!(network_panel.contains("Reconnects Bluetooth radios on their own."));
+    assert!(settings.contains("androidRnodeAutoResumeRow.hidden = !isAndroid();"));
     assert!(settings.contains("set_android_ble_rnode_auto_resume"));
     assert!(health.contains("auto_resume_disabled: 'Reconnect paused'"));
 
@@ -1682,7 +1679,9 @@ fn incoming_lxmf_limit_setting_is_normal_default_on_and_backend_authoritative() 
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
     assert!(index.contains("Limit incoming messages to 1 MB"));
-    assert!(index.contains("id=\"lxmf-limit-1mb-toggle\" checked"));
+    assert!(index.contains(
+        "id=\"lxmf-limit-1mb-toggle\" aria-labelledby=\"lxmf-limit-1mb-toggle-label\" aria-describedby=\"lxmf-limit-1mb-toggle-desc\" checked"
+    ));
 
     let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
     assert!(settings.contains("data.lxmf_limit_1mb"));
@@ -1703,27 +1702,25 @@ fn keep_trying_is_default_on_and_one_switch_reaches_every_consumer() {
     let root = repo_root();
     let source = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
     let index = source("dashboard/index.html");
-    let row = index
-        .find("<span class=\"settings-row-label\">Keep trying to send</span>")
-        .expect("the row");
-    assert!(
-        index.contains(
-            "<span class=\"settings-row-desc\">If a message can't be sent, try again for up to 24 hours.</span>"
-        )
-    );
-    assert!(index.contains("id=\"lxmf-keep-trying-toggle\" checked"));
+    let row = index.find(">Keep trying to send</span>").expect("the row");
+    assert!(index.contains(
+        "<span class=\"ui-prop-desc\" id=\"lxmf-keep-trying-toggle-desc\">Retries a failed message for up to 24 hours.</span>"
+    ));
+    assert!(index.contains(
+        "id=\"lxmf-keep-trying-toggle\" aria-labelledby=\"lxmf-keep-trying-toggle-label\" aria-describedby=\"lxmf-keep-trying-toggle-desc\" checked"
+    ));
     let general = index
         .find("id=\"panel-settings-general\"")
         .expect("the General panel");
     let limit = index
-        .find("<span class=\"settings-row-label\">Limit incoming messages to 1 MB</span>")
+        .find(">Limit incoming messages to 1 MB</span>")
         .expect("the 1 MB row");
     assert!(
         general < row && row < limit,
         "in General, above the 1 MB row"
     );
     assert_eq!(
-        index[row..limit].matches("class=\"settings-row\"").count(),
+        index[row..limit].matches("class=\"ui-prop\"").count(),
         1,
         "directly above it"
     );
@@ -1855,7 +1852,9 @@ fn activity_identity_protection_is_default_on_durable_and_event_scoped() {
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("tauri lib");
 
     assert!(index.contains("Protect Activity identities"));
-    assert!(index.contains("id=\"settings-activity-identity-protection-on\" value=\"on\" checked"));
+    assert!(index.contains(
+        "id=\"settings-activity-identity-protection-toggle\" aria-labelledby=\"settings-activity-identity-protection-toggle-label\" aria-describedby=\"settings-activity-identity-protection-toggle-desc\" checked"
+    ));
     assert!(settings.contains("set_activity_identity_protection"));
     assert!(settings.contains("adoptActivityIdentityProtectionFromBackend"));
     assert!(activity.contains("function activityRevealEvent(event)"));
@@ -1886,11 +1885,14 @@ fn text_scale_presets_are_durable_and_backend_validated() {
     assert!(interfaces.contains("(percent.clamp(90, 150) + 5) / 10 * 10"));
     assert!(tauri_lib.contains("set_text_scale"));
     assert!(index.contains("/static/style.css?v=ui-20260924-4"));
-    assert!(views_css.contains(".settings-theme-family-row > .settings-row-info"));
-    assert!(views_css.contains("html[data-text-scale-tier=\"large\"] .settings-theme-family-row"));
-    assert!(views_css.contains("justify-content: flex-start;\n    flex-wrap: nowrap;"));
-    assert!(views_css.contains("html[data-text-scale-tier=\"xlarge\"] .settings-row"));
-    assert!(!views_css.contains("html[data-text-scale-tier=\"xlarge\"] .settings-page-shell"));
+    // Choice tiles stack under their label, so larger text never squeezes them.
+    let settings_css = read_source(root.join("dashboard/static/css/10-network-settings.css"))
+        .expect("settings css");
+    assert!(settings_css.contains(".ui-prop.settings-prop-stack { flex-direction: column;"));
+    assert!(
+        index.contains(r#"<div class="ui-prop settings-prop-stack" id="theme-family-picker">"#)
+    );
+    assert!(!views_css.contains(".settings-theme-family-row"));
 }
 
 #[test]
@@ -1907,7 +1909,7 @@ fn appearance_families_are_durable_validated_and_native_aware() {
     )
     .expect("Android activity");
 
-    assert!(index.contains("id=\"theme-family-picker\""));
+    assert!(index.contains("id=\"theme-family-grid\""));
     assert!(index.contains("id=\"theme-toggle\""));
     for family in [
         "ratspeak",
@@ -1928,7 +1930,7 @@ fn appearance_families_are_durable_validated_and_native_aware() {
     assert!(theme.contains("ratspeak-theme-changed"));
     assert!(theme.contains("'rs-theme-family'"));
     assert!(!settings.contains("label.title = family.name"));
-    assert!(settings.contains("'Use ' + family.name + ' theme'"));
+    assert!(settings.contains("name.textContent = family.name;"));
     assert!(theme.contains("if (value === 'solarized') return 'everforest'"));
     assert!(settings.contains("RS.invoke('set_appearance'"));
     assert!(settings.contains("data.theme_family"));
@@ -4234,8 +4236,8 @@ fn linux_window_decorations_preference_is_wired_end_to_end() {
     assert!(commands.contains("\"window_decorations\": window_decorations"));
     assert!(settings_js.contains("set_window_decorations"));
     assert!(settings_js.contains("initWindowDecorationsToggle"));
-    assert!(index.contains("settings-window-decorations-auto"));
-    assert!(index.contains("settings-window-decorations-off"));
+    assert!(index.contains(r#"id="settings-window-decorations-seg""#));
+    assert!(index.contains("Changes below apply after Ratspeak restarts."));
 }
 
 #[test]
@@ -5610,32 +5612,25 @@ fn channel_hosting_is_an_explicit_durable_settings_capability() {
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lifecycle");
     let tauri_lib = read_source(root.join("src-tauri/src/lib.rs")).expect("src-tauri lib");
 
-    let general_nav = index
-        .find(r#"data-settings-panel="panel-settings-general""#)
-        .expect("General settings navigation");
-    let channels_nav = index
-        .find(r#"data-settings-panel="panel-settings-channels""#)
-        .expect("Channels settings navigation");
-    let identity_nav = index
-        .find(r#"data-settings-panel="panel-settings-identity""#)
-        .expect("Identity settings navigation");
-    assert!(general_nav < channels_nav && channels_nav < identity_nav);
-    assert!(index.contains(r#"id="panel-settings-channels""#));
+    // Channel hosting is one switch in Settings › General.
+    let general_panel = index
+        .split(r#"id="panel-settings-general""#)
+        .nth(1)
+        .and_then(|tail| tail.split(r#"id="panel-settings-appearance""#).next())
+        .expect("General settings panel");
+    assert!(!index.contains(r#"id="panel-settings-channels""#));
     assert!(index.contains(r#"<html lang="en" data-channel-hosting="off">"#));
-    assert!(index.contains(r#"role="radiogroup" aria-label="Channel hosting""#));
-    assert!(index.contains(r#"id="settings-channel-hosting-desc" aria-live="polite""#));
-    assert!(index.contains(
-        r#"type="radio" name="settings-channel-hosting" id="settings-channel-hosting-off" value="off" checked"#
+    assert!(general_panel.contains(r#"id="settings-channel-hosting-desc" aria-live="polite""#));
+    assert!(general_panel.contains(
+        r#"<input type="checkbox" role="switch" id="settings-channel-hosting-toggle" aria-labelledby="settings-channel-hosting-label""#
     ));
-    assert!(index.contains(
-        r#"type="radio" name="settings-channel-hosting" id="settings-channel-hosting-on" value="on""#
-    ));
+    assert!(!general_panel.contains(r#"id="settings-channel-hosting-toggle" aria-labelledby="settings-channel-hosting-label" aria-describedby="settings-channel-hosting-desc" checked"#));
 
     assert!(settings_js.contains("function initChannelHostingToggle()"));
     assert!(settings_js.contains("RS.invoke('set_channel_hosting_enabled'"));
     assert!(settings_js.contains("adoptChannelHostingFromBackend(data.channel_hosting_enabled)"));
     assert!(settings_js.contains("var _settingsChannelHostingRequested = null;"));
-    assert!(settings_js.contains("Stopping your hub and hiding hosting controls…"));
+    assert!(settings_js.contains("Stopping your hub…"));
     assert!(settings_js.contains("document.documentElement.dataset.channelHosting"));
     assert!(settings_js.contains("channelHubRenderHome(channelHubOverview)"));
     let settings_lifecycle = nav_js
@@ -6942,37 +6937,21 @@ fn settings_version_display_uses_package_version_api() {
     assert!(tauri_build.contains("cargo::rustc-env=RATSPEAK_DISPLAY_VERSION"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("index");
-    assert!(index.contains("id=\"settings-version-sidebar\""));
-    assert!(index.contains("id=\"settings-version-system\""));
-    assert!(index.contains("class=\"system-data-tip\""));
-    assert!(
-        index.contains("Click and hold the send button on a message to choose its delivery type.")
-    );
-    assert!(!index.contains("Tap and hold the send button in Messages"));
-    let settings_sidebar = index
-        .split("class=\"settings-sidebar-panel\"")
+    // The version lives in About, beside the app icon; the nav and the Tip box no longer carry it.
+    assert!(!index.contains("id=\"settings-version-sidebar\""));
+    assert!(!index.contains("class=\"system-data-tip\""));
+    let about = index
+        .split("id=\"panel-settings-about\"")
         .nth(1)
-        .and_then(|tail| tail.split("class=\"settings-detail-pane\"").next())
-        .expect("settings sidebar");
-    assert!(settings_sidebar.contains("class=\"system-data-tip\""));
-    let sidebar_version = settings_sidebar
-        .find("id=\"settings-version-sidebar\"")
-        .expect("sidebar version");
-    let sidebar_tip = settings_sidebar
-        .find("class=\"system-data-tip\"")
-        .expect("settings tip");
-    assert!(sidebar_version < sidebar_tip);
-    let system_panel = index
-        .split("id=\"panel-settings-system\"")
-        .nth(1)
-        .and_then(|tail| tail.split("id=\"settings-version-system\"").next())
-        .expect("system panel");
-    assert!(!system_panel.contains("class=\"system-data-tip\""));
+        .expect("About panel");
+    assert!(about.contains("id=\"settings-about-version\""));
+    assert!(about.contains("id=\"settings-update-label\""));
+    assert!(about.contains("id=\"settings-update-btn\""));
 
     let settings_js = read_source(root.join("dashboard/static/js/settings.js")).expect("settings");
     assert!(settings_js.contains("function renderSettingsVersion()"));
     assert!(settings_js.contains("RS.invoke('api_version')"));
-    assert!(settings_js.contains("name + ' v.' + version"));
+    assert!(settings_js.contains("versionEl.textContent = 'Version ' + version;"));
     assert!(settings_js.contains("RATSPEAK_RELEASE_LATEST_URL"));
     assert!(settings_js.contains("https://api.github.com/repos/ratspeak/Ratspeak/releases/latest"));
     assert!(settings_js.contains("function promptRatspeakUpdateCheck"));
@@ -6986,31 +6965,30 @@ fn settings_version_display_uses_package_version_api() {
     assert!(settings_js.contains("fetch(RATSPEAK_RELEASE_LATEST_URL"));
     assert!(settings_js.contains("function _settingsShowUpdateAvailable(release, currentVersion)"));
     assert!(settings_js.contains("title: 'Update available'"));
-    assert!(settings_js.contains("\"You're up to date\""));
+    assert!(settings_js.contains("label.textContent = 'You’re up to date.';"));
+    assert!(settings_js.contains("label.textContent = 'Couldn’t check for updates';"));
+    assert!(settings_js.contains("' is available'"));
+    assert!(settings_js.contains("RS.invoke('set_ui_state', { key: 'update_last_checked'"));
+    assert!(settings_js.contains("'Last checked: ' + full"));
     assert!(settings_js.contains("For privacy, Ratspeak doesn't update itself."));
     assert!(settings_js.contains("RS.markdown.render(body"));
     assert!(!settings_js.contains("data.html_url"));
 
     let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav");
-    assert!(nav_js.contains("id=\"about-modal-version\""));
-    assert!(nav_js.contains("RS.invoke('api_version')"));
+    assert!(
+        !nav_js.contains("about-modal"),
+        "About is a Settings section, not a modal"
+    );
     assert!(!nav_js.contains("v1.0.7"));
 
     let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs");
     assert!(dialogs_js.contains("function rsAlert(opts)"));
 
-    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(views_css.contains(".settings-sidebar-version"));
-    assert!(views_css.contains(".settings-version-system"));
-    assert!(views_css.contains(".settings-update-check-btn"));
+    let settings_css = read_source(root.join("dashboard/static/css/10-network-settings.css"))
+        .expect("settings css");
+    assert!(settings_css.contains(".settings-about-icon"));
     let forms_css = read_source(root.join("dashboard/static/css/06-forms.css")).expect("forms css");
-    assert!(forms_css.contains(".system-data-tip"));
-    assert!(forms_css.contains(".system-data-tip-icon"));
-
-    let responsive_css =
-        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
-    assert!(responsive_css.contains(".settings-version-system"));
-    assert!(responsive_css.contains("text-align: center;"));
+    assert!(!forms_css.contains(".system-data-tip"));
 
     let tauri_conf = read_source(root.join("src-tauri/tauri.conf.json")).expect("tauri conf");
     assert!(
@@ -7502,177 +7480,138 @@ fn settings_information_architecture_groups_one_off_settings() {
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     let settings_js =
         read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
-    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    let responsive_css =
-        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
-
-    assert!(!index.contains(r#"data-settings-panel="panel-settings-blocked""#));
-    assert!(!index.contains(r#"id="panel-settings-blocked""#));
-    assert!(!index.contains(r#"<span class="settings-nav-label">Blocked Users</span>"#));
-    assert!(!index.contains(r#"data-settings-panel="panel-settings-notifications""#));
-    assert!(!index.contains(r#"id="panel-settings-notifications""#));
-    assert!(!index.contains(r#"id="settings-nav-notifications""#));
-
-    let general_panel = index
-        .split(r#"id="panel-settings-general""#)
-        .nth(1)
-        .and_then(|tail| tail.split(r#"id="panel-settings-identity""#).next())
-        .expect("general settings panel");
-    assert!(general_panel.contains(r#"<span class="settings-row-label">Notifications</span>"#));
-    assert!(general_panel.contains(r#"id="settings-row-notifications""#));
-    assert!(general_panel.contains(r#"id="desktop-notifications-toggle""#));
-    assert!(general_panel.contains(r#"id="settings-notification-action""#));
-    assert!(general_panel.contains("sound and haptics follow device settings"));
-    assert!(general_panel.contains(r#"id="settings-row-keep-connected""#));
-    assert!(general_panel.contains(r#"<span class="settings-row-label">Block List</span>"#));
-    assert!(general_panel.contains(
-        r#"class="selector-badge selector-badge-no-caret" id="settings-blocked-count">Manage</button>"#
-    ));
-
-    let identity_panel = index
-        .split(r#"id="panel-settings-identity""#)
-        .nth(1)
-        .and_then(|tail| tail.split(r#"id="panel-settings-privacy""#).next())
-        .expect("identity settings panel");
-    assert!(identity_panel.contains(r#"<span class="settings-row-label">Status</span>"#));
-    assert!(identity_panel.contains(r#"id="settings-identity-status-desc""#));
-    assert!(identity_panel.contains(r#"id="settings-status-action-btn">Set</button>"#));
-    assert!(!identity_panel.contains(r#"id="settings-clear-status-btn""#));
-    assert!(identity_panel.contains(
-        r#"class="selector-badge selector-badge-no-caret" id="settings-manage-identities-btn">Manage</button>"#
-    ));
-    assert!(identity_panel.contains(
-        r#"class="selector-badge selector-badge-no-caret" id="settings-backup-identity-btn">Export</button>"#
-    ));
-    assert!(identity_panel.contains(r#"<span class="settings-row-label">Backup Identity</span>"#));
-    assert!(
-        !identity_panel.contains(r#"<span class="settings-row-label">View Recovery Phrase</span>"#)
-    );
-    assert!(identity_panel.contains(
-        r#"class="selector-badge selector-badge-no-caret" id="settings-view-recovery-phrase-btn">View</button>"#
-    ));
-    assert!(identity_panel.contains(r#"<span class="settings-row-label">Auto-Lock</span>"#));
-    assert!(identity_panel.contains(r#"id="hw-lock-row""#));
-
-    let network_panel = index
-        .split(r#"id="panel-settings-network""#)
-        .nth(1)
-        .and_then(|tail| tail.split(r#"id="panel-settings-offline-inbox""#).next())
-        .expect("network settings panel");
-    assert!(network_panel.contains(r#"<span class="settings-row-label">Transport Mode</span>"#));
-    assert!(network_panel.contains(r#"<span class="settings-row-label">Auto-Announce</span>"#));
-    assert!(!network_panel.contains("Auto-Lock"));
-
-    // Discovery is a group of the Network panel, after its rows, with dependent rows hidden until it is on.
-    let discovery = network_panel
-        .split(r#"id="discovery-settings-body""#)
-        .nth(1)
-        .expect("discovery settings group");
-    assert!(
-        network_panel.find(r#"id="auto-announce-select""#)
-            < network_panel.find(r#"id="discovery-settings-body""#)
-    );
-    assert!(discovery.contains(
-        r#"<h3 class="settings-panel-section-title" id="discovery-settings-heading">Discovery</h3>"#
-    ));
-    // One caption above the three restart groups covers them all.
-    assert!(discovery.contains("Changes below restart the network for a moment."));
-    assert!(discovery.contains(
-        r#"<span class="settings-row-label" id="ns-discover-label">Discover Connections</span>"#
-    ));
-    for label in ["Join Automatically", "Accept From", "Trusted Publishers"] {
-        assert!(
-            discovery.contains(&format!(
-                r#"<span class="settings-row-label">{label}</span>"#
-            )),
-            "{label}"
-        );
-    }
-    assert!(discovery.contains(
-        r#"class="selector-badge settings-state-value" id="ns-autojoin-select" type="button">OFF</button>"#
-    ));
-    // Another app's Reticulum service owns discovery; the group is hidden with the connection sections.
-    assert!(views_css.contains(".network-external .discovery-settings { display: none; }"));
-    assert!(discovery.contains(r#"id="ns-autojoin-row" hidden"#));
-    // On/off rows: a labelled switch with its help text.
-    let toggle_row = |id: &str, label: &str, desc: &str, checked: bool| {
-        let row = network_panel
-            .split(&format!(r#"<div class="settings-row" id="ns-{id}-row""#))
+    let panel = |key: &str| {
+        index
+            .split(&format!(r#"id="panel-settings-{key}""#))
             .nth(1)
-            .and_then(|tail| tail.split(r#"<div class="settings-row""#).next())
-            .unwrap_or_else(|| panic!("{id}"));
-        assert!(
-            row.contains(&format!(
-                r#"<span class="settings-row-label" id="ns-{id}-label">{label}</span>"#
-            )),
-            "{id}"
-        );
-        assert!(
-            row.contains(&format!(
-                r#"<span class="settings-row-desc" id="ns-{id}-desc">{desc}</span>"#
-            )),
-            "{id}"
-        );
-        let state = if checked { " checked" } else { "" };
-        assert!(
-            row.contains(&format!(
-                r#"<input type="checkbox" id="ns-{id}-toggle"{state} aria-labelledby="ns-{id}-label" aria-describedby="ns-{id}-desc">"#
-            )),
-            "{id}"
-        );
+            .and_then(|tail| {
+                tail.split(r#"<div class="settings-panel" id="panel-settings-"#)
+                    .next()
+            })
+            .unwrap_or_else(|| panic!("{key} settings panel"))
     };
-    // Unknown implementations sit directly under Join Automatically.
-    assert!(
-        discovery
-            .split(r#"id="ns-autojoin-row""#)
-            .nth(1)
-            .and_then(|tail| tail.split(r#"<div class="settings-row" "#).nth(1))
-            .is_some_and(|next| next.starts_with(r#"id="ns-unknown-impl-row" hidden>"#))
-    );
-    toggle_row(
-        "unknown-impl",
-        "Auto-connect to unknown implementations",
-        "When off, joins only Python Reticulum 1.5.7+ and rsReticulum 1.5.0+ servers.",
-        false,
-    );
-    // Network Stamps and Links follow Discovery as groups of their own, hidden with it.
-    let mut at = network_panel
-        .find(r#"id="discovery-settings-body""#)
-        .unwrap();
-    for (group, heading) in [
-        ("stamp-settings-body", "Network Stamps"),
-        ("link-settings-body", "Links"),
+
+    // Nine sections, in order.
+    let mut at = 0;
+    for (key, title) in [
+        ("general", "General"),
+        ("appearance", "Appearance"),
+        ("notifications", "Notifications"),
+        ("privacy", "Privacy and blocking"),
+        ("network", "Network"),
+        ("offline-inbox", "Offline Inbox"),
+        ("storage", "Storage"),
+        ("developer", "Developer"),
+        ("about", "About"),
     ] {
-        let open = format!(r#"<section class="discovery-settings" id="{group}""#);
-        let found = network_panel.find(&open).expect(group);
-        assert!(at < found, "{group}");
+        let nav =
+            format!(r#"data-settings-panel="panel-settings-{key}" data-settings-title="{title}""#);
+        let found = index.find(&nav).unwrap_or_else(|| panic!("{key}"));
+        assert!(at < found, "{key} keeps its place");
         at = found;
-        let section = network_panel[found..].split("</section>").next().unwrap();
-        assert!(section.contains(&format!(">{heading}</h3>")), "{group}");
-        assert!(!section.contains("settings-panel-caption"), "{group}");
     }
-    toggle_row(
-        "stamp",
-        "Stamp my announces and path requests",
-        "Lets nodes that require stamps pass yours on, at some battery cost.",
-        false,
+    for gone in ["channels", "identity", "system", "blocked"] {
+        assert!(
+            !index.contains(&format!(r#"id="panel-settings-{gone}""#)),
+            "{gone}"
+        );
+    }
+    assert!(!index.contains("system-data-tip"), "the Tip box is gone");
+
+    // General: Identity opens its page; messages; Channel hosting; this device or the window.
+    let general = panel("general");
+    for id in [
+        "settings-open-identity",
+        "lxmf-keep-trying-toggle",
+        "lxmf-limit-1mb-toggle",
+        "settings-paper-messages-toggle",
+        "settings-channel-hosting-toggle",
+        "haptics-enabled-toggle",
+        "settings-close-button-seg",
+        "settings-window-decorations-seg",
+    ] {
+        assert!(general.contains(&format!(r#"id="{id}""#)), "{id}");
+    }
+    // Appearance moved out of General.
+    let appearance = panel("appearance");
+    for id in [
+        "theme-family-grid",
+        "theme-toggle",
+        "settings-text-scale-tiles",
+    ] {
+        assert!(appearance.contains(&format!(r#"id="{id}""#)), "{id}");
+    }
+    // Notifications: alerts, previews, and Android's battery access.
+    let notifications = panel("notifications");
+    for id in [
+        "settings-row-notifications",
+        "settings-notification-action",
+        "notification-preview-select",
+        "settings-row-keep-connected",
+    ] {
+        assert!(notifications.contains(&format!(r#"id="{id}""#)), "{id}");
+    }
+    // Blocking moved here from General.
+    let privacy = panel("privacy");
+    for id in [
+        "settings-blocked-count",
+        "settings-hide-known-spam-peers-toggle",
+        "settings-activity-identity-protection-toggle",
+        "announce-ratspeak-usage-toggle",
+        "settings-trusted-links-btn",
+    ] {
+        assert!(privacy.contains(&format!(r#"id="{id}""#)), "{id}");
+    }
+    // Network: announces and relaying, then one restart notice over Discovery, stamps, and links.
+    let network = panel("network");
+    let relay = network.find(r#"id="transport-mode-seg""#).expect("relay");
+    let notice = network
+        .find("Changes below restart the network for a moment.")
+        .expect("restart notice");
+    let discovery = network
+        .find(r#"id="discovery-settings-body""#)
+        .expect("discovery");
+    let stamps = network.find(r#"id="stamp-settings-body""#).expect("stamps");
+    let links = network.find(r#"id="link-settings-body""#).expect("links");
+    assert!(relay < notice && notice < discovery && discovery < stamps && stamps < links);
+    assert_eq!(
+        network.matches(r#"class="ui-notice "#).count(),
+        1,
+        "one restart notice"
     );
-    toggle_row(
-        "require-stamps",
-        "Require stamps from others",
-        "Nodes on older software don't stamp, so they won't be heard.",
-        false,
+    assert!(network.contains(r#"<span class="ui-prop-label">Relay for other devices</span>"#));
+    assert!(network.contains(r#"<span class="ui-prop-label">Auto-announce</span>"#));
+    assert!(network.contains(r#"id="ns-autojoin-row" hidden"#));
+    assert!(network.contains(r#"id="ns-unknown-impl-row" hidden"#));
+    assert!(network.contains(r#"id="ns-accept-row" hidden"#));
+    assert!(network.contains(r#"id="ns-trusted-btn" hidden"#));
+    assert!(
+        network.contains("When off, joins only Reticulum 1.5.7+ and rsReticulum 1.5.0+ servers.")
     );
-    toggle_row(
-        "mtu",
-        "Link MTU discovery",
-        "Uses larger packets on fast links so transfers finish sooner.",
-        true,
+    assert!(
+        !network.contains("network-ownership-settings"),
+        "ownership moved to Developer"
     );
-    assert!(discovery.contains(r#"id="ns-accept-row" hidden"#));
-    assert!(discovery.contains(r#"id="ns-trusted-row" hidden"#));
-    assert!(!index.contains(r#"id="panel-settings-discovery""#));
-    assert!(views_css.contains(".settings-row[hidden] { display: none; }"));
+    // The rest.
+    assert!(panel("offline-inbox").contains(r#"id="settings-propagation-status""#));
+    let storage = panel("storage");
+    for id in [
+        "settings-clear-paths",
+        "settings-clear-announces",
+        "settings-clear-messages",
+        "settings-clear-contacts",
+        "settings-reset-database",
+        "settings-factory-reset",
+    ] {
+        assert!(storage.contains(&format!(r#"id="{id}""#)), "{id}");
+    }
+    let developer = panel("developer");
+    assert!(developer.contains(r#"id="settings-developer-mode-toggle""#));
+    assert!(developer.contains(">Reticulum on this device</h3>"));
+    let about = panel("about");
+    assert!(about.contains(r#"src="/static/assets/app-icon.png""#));
+    assert!(about.contains(r#"data-external-url="https://github.com/ratspeak""#));
+    assert!(!index.contains("reticulum.network"));
 
     assert!(
         settings_js
@@ -7681,9 +7620,6 @@ fn settings_information_architecture_groups_one_off_settings() {
     assert!(settings_js.contains("window.RatspeakAndroid.batteryOptimizationStatus()"));
     assert!(settings_js.contains("requestBatteryOptimizationExemption()"));
     assert!(settings_js.contains("rs-notification-permission-changed"));
-    assert!(!settings_js.contains("document.getElementById('panel-settings-notifications')"));
-    assert!(settings_js.contains("function syncSettingsIdentityStatus()"));
-    assert!(settings_js.contains("actionBtn.textContent = status ? 'Edit' : 'Set';"));
     assert!(settings_js.contains("openIdentityStatusEditor()"));
     assert!(settings_js.contains("clearStatusBtn.textContent = 'Clear status';"));
     assert!(
@@ -7696,10 +7632,6 @@ fn settings_information_architecture_groups_one_off_settings() {
         settings_js
             .contains("setActiveProfileStatus(savedStatus === null ? nextStatus : savedStatus);")
     );
-
-    assert!(views_css.contains(".settings-row-actions"));
-    assert!(views_css.contains(".selector-badge-no-caret::after"));
-    assert!(responsive_css.contains(".settings-row-actions"));
 }
 
 #[test]
@@ -7713,7 +7645,12 @@ fn mobile_settings_use_section_drilldown_instead_of_stacked_panels() {
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
 
-    assert!(index.contains("class=\"settings-nav-desc\""));
+    // Desktop: kit sidebar items with a one-line description; phone: grouped chevron rows.
+    assert!(index.contains(r#"class="settings-nav ui-desk-only" id="settings-section-nav""#));
+    assert!(index.contains(r#"class="settings-index ui-phone-only""#));
+    assert!(index.contains(
+        "<span class=\"lbl\">General<small>Sending, channels, and this window</small></span>"
+    ));
     assert!(index.contains("id=\"settings-mobile-back-btn\""));
     assert!(index.contains("id=\"settings-mobile-detail-title\""));
     assert!(!index.contains("settings-mobile-detail-eyebrow"));
@@ -7742,53 +7679,46 @@ fn mobile_settings_use_section_drilldown_instead_of_stacked_panels() {
     assert!(nav_js.contains("RS.viewStack.depth() > 1) return true;"));
     assert!(nav_js.contains("showSettingsMobileSectionIndex();"));
     assert!(nav_js.contains("initSettingsDetailSwipeBack();"));
-    assert!(views_css.contains(".settings-nav-desc,"));
-    assert!(!responsive_css.contains(".settings-mobile-detail-eyebrow"));
-    assert!(
-        responsive_css
-            .contains(".settings-page:not(.settings-mobile-detail-active) .settings-detail-pane")
-    );
-    assert!(
-        responsive_css.contains(".settings-detail-mode .settings-panel.settings-panel-selected")
-    );
-    assert!(responsive_css.contains(".settings-row-label {\n        font-size: var(--text-base);"));
+    // The detail opens over the sections on a phone, through the kit split.
+    assert!(settings_js.contains("detail.classList.toggle('is-open', open);"));
+    assert!(settings_js.contains("pane.classList.toggle('is-covered', open);"));
+    let _ = (views_css, responsive_css);
 }
 
 #[test]
-fn settings_system_panel_has_developer_mode_and_reset_group() {
+fn settings_developer_and_storage_panels() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     let settings_js =
         read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
-    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    let responsive_css =
-        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
 
+    assert!(index.contains(
+        r#"data-settings-panel="panel-settings-developer" data-settings-title="Developer""#
+    ));
     assert!(
         index.contains(
-            r#"data-settings-panel="panel-settings-system" data-settings-title="System""#
+            r#"data-settings-panel="panel-settings-storage" data-settings-title="Storage""#
         )
     );
-    assert!(index.contains(r#"<span class="settings-nav-label">System</span>"#));
-    assert!(!index.contains(r#"<span class="settings-nav-label">System Data</span>"#));
-    assert!(!index.contains(r#"<div class="panel-header">System</div>"#));
-    assert!(!index.contains(r#"<div class="settings-panel-section-title">System</div>"#));
-    assert!(index.contains(r#"<span class="settings-row-label">Developer Mode</span>"#));
-    assert!(index.contains(r#"role="radiogroup" aria-label="Developer Mode""#));
-    assert!(index.contains(r#"type="radio" name="settings-developer-mode" id="settings-developer-mode-off" value="off" checked"#));
     assert!(index.contains(
-        r#"type="radio" name="settings-developer-mode" id="settings-developer-mode-on" value="on""#
+        r#"<input type="checkbox" role="switch" id="settings-developer-mode-toggle" aria-labelledby="settings-developer-mode-toggle-label" aria-describedby="settings-developer-mode-toggle-desc">"#
     ));
-    assert!(index.contains(r#"<div class="settings-panel-section-title">Reset</div>"#));
-
-    let developer_mode = index
-        .find(r#"<span class="settings-row-label">Developer Mode</span>"#)
-        .unwrap();
-    let reset_title = index
-        .find(r#"<div class="settings-panel-section-title">Reset</div>"#)
-        .unwrap();
-    let cache_section = index.find(r#"id="system-section-caches""#).unwrap();
-    assert!(developer_mode < reset_title && reset_title < cache_section);
+    // Storage: caches, then deletes as error-tone rows, then the reset on its own.
+    let storage = index
+        .split(r#"id="panel-settings-storage""#)
+        .nth(1)
+        .and_then(|tail| tail.split(r#"id="panel-settings-developer""#).next())
+        .expect("storage panel");
+    let caches = storage.find(">Caches</h3>").unwrap();
+    let delete = storage.find(">Delete data</h3>").unwrap();
+    let reset = storage.find(">Start over</h3>").unwrap();
+    assert!(caches < delete && delete < reset);
+    assert_eq!(storage.matches("ui-prop ui-prop--danger").count(), 4);
+    assert!(storage.contains("Deleted data can’t be brought back."));
+    assert!(
+        !index.contains("system-subsection"),
+        "no collapsible reset cards"
+    );
 
     assert!(settings_js.contains("function initDeveloperModeToggle()"));
     assert!(settings_js.contains("initDeveloperModeToggle();"));
@@ -7797,56 +7727,40 @@ fn settings_system_panel_has_developer_mode_and_reset_group() {
     assert!(settings_js.contains("function setDeveloperModeEnabled(enabled)"));
     assert!(settings_js.contains("window.ratspeakDeveloperModeEnabled = function()"));
     assert!(settings_js.contains("ratspeak-developer-mode-changed"));
-    assert!(settings_js.contains("if (on.checked) setDeveloperModeEnabled(true);"));
-    assert!(settings_js.contains("setDeveloperModeEnabled(false);"));
-    assert!(!settings_js.contains("function rejectDeveloperModeEnable()"));
+    assert!(settings_js.contains("setDeveloperModeEnabled(!!toggle.checked);"));
     assert!(!settings_js.contains("Developer mode is coming soon."));
-    assert!(!settings_js.contains("title: 'Enable Developer Mode?'"));
-    assert!(!settings_js.contains("confirmText: 'Enable'"));
-    assert!(!settings_js.contains("_settingsDeveloperModeEnabled = !!ok;"));
     // Durable store is SQLite (see developer_mode_persists_in_sqlite_not_only_localstorage).
     assert!(settings_js.contains("RS.invoke('set_developer_mode'"));
-
-    assert!(views_css.contains(".settings-panel-section-title"));
-    assert!(views_css.contains(".settings-radio-group"));
-    assert!(views_css.contains(".settings-radio-option input:checked + span"));
-    assert!(
-        responsive_css
-            .contains(".settings-radio-option span { min-height: 40px; min-width: 58px; }")
-    );
+    // Deletes confirm in a dialog; the reset confirms twice.
+    assert!(settings_js.contains("function deleteWithConfirm("));
+    assert!(settings_js.contains("title: 'Reset Ratspeak?'"));
+    assert!(settings_js.contains("title: 'Delete everything?'"));
 }
 
 #[test]
-fn settings_machine_states_share_uppercase_outfit_typography() {
+fn settings_values_read_in_sentence_case() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    let tokens = read_source(root.join("dashboard/static/css/00-tokens.css")).expect("type tokens");
-    let views = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
     let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
     let propagation =
         read_source(root.join("dashboard/static/js/propagation.js")).expect("propagation js");
-    let modals = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
+    let network_settings = read_source(root.join("dashboard/static/js/network_settings.js"))
+        .expect("network settings");
 
-    assert!(tokens.contains("--type-state-size:     var(--text-xs);"));
-    assert!(tokens.contains("--type-state-weight:   var(--type-weight-semibold);"));
-    assert!(tokens.contains("--type-state-tracking: 0.04em;"));
-    assert!(views.contains(".settings-radio-option span {"));
-    assert!(views.contains("font-family: var(--font-sans);"));
-    assert!(views.contains("font-size: var(--type-state-size);"));
-    assert!(views.contains("text-transform: uppercase;"));
-    assert!(views.contains(".settings-state-value {"));
-    assert!(views.contains(".relay-mode-btn {"));
-
+    // Switches for on and off, segmented controls for three-way choices, and values in sentence case.
+    assert!(!index.contains("settings-radio-group"));
+    assert!(!index.contains("selector-badge settings-state-value"));
+    assert!(index.contains(
+        r#"<button type="button" role="radio" aria-checked="true" data-value="auto">Automatic</button>"#
+    ));
+    assert!(settings.contains("0: 'Never',"));
+    assert!(settings.contains("1800: '30 minutes',"));
+    assert!(!settings.contains("label: 'OFF'"));
+    assert!(propagation.contains("? ('Cost ' + cost) : 'Off'"));
     assert!(
-        index.contains(
-            r#"class="selector-badge settings-state-value" id="transport-mode-select">OFF"#
-        )
+        network_settings
+            .contains("{ label: 'Off', value: 0, hint: 'Only connect to servers you add.' },")
     );
-    assert!(index.contains(r#"id="hw-lock-timeout-select">OFF</button>"#));
-    assert!(settings.contains("if (!secs || secs <= 0) return 'OFF';"));
-    assert!(settings.contains("{ label: 'OFF', value: '0'"));
-    assert!(propagation.contains("? ('Cost ' + cost) : 'OFF'"));
-    assert!(modals.contains("{ label: 'Always on', value: '0' }"));
 }
 
 #[test]
@@ -7887,11 +7801,6 @@ fn mobile_primary_lists_share_readable_row_scale() {
     assert!(index.contains("class=\"lxmf-messages ui-scroll\" id=\"lxmf-messages\""));
     assert!(index.contains("<div class=\"ui-pane-scroll\" id=\"msg-pane-scroll\">"));
     assert!(responsive_css.contains(".conn-group-header {\n        font-size: var(--text-sm);"));
-    assert!(responsive_css.contains(".system-action-label,"));
-    assert!(responsive_css.contains(".system-subsection-title,"));
-    assert!(responsive_css.contains(".relay-card-header,"));
-    assert!(responsive_css.contains(".relay-card-details,"));
-    assert!(responsive_css.contains(".propagation-section-desc,"));
     assert!(
         !responsive_css.contains("#bottom-sheet .bottom-sheet-item"),
         "More is a kit menu sheet"
@@ -8084,9 +7993,6 @@ fn identity_avatars_are_circle_cropped_everywhere() {
     assert!(identity_js.contains("RS.kit.avatar(address, 'row')"));
     assert!(identity_js.contains("RS.kit.avatar(ident.lxmf_hash || ident.hash, 64)"));
     assert!(views_css.contains(
-        ".settings-identity-avatar {\n    flex-shrink: 0;\n    border-radius: var(--radius-full);"
-    ));
-    assert!(views_css.contains(
         ".identity-summary-avatar {\n    flex-shrink: 0;\n    border-radius: var(--radius-full);"
     ));
     let _ = responsive_css;
@@ -8151,7 +8057,7 @@ fn cache_clear_buttons_clear_reticulum_db_and_frontend_caches() {
     assert!(events.contains("announceCache = [];"));
     assert!(events.contains("RS.invoke('api_get_peers_snapshot')"));
     assert!(peers_cache.contains("function replace(rows)"));
-    assert!(settings.contains("Path table cleared"));
+    assert!(settings.contains("'api_clear_paths', 'Routes cleared'"));
     assert!(!settings.contains("Hub node restarting"));
 }
 
@@ -8912,33 +8818,23 @@ fn identity_management_is_first_class_tab() {
     assert!(!index.contains("Identity Management"));
     assert!(!index.contains("id=\"identity-export-btn\""));
     assert!(!index.contains("identity-panel-actions"));
-    assert!(index.contains(r#"data-settings-panel="panel-settings-identity""#));
-    assert!(index.contains(r#"id="panel-settings-identity""#));
-    assert!(index.contains(r#"id="settings-active-identity-desc""#));
-    assert!(index.contains(r#"id="settings-identity-status-desc""#));
-    assert!(index.contains(r#"id="settings-status-action-btn""#));
-    assert!(!index.contains(r#"id="settings-clear-status-btn""#));
-    assert!(index.contains(r#"id="settings-backup-identity-btn""#));
-    assert!(index.contains(r#"id="settings-view-recovery-phrase-btn""#));
-    let general_nav = index
-        .find(r#"data-settings-panel="panel-settings-general""#)
-        .unwrap();
-    let identity_nav = index
-        .find(r#"data-settings-panel="panel-settings-identity""#)
-        .unwrap();
-    let privacy_nav = index
-        .find(r#"data-settings-panel="panel-settings-privacy""#)
-        .unwrap();
-    assert!(general_nav < identity_nav && identity_nav < privacy_nav);
+    // Identity's rows live on the Identity page; Settings keeps one row that opens it.
+    assert!(!index.contains(r#"data-settings-panel="panel-settings-identity""#));
+    assert!(!index.contains(r#"id="panel-settings-identity""#));
+    assert!(!index.contains(r#"id="settings-backup-identity-btn""#));
+    assert!(!index.contains(r#"id="settings-view-recovery-phrase-btn""#));
+    let general_panel = index
+        .split(r#"id="panel-settings-general""#)
+        .nth(1)
+        .and_then(|tail| tail.split(r#"id="panel-settings-appearance""#).next())
+        .expect("General settings panel");
+    assert!(general_panel.contains(r#"id="settings-open-identity""#));
 
     let settings_js =
         read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
     assert!(settings_js.contains("function settingsCurrentActiveIdentity()"));
     assert!(settings_js.contains("function syncSettingsIdentityActions()"));
-    assert!(settings_js.contains("settings-backup-identity-btn"));
-    assert!(settings_js.contains("settings-view-recovery-phrase-btn"));
-    assert!(settings_js.contains("viewActiveRecoveryPhrase();"));
-    assert!(settings_js.contains("settings-status-action-btn"));
+    assert!(settings_js.contains("openIdentityPage()"));
     assert!(settings_js.contains("rs-dialog-clear-status"));
     assert!(settings_js.contains("submitStatus('')"));
     assert!(
@@ -9645,8 +9541,11 @@ fn transport_mode_defaults_and_auto_policy_are_explicit() {
     let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
         .expect("interfaces source");
 
-    assert!(index.contains(r#"id="transport-mode-select">OFF</button>"#));
+    assert!(index.contains(r#"<div class="ui-seg" role="radiogroup" id="transport-mode-seg" aria-label="Relay for other devices"><button type="button" role="radio" aria-checked="false" data-value="auto">Automatic</button>"#));
+    assert!(index.contains(r#"aria-checked="true" data-value="off">Off</button>"#));
+    assert!(index.contains("Automatic relays on fast connections, never over radio."));
     assert!(ui_shared_js.contains("Enables only on suitable non-LoRa interfaces."));
+    assert!(ui_shared_js.contains("RS.ui.setTransportMode = function(elOrId, mode)"));
     assert!(ui_shared_js.contains("RS.ui.applyTransportModePayload"));
     assert!(ui_shared_js.contains("RS.ui.openTransportModeChoice"));
     assert!(ui_shared_js.contains("RS.ui.bindTransportChoice"));
@@ -9654,7 +9553,7 @@ fn transport_mode_defaults_and_auto_policy_are_explicit() {
     assert!(ui_shared_js.contains("badge.textContent = previousText || 'OFF';"));
     assert!(settings_js.contains("function applyTransportModePayload"));
     assert!(settings_js.contains("RS.ui.applyTransportModePayload"));
-    assert!(settings_js.contains("RS.ui.bindTransportChoice"));
+    assert!(settings_js.contains("RS.ui.setTransportMode(seg, mode)"));
     assert!(
         settings_js.contains(
             "if (ifaces && ifaces.transport) applyTransportModePayload(ifaces.transport);"
@@ -10041,11 +9940,10 @@ fn peer_spammer_names_are_ui_suppressed_not_user_blocked() {
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
     assert!(index.contains("Hide known spam peers"));
-    assert!(
-        index
-            .contains("Hide repeated bridge-style IDs unless you have saved or messaged the peer.")
-    );
-    assert!(index.contains("id=\"settings-hide-known-spam-peers-on\" value=\"on\" checked"));
+    assert!(index.contains("Hides bridge-style IDs you haven’t saved or messaged."));
+    assert!(index.contains(
+        "id=\"settings-hide-known-spam-peers-toggle\" aria-labelledby=\"settings-hide-known-spam-peers-toggle-label\" aria-describedby=\"settings-hide-known-spam-peers-toggle-desc\" checked"
+    ));
 
     let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
     assert!(
@@ -10220,7 +10118,8 @@ fn offline_inbox_auto_settings_use_ratspeak_node_preference() {
         "the card is the only Offline Inbox status"
     );
     assert!(propagation_js.contains("if (mode === 'manual')"));
-    assert!(propagation_js.contains(r#"<span class="inline-hint-sm">Propagation address</span>"#));
+    assert!(propagation_js.contains("<span class=\"ui-prop-label\">Inbox address</span>"));
+    assert!(propagation_js.contains("RS.kit.hash.copy(hash, { noun: 'Inbox address' })"));
     assert!(!propagation_js.contains("Connecting..."));
     assert!(!settings_html.contains("Relay Node"));
     assert!(settings_html.contains("Offline Inbox"));
@@ -10624,8 +10523,10 @@ fn public_channels_are_adult_gated_reportable_and_link_to_public_policies() {
     }
     assert!(channels.contains("RS.legal.open(documentId)"));
     assert!(channels.contains("RS.legal.open('support')"));
-    assert!(nav.contains("data-about-document"));
-    assert!(nav.contains("RS.legal.open(documentId)"));
+    let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings");
+    assert!(settings.contains("data-about-document"));
+    assert!(settings.contains("RS.legal.open(btn.getAttribute('data-about-document'))"));
+    let _ = &nav;
     assert!(index.contains("/static/js/legal_documents.js"));
     assert!(channels.contains("api_blocked_contacts"));
     assert!(channels.contains("block_contact"));
@@ -10931,25 +10832,17 @@ fn active_identity_read_errors_are_not_taken_for_a_missing_identity() {
 #[test]
 fn auto_lock_copy_counts_from_the_unlock() {
     let root = repo_root();
-    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
-    let row = index
-        .split(r#"id="hw-lock-row""#)
+    let identity = read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    let row = identity
+        .split("_identityProp('Auto-lock',")
         .nth(1)
-        .and_then(|tail| tail.split(r#"id="hw-lock-timeout-select""#).next())
+        .and_then(|tail| tail.split('\n').next())
         .expect("auto-lock row");
-    let choice = settings
-        .split("function _initHwLockSetting(")
-        .nth(1)
-        .and_then(|tail| tail.split("\n}\n").next())
-        .expect("auto-lock choice");
-    for copy in [row, choice] {
-        assert!(copy.contains("since you unlocked it"), "{copy}");
-        assert!(
-            !copy.contains("inactivity") && !copy.contains("idle"),
-            "{copy}"
-        );
-    }
+    assert!(row.contains("this long after you unlock it"), "{row}");
+    assert!(
+        !row.contains("inactivity") && !row.contains("idle"),
+        "{row}"
+    );
 }
 
 /// Auto-lock runs on the suspend-counting clock and has a watcher of its own,
@@ -11299,12 +11192,12 @@ fn discovery_settings_use_the_network_settings_commands() {
     }
     assert!(ns.contains("title: 'Restart the network?'"));
     assert!(ns.contains("toast('Network restarted'"));
-    assert!(ns.contains("value.textContent = 'Restarting…';"));
+    assert!(ns.contains("setBadge(opts.value, 'Restarting…')"));
     assert!(index.contains(r#"id="conn-section-discovered" hidden"#));
     assert!(ns.contains("Published servers and radios appear here"));
     // Restart consequences and the current choice.
     assert!(ns.contains("connected devices will disconnect for a moment."));
-    assert!(ns.contains("c.selected = parseInt(c.value, 10) === s.autojoin"));
+    assert!(ns.contains("checked: c.value === currentValue"));
     // Unknown implementations show only while joining; each switch saves one field.
     assert!(ns.contains("show('ns-unknown-impl-row', s.discover && s.autojoin > 0);"));
     for (toggle, state) in [

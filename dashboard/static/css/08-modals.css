@@ -997,30 +997,6 @@
     margin-left: var(--space-2);
 }
 
-.settings-section {
-    border-bottom: 1px solid var(--border);
-    padding-bottom: var(--space-6);
-}
-.settings-section:last-child {
-    border-bottom: none;
-    padding-bottom: 0;
-}
-
-.settings-section-title {
-    font-size: var(--type-section-label-size);
-    font-weight: var(--type-section-label-weight);
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: var(--type-section-label-tracking);
-    margin-bottom: var(--space-4);
-}
-
-.settings-shortcuts {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-}
-
 .shortcut-row {
     font-size: var(--text-sm);
     color: var(--text-secondary);
@@ -1408,7 +1384,6 @@
     to   { opacity: 0; }
 }
 
-
 .rs-confirm-card {
     border-radius: var(--radius-xl);
 }
@@ -1424,120 +1399,6 @@
     z-index: var(--z-modal);
     backdrop-filter: blur(4px);
     -webkit-backdrop-filter: blur(4px);
-}
-.block-list-modal {
-    background: var(--surface-dialog);
-    border: 1px solid var(--border-surface);
-    border-radius: var(--radius-xl);
-    width: 420px;
-    max-width: 90vw;
-    max-height: 70vh;
-    display: flex;
-    flex-direction: column;
-    overflow: hidden;
-    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
-}
-.block-list-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: var(--space-5) var(--space-6);
-    border-bottom: 1px solid var(--divider);
-}
-.block-list-title {
-    font-weight: var(--type-weight-semibold);
-    font-size: var(--type-row-title-size);
-    color: var(--text-primary);
-}
-.block-list-close {
-    background: none;
-    border: none;
-    color: var(--text-muted);
-    font-size: var(--text-xl);
-    cursor: pointer;
-    padding: 4px 8px;
-    border-radius: var(--radius-md);
-    line-height: 1;
-}
-.block-list-close:hover { color: var(--text-primary); background: var(--surface-row-hover); }
-.block-list-search-wrap {
-    padding: var(--space-3) var(--space-5);
-    border-bottom: 1px solid var(--divider);
-}
-.block-list-search {
-    width: 100%;
-    padding: var(--space-2) var(--space-3);
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius-md);
-    background: var(--bg-primary);
-    color: var(--text-primary);
-    font-size: var(--type-control-size);
-    outline: none;
-}
-.block-list-search:focus { border-color: var(--accent); }
-.block-list-container {
-    flex: 1;
-    overflow-y: auto;
-    padding: var(--space-2) 0;
-}
-.block-list-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    padding: var(--space-3) var(--space-5);
-    cursor: pointer;
-    transition: background 0.15s;
-}
-.block-list-row:hover { background: var(--surface-row-hover); }
-.block-list-row-avatar { flex-shrink: 0; }
-.block-list-row-info {
-    display: flex;
-    flex-direction: column;
-    min-width: 0;
-}
-.block-list-row-name {
-    font-size: var(--type-row-title-size);
-    font-weight: var(--type-row-title-weight);
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.block-list-row-meta {
-    font-size: var(--type-id-size);
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-}
-.block-list-shield-wrap {
-    display: inline-flex;
-    align-items: center;
-    margin-left: var(--space-2);
-    color: var(--accent);
-    vertical-align: middle;
-}
-.block-list-shield {
-    display: block;
-}
-/* "pending" pill on rows whose network-blackhole escalation is queued
-   awaiting the contact's first announce (Stage 6 promotion fires later). */
-.block-list-pending {
-    display: inline-block;
-    margin-left: var(--space-2);
-    padding: 1px var(--space-2);
-    font-size: var(--text-2xs);
-    font-weight: 600;
-    text-transform: lowercase;
-    border-radius: var(--radius-pill);
-    background: var(--bg-tertiary);
-    color: var(--text-muted);
-    border: 1px solid var(--border);
-    vertical-align: middle;
-}
-.block-list-empty {
-    padding: var(--space-8) var(--space-6);
-    text-align: center;
-    color: var(--text-muted);
-    font-size: var(--type-empty-hint-size);
 }
 
 .about-drag-handle {

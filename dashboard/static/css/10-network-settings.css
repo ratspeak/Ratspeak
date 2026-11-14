@@ -1,0 +1,112 @@
+/* Network, Activity, and Settings: screen layout on the ui-* components. */
+
+/* ---------------------------------------------------------------- Settings */
+#view-settings { padding: 0; overflow: hidden; }
+.settings-page { height: 100%; }
+.settings-nav-pane { flex: 0 0 300px; width: 300px; }
+.settings-nav-pane .ui-pane-scroll { padding: 0 8px 16px; }
+.settings-nav { display: flex; flex-direction: column; gap: 2px; }
+.settings-index { display: flex; flex-direction: column; gap: 16px; padding: 0 8px; }
+.settings-detail-pane { display: block; }
+.settings-detail-page { width: 100%; max-width: 720px; margin: 0 auto; padding: 24px 32px 48px; box-sizing: border-box; }
+.settings-head { margin: 8px 0 24px; }
+.settings-head .ui-detail-title { margin: 0 0 4px; }
+.settings-head p { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.45; }
+.settings-head.is-bare { display: none; }
+.settings-panel { display: none; }
+.settings-panel.settings-panel-selected { display: block; }
+.settings-panel > .ui-group + .ui-group,
+.settings-panel > .ui-group + .ui-notice,
+.settings-panel > .ui-notice + .ui-group,
+.settings-panel > .ui-group-foot + .ui-group,
+.settings-panel > div > .ui-notice + .ui-group,
+#settings-propagation-status > .ui-group + .ui-notice,
+#settings-propagation-status > .ui-notice + .ui-section-title { margin-top: 16px; }
+.settings-panel > .ui-notice,
+.settings-panel .settings-restart-group > .ui-section-title,
+.settings-panel > div > .ui-section-title,
+.settings-panel > section > .ui-section-title { margin-top: 32px; }
+.settings-panel > .ui-notice:first-child,
+.settings-panel > .ui-section-title:first-child { margin-top: 0; }
+.settings-panel > div > .ui-notice { margin-bottom: 8px; }
+#settings-propagation-status > .ui-section-title,
+#settings-propagation-status > .settings-sec { margin-top: 32px; }
+/* A property row whose control sits below its label (choice tiles, fields). */
+.ui-prop.settings-prop-stack { flex-direction: column; align-items: stretch; gap: 12px; padding-top: 12px; padding-bottom: 16px; }
+.ui-prop.settings-prop-stack > .ui-prop-text { flex: 0 0 auto; }
+/* A section title with one trailing action. */
+.settings-sec { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 0 8px 4px; }
+.settings-sec .ui-section-title { margin: 0; }
+.settings-fields { display: flex; flex-direction: column; gap: 12px; }
+.settings-field-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.settings-field-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.settings-field-actions--end { justify-content: flex-end; margin-top: 12px; }
+.settings-field-actions[hidden], .settings-head p[hidden] { display: none; }
+.settings-textarea { height: auto; min-height: 72px; padding-top: 8px; padding-bottom: 8px; resize: vertical; }
+.settings-inline-field { display: flex; gap: 8px; align-items: center; }
+.settings-inline-field .ui-input { flex: 1; min-width: 0; }
+.network-owner-fields > .ui-prop::before { content: ''; position: absolute; top: 0; left: 16px; right: 0; height: 1px; background: var(--border-row); }
+/* Offline Inbox: the inbox in use. */
+.settings-inbox-status { display: flex; flex-direction: column; gap: 4px; font-size: var(--text-xs); color: var(--text-secondary); line-height: 1.4; }
+.settings-inbox-status .ui-status { font-size: var(--text-xs); }
+.settings-inbox-sub { font-size: var(--text-xs); color: var(--text-secondary); }
+.settings-inbox-note { font-weight: 400; color: var(--text-muted); }
+.settings-inbox-notice .ui-notice-body p { margin: 0; }
+.settings-inbox-notice .ui-notice-body p + p { margin-top: 4px; }
+.ui-prop-text > .ui-hash-copy { align-self: flex-start; max-width: 100%; }
+/* Blocked people. */
+.block-list-row { display: flex; align-items: center; gap: 12px; min-height: 56px; padding: 8px 16px; box-sizing: border-box; }
+.block-list-row + .block-list-row { border-top: 1px solid var(--border-row); }
+.block-list-row-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.block-list-row-text b { font-size: var(--text-base); font-weight: 500; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.block-list-row-text small { font-size: var(--text-xs); color: var(--text-muted); }
+/* About. */
+.settings-about { display: flex; align-items: center; gap: 16px; margin: 8px 0 24px; }
+.settings-about-icon { display: block; flex: 0 0 auto; width: 64px; height: 64px; }
+.settings-about .ui-detail-title { margin: 0; }
+.settings-about p { margin: 2px 0 0; font-size: var(--text-sm); color: var(--text-secondary); }
+#settings-update-row .ui-btn .ui-spin { margin-right: 2px; }
+
+/* Choice tile (theme family, text size): the selection fill and a check, nothing else. */
+.settings-choices { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+.settings-choices--sizes { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.settings-choice { position: relative; display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-width: 0; padding: 8px; box-sizing: border-box; border: 0; border-radius: var(--radius-control); background: var(--fill-control); color: var(--text-secondary); font: inherit; text-align: left; cursor: pointer; transition: background-color .15s ease; }
+.settings-choice:hover:not([aria-checked="true"]):not(:disabled) { background: var(--control-press); color: var(--text-primary); }
+.settings-choice[aria-checked="true"] { background: var(--selection-bg); color: var(--text-primary); }
+.settings-choice:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.settings-choice:disabled { cursor: default; }
+.settings-choice-name { display: flex; align-items: center; gap: 6px; min-height: 20px; padding: 0 2px; font-size: var(--text-sm); font-weight: 500; line-height: 1.2; white-space: nowrap; }
+.settings-choice-name .ui-ico { width: 14px; height: 14px; margin-left: auto; color: var(--accent-ink); }
+.settings-swatch { display: grid; grid-template-columns: 1fr 1fr; height: 44px; overflow: hidden; border-radius: 6px; box-shadow: inset 0 0 0 1px var(--border-surface); }
+.settings-swatch > span { position: relative; background: var(--swatch-bg, transparent); }
+.settings-swatch > span::before { content: ''; position: absolute; left: 8px; right: 8px; top: 8px; height: 12px; border-radius: 3px; background: var(--swatch-panel, transparent); }
+.settings-swatch > span::after { content: ''; position: absolute; left: 8px; bottom: 8px; width: 16px; height: 8px; border-radius: 2px; background: var(--swatch-accent, transparent); }
+.settings-size { align-items: center; gap: 4px; padding: 8px 4px; text-align: center; }
+.settings-size-aa { display: block; height: 32px; line-height: 32px; font-weight: 600; color: var(--text-primary); }
+.settings-size[data-scale="90"] .settings-size-aa { font-size: 14.4px; }
+.settings-size[data-scale="100"] .settings-size-aa { font-size: 16px; }
+.settings-size[data-scale="110"] .settings-size-aa { font-size: 17.6px; }
+.settings-size[data-scale="120"] .settings-size-aa { font-size: 19.2px; }
+.settings-size[data-scale="130"] .settings-size-aa { font-size: 20.8px; }
+.settings-size[data-scale="140"] .settings-size-aa { font-size: 22.4px; }
+.settings-size[data-scale="150"] .settings-size-aa { font-size: 24px; }
+.settings-size-pct { font-size: var(--text-2xs); font-variant-numeric: tabular-nums; }
+
+@media (max-width: 768px) {
+    .settings-nav-pane { flex: 1 1 auto; width: 100%; }
+    .settings-nav-pane .ui-pane-scroll { padding: 0 0 24px; }
+    .settings-index { padding: 0 16px; }
+    .settings-detail-page { max-width: none; padding: 0 16px 32px; }
+    .settings-head { margin: 0 0 16px; }
+    .settings-head .ui-detail-title { display: none; }
+    .settings-mobile-head { background: var(--surface-panel); }
+    /* A segmented control drops under its label. */
+    .ui-prop.settings-prop-wrap { flex-wrap: wrap; }
+    .ui-prop.settings-prop-wrap > .ui-seg { flex: 1 1 100%; }
+    .settings-choices { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .settings-choices--sizes { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .settings-choice { min-height: 44px; }
+    .settings-field-pair { grid-template-columns: 1fr; }
+}
+/* Another app's Reticulum owns discovery. */
+.network-external #discovery-settings-body { display: none; }

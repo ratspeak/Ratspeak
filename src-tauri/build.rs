@@ -55,6 +55,7 @@ fn build_dashboard_css() {
         "09-messaging.css",
         "09-channels.css",
         "10-views.css",
+        "10-network-settings.css",
         "11-games.css",
         "12-animations.css",
         "13-responsive.css",

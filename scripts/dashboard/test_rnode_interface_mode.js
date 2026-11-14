@@ -51,7 +51,7 @@ assert(/<option value="roaming" selected>Roaming \(recommended\)<\/option>/.test
     'the no-script form default and visible recommendation must both be Roaming');
 assert(html.includes('aria-describedby="rnode-interface-mode-hint"'),
     'the advanced mode control must expose its radio-specific guidance');
-assert(html.includes('Show advanced interface controls and developer settings when available.'),
+assert(html.includes('Shows advanced connection settings.'),
     'Developer Mode settings copy must explain that it reveals interface controls');
 
 var nameStart = modalSource.indexOf('function _rnodeDefaultInterfaceName');

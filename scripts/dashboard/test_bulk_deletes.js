@@ -29,12 +29,12 @@ function settle() {
     return new Promise(function(resolve) { setImmediate(resolve); });
 }
 
-// Both confirmations of each clear say that blocks survive it.
+// The confirmation of each clear that touches contacts says that blocks survive it.
 [
-    'Delete ALL contacts? Blocked users stay blocked. This cannot be undone.',
-    'Clear ALL messages and contacts? Blocked users stay blocked. This cannot be undone.',
+    'Your saved contacts are deleted. Blocked people stay blocked. This can’t be undone.',
+    'Every conversation and saved contact is deleted. Blocked people stay blocked. This can’t be undone.',
 ].forEach(function(copy) {
-    assert.equal(settings.split("'" + copy + "'").length - 1, 2, copy);
+    assert.equal(settings.split("'" + copy + "'").length - 1, 1, copy);
 });
 
 // An identity switch and a bulk delete drop the same conversation caches.
@@ -155,7 +155,7 @@ var danger = {
 };
 vm.createContext(danger);
 vm.runInContext(
-    ['_showBulkDeleteFailure', 'clearWithConfirm', 'confirmDangerAction'].map(function(name) {
+    ['_showBulkDeleteFailure', 'deleteWithConfirm'].map(function(name) {
         return functionSource(settings, name);
     }).join('\n'),
     danger,
@@ -171,21 +171,14 @@ vm.runInContext(
     assert.deepEqual(peers, ['clear'], 'a cleared announce cache still drops its peers');
 
     var cases = [
-        ['clearWithConfirm', 'api_clear_messages', 'Done'],
-        ['clearWithConfirm', 'api_clear_contacts', 'Done'],
-        ['clearWithConfirm', 'api_reset_database', 'Done'],
-        ['confirmDangerAction', 'clear-messages', 'All messages deleted'],
-        ['confirmDangerAction', 'clear-contacts', 'All contacts deleted'],
-        ['confirmDangerAction', 'clear-all-data', 'All messages and contacts cleared'],
+        ['deleteWithConfirm', 'api_clear_messages', 'Done'],
+        ['deleteWithConfirm', 'api_clear_contacts', 'Done'],
+        ['deleteWithConfirm', 'api_reset_database', 'Done'],
     ];
     async function run(entry) {
         replies = [];
         toasts = [];
-        if (entry[0] === 'clearWithConfirm') {
-            danger.clearWithConfirm(entry[1], 'Sure?', 'Done', 'Failed');
-        } else {
-            danger.confirmDangerAction(entry[1]);
-        }
+        danger.deleteWithConfirm(entry[1], 'Delete?', 'Sure?', 'Delete', 'Done', 'Failed');
         await settle();
         await settle();
         assert.equal(replies.length, 1, entry[1] + ': ' + replies.join(', '));

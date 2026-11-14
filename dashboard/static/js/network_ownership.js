@@ -53,8 +53,18 @@
         }
         editorEnabled = enabled;
     }
+    // Run by: a segmented control (Ratspeak or another app).
+    function mode() {
+        var on = el('mode').querySelector('[aria-checked="true"]');
+        return on ? on.getAttribute('data-value') : 'managed';
+    }
+    function setMode(value) {
+        el('mode').querySelectorAll('[role="radio"]').forEach(function(btn) {
+            btn.setAttribute('aria-checked', btn.getAttribute('data-value') === value ? 'true' : 'false');
+        });
+    }
     function fields() {
-        var existing = el('mode').value === 'existing';
+        var existing = mode() === 'existing';
         el('managed').hidden = existing;
         el('existing').hidden = !existing;
         var unix = el('carrier').value === 'unix';
@@ -83,7 +93,7 @@
         if (data.error) return data.error;
         if (includeWarnings && data.warnings && data.warnings.length) return data.warnings.map(function(warning) { return warning.interface + ': ' + warning.message; }).join('\n');
         var states = { ready: 'Ready', reconnecting: 'Waiting for the shared instance; reconnecting automatically',
-            authentication_rejected: 'The shared instance rejected the RPC key. Update it in Settings → Network.',
+            authentication_rejected: 'The other app rejected the RPC key. Update it in Settings › Developer.',
             control_unavailable: 'The shared control service is unavailable. No local interfaces have been started.',
             stopped: 'Stopped', unavailable: 'Network unavailable', legacy_client: 'Using a legacy configured shared instance' };
         return (data.mode === 'existing' ? 'Existing local instance · ' : 'Managed by Ratspeak · ') + (states[data.status] || data.status || 'Checking');
@@ -100,14 +110,14 @@
         var remote = el('interfaces');
         remote.hidden = !external;
         if (!external) remote.textContent = '';
-        var transport = document.getElementById('transport-mode-select');
+        var transport = document.getElementById('transport-mode-seg');
         if (transport) {
-            transport.disabled = external;
-            transport.title = external ? 'Transport is managed by the existing instance' : '';
+            transport.querySelectorAll('[role="radio"]').forEach(function(btn) { btn.disabled = external; });
+            transport.title = external ? 'Relaying is managed by the other app' : '';
         }
         if (!dirty || reset) {
             dirty = false;
-            el('mode').value = current.mode || 'managed';
+            setMode(current.mode || 'managed');
             el('share').checked = !!current.share;
             applyEndpoint(current.mode === 'existing' ? current.endpoint : null);
             el('key').placeholder = current.credential_saved ? 'Saved securely — leave blank to keep' : 'Key from the shared instance';
@@ -134,7 +144,7 @@
         }).catch(function(error) { if (requestEpoch === epoch && requestSnapshot === snapshotEpoch) status(error.message || 'Cannot read network ownership'); });
     }
     function request() {
-        var existing = el('mode').value === 'existing';
+        var existing = mode() === 'existing';
         var endpoint = el('carrier').value === 'unix'
             ? { carrier: 'unix', instance_name: el('name').value.trim() }
             : { carrier: 'tcp', packet_port: Number(el('packet').value), control_port: Number(el('control').value) };
@@ -233,7 +243,12 @@
             status('');
             fields();
         });
-        el('mode').addEventListener('change', function() { dirty = true; invalidateSecrets(); status(''); fields(); });
+        el('mode').addEventListener('click', function(event) {
+            var btn = event.target.closest && event.target.closest('[role="radio"]');
+            if (!btn || btn.disabled || btn.getAttribute('aria-checked') === 'true') return;
+            setMode(btn.getAttribute('data-value'));
+            dirty = true; invalidateSecrets(); status(''); fields();
+        });
         el('carrier').addEventListener('change', fields);
         el('test').addEventListener('click', test);
         el('apply').addEventListener('click', apply);

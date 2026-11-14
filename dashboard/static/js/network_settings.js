@@ -68,6 +68,7 @@
         });
     };
 
+    // While a change restarts the network, its switch spins and its line says so.
     function setBusy(opts, busy) {
         NS.busy = busy;
         var row = opts.row ? $(opts.row) : null;
@@ -75,26 +76,40 @@
             var group = $(id);
             if (group) group.classList.toggle('is-restarting', busy);
         });
-        if (row) row.classList.toggle('is-committing', busy);
+        if (row) {
+            row.classList.toggle('is-committing', busy);
+            var track = row.querySelector('.ui-switch');
+            var input = row.querySelector('.ui-switch input');
+            if (track) track.classList.toggle('is-busy', busy);
+            if (input) input.disabled = busy;
+            var desc = row.querySelector('.ui-prop-desc');
+            if (desc && busy) {
+                desc.setAttribute('data-rest', desc.textContent);
+                desc.innerHTML = '<span class="ui-status"><span class="ui-spin ui-spin--ring" aria-hidden="true"></span>Restarting the network…</span>';
+            } else if (desc && desc.hasAttribute('data-rest')) {
+                desc.textContent = desc.getAttribute('data-rest');
+                desc.removeAttribute('data-rest');
+            }
+        }
         var value = opts.value ? $(opts.value) : null;
-        if (value && busy) {
-            value.textContent = 'Restarting…';
-            value.classList.remove('settings-state-value');
-            value.classList.add('is-pending-value');
-        }
-        if (!busy) {
-            if (value) value.classList.remove('is-pending-value');
-            render();
-        }
+        if (value && busy) setBadge(opts.value, 'Restarting…');
+        if (!busy) render();
     }
 
     // -------------------------------------------------------------- settings
 
-    function setBadge(id, text, muted) {
+    function setBadge(id, text) {
         var el = $(id);
         if (!el) return;
-        el.textContent = text;
-        el.classList.toggle('settings-state-value', !!muted);
+        var v = el.querySelector('.v');
+        if (v) {
+            v.textContent = text;
+            var label = el.getAttribute('data-label') || (el.getAttribute('aria-label') || '').split(':')[0];
+            el.setAttribute('data-label', label);
+            el.setAttribute('aria-label', label + ': ' + text);
+        } else {
+            el.textContent = text;
+        }
     }
     function show(id, visible) {
         var el = $(id);
@@ -113,27 +128,15 @@
         setToggle('ns-unknown-impl-toggle', s.autoconnect_unknown_implementations);
         show('ns-unknown-impl-row', s.discover && s.autojoin > 0);
         show('ns-accept-row', s.discover);
-        show('ns-trusted-row', s.discover && s.trusted_only);
-        setBadge('ns-autojoin-select', s.autojoin ? plural(s.autojoin, 'server', 'servers') : 'OFF', !s.autojoin);
-        setBadge('ns-accept-select', s.trusted_only ? 'Trusted publishers' : 'Anyone', false);
+        show('ns-trusted-btn', s.discover && s.trusted_only);
+        setBadge('ns-autojoin-select', s.autojoin ? plural(s.autojoin, 'server', 'servers') : 'Off');
+        setBadge('ns-accept-select', s.trusted_only ? 'Trusted publishers' : 'Anyone');
         var trusted = s.trusted_publishers.length;
-        setBadge('ns-trusted-btn', (trusted ? plural(trusted, 'publisher', 'publishers') : 'None') + ' ›', false);
+        setBadge('ns-trusted-value', trusted ? String(trusted) : 'None');
         setToggle('ns-stamp-toggle', s.stamp_outgoing);
         setToggle('ns-require-stamps-toggle', s.require_stamps);
         setToggle('ns-mtu-toggle', !s.link_mtu_discovery_off);
-        GROUPS.forEach(markLastRow);
         renderDiscovered();
-    }
-
-    // Rows show and hide with their parents; only the last visible one drops its rule.
-    function markLastRow(bodyId) {
-        var body = $(bodyId);
-        if (!body) return;
-        var rows = Array.prototype.filter.call(body.querySelectorAll('.settings-row'), function(row) {
-            row.classList.remove('is-last-visible');
-            return !row.hidden;
-        });
-        if (rows.length) rows[rows.length - 1].classList.add('is-last-visible');
     }
 
     function save(patch, where) {
@@ -168,6 +171,23 @@
         el.addEventListener('click', open);
     }
 
+    // An inline select's menu: a trailing check on the current value.
+    function pick(id, title, choices, currentValue, onPick) {
+        var el = $(id);
+        if (!el || NS.busy || !RS.kit || typeof RS.kit.menu !== 'function') return;
+        RS.kit.menu(el, {
+            title: title,
+            items: choices.map(function(c) {
+                return {
+                    label: c.label,
+                    hint: c.hint,
+                    checked: c.value === currentValue,
+                    onSelect: function() { onPick(c.value); }
+                };
+            })
+        });
+    }
+
     // An on/off row: its switch's state becomes one field.
     function bindToggle(id, row, patch) {
         var el = $(id);
@@ -186,35 +206,23 @@
         bindToggle('ns-require-stamps-toggle', 'ns-require-stamps-row', function(on) { return { require_stamps: on }; });
         bindToggle('ns-mtu-toggle', 'ns-mtu-row', function(on) { return { link_mtu_discovery_off: !on }; });
         bindBadge('ns-autojoin-select', function() {
-            if (typeof rsChoice !== 'function') return;
             var s = current();
-            rsChoice({
-                title: 'Join Automatically',
-                message: 'Discovered Backbone servers to keep connected. Their operators can see your IP address.',
-                choices: [
-                    { label: 'OFF', value: '0', hint: 'Only connect to servers you add.' },
-                    { label: '1 server', value: '1' },
-                    { label: '3 servers', value: '3' },
-                    { label: '5 servers', value: '5' },
-                ].map(function(c) { c.selected = parseInt(c.value, 10) === s.autojoin; return c; }),
-            }).then(function(value) {
-                if (value === null || value === undefined) return;
-                var n = parseInt(value, 10) || 0;
+            pick('ns-autojoin-select', 'Join automatically', [
+                { label: 'Off', value: 0, hint: 'Only connect to servers you add.' },
+                { label: '1 server', value: 1 },
+                { label: '3 servers', value: 3 },
+                { label: '5 servers', value: 5 },
+            ], s.autojoin, function(n) {
                 if (n === s.autojoin) return;
                 save({ autojoin: n }, { row: 'ns-autojoin-row', value: 'ns-autojoin-select' });
             });
         });
         bindBadge('ns-accept-select', function() {
-            if (typeof rsChoice !== 'function') return;
             var s = current();
-            rsChoice({
-                title: 'Accept From',
-                choices: [
-                    { label: 'Anyone', value: 'anyone', hint: 'List connections any publisher shares.', selected: !s.trusted_only },
-                    { label: 'Trusted publishers', value: 'trusted', hint: 'List only connections from publishers you add.', selected: !!s.trusted_only },
-                ],
-            }).then(function(value) {
-                if (!value) return;
+            pick('ns-accept-select', 'Accept from', [
+                { label: 'Anyone', value: 'anyone', hint: 'List servers any publisher shares.' },
+                { label: 'Trusted publishers', value: 'trusted', hint: 'List only servers from publishers you add.' },
+            ], s.trusted_only ? 'trusted' : 'anyone', function(value) {
                 var trusted = value === 'trusted';
                 if (trusted === s.trusted_only) return;
                 save({ trusted_only: trusted }, { row: 'ns-accept-row', value: 'ns-accept-select' });
@@ -226,14 +234,14 @@
     function openTrustedPublishers() {
         var s = current();
         NS.openHashList({
-            title: 'Trusted Publishers',
-            message: 'Only connections these publishers share are listed and joined. Saving restarts the network for a moment.',
+            title: 'Trusted publishers',
+            message: 'Only servers these publishers share are listed and joined. Saving restarts the network for a moment.',
             items: s.trusted_publishers,
             emptyText: 'Add a publisher from a discovered connection, or paste its address.',
             placeholder: 'Paste an address',
             noun: 'A publisher address',
             onSave: function(items) {
-                return save({ trusted_publishers: items }, { row: 'ns-trusted-row', value: 'ns-trusted-btn' });
+                return save({ trusted_publishers: items }, { row: 'ns-trusted-btn', value: 'ns-trusted-value' });
             },
         });
     }
@@ -607,7 +615,7 @@
     function trust(e) {
         var s = current();
         var list = s.trusted_publishers.concat([e.publisher]);
-        save({ trusted_publishers: list }, { row: 'ns-trusted-row', value: 'ns-trusted-btn' })
+        save({ trusted_publishers: list }, { row: 'ns-trusted-btn', value: 'ns-trusted-value' })
             .then(function(ok) {
                 if (ok && !s.trusted_only) toast('Publisher trusted. It counts once Accept From is Trusted publishers.', 'toast-info', 5000);
             });

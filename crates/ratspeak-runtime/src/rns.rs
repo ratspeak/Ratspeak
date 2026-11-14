@@ -92,7 +92,7 @@ impl RnsManager {
                 .await
         {
             handle.shutdown_and_wait().await;
-            return Err(format!("Shared-instance control unavailable ({error}). Configure the existing instance and its RPC key in Settings → Network, or choose Managed by Ratspeak to use your TCP interfaces.").into());
+            return Err(format!("Shared-instance control unavailable ({error}). Configure the other app and its RPC key in Settings › Developer › Reticulum on this device, or set Run by to Ratspeak to use your TCP interfaces.").into());
         }
         let startup_rnode_runtimes = handle.startup_rnode_runtimes();
 

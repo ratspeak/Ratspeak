@@ -89,22 +89,6 @@ html[data-native-mobile] .shell-sidebar [data-view="dashboard"] { display: none;
     display: block;
 }
 
-.settings-btn {
-    background: transparent;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-md);
-    padding: var(--space-1) var(--space-4);
-    font-size: var(--text-base);
-    color: var(--text-muted);
-    cursor: pointer;
-    transition: all var(--transition-base);
-    line-height: 1;
-}
-.settings-btn:hover {
-    border-color: var(--border-light);
-    color: var(--text-primary);
-}
-
 .conn-card:focus-within,
 .interface-card:focus-within {
     border-color: var(--focus-ring);

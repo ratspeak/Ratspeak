@@ -14,7 +14,6 @@ const js = path.join(__dirname, '..', '..', 'dashboard', 'static', 'js');
 const read = name => fs.readFileSync(path.join(js, name), 'utf8');
 const events = read('tauri_events.js');
 const identity = read('identity.js');
-const settings = read('settings.js');
 const constants = read('constants.js');
 
 function block(source, opening) {
@@ -59,18 +58,6 @@ async function boot(stage) {
     ].join('\n'), context, { filename: 'tauri_events.js' });
     await settle();
     return calls;
-}
-
-async function lockRowShown(identities) {
-    const row = { style: { display: 'none' } };
-    const context = {
-        document: { getElementById: id => (id === 'hw-lock-row' ? row : null) },
-        RS: { invoke: () => Promise.resolve(identities) }
-    };
-    vm.runInNewContext(block(settings, 'function _maybeRevealHwLockRow(') + '\n_maybeRevealHwLockRow();',
-        context, { filename: 'settings.js' });
-    await settle();
-    return row.style.display === '';
 }
 
 async function toastsFor(code) {
@@ -122,9 +109,6 @@ async function toastsFor(code) {
     assert.deepEqual(await toastsFor('locked'), [], 'the PIN sheet answers a locked identity');
     assert.equal((await toastsFor('conflict')).length, 1);
 
-    assert.equal(await lockRowShown([{ passcode_protected: true }]), true, 'a passcode identity can auto-lock');
-    assert.equal(await lockRowShown([{ is_hardware: true }]), true);
-    assert.equal(await lockRowShown([{}]), false, 'nothing to lock without a PIN');
 
     console.log('Locked identity tests passed');
 })().catch(error => {

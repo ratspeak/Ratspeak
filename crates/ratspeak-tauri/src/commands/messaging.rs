@@ -574,7 +574,7 @@ pub(crate) fn validate_delivery_preference(
             && !propagation_node_configured(state)
         {
             return Err(AppError::conflict(
-                "No Offline Inbox node configured. Set one in Settings > Network first.",
+                "No Offline Inbox is set. Choose one in Settings › Offline Inbox first.",
             ));
         }
     }
@@ -627,7 +627,7 @@ fn inbox_send_refusal(
     match readiness {
         RelayReadiness::Ready if recipient_known => None,
         RelayReadiness::Unavailable => {
-            Some("No Offline Inbox node is configured. Check Settings > Network.")
+            Some("No Offline Inbox is set. Check Settings › Offline Inbox.")
         }
         _ if waits => None,
         RelayReadiness::Ready => Some(
@@ -3420,7 +3420,7 @@ mod tests {
         for (recipient_known, waits) in [(true, true), (false, true), (true, false)] {
             assert_eq!(
                 inbox_send_refusal(Unavailable, recipient_known, waits),
-                Some("No Offline Inbox node is configured. Check Settings > Network.")
+                Some("No Offline Inbox is set. Check Settings › Offline Inbox.")
             );
         }
     }

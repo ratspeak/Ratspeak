@@ -15,8 +15,8 @@ const source = fs.readFileSync(
 
 // The row sits with the notification toggle and follows it.
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'dashboard', 'index.html'), 'utf8');
-assert.match(html, /<div class="settings-row" id="settings-row-notification-preview" style="display:none;">/);
-assert.match(html, /<button class="selector-badge" id="notification-preview-select" type="button">Name and message<\/button>/);
+assert.match(html, /<div class="ui-prop" id="settings-row-notification-preview" hidden>/);
+assert.match(html, /<button type="button" class="ui-select ui-select--inline" id="notification-preview-select" aria-haspopup="menu" aria-expanded="false" aria-label="Previews"><span class="v">Name and message<\/span>/);
 assert.ok(html.indexOf('id="settings-row-notifications"') < html.indexOf('id="settings-row-notification-preview"'));
 assert.match(source, /_preview\.show\(data\.preview\);/);
 assert.match(source, /_preview\.visible\(_notifPreferenceEnabled\);/);
@@ -43,16 +43,25 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 
 function load({ choice, reply }) {
     const seen = { invoked: [], toasts: [], choices: [] };
+    const value = { textContent: '' };
     const badge = {
-        textContent: '', attributes: {}, click: null,
-        setAttribute(name, value) { this.attributes[name] = value; },
-        getAttribute(name) { return this.attributes[name]; },
+        attributes: { 'aria-label': 'Previews' }, click: null,
+        get textContent() { return value.textContent; },
+        querySelector(selector) { return selector === '.v' ? value : null; },
+        setAttribute(name, v) { this.attributes[name] = v; },
+        getAttribute(name) { return name in this.attributes ? this.attributes[name] : null; },
         addEventListener(name, fn) { if (name === 'click') this.click = fn; }
     };
-    const row = { style: { display: 'none' } };
+    const row = { hidden: true };
     const context = {
-        rsChoice(opts) { seen.choices.push(opts); return Promise.resolve(choice); },
         RS: {
+            kit: {
+                menu(trigger, opts) {
+                    seen.choices.push(opts);
+                    const pick = opts.items.find(item => labelValue[item.label] === choice);
+                    if (pick) pick.onSelect();
+                }
+            },
             invoke(name, args) {
                 seen.invoked.push([name, JSON.parse(JSON.stringify(args))]);
                 return reply;
@@ -61,7 +70,9 @@ function load({ choice, reply }) {
         showToast(...args) { seen.toasts.push(args); },
         toastErrorCopy: (error, fallback) => fallback
     };
-    vm.runInNewContext(labels() + '\n' + functionSource('_initNotificationPreview') +
+    const labelValue = { 'Name and message': 'name_and_message', 'Name only': 'name_only', 'Neither': 'neither' };
+    vm.runInNewContext(labels() + '\n' + functionSource('_settingsSetSelectValue') + '\n' + functionSource('_settingsOpenSelect') +
+        '\n' + functionSource('_initNotificationPreview') +
         '\nvar controls = _initNotificationPreview(row, badge);', Object.assign(context, { row, badge }));
     return { controls: context.controls, badge, row, seen };
 }
@@ -73,16 +84,17 @@ function load({ choice, reply }) {
     h.controls.show('neither');
     assert.equal(h.badge.textContent, 'Neither');
     h.controls.visible(true);
-    assert.equal(h.row.style.display, '');
+    assert.equal(h.row.hidden, false);
     h.controls.visible(false);
-    assert.equal(h.row.style.display, 'none', 'no previews to choose with alerts off');
+    assert.equal(h.row.hidden, true, 'no previews to choose with alerts off');
 
     h.controls.show('name_and_message');
     h.badge.click();
     await settle();
     assert.deepEqual(h.seen.invoked, [['set_notification_preview', { preview: 'name_only' }]]);
     assert.equal(h.badge.textContent, 'Name only');
-    assert.match(h.seen.choices[0].message, /call always shows who is calling/);
+    assert.match(h.seen.choices[0].items[2].hint, /call always shows who is calling/);
+    assert.equal(h.badge.getAttribute('aria-label'), 'Previews: Name only');
 
     h = load({ choice: 'neither', reply: Promise.reject({ code: 'internal_error', message: 'disk full' }) });
     h.controls.show('name_and_message');

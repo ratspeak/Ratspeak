@@ -100,11 +100,11 @@ var labelTargets = Array.from(html.matchAll(/<label\b[^>]*\sfor="([^"]+)"/g), fu
 assert.deepStrictEqual(Array.from(new Set(labelTargets.filter(function(id) {
     return ids.indexOf(id) === -1;
 }))), [], 'label for attributes must resolve to dashboard controls');
-assert.strictEqual((html.match(/name="settings-text-scale"/g) || []).length, 7);
+assert.strictEqual((html.match(/class="settings-choice settings-size" role="radio"/g) || []).length, 7);
 ['90', '100', '110', '120', '130', '140', '150'].forEach(function(value) {
-    assert(html.includes('name="settings-text-scale" value="' + value + '"'));
+    assert(html.includes('data-scale="' + value + '" aria-label="' + value + ' percent"'));
 });
-assert(html.includes('class="settings-type-presets"'));
+assert(html.includes('id="settings-text-scale-tiles"'));
 assert(html.includes('aria-labelledby="settings-text-scale-label"'));
 assert(html.includes('aria-describedby="settings-text-scale-desc"'));
 assert(!html.includes('class="settings-detail-eyebrow"'),

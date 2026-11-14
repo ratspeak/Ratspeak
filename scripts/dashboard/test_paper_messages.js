@@ -302,39 +302,40 @@ const PREVIEW = {
             : blockedParent.innerHTML.includes('Signature doesn&#39;t match') || blockedParent.innerHTML.includes('Signature doesn\'t match'));
     }
 
-    // Settings: OFF by default, mirrored to data-paper-messages, wired to the backend.
-    const handlers = { off: {}, on: {} };
-    const radio = (name, checked) => ({ checked, disabled: false, closest: () => ({ setAttribute() {} }),
-        addEventListener: (type, handler) => { handlers[name][type] = handler; } });
-    const off = radio('off', true), on = radio('on', false);
+    // Settings: off by default, mirrored to data-paper-messages, wired to the backend.
+    const handlers = {};
+    const track = { classList: { toggle() {} } };
+    const toggle = { checked: false, disabled: false, closest: () => track, setAttribute() {},
+        addEventListener: (type, handler) => { handlers[type] = handler; } };
     const settingsCalls = [];
     const settingsContext = {
         window: {},
-        document: { documentElement: { dataset: {} }, getElementById: id => ({ 'settings-paper-messages-off': off, 'settings-paper-messages-on': on })[id] || null },
+        document: { documentElement: { dataset: {} }, getElementById: id => ({ 'settings-paper-messages-toggle': toggle })[id] || null },
         RS: { invoke: (command, args) => { settingsCalls.push([command, args]); return Promise.resolve({ enabled: args.enabled }); } },
     };
     const settingsStart = settingsSource.indexOf('var _settingsPaperMessagesBound');
     const settingsEnd = settingsSource.indexOf('window.ratspeakPaperMessagesEnabled');
-    vm.runInNewContext(settingsSource.slice(settingsStart, settingsEnd) +
+    vm.runInNewContext(fn(settingsSource, '_settingsSyncSwitch') + '\n' + settingsSource.slice(settingsStart, settingsEnd) +
         fn(settingsSource, 'applyAppSettingsPayload').replace(/^function applyAppSettingsPayload\(data\) \{[\s\S]*?(    if \(data\.paper_messages_enabled)/, 'function applyAppSettingsPayload(data) {\n$1').replace(/\n    var lxmfLimitToggle[\s\S]*$/, '\n}') +
         '\nthis.init = initPaperMessagesToggle; this.apply = applyAppSettingsPayload;', settingsContext);
     settingsContext.init();
     assert.equal(settingsContext.document.documentElement.dataset.paperMessages, 'off');
-    on.checked = true; off.checked = false;
-    handlers.on.change();
+    toggle.checked = true;
+    handlers.change();
     await settle(); await settle();
     assert.deepEqual(JSON.parse(JSON.stringify(settingsCalls)), [['set_paper_messages_enabled', { enabled: true }]]);
     assert.equal(settingsContext.document.documentElement.dataset.paperMessages, 'on');
     settingsContext.apply({ paper_messages_enabled: false });
     assert.equal(settingsContext.document.documentElement.dataset.paperMessages, 'off');
-    assert.deepEqual([off.checked, on.checked], [true, false]);
+    assert.equal(toggle.checked, false);
     const indexHtml = fs.readFileSync(path.join(js, '..', '..', 'index.html'), 'utf8');
-    const spam = indexHtml.indexOf('id="settings-hide-known-spam-peers-on"');
-    const paperRow = indexHtml.indexOf('<span class="settings-row-label">Paper messages</span>');
-    const blockList = indexHtml.indexOf('<span class="settings-row-label">Block List</span>');
-    assert(spam < paperRow && paperRow < blockList, 'the row sits between spam peers and the block list');
-    assert(indexHtml.includes('Open messages shared as a paper QR or link. Adds Paper to the new message menu.'));
-    assert(indexHtml.includes('id="settings-paper-messages-off" value="off" checked'));
+    const general = indexHtml.split('id="panel-settings-general"')[1].split('id="panel-settings-appearance"')[0];
+    const keepTrying = general.indexOf('id="lxmf-keep-trying-toggle"');
+    const paperRow = general.indexOf('id="settings-paper-messages-toggle"');
+    const hosting = general.indexOf('id="settings-channel-hosting-toggle"');
+    assert(keepTrying < paperRow && paperRow < hosting, 'the row sits with the other message rows, before Channels');
+    assert(general.includes('Opens messages shared as a QR code or link.'));
+    assert(!/id="settings-paper-messages-toggle"[^>]*checked/.test(general), 'paper messages start off');
     assert(settingsSource.includes("if (data.paper_messages_enabled !== undefined) {\n        adoptPaperMessagesFromBackend(data.paper_messages_enabled);"));
 
     // Native handoff: peek on start, open the decoder prefilled, ack the exact link on close.

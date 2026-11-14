@@ -276,7 +276,7 @@ pub fn require_local_interfaces(state: &AppState) -> Result<(), String> {
     if local_interfaces_allowed(state) {
         Ok(())
     } else {
-        Err("Interfaces are managed by the existing Reticulum instance. Configure them in that app, or switch to Managed by Ratspeak in Settings → Network.".into())
+        Err("Interfaces are managed by another app's Reticulum. Configure them in that app, or set Run by to Ratspeak in Settings › Developer.".into())
     }
 }
 
@@ -373,7 +373,7 @@ pub fn auto_startup_error_message(error: &str, data_port: u16) -> String {
             || error.contains("os error 10048"))
     {
         format!(
-            "Local Network could not start: UDP port {data_port} is already in use. Another Reticulum stack or Local Network interface may own it. Use that existing stack in Settings → Network (Developer Mode), or disable its AutoInterface before enabling Ratspeak's. Ordinary TCP connections can still be used. The LAN port has not been changed."
+            "Local Network could not start: UDP port {data_port} is already in use. Another Reticulum stack or Local Network interface may own it. Use that stack in Settings › Developer › Reticulum on this device, or turn off its AutoInterface before turning on Ratspeak's. Ordinary TCP connections can still be used. The LAN port has not been changed."
         )
     } else {
         error.to_string()

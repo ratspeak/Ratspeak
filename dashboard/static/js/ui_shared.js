@@ -378,17 +378,43 @@
         return 'unknown';
     }
 
+    // A segmented control (Settings › Network › Relay for other devices) or a badge.
+    function showTransportMode(el, mode) {
+        if (!el) return;
+        if (el.getAttribute('role') === 'radiogroup') {
+            Array.prototype.forEach.call(el.querySelectorAll('[role="radio"]'), function(btn) {
+                btn.setAttribute('aria-checked', btn.getAttribute('data-value') === mode ? 'true' : 'false');
+            });
+        } else {
+            el.textContent = transportLabels[mode] || mode.toUpperCase();
+        }
+        el.setAttribute('data-value', mode);
+    }
+
     RS.ui.applyTransportModePayload = function(elOrId, data, opts) {
         opts = opts || {};
         var mode = (data && data.mode) || 'off';
-        var badge = elementRef(elOrId);
-        if (badge) {
-            badge.textContent = transportLabels[mode] || mode.toUpperCase();
-            badge.setAttribute('data-value', mode);
-        }
+        showTransportMode(elementRef(elOrId), mode);
         if (opts.toastSuppressed && data && data.suppressed && typeof showToast === 'function') {
-            showToast('Transport Mode is managed by Ratspeak\u2019s shared service on this device.', 'toast-info', 5000);
+            showToast('Relaying is managed by Ratspeak\u2019s shared service on this device.', 'toast-info', 5000);
         }
+    };
+
+    RS.ui.setTransportMode = function(elOrId, mode) {
+        var el = elementRef(elOrId);
+        var previous = el ? el.getAttribute('data-value') : '';
+        showTransportMode(el, mode);
+        return RS.invoke('set_transport_mode', {
+            args: { mode: mode, network_type: currentNetworkType() }
+        }).then(function() {
+            return mode;
+        }).catch(function(err) {
+            if (previous) showTransportMode(el, previous);
+            if (typeof showToast === 'function') {
+                showToast((err && err.message) || 'Could not change relaying', 'toast-error', 8000);
+            }
+            return null;
+        });
     };
 
     RS.ui.openTransportModeChoice = function(elOrId) {

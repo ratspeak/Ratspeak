@@ -12,10 +12,6 @@ function openSettings() {
     initCloseButtonToggle();
     syncSettingsIdentityActions();
     renderSettingsVersion();
-    // Re-seal every System reset subsection on each visit. The collapse IS the
-    // safety feature for destructive ops — a stale-open Delete Data section
-    // from a previous visit would defeat it.
-    resetSystemDataCollapse();
 }
 
 var _settingsVersionLabel = '';
@@ -44,35 +40,66 @@ window.ratspeakChannelHostingEnabled = function() {
     return !!_settingsChannelHostingEnabled;
 };
 
-function syncChannelHostingRadioState() {
-    var off = document.getElementById('settings-channel-hosting-off');
-    var on = document.getElementById('settings-channel-hosting-on');
+// A kit switch: the input carries the state, its label spins while a change is saving.
+function _settingsSyncSwitch(input, checked, busy, disabled) {
+    if (!input) return;
+    input.checked = !!checked;
+    input.disabled = !!busy || !!disabled;
+    var track = input.closest && input.closest('.ui-switch');
+    if (track && track.classList) track.classList.toggle('is-busy', !!busy);
+    input.setAttribute('aria-busy', busy ? 'true' : 'false');
+}
+
+// A kit segmented control: aria-checked on the chosen button.
+function _settingsSyncSeg(group, value, disabled) {
+    if (!group) return;
+    Array.prototype.forEach.call(group.querySelectorAll('[role="radio"]'), function(btn) {
+        btn.setAttribute('aria-checked', btn.getAttribute('data-value') === value ? 'true' : 'false');
+        btn.disabled = !!disabled;
+    });
+}
+
+function _settingsBindSeg(group, onPick) {
+    if (!group || group._ratspeakSegBound) return;
+    group._ratspeakSegBound = true;
+    group.addEventListener('click', function(event) {
+        var btn = event.target.closest && event.target.closest('[role="radio"]');
+        if (!btn || btn.disabled || btn.getAttribute('aria-checked') === 'true') return;
+        onPick(btn.getAttribute('data-value'));
+    });
+    group.addEventListener('keydown', function(event) {
+        if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].indexOf(event.key) === -1) return;
+        var buttons = Array.prototype.slice.call(group.querySelectorAll('[role="radio"]:not(:disabled)'));
+        var at = buttons.indexOf(document.activeElement);
+        if (at === -1) return;
+        event.preventDefault();
+        var step = event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 1;
+        var next = buttons[(at + step + buttons.length) % buttons.length];
+        next.focus();
+        onPick(next.getAttribute('data-value'));
+    });
+}
+
+function syncChannelHostingToggleState() {
+    var toggle = document.getElementById('settings-channel-hosting-toggle');
     var desc = document.getElementById('settings-channel-hosting-desc');
-    var group = on && on.closest('.settings-radio-group');
     var displayedEnabled = _settingsChannelHostingRequested === null
         ? _settingsChannelHostingEnabled
         : _settingsChannelHostingRequested;
     if (document.documentElement) {
         document.documentElement.dataset.channelHosting = displayedEnabled ? 'on' : 'off';
     }
-    if (off) {
-        off.checked = !displayedEnabled;
-        off.disabled = _settingsChannelHostingBusy;
-    }
-    if (on) {
-        on.checked = displayedEnabled;
-        on.disabled = _settingsChannelHostingBusy || _settingsChannelHostingSupported === false;
-    }
-    if (group) group.setAttribute('aria-busy', _settingsChannelHostingBusy ? 'true' : 'false');
+    _settingsSyncSwitch(toggle, displayedEnabled, _settingsChannelHostingBusy,
+        _settingsChannelHostingSupported === false && !displayedEnabled);
     if (desc) {
         if (_settingsChannelHostingBusy) {
             desc.textContent = _settingsChannelHostingRequested
-                ? 'Enabling hosting controls…'
-                : 'Stopping your hub and hiding hosting controls…';
+                ? 'Turning on channel hosting…'
+                : 'Stopping your hub…';
         } else {
             desc.textContent = _settingsChannelHostingSupported === false
                 ? 'Channel hosting is available in the desktop app.'
-                : 'Show hub controls in Channels and allow this device to host.';
+                : 'Lets this device host channels.';
         }
     }
 }
@@ -83,7 +110,7 @@ function adoptChannelHostingFromBackend(enabled, supported) {
     if (typeof channelHubOverview !== 'undefined' && channelHubOverview) {
         channelHubOverview.hosting_enabled = _settingsChannelHostingEnabled;
     }
-    syncChannelHostingRadioState();
+    syncChannelHostingToggleState();
     if (typeof channelHubRenderHome === 'function') channelHubRenderHome(channelHubOverview);
 }
 
@@ -92,7 +119,7 @@ function setChannelHostingEnabled(enabled) {
     if (enabled && _settingsChannelHostingSupported === false) return;
     _settingsChannelHostingRequested = !!enabled;
     _settingsChannelHostingBusy = true;
-    syncChannelHostingRadioState();
+    syncChannelHostingToggleState();
 
     RS.invoke('set_channel_hosting_enabled', { enabled: !!enabled }).then(function(overview) {
         if (overview && typeof _channelHubApplyOverview === 'function') {
@@ -121,22 +148,18 @@ function setChannelHostingEnabled(enabled) {
     }).then(function() {
         _settingsChannelHostingRequested = null;
         _settingsChannelHostingBusy = false;
-        syncChannelHostingRadioState();
+        syncChannelHostingToggleState();
     });
 }
 
 function initChannelHostingToggle() {
-    var off = document.getElementById('settings-channel-hosting-off');
-    var on = document.getElementById('settings-channel-hosting-on');
-    if (!off || !on) return;
-    syncChannelHostingRadioState();
+    var toggle = document.getElementById('settings-channel-hosting-toggle');
+    if (!toggle) return;
+    syncChannelHostingToggleState();
     if (!_settingsChannelHostingBound) {
         _settingsChannelHostingBound = true;
-        off.addEventListener('change', function() {
-            if (off.checked) setChannelHostingEnabled(false);
-        });
-        on.addEventListener('change', function() {
-            if (on.checked) setChannelHostingEnabled(true);
+        toggle.addEventListener('change', function() {
+            setChannelHostingEnabled(!!toggle.checked);
         });
     }
     if (typeof channelHubLoad === 'function') {
@@ -147,26 +170,14 @@ function initChannelHostingToggle() {
     }
 }
 
-function syncActivityIdentityProtectionRadioState() {
-    var off = document.getElementById('settings-activity-identity-protection-off');
-    var on = document.getElementById('settings-activity-identity-protection-on');
-    var group = on && on.closest('.settings-radio-group');
-    if (off) {
-        off.checked = !_settingsActivityIdentityProtectionEnabled;
-        off.disabled = _settingsActivityIdentityProtectionBusy;
-    }
-    if (on) {
-        on.checked = _settingsActivityIdentityProtectionEnabled;
-        on.disabled = _settingsActivityIdentityProtectionBusy;
-    }
-    if (group) {
-        group.setAttribute('aria-busy', _settingsActivityIdentityProtectionBusy ? 'true' : 'false');
-    }
+function syncActivityIdentityProtectionToggleState() {
+    _settingsSyncSwitch(document.getElementById('settings-activity-identity-protection-toggle'),
+        _settingsActivityIdentityProtectionEnabled, _settingsActivityIdentityProtectionBusy);
 }
 
 function adoptActivityIdentityProtectionFromBackend(enabled) {
     _settingsActivityIdentityProtectionEnabled = enabled !== false;
-    syncActivityIdentityProtectionRadioState();
+    syncActivityIdentityProtectionToggleState();
     if (RS.activityIdentityProtection && typeof RS.activityIdentityProtection.set === 'function') {
         RS.activityIdentityProtection.set(_settingsActivityIdentityProtectionEnabled);
     }
@@ -177,7 +188,7 @@ function saveActivityIdentityProtectionEnabled(enabled) {
     var previous = _settingsActivityIdentityProtectionEnabled;
     _settingsActivityIdentityProtectionEnabled = !!enabled;
     _settingsActivityIdentityProtectionBusy = true;
-    syncActivityIdentityProtectionRadioState();
+    syncActivityIdentityProtectionToggleState();
     if (RS.activityIdentityProtection && typeof RS.activityIdentityProtection.set === 'function') {
         RS.activityIdentityProtection.set(_settingsActivityIdentityProtectionEnabled);
     }
@@ -195,43 +206,29 @@ function saveActivityIdentityProtectionEnabled(enabled) {
         })
         .then(function() {
             _settingsActivityIdentityProtectionBusy = false;
-            syncActivityIdentityProtectionRadioState();
+            syncActivityIdentityProtectionToggleState();
         });
 }
 
 function initActivityIdentityProtectionToggle() {
-    var off = document.getElementById('settings-activity-identity-protection-off');
-    var on = document.getElementById('settings-activity-identity-protection-on');
-    if (!off || !on) return;
-    syncActivityIdentityProtectionRadioState();
+    var toggle = document.getElementById('settings-activity-identity-protection-toggle');
+    if (!toggle) return;
+    syncActivityIdentityProtectionToggleState();
     if (_settingsActivityIdentityProtectionBound) return;
     _settingsActivityIdentityProtectionBound = true;
-    off.addEventListener('change', function() {
-        if (off.checked) saveActivityIdentityProtectionEnabled(false);
-    });
-    on.addEventListener('change', function() {
-        if (on.checked) saveActivityIdentityProtectionEnabled(true);
+    toggle.addEventListener('change', function() {
+        saveActivityIdentityProtectionEnabled(!!toggle.checked);
     });
 }
 
-function syncHideKnownSpamPeersRadioState() {
-    var off = document.getElementById('settings-hide-known-spam-peers-off');
-    var on = document.getElementById('settings-hide-known-spam-peers-on');
-    var group = on && on.closest('.settings-radio-group');
-    if (off) {
-        off.checked = !_settingsHideKnownSpamPeersEnabled;
-        off.disabled = _settingsHideKnownSpamPeersBusy;
-    }
-    if (on) {
-        on.checked = _settingsHideKnownSpamPeersEnabled;
-        on.disabled = _settingsHideKnownSpamPeersBusy;
-    }
-    if (group) group.setAttribute('aria-busy', _settingsHideKnownSpamPeersBusy ? 'true' : 'false');
+function syncHideKnownSpamPeersToggleState() {
+    _settingsSyncSwitch(document.getElementById('settings-hide-known-spam-peers-toggle'),
+        _settingsHideKnownSpamPeersEnabled, _settingsHideKnownSpamPeersBusy);
 }
 
 function adoptHideKnownSpamPeersFromBackend(enabled) {
     _settingsHideKnownSpamPeersEnabled = enabled !== false;
-    syncHideKnownSpamPeersRadioState();
+    syncHideKnownSpamPeersToggleState();
     if (typeof PeersCache !== 'undefined' && PeersCache &&
         typeof PeersCache.setHideKnownSpamPeers === 'function') {
         PeersCache.setHideKnownSpamPeers(_settingsHideKnownSpamPeersEnabled);
@@ -251,7 +248,7 @@ function setHideKnownSpamPeersEnabled(enabled) {
     _settingsHideKnownSpamPeersEnabled = !!enabled;
     _settingsHideKnownSpamPeersBusy = true;
     adoptHideKnownSpamPeersFromBackend(_settingsHideKnownSpamPeersEnabled);
-    syncHideKnownSpamPeersRadioState();
+    syncHideKnownSpamPeersToggleState();
     RS.invoke('set_hide_known_spam_peers', { enabled: _settingsHideKnownSpamPeersEnabled })
         .then(function(result) {
             adoptHideKnownSpamPeersFromBackend(
@@ -266,22 +263,18 @@ function setHideKnownSpamPeersEnabled(enabled) {
         })
         .then(function() {
             _settingsHideKnownSpamPeersBusy = false;
-            syncHideKnownSpamPeersRadioState();
+            syncHideKnownSpamPeersToggleState();
         });
 }
 
 function initHideKnownSpamPeersToggle() {
-    var off = document.getElementById('settings-hide-known-spam-peers-off');
-    var on = document.getElementById('settings-hide-known-spam-peers-on');
-    if (!off || !on) return;
-    syncHideKnownSpamPeersRadioState();
+    var toggle = document.getElementById('settings-hide-known-spam-peers-toggle');
+    if (!toggle) return;
+    syncHideKnownSpamPeersToggleState();
     if (_settingsHideKnownSpamPeersBound) return;
     _settingsHideKnownSpamPeersBound = true;
-    off.addEventListener('change', function() {
-        if (off.checked) setHideKnownSpamPeersEnabled(false);
-    });
-    on.addEventListener('change', function() {
-        if (on.checked) setHideKnownSpamPeersEnabled(true);
+    toggle.addEventListener('change', function() {
+        setHideKnownSpamPeersEnabled(!!toggle.checked);
     });
 }
 
@@ -294,27 +287,17 @@ var _settingsPaperMessagesBusy = false;
 var _settingsPaperMessagesEnabled = false;
 
 // Gates only the manual decoder entry points; sending, scanning, and links always work.
-function syncPaperMessagesRadioState() {
-    var off = document.getElementById('settings-paper-messages-off');
-    var on = document.getElementById('settings-paper-messages-on');
-    var group = on && on.closest('.settings-radio-group');
+function syncPaperMessagesToggleState() {
     if (document.documentElement) {
         document.documentElement.dataset.paperMessages = _settingsPaperMessagesEnabled ? 'on' : 'off';
     }
-    if (off) {
-        off.checked = !_settingsPaperMessagesEnabled;
-        off.disabled = _settingsPaperMessagesBusy;
-    }
-    if (on) {
-        on.checked = _settingsPaperMessagesEnabled;
-        on.disabled = _settingsPaperMessagesBusy;
-    }
-    if (group) group.setAttribute('aria-busy', _settingsPaperMessagesBusy ? 'true' : 'false');
+    _settingsSyncSwitch(document.getElementById('settings-paper-messages-toggle'),
+        _settingsPaperMessagesEnabled, _settingsPaperMessagesBusy);
 }
 
 function adoptPaperMessagesFromBackend(enabled) {
     _settingsPaperMessagesEnabled = enabled === true;
-    syncPaperMessagesRadioState();
+    syncPaperMessagesToggleState();
 }
 
 function setPaperMessagesEnabled(enabled) {
@@ -322,7 +305,7 @@ function setPaperMessagesEnabled(enabled) {
     var previous = _settingsPaperMessagesEnabled;
     _settingsPaperMessagesEnabled = !!enabled;
     _settingsPaperMessagesBusy = true;
-    syncPaperMessagesRadioState();
+    syncPaperMessagesToggleState();
     RS.invoke('set_paper_messages_enabled', { enabled: _settingsPaperMessagesEnabled })
         .then(function(result) {
             var next = result && result.enabled !== undefined ? result.enabled
@@ -337,21 +320,17 @@ function setPaperMessagesEnabled(enabled) {
         })
         .then(function() {
             _settingsPaperMessagesBusy = false;
-            syncPaperMessagesRadioState();
+            syncPaperMessagesToggleState();
         });
 }
 
 function initPaperMessagesToggle() {
-    var off = document.getElementById('settings-paper-messages-off');
-    var on = document.getElementById('settings-paper-messages-on');
-    syncPaperMessagesRadioState();
-    if (!off || !on || _settingsPaperMessagesBound) return;
+    var toggle = document.getElementById('settings-paper-messages-toggle');
+    syncPaperMessagesToggleState();
+    if (!toggle || _settingsPaperMessagesBound) return;
     _settingsPaperMessagesBound = true;
-    off.addEventListener('change', function() {
-        if (off.checked) setPaperMessagesEnabled(false);
-    });
-    on.addEventListener('change', function() {
-        if (on.checked) setPaperMessagesEnabled(true);
+    toggle.addEventListener('change', function() {
+        setPaperMessagesEnabled(!!toggle.checked);
     });
 }
 
@@ -382,7 +361,7 @@ function notifyDeveloperModeChanged() {
 function setDeveloperModeEnabled(enabled) {
     _settingsDeveloperModeEnabled = !!enabled;
     persistDeveloperModePreference(_settingsDeveloperModeEnabled);
-    syncDeveloperModeRadioState();
+    syncDeveloperModeToggleState();
     notifyDeveloperModeChanged();
     // SQLite is the durable store; localStorage is only a boot-time cache
     // (WKWebView drops custom-scheme localStorage on macOS/iOS).
@@ -395,7 +374,7 @@ function adoptDeveloperModeFromBackend(enabled) {
     if (enabled === _settingsDeveloperModeEnabled) return;
     _settingsDeveloperModeEnabled = enabled;
     persistDeveloperModePreference(enabled);
-    syncDeveloperModeRadioState();
+    syncDeveloperModeToggleState();
     notifyDeveloperModeChanged();
 }
 
@@ -403,27 +382,19 @@ window.ratspeakDeveloperModeEnabled = function() {
     return !!_settingsDeveloperModeEnabled;
 };
 
-function syncDeveloperModeRadioState() {
-    var off = document.getElementById('settings-developer-mode-off');
-    var on = document.getElementById('settings-developer-mode-on');
-    if (off) off.checked = !_settingsDeveloperModeEnabled;
-    if (on) on.checked = _settingsDeveloperModeEnabled;
+function syncDeveloperModeToggleState() {
+    var toggle = document.getElementById('settings-developer-mode-toggle');
+    if (toggle) toggle.checked = _settingsDeveloperModeEnabled;
 }
 
 function initDeveloperModeToggle() {
-    var off = document.getElementById('settings-developer-mode-off');
-    var on = document.getElementById('settings-developer-mode-on');
-    if (!off || !on) return;
-    syncDeveloperModeRadioState();
+    var toggle = document.getElementById('settings-developer-mode-toggle');
+    if (!toggle) return;
+    syncDeveloperModeToggleState();
     if (_settingsDeveloperModeBound) return;
     _settingsDeveloperModeBound = true;
-
-    off.addEventListener('click', function() {
-        setDeveloperModeEnabled(false);
-    });
-
-    on.addEventListener('change', function() {
-        if (on.checked) setDeveloperModeEnabled(true);
+    toggle.addEventListener('change', function() {
+        setDeveloperModeEnabled(!!toggle.checked);
     });
 }
 
@@ -436,17 +407,25 @@ function windowDecorationsRowApplies() {
     return !!window.__RATSPEAK_DESKTOP__ && /linux/i.test(navigator.userAgent);
 }
 
-function syncWindowDecorationsRadioState() {
-    ['auto', 'on', 'off'].forEach(function(mode) {
-        var el = document.getElementById('settings-window-decorations-' + mode);
-        if (el) el.checked = (_settingsWindowDecorationsMode === mode);
-    });
+// The Window group shows when one of its rows applies on this platform.
+function syncSettingsWindowBlock() {
+    var block = document.getElementById('settings-window-block');
+    if (!block) return;
+    var decorations = windowDecorationsRowApplies();
+    var close = closeButtonRowApplies();
+    var notice = document.getElementById('settings-window-decorations-notice');
+    if (notice) notice.hidden = !decorations;
+    block.hidden = !(decorations || close);
+}
+
+function syncWindowDecorationsToggleState() {
+    _settingsSyncSeg(document.getElementById('settings-window-decorations-seg'), _settingsWindowDecorationsMode);
 }
 
 function setWindowDecorationsMode(mode) {
     if (['auto', 'on', 'off'].indexOf(mode) === -1) return;
     _settingsWindowDecorationsMode = mode;
-    syncWindowDecorationsRadioState();
+    syncWindowDecorationsToggleState();
     RS.invoke('set_window_decorations', { mode: mode }).then(function(result) {
         if (result && result.restart_required) {
             showToast('Restart Ratspeak to apply the title bar change', 'toast-info', 4000);
@@ -460,23 +439,18 @@ function adoptWindowDecorationsFromBackend(mode) {
     if (['auto', 'on', 'off'].indexOf(mode) === -1) mode = 'auto';
     if (mode === _settingsWindowDecorationsMode) return;
     _settingsWindowDecorationsMode = mode;
-    syncWindowDecorationsRadioState();
+    syncWindowDecorationsToggleState();
 }
 
 function initWindowDecorationsToggle() {
     var row = document.getElementById('settings-window-decorations-row');
-    if (!row) return;
-    if (!windowDecorationsRowApplies()) return;
-    row.style.display = '';
-    syncWindowDecorationsRadioState();
+    syncSettingsWindowBlock();
+    if (!row || !windowDecorationsRowApplies()) return;
+    row.hidden = false;
+    syncWindowDecorationsToggleState();
     if (_settingsWindowDecorationsBound) return;
     _settingsWindowDecorationsBound = true;
-    ['auto', 'on', 'off'].forEach(function(mode) {
-        var el = document.getElementById('settings-window-decorations-' + mode);
-        if (el) el.addEventListener('change', function() {
-            if (el.checked) setWindowDecorationsMode(mode);
-        });
-    });
+    _settingsBindSeg(document.getElementById('settings-window-decorations-seg'), setWindowDecorationsMode);
 }
 
 var _settingsCloseButtonBound = false;
@@ -488,21 +462,18 @@ function closeButtonRowApplies() {
     return !!window.__RATSPEAK_DESKTOP__ && /windows/i.test(navigator.userAgent);
 }
 
-function syncCloseButtonRadioState() {
-    _CLOSE_BUTTON_ACTIONS.forEach(function(action) {
-        var el = document.getElementById('settings-close-button-' + action);
-        if (el) el.checked = (_settingsCloseButtonAction === action);
-    });
+function syncCloseButtonToggleState() {
+    _settingsSyncSeg(document.getElementById('settings-close-button-seg'), _settingsCloseButtonAction);
 }
 
 function setCloseButtonAction(action) {
     if (_CLOSE_BUTTON_ACTIONS.indexOf(action) === -1) return;
     var previous = _settingsCloseButtonAction;
     _settingsCloseButtonAction = action;
-    syncCloseButtonRadioState();
+    syncCloseButtonToggleState();
     RS.invoke('set_close_button_action', { mode: action }).catch(function() {
         _settingsCloseButtonAction = previous;
-        syncCloseButtonRadioState();
+        syncCloseButtonToggleState();
         showToast('Could not update the close button', 'toast-error', 4000);
     });
 }
@@ -510,70 +481,116 @@ function setCloseButtonAction(action) {
 function adoptCloseButtonActionFromBackend(action) {
     if (_CLOSE_BUTTON_ACTIONS.indexOf(action) === -1) action = 'ask';
     _settingsCloseButtonAction = action;
-    syncCloseButtonRadioState();
+    syncCloseButtonToggleState();
 }
 
 function initCloseButtonToggle() {
     var row = document.getElementById('settings-close-button-row');
+    syncSettingsWindowBlock();
     if (!row || !closeButtonRowApplies()) return;
-    row.style.display = '';
-    syncCloseButtonRadioState();
+    row.hidden = false;
+    syncCloseButtonToggleState();
     if (_settingsCloseButtonBound) return;
     _settingsCloseButtonBound = true;
-    _CLOSE_BUTTON_ACTIONS.forEach(function(action) {
-        var el = document.getElementById('settings-close-button-' + action);
-        if (el) el.addEventListener('change', function() {
-            if (el.checked) setCloseButtonAction(action);
-        });
-    });
+    _settingsBindSeg(document.getElementById('settings-close-button-seg'), setCloseButtonAction);
 }
 
+// About: the version, and one update row. By default the row says when Ratspeak
+// last checked; after a check it shows only the result until About is left.
+var _settingsUpdateState = 'idle';
+var _settingsUpdateRelease = null;
+var _settingsUpdateReason = '';
+var _settingsLastChecked = 0;
+
 function renderSettingsVersion() {
-    var targets = [
-        document.getElementById('settings-version-sidebar'),
-        document.getElementById('settings-version-system')
-    ].filter(Boolean);
-    if (!targets.length) return;
-
-    function paint(label, version) {
-        targets.forEach(function(el) {
-            el.innerHTML = '';
-            if (label) {
-                var versionLabel = document.createElement('span');
-                versionLabel.className = 'settings-version-label';
-                versionLabel.textContent = label;
-                el.appendChild(versionLabel);
-
-                var button = document.createElement('button');
-                button.type = 'button';
-                button.className = 'settings-update-check-btn';
-                button.textContent = 'Check for updates';
-                button.disabled = _settingsUpdateCheckInFlight;
-                button.addEventListener('click', function() {
-                    promptRatspeakUpdateCheck(version);
-                });
-                el.appendChild(button);
-            }
-            el.style.display = label ? '' : 'none';
-        });
-    }
-
+    var versionEl = document.getElementById('settings-about-version');
     if (_settingsVersionLabel) {
-        paint(_settingsVersionLabel, _settingsVersionValue);
+        if (versionEl) versionEl.textContent = 'Version ' + _settingsVersionValue;
+        renderSettingsUpdateRow();
         return;
     }
-
+    renderSettingsUpdateRow();
     RS.invoke('api_version').then(function(data) {
         var name = (data && data.name) || 'Ratspeak';
         var version = (data && data.version) || '';
         if (!version) return;
         _settingsVersionValue = version;
-        _settingsVersionLabel = name + ' v.' + version;
-        paint(_settingsVersionLabel, _settingsVersionValue);
-    }).catch(function() {
-        paint('', '');
-    });
+        _settingsVersionLabel = name + ' ' + version;
+        if (versionEl) versionEl.textContent = 'Version ' + version;
+        renderSettingsUpdateRow();
+    }).catch(function() {});
 }
+
+function _settingsLastCheckedText() {
+    if (!_settingsLastChecked) return 'Last checked: never';
+    var full = RS.kit && RS.kit.time ? RS.kit.time.full(_settingsLastChecked) : new Date(_settingsLastChecked * 1000).toLocaleString();
+    return 'Last checked: ' + full;
+}
+
+function renderSettingsUpdateRow() {
+    var label = document.getElementById('settings-update-label');
+    var btn = document.getElementById('settings-update-btn');
+    if (!label || !btn) return;
+    var state = _settingsUpdateState;
+    btn.hidden = state === 'current';
+    btn.disabled = state === 'checking';
+    btn.removeAttribute('aria-busy');
+    btn.className = 'ui-btn ui-btn--sm' + (state === 'update' ? ' ui-btn--primary' : '');
+    label.title = state === 'failed' ? _settingsUpdateReason : '';
+    if (state === 'current') {
+        label.textContent = 'You’re up to date.';
+    } else if (state === 'update' && _settingsUpdateRelease) {
+        label.textContent = 'Version ' + _settingsUpdateRelease.version + ' is available';
+        btn.textContent = 'Update';
+    } else if (state === 'failed') {
+        label.textContent = 'Couldn’t check for updates';
+        btn.textContent = 'Try again';
+    } else {
+        label.textContent = _settingsLastCheckedText();
+        if (state === 'checking') {
+            btn.setAttribute('aria-busy', 'true');
+            btn.innerHTML = '<span class="ui-spin" aria-hidden="true"></span>Checking…';
+        } else {
+            btn.textContent = 'Check for updates';
+        }
+    }
+}
+
+function _settingsSetUpdateState(state) {
+    _settingsUpdateState = state;
+    _settingsUpdateCheckInFlight = state === 'checking';
+    renderSettingsUpdateRow();
+}
+
+// Leaving About forgets the last result; coming back shows when it last checked.
+function _settingsResetUpdateRow() {
+    if (_settingsUpdateState === 'checking') return;
+    _settingsUpdateRelease = null;
+    _settingsSetUpdateState('idle');
+}
+
+function adoptUpdateLastCheckedFromBackend(at) {
+    var value = Number(at) || 0;
+    if (value > _settingsLastChecked) _settingsLastChecked = value;
+    renderSettingsUpdateRow();
+}
+
+function _settingsRecordUpdateCheck() {
+    _settingsLastChecked = Math.floor(Date.now() / 1000);
+    RS.invoke('set_ui_state', { key: 'update_last_checked', value: _settingsLastChecked }).catch(function() {});
+}
+
+(function() {
+    var btn = document.getElementById('settings-update-btn');
+    if (!btn) return;
+    btn.addEventListener('click', function() {
+        if (_settingsUpdateState === 'update' && _settingsUpdateRelease) {
+            _settingsShowUpdateAvailable(_settingsUpdateRelease, _settingsNormalizeVersion(_settingsVersionValue));
+            return;
+        }
+        promptRatspeakUpdateCheck(_settingsVersionValue);
+    });
+})();
 
 function _settingsNormalizeVersion(version) {
     return String(version || '')
@@ -620,27 +637,11 @@ function _settingsCompareVersions(left, right) {
     return 0;
 }
 
-function _settingsSetUpdateButtonsBusy(busy) {
-    _settingsUpdateCheckInFlight = !!busy;
-    document.querySelectorAll('.settings-update-check-btn').forEach(function(btn) {
-        btn.disabled = _settingsUpdateCheckInFlight;
-        btn.textContent = _settingsUpdateCheckInFlight ? 'Checking…' : 'Check for updates';
-    });
-}
-
 // The busy state disables (and so blurs) the button, so dialogs can't restore focus to it themselves.
 function _settingsFocusUpdateButton() {
     if (RS.ui && typeof RS.ui.prefersKeyboardFocus === 'function' && !RS.ui.prefersKeyboardFocus()) return;
-    var btn = document.querySelector('.settings-update-check-btn');
-    if (btn && !btn.disabled) btn.focus();
-}
-
-function _settingsShowUpdateResult(title, message) {
-    if (typeof rsAlert === 'function') {
-        return rsAlert({ title: title, message: message, closeText: 'Close' });
-    }
-    showToast(title + ' ' + message, 'toast-info', 6000);
-    return Promise.resolve();
+    var btn = document.getElementById('settings-update-btn');
+    if (btn && !btn.disabled && !btn.hidden) btn.focus();
 }
 
 function _settingsUpdateError(kind, status) {
@@ -882,61 +883,45 @@ function _settingsShowUpdateAvailable(release, currentVersion) {
     });
 }
 
-function _settingsShowUpdateFailure(err, currentVersion) {
-    var title = "Couldn't check for updates";
-    if (err && err.kind === 'bad-response') {
-        return _settingsShowUpdateResult(title, 'GitHub sent an unexpected response. Try again later.')
-            .then(_settingsFocusUpdateButton);
+function _settingsUpdateFailureReason(err) {
+    if (err && err.kind === 'bad-response') return 'GitHub sent an unexpected response. Try again later.';
+    if (err && err.kind === 'http' && (err.status === 403 || err.status === 429)) {
+        return 'GitHub is limiting requests right now. Try again in a few minutes.';
     }
-    var limited = err && err.kind === 'http' && (err.status === 403 || err.status === 429);
-    return rsConfirm({
-        title: title,
-        message: limited
-            ? 'GitHub is limiting requests right now. Try again in a few minutes.'
-            : 'Check your internet connection and try again.',
-        confirmText: 'Try Again',
-        cancelText: 'Close'
-    }).then(function(retry) {
-        if (retry) return checkRatspeakUpdate(currentVersion);
-        _settingsFocusUpdateButton();
-    });
+    return 'Check your internet connection and try again.';
 }
 
 function checkRatspeakUpdate(currentVersion) {
     currentVersion = _settingsNormalizeVersion(currentVersion || _settingsVersionValue);
     if (!currentVersion) {
-        return _settingsShowUpdateResult(
-            "Couldn't check for updates",
-            "Ratspeak couldn't read its own version. Restart the app and try again."
-        );
+        _settingsUpdateReason = "Ratspeak couldn't read its own version. Restart the app and try again.";
+        _settingsSetUpdateState('failed');
+        return Promise.resolve();
     }
 
-    _settingsSetUpdateButtonsBusy(true);
-    var progress = typeof rsProgress === 'function'
-        ? rsProgress({ title: 'Checking for updates', message: 'Contacting GitHub…' })
-        : null;
+    _settingsSetUpdateState('checking');
     var controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     var timeoutId = setTimeout(function() {
         if (controller) controller.abort();
     }, 12000);
 
     return _settingsLatestRelease(controller ? controller.signal : undefined).then(function(release) {
-        if (progress) progress.close();
         clearTimeout(timeoutId);
-        _settingsSetUpdateButtonsBusy(false);
+        _settingsRecordUpdateCheck();
         if (_settingsCompareVersions(release.version, currentVersion) > 0) {
-            return _settingsShowUpdateAvailable(release, currentVersion);
+            _settingsUpdateRelease = release;
+            _settingsSetUpdateState('update');
+        } else {
+            // "You're up to date": the row says it in place of a dialog.
+            _settingsSetUpdateState('current');
         }
-        return _settingsShowUpdateResult(
-            "You're up to date",
-            'Ratspeak ' + currentVersion + ' is the latest version.'
-        ).then(_settingsFocusUpdateButton);
+        _settingsFocusUpdateButton();
     }, function(err) {
-        if (progress) progress.close();
         clearTimeout(timeoutId);
-        _settingsSetUpdateButtonsBusy(false);
         window.RS.diag('warn', '[settings] update check failed:', err);
-        return _settingsShowUpdateFailure(err, currentVersion);
+        _settingsUpdateReason = _settingsUpdateFailureReason(err);
+        _settingsSetUpdateState('failed');
+        _settingsFocusUpdateButton();
     });
 }
 
@@ -953,37 +938,12 @@ function promptRatspeakUpdateCheck(currentVersion) {
     });
 }
 
-// Seal all System reset subsections. Called on every Settings open so the
-// destructive/nuclear sections never start expanded after a previous session.
-function resetSystemDataCollapse() {
-    var sections = document.querySelectorAll('#panel-settings-system .system-subsection');
-    for (var i = 0; i < sections.length; i++) {
-        sections[i].classList.add('collapsed');
-        var header = sections[i].querySelector('.system-subsection-header');
-        if (header) header.setAttribute('aria-expanded', 'false');
-    }
-}
-
-function toggleSystemSubsection(headerEl) {
-    var section = headerEl.closest('.system-subsection');
-    if (!section) return;
-    section.classList.toggle('collapsed');
-    var collapsed = section.classList.contains('collapsed');
-    headerEl.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-}
-
-function handleSystemSubsectionKey(e) {
-    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
-        e.preventDefault();
-        toggleSystemSubsection(e.currentTarget);
-    }
-}
-
 var SETTINGS_DEFAULT_PANEL_ID = 'panel-settings-general';
 var _settingsSectionNavBound = false;
 var _settingsSectionResizeBound = false;
 var _settingsMobileBackBound = false;
 var _settingsMobileDetailActive = false;
+var _settingsShownPanelId = '';
 
 function _settingsDetailModeActive() {
     return !!(window.matchMedia && window.matchMedia('(min-width: 769px)').matches);
@@ -997,8 +957,12 @@ function _settingsPanelAvailable(panel) {
     return !!(panel && !panel.hidden && panel.style.display !== 'none');
 }
 
+function _settingsNavItems() {
+    return document.querySelectorAll('#view-settings .settings-nav-item[data-settings-panel]');
+}
+
 function _settingsFirstAvailablePanelId() {
-    var items = document.querySelectorAll('.settings-nav-item[data-settings-panel]');
+    var items = document.querySelectorAll('#settings-section-nav [data-settings-panel]');
     for (var i = 0; i < items.length; i++) {
         var panelId = items[i].dataset.settingsPanel;
         if (_settingsPanelAvailable(document.getElementById(panelId))) return panelId;
@@ -1008,11 +972,10 @@ function _settingsFirstAvailablePanelId() {
 
 function syncSettingsNavVisibility() {
     var activeHidden = false;
-    document.querySelectorAll('.settings-nav-item[data-settings-panel]').forEach(function(item) {
-        var panel = document.getElementById(item.dataset.settingsPanel);
-        var available = _settingsPanelAvailable(panel);
-        item.style.display = available ? '' : 'none';
-        if (!available && item.classList.contains('active')) activeHidden = true;
+    _settingsNavItems().forEach(function(item) {
+        var available = _settingsPanelAvailable(document.getElementById(item.dataset.settingsPanel));
+        item.hidden = !available;
+        if (!available && item.getAttribute('aria-current') === 'page') activeHidden = true;
     });
     if (activeHidden) {
         selectSettingsSection(_settingsFirstAvailablePanelId(), { skipStore: true });
@@ -1028,33 +991,44 @@ function selectSettingsSection(panelId, opts) {
     }
     if (!panel) return;
 
-    var detailMode = _settingsDetailModeActive();
-    document.querySelectorAll('.settings-panel').forEach(function(el) {
-        var selected = el.id === panelId;
-        el.classList.toggle('settings-panel-selected', selected);
-        if (detailMode) {
-            el.setAttribute('aria-hidden', selected ? 'false' : 'true');
+    var changed = _settingsShownPanelId !== panelId;
+    if (changed && panelId === 'panel-settings-about') _settingsResetUpdateRow();
+    _settingsShownPanelId = panelId;
+
+    document.querySelectorAll('#view-settings .settings-panel').forEach(function(el) {
+        el.classList.toggle('settings-panel-selected', el.id === panelId);
+    });
+
+    var activeItem = null;
+    document.querySelectorAll('#settings-section-nav [data-settings-panel]').forEach(function(item) {
+        var selected = item.dataset.settingsPanel === panelId;
+        if (selected) {
+            item.setAttribute('aria-current', 'page');
+            activeItem = item;
         } else {
-            el.removeAttribute('aria-hidden');
+            item.removeAttribute('aria-current');
         }
     });
 
-    document.querySelectorAll('.settings-nav-item[data-settings-panel]').forEach(function(item) {
-        var selected = item.dataset.settingsPanel === panelId;
-        item.classList.toggle('active', selected);
-        if (selected) item.setAttribute('aria-current', 'page');
-        else item.removeAttribute('aria-current');
-    });
-
-    var activeItem = document.querySelector('.settings-nav-item[data-settings-panel="' + panelId + '"]');
+    var head = document.getElementById('settings-head');
     var title = document.getElementById('settings-detail-title');
     var desc = document.getElementById('settings-detail-desc');
     var mobileTitle = document.getElementById('settings-mobile-detail-title');
     if (activeItem) {
         var settingsTitle = activeItem.dataset.settingsTitle || activeItem.textContent.trim();
+        var settingsDesc = activeItem.dataset.settingsDesc || '';
         if (title) title.textContent = settingsTitle;
         if (mobileTitle) mobileTitle.textContent = settingsTitle;
-        if (desc) desc.textContent = activeItem.dataset.settingsDesc || '';
+        if (desc) {
+            desc.textContent = settingsDesc;
+            desc.hidden = !settingsDesc;
+        }
+        if (head) head.classList.toggle('is-bare', !settingsDesc);
+    }
+
+    if (changed) {
+        var pane = document.querySelector('#view-settings .settings-detail-pane');
+        if (pane) pane.scrollTop = 0;
     }
 
     if (!opts.skipStore) {
@@ -1066,11 +1040,11 @@ function selectSettingsSection(panelId, opts) {
 }
 
 function initSettingsSectionNav() {
-    var nav = document.getElementById('settings-section-nav');
-    if (!nav) return;
+    var view = document.getElementById('view-settings');
+    if (!view) return;
 
     if (!_settingsSectionNavBound) {
-        nav.querySelectorAll('.settings-nav-item[data-settings-panel]').forEach(function(item) {
+        _settingsNavItems().forEach(function(item) {
             item.addEventListener('click', function() {
                 selectSettingsSection(item.dataset.settingsPanel, { showMobileDetail: _settingsMobileModeActive() });
             });
@@ -1089,7 +1063,7 @@ function initSettingsSectionNav() {
     // Only width selects the section layout; entering Settings re-syncs it.
     if (!_settingsSectionResizeBound) {
         watchViewLayout('settings', function() {
-            var active = document.querySelector('.settings-nav-item.active[data-settings-panel]');
+            var active = document.querySelector('#settings-section-nav [aria-current="page"]');
             selectSettingsSection(active ? active.dataset.settingsPanel : _settingsFirstAvailablePanelId(), { skipStore: true });
         });
         _settingsSectionResizeBound = true;
@@ -1100,17 +1074,25 @@ function initSettingsSectionNav() {
     try {
         selected = localStorage.getItem('ratspeak_settings_section') || selected;
     } catch(e) {}
+    // Sections that moved in 1.1 land on their new home.
+    if (selected === 'panel-settings-system') selected = 'panel-settings-storage';
+    if (selected === 'panel-settings-channels') selected = 'panel-settings-general';
+    if (selected === 'panel-settings-identity') selected = 'panel-settings-general';
     selectSettingsSection(selected, { skipStore: true });
     if (_settingsMobileModeActive()) _settingsMobileDetailActive = false;
     syncSettingsMobileLayout();
 }
 
 function syncSettingsMobileLayout() {
-    var page = document.querySelector('#view-settings .settings-page');
+    var page = document.getElementById('settings-page');
     if (!page) return;
     var mobile = _settingsMobileModeActive();
-    page.classList.toggle('settings-mobile-mode', mobile);
-    page.classList.toggle('settings-mobile-detail-active', mobile && _settingsMobileDetailActive);
+    var open = mobile && _settingsMobileDetailActive;
+    page.classList.toggle('settings-mobile-detail-active', open);
+    var detail = page.querySelector('.settings-detail-pane');
+    var pane = page.querySelector('.settings-nav-pane');
+    if (detail) detail.classList.toggle('is-open', open);
+    if (pane) pane.classList.toggle('is-covered', open);
 }
 
 function isSettingsMobileDetailActive() {
@@ -1122,10 +1104,10 @@ function showSettingsMobileSectionIndex(opts) {
     _settingsMobileDetailActive = false;
     syncSettingsMobileLayout();
     if (_settingsMobileModeActive()) {
-        var view = document.getElementById('view-settings');
-        if (view) view.scrollTop = 0;
+        var scroller = document.querySelector('#view-settings .settings-nav-pane .ui-pane-scroll');
+        if (scroller) scroller.scrollTop = 0;
         if (opts.restoreFocus !== false) {
-            var activeItem = document.querySelector('.settings-nav-item.active[data-settings-panel]');
+            var activeItem = document.querySelector('#view-settings .settings-index [data-settings-panel="' + _settingsShownPanelId + '"]');
             if (activeItem) requestAnimationFrame(function() { activeItem.focus({ preventScroll: true }); });
         }
     }
@@ -1310,38 +1292,12 @@ function settingsCurrentActiveIdentity() {
 
 function syncSettingsIdentityActions() {
     var active = settingsCurrentActiveIdentity();
-    var desc = document.getElementById('settings-active-identity-desc');
-    var exportBtn = document.getElementById('settings-backup-identity-btn');
-    var phraseBtn = document.getElementById('settings-view-recovery-phrase-btn');
+    var value = document.getElementById('settings-identity-value');
+    if (!value) return;
     var activeName = active && typeof identityDisplayName === 'function'
         ? identityDisplayName(active)
-        : (active && (active.display_name || active.nickname || active.hash));
-
-    if (desc) {
-        desc.textContent = active
-            ? ('Active: ' + (activeName || 'Unnamed'))
-            : 'No active identity loaded.';
-    }
-
-    if (exportBtn) {
-        var exportDisabled = !active || !!active.is_hardware;
-        exportBtn.disabled = exportDisabled;
-        exportBtn.title = !active
-            ? 'No active identity loaded'
-            : (active.is_hardware ? 'Hardware-key identities cannot be exported' : 'Export active identity');
-    }
-
-    if (phraseBtn) {
-        var phraseDisabled = !active || !!active.is_hardware || !active.has_mnemonic;
-        phraseBtn.disabled = phraseDisabled;
-        phraseBtn.title = !active
-            ? 'No active identity loaded'
-            : (active.is_hardware
-                ? 'Hardware-key identities do not have a recovery phrase on this device'
-                : (!active.has_mnemonic ? 'No recovery phrase is available for this identity' : 'View active recovery phrase'));
-    }
-
-    syncSettingsIdentityStatus();
+        : (active && (active.display_name || active.nickname || ''));
+    value.textContent = active ? (activeName || 'Unnamed') : '';
 }
 window.syncSettingsIdentityActions = syncSettingsIdentityActions;
 
@@ -1353,26 +1309,16 @@ function settingsCurrentStatusValue() {
 }
 
 function syncSettingsIdentityStatus() {
-    var active = settingsCurrentActiveIdentity();
-    var desc = document.getElementById('settings-identity-status-desc');
-    var actionBtn = document.getElementById('settings-status-action-btn');
-    var status = active ? settingsCurrentStatusValue() : '';
-
-    if (desc) {
-        desc.textContent = active
-            ? (status || 'Not set.')
-            : 'No active identity loaded.';
-        desc.title = status || '';
-    }
-
-    if (actionBtn) {
-        actionBtn.disabled = !active;
-        actionBtn.textContent = status ? 'Edit' : 'Set';
-        actionBtn.title = !active
-            ? 'No active identity loaded'
-            : (status ? 'Edit status' : 'Set status');
-    }
+    syncSettingsIdentityActions();
 }
+
+(function() {
+    var row = document.getElementById('settings-open-identity');
+    if (row) row.addEventListener('click', function() {
+        if (typeof openIdentityPage === 'function') openIdentityPage();
+        else switchView('identity');
+    });
+})();
 
 var PROFILE_STATUS_MAX_BYTES = 50;
 var _activeProfileStatus = '';
@@ -1686,27 +1632,17 @@ RS.listen('lxmf_identity', function(data) {
 
 function applyTransportModePayload(data) {
     if (RS.ui && typeof RS.ui.applyTransportModePayload === 'function') {
-        RS.ui.applyTransportModePayload('transport-mode-select', data, { toastSuppressed: true });
+        RS.ui.applyTransportModePayload('transport-mode-seg', data, { toastSuppressed: true });
     }
 }
 
-var _settingsTransportBadge = document.getElementById('transport-mode-select');
-if (_settingsTransportBadge) {
-    function _openTransportChoice() {
-        if (RS.ui && typeof RS.ui.openTransportModeChoice === 'function') {
-            RS.ui.openTransportModeChoice(_settingsTransportBadge);
-        }
-    }
-
-    if (RS.ui && typeof RS.ui.bindTransportChoice === 'function') {
-        RS.ui.bindTransportChoice(_settingsTransportBadge);
-    } else {
-        _settingsTransportBadge.addEventListener('click', _openTransportChoice);
-        _settingsTransportBadge.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _openTransportChoice(); }
-        });
-    }
-}
+(function() {
+    var seg = document.getElementById('transport-mode-seg');
+    if (!seg) return;
+    _settingsBindSeg(seg, function(mode) {
+        if (RS.ui && typeof RS.ui.setTransportMode === 'function') RS.ui.setTransportMode(seg, mode);
+    });
+})();
 
 // Native NetworkCallback / NWPathMonitor publishes directly to Rust; the
 // WebView only observes transport-policy updates.
@@ -1717,9 +1653,9 @@ RS.listen('transport_mode_updated', function(data) {
 
 var _announceLabels = {
     0: 'Never',
-    900: '15 min',
-    1800: '30 min',
-    3600: '1 hr'
+    900: '15 minutes',
+    1800: '30 minutes',
+    3600: '1 hour'
 };
 
 function _announceLabel(secs) {
@@ -1727,29 +1663,57 @@ function _announceLabel(secs) {
     if (_announceLabels[secs] !== undefined) return _announceLabels[secs];
     if (secs <= 0) return 'Never';
     var hours = secs / 3600;
-    if (hours >= 1 && hours === Math.floor(hours)) return hours + 'h';
-    return Math.round(secs / 60) + ' min';
+    if (hours >= 1 && hours === Math.floor(hours)) return hours + ' hours';
+    return Math.round(secs / 60) + ' minutes';
 }
 
-var _settingsAnnounceBadge = document.getElementById('auto-announce-select');
-if (_settingsAnnounceBadge) {
-    function _openAnnounceChoice() {
-        rsChoice({
-            title: 'Auto-Announce',
-            message: 'Automatically announce your presence every:',
-            choices: [
-                { label: 'Never', value: '0', hint: 'Only announce manually.' },
-                { label: '15 minutes', value: '900', hint: 'Recommended for active mesh networks.' },
-                { label: '30 minutes', value: '1800', hint: 'Good balance of visibility and efficiency.' },
-                { label: '1 hour', value: '3600', hint: 'Low-traffic, long-running nodes.' },
-                { label: 'Custom\u2026', value: 'custom', hint: 'Set a custom interval (1\u201348 hours).' }
-            ]
-        }).then(function(val) {
-            if (val === null) return;
-            if (val === 'custom') {
-                return rsPrompt({
-                    title: 'Custom Interval',
-                    message: 'Enter interval in hours (1\u201348):',
+// An inline select's value: the visible words and the stored value.
+function _settingsSetSelectValue(select, text, value) {
+    if (!select) return;
+    var v = select.querySelector('.v');
+    if (v) v.textContent = text;
+    else select.textContent = text;
+    if (value !== undefined) select.setAttribute('data-value', value);
+    var label = select.getAttribute('data-label') || (select.getAttribute('aria-label') || '').split(':')[0];
+    select.setAttribute('data-label', label);
+    select.setAttribute('aria-label', label + ': ' + text);
+}
+
+// One menu for every inline select: a trailing check on the current value.
+function _settingsOpenSelect(select, title, choices, current, onPick) {
+    if (!select || !RS.kit || typeof RS.kit.menu !== 'function') return;
+    RS.kit.menu(select, {
+        title: title,
+        items: choices.map(function(choice) {
+            if (choice.separator) return { separator: true };
+            return {
+                label: choice.label,
+                hint: choice.hint,
+                checked: String(choice.value) === String(current),
+                onSelect: function() { onPick(choice.value); }
+            };
+        })
+    });
+}
+
+var _settingsAnnounceSelect = document.getElementById('auto-announce-select');
+if (_settingsAnnounceSelect) {
+    _settingsAnnounceSelect.addEventListener('click', function() {
+        var current = parseInt(_settingsAnnounceSelect.getAttribute('data-value'), 10);
+        if (isNaN(current)) current = 1800;
+        var preset = [0, 900, 1800, 3600].indexOf(current) !== -1;
+        _settingsOpenSelect(_settingsAnnounceSelect, 'Auto-announce', [
+            { label: 'Never', value: '0', hint: 'Announce only when you choose.' },
+            { label: '15 minutes', value: '900' },
+            { label: '30 minutes', value: '1800' },
+            { label: '1 hour', value: '3600' },
+            { separator: true },
+            { label: preset ? 'Custom…' : 'Custom: ' + _announceLabel(current), value: 'custom', hint: 'Between 1 and 48 hours.' }
+        ], preset ? String(current) : 'custom', function(val) {
+            var pending = val === 'custom'
+                ? rsPrompt({
+                    title: 'Custom interval',
+                    message: 'Hours between announces, from 1 to 48.',
                     placeholder: 'e.g. 2',
                     confirmText: 'Set'
                 }).then(function(input) {
@@ -1758,23 +1722,17 @@ if (_settingsAnnounceBadge) {
                     if (isNaN(hours) || hours < 1) hours = 1;
                     if (hours > 48) hours = 48;
                     return String(hours * 3600);
+                })
+                : Promise.resolve(val);
+            pending.then(function(secs) {
+                if (secs === null || secs === undefined) return;
+                var interval = parseInt(secs, 10);
+                _settingsSetSelectValue(_settingsAnnounceSelect, _announceLabel(interval), interval);
+                RS.invoke('set_auto_announce', { interval: interval }).catch(function(err) {
+                    showToast((err && err.message) || 'Could not update the announce interval', 'toast-error', 8000);
                 });
-            }
-            return val;
-        }).then(function(secs) {
-            if (secs === null || secs === undefined) return;
-            var interval = parseInt(secs, 10);
-            _settingsAnnounceBadge.textContent = _announceLabel(interval);
-            _settingsAnnounceBadge.setAttribute('data-value', interval);
-            RS.invoke('set_auto_announce', { interval: interval }).catch(function(err) {
-                showToast((err && err.message) || 'Could not update the announce interval', 'toast-error', 8000);
             });
         });
-    }
-
-    _settingsAnnounceBadge.addEventListener('click', _openAnnounceChoice);
-    _settingsAnnounceBadge.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _openAnnounceChoice(); }
     });
 }
 
@@ -1784,12 +1742,11 @@ RS.listen('auto_announce_updated', function(data) {
 
 function applyAppSettingsPayload(data) {
     if (!data) return;
-    var badge = document.getElementById('auto-announce-select');
+    var announce = document.getElementById('auto-announce-select');
     var interval = data.auto_announce_interval !== undefined ? data.auto_announce_interval : data.interval;
-    if (badge && interval !== undefined) {
+    if (announce && interval !== undefined) {
         var secs = parseInt(interval, 10);
-        badge.textContent = _announceLabel(secs);
-        badge.setAttribute('data-value', secs);
+        _settingsSetSelectValue(announce, _announceLabel(secs), secs);
     }
     var usageToggle = document.getElementById('announce-ratspeak-usage-toggle');
     if (usageToggle && data.announce_ratspeak_usage !== undefined) {
@@ -1827,13 +1784,6 @@ function applyAppSettingsPayload(data) {
         );
         syncAppearanceControls();
     }
-    var hwBadge = document.getElementById('hw-lock-timeout-select');
-    if (hwBadge && data.hardware_session_timeout !== undefined) {
-        var t = parseInt(data.hardware_session_timeout, 10);
-        hwBadge.textContent = _hwLockLabel(t);
-        hwBadge.setAttribute('data-value', t);
-        hwBadge.classList.toggle('settings-state-value', !t || t <= 0);
-    }
     if (data.developer_mode !== undefined) {
         adoptDeveloperModeFromBackend(data.developer_mode);
     }
@@ -1846,63 +1796,12 @@ function applyAppSettingsPayload(data) {
     if (data.channel_hosting_enabled !== undefined) {
         adoptChannelHostingFromBackend(data.channel_hosting_enabled);
     }
-}
-
-function _hwLockLabel(secs) {
-    if (!secs || secs <= 0) return 'OFF';
-    if (secs % 3600 === 0) { var h = secs / 3600; return h + (h === 1 ? ' hour' : ' hours'); }
-    if (secs % 60 === 0) return (secs / 60) + ' min';
-    return secs + 's';
-}
-
-// Reveal the Auto-Lock row when an identity has a PIN: a hardware key or a
-// passcode.
-function _maybeRevealHwLockRow() {
-    var row = document.getElementById('hw-lock-row');
-    if (!row) return;
-    RS.invoke('api_list_identities').then(function(list) {
-        var protectedIdentity = Array.isArray(list) && list.some(function(i) {
-            return i && (i.is_hardware || i.passcode_protected);
-        });
-        row.style.display = protectedIdentity ? '' : 'none';
-    }).catch(function() {});
-}
-
-function _initHwLockSetting() {
-    var badge = document.getElementById('hw-lock-timeout-select');
-    if (!badge) return;
-    function open() {
-        rsChoice({
-            title: 'Auto-Lock',
-            message: 'Lock an identity with a PIN once this long has passed since you unlocked it. You’ll re-enter its PIN to resume.',
-            choices: [
-                { label: 'OFF', value: '0', hint: 'Locks when you switch identities or restart Ratspeak.' },
-                { label: '5 minutes', value: '300', hint: 'Tightest; frequent PIN prompts.' },
-                { label: '15 minutes', value: '900' },
-                { label: '30 minutes', value: '1800' },
-                { label: '1 hour', value: '3600' }
-            ]
-        }).then(function(val) {
-            if (val === null || val === undefined) return;
-            var secs = parseInt(val, 10);
-            badge.textContent = _hwLockLabel(secs);
-            badge.setAttribute('data-value', secs);
-            badge.classList.toggle('settings-state-value', !secs || secs <= 0);
-            RS.invoke('set_hardware_lock_timeout', { seconds: secs }).catch(function(err) {
-                showToast((err && err.message) || 'Could not update auto-lock', 'toast-error', 8000);
-            });
-        });
+    if (data.update_last_checked !== undefined) {
+        adoptUpdateLastCheckedFromBackend(data.update_last_checked);
     }
-    badge.addEventListener('click', open);
-    badge.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
-    });
+    if (typeof RS.adoptUiState === 'function') RS.adoptUiState(data);
 }
 
-document.addEventListener('DOMContentLoaded', function() {
-    _initHwLockSetting();
-    _maybeRevealHwLockRow();
-});
 
 (function() {
     var usageToggle = document.getElementById('announce-ratspeak-usage-toggle');
@@ -1910,9 +1809,7 @@ document.addEventListener('DOMContentLoaded', function() {
     var androidRnodeAutoResumeToggle = document.getElementById('android-rnode-auto-resume-toggle');
     var lxmfLimitToggle = document.getElementById('lxmf-limit-1mb-toggle');
     var keepTryingToggle = document.getElementById('lxmf-keep-trying-toggle');
-    if (androidRnodeAutoResumeRow) {
-        androidRnodeAutoResumeRow.style.display = isAndroid() ? '' : 'none';
-    }
+    if (androidRnodeAutoResumeRow) androidRnodeAutoResumeRow.hidden = !isAndroid();
     initActivityIdentityProtectionToggle();
     initHideKnownSpamPeersToggle();
     initPaperMessagesToggle();
@@ -1989,20 +1886,15 @@ function _initNotificationPreview(row, badge) {
     function show(value) {
         var known = Object.prototype.hasOwnProperty.call(NOTIFICATION_PREVIEW_LABELS, value);
         var preview = known ? value : 'name_and_message';
-        badge.textContent = NOTIFICATION_PREVIEW_LABELS[preview];
-        badge.setAttribute('data-value', preview);
+        _settingsSetSelectValue(badge, NOTIFICATION_PREVIEW_LABELS[preview], preview);
     }
     badge.addEventListener('click', function() {
         var previous = badge.getAttribute('data-value') || 'name_and_message';
-        rsChoice({
-            title: 'Previews',
-            message: 'What message alerts show. A call always shows who is calling.',
-            choices: [
-                { label: 'Name and message', value: 'name_and_message' },
-                { label: 'Name only', value: 'name_only', hint: '“Message from Alice”, without the text.' },
-                { label: 'Neither', value: 'neither', hint: 'Just “New message”.' }
-            ]
-        }).then(function(value) {
+        _settingsOpenSelect(badge, 'Previews', [
+            { label: 'Name and message', value: 'name_and_message' },
+            { label: 'Name only', value: 'name_only', hint: '“Message from Alice”, without the text.' },
+            { label: 'Neither', value: 'neither', hint: 'Just “New message”. A call always shows who is calling.' }
+        ], previous, function(value) {
             if (!value || value === previous) return;
             show(value);
             return RS.invoke('set_notification_preview', { preview: value }).then(function(settings) {
@@ -2015,7 +1907,7 @@ function _initNotificationPreview(row, badge) {
     });
     return {
         show: show,
-        visible: function(enabled) { row.style.display = enabled ? '' : 'none'; }
+        visible: function(enabled) { row.hidden = !enabled; }
     };
 }
 
@@ -2048,7 +1940,7 @@ function _settingsBatteryPresentation(state) {
     var _android = typeof hasAndroidBridge === 'function' && hasAndroidBridge();
     var _notifAuthorization = 'unavailable';
     var _notifPreferenceEnabled = true;
-    _notifRow.style.display = '';
+    _notifRow.hidden = false;
     var _previewRow = document.getElementById('settings-row-notification-preview');
     var _previewBadge = document.getElementById('notification-preview-select');
     var _preview = _previewRow && _previewBadge
@@ -2058,14 +1950,14 @@ function _settingsBatteryPresentation(state) {
     function _refreshNotificationAuthorization() {
         if (!_isMobile || typeof rsNotify === 'undefined') return;
         if (!_notifPreferenceEnabled) {
-            if (_notifAction) _notifAction.style.display = 'none';
+            if (_notifAction) _notifAction.hidden = true;
             return;
         }
         rsNotify.permissionState().then(function(state) {
             _notifAuthorization = state;
             if (_notifAction) {
                 var action = _settingsNotificationPresentation(_notifPreferenceEnabled, state);
-                _notifAction.style.display = action.hidden ? 'none' : '';
+                _notifAction.hidden = !!action.hidden;
                 _notifAction.disabled = action.disabled;
                 _notifAction.textContent = action.label;
             }
@@ -2074,7 +1966,7 @@ function _settingsBatteryPresentation(state) {
 
     function _refreshKeepConnected() {
         if (!_android || !_keepRow || !_keepAction || !_keepDesc) return;
-        _keepRow.style.display = '';
+        _keepRow.hidden = false;
         var status = 'unavailable';
         try { status = window.RatspeakAndroid.batteryOptimizationStatus(); } catch (_) {}
         var presentation = _settingsBatteryPresentation(status);
@@ -2092,7 +1984,7 @@ function _settingsBatteryPresentation(state) {
         if (_notifPreferenceEnabled && typeof rsNotify !== 'undefined' && rsNotify.available()) {
             _refreshNotificationAuthorization();
         } else if (_notifAction) {
-            _notifAction.style.display = 'none';
+            _notifAction.hidden = true;
         }
     }).catch(function() {});
 
@@ -2107,7 +1999,7 @@ function _settingsBatteryPresentation(state) {
                 setTimeout(_refreshNotificationAuthorization, 350);
             });
         } else if (_notifAction) {
-            _notifAction.style.display = 'none';
+            _notifAction.hidden = true;
         }
     });
 
@@ -2160,44 +2052,8 @@ RS.listen('desktop_notifications_updated', function(data) {
     if (typeof rsNotify !== 'undefined') rsNotify.setEnabled(!!data.enabled);
 });
 
-var settingsCreateBtn = document.getElementById('settings-create-identity-btn');
-if (settingsCreateBtn) settingsCreateBtn.addEventListener('click', function() {
-    if (typeof createNewIdentity === 'function') createNewIdentity();
-});
-
-var settingsImportBtn = document.getElementById('settings-import-identity-btn');
-if (settingsImportBtn) settingsImportBtn.addEventListener('click', function() {
-    if (typeof importIdentity === 'function') importIdentity();
-});
-
-var settingsBackupBtn = document.getElementById('settings-backup-identity-btn');
-if (settingsBackupBtn) settingsBackupBtn.addEventListener('click', function() {
-    if (typeof exportActiveIdentity === 'function') exportActiveIdentity();
-});
-
-var settingsViewPhraseBtn = document.getElementById('settings-view-recovery-phrase-btn');
-if (settingsViewPhraseBtn) settingsViewPhraseBtn.addEventListener('click', function() {
-    if (typeof viewActiveRecoveryPhrase === 'function') viewActiveRecoveryPhrase();
-    else if (typeof showToast === 'function') showToast('Recovery phrase is not ready yet', 'toast-warning', 2500);
-});
-
-var settingsStatusActionBtn = document.getElementById('settings-status-action-btn');
-if (settingsStatusActionBtn) settingsStatusActionBtn.addEventListener('click', function() {
-    if (settingsStatusActionBtn.disabled) return;
-    if (typeof openIdentityStatusEditor === 'function') openIdentityStatusEditor();
-});
-
-var _manageIdentitiesBtn = document.getElementById('settings-manage-identities-btn');
-if (_manageIdentitiesBtn) {
-    _manageIdentitiesBtn.addEventListener('click', function() {
-        if (typeof switchView === 'function') switchView('identity');
-    });
-}
-
 syncSettingsIdentityActions();
 
-// A delete that removed the rows but left files for the cleanup sweep
-// succeeded with a caveat. Returns whether that was the case.
 function _showBulkDeleteFailure(err, failMsg) {
     if (err && err.code === 'files_not_removed') {
         showToast('Messages deleted. Some files could not be removed yet; Ratspeak will retry.',
@@ -2208,14 +2064,23 @@ function _showBulkDeleteFailure(err, failMsg) {
     return false;
 }
 
-function clearWithConfirm(commandName, confirmMsg, successMsg, failMsg) {
-    var errorMsg = failMsg || 'Operation failed.';
-    rsConfirm({ message: confirmMsg, danger: true, confirmText: 'Clear' }).then(function(ok) {
+function clearAtOnce(commandName, successMsg, failMsg) {
+    RS.invoke(commandName).then(function() {
+        showToast(successMsg, 'toast-success', 3000);
+    }).catch(function(err) {
+        _showBulkDeleteFailure(err, failMsg);
+    });
+}
+
+function deleteWithConfirm(commandName, title, message, confirmText, successMsg, failMsg) {
+    rsConfirm({ title: title, message: message, danger: true, confirmText: confirmText }).then(function(ok) {
         if (!ok) return;
         RS.invoke(commandName).then(function() {
+            if (typeof haptic === 'function') haptic('success');
             showToast(successMsg, 'toast-success', 3000);
         }).catch(function(err) {
-            _showBulkDeleteFailure(err, errorMsg);
+            var partial = _showBulkDeleteFailure(err, failMsg);
+            if (typeof haptic === 'function') haptic(partial ? 'warning' : 'error');
         });
     });
 }
@@ -2223,50 +2088,41 @@ function clearWithConfirm(commandName, confirmMsg, successMsg, failMsg) {
 var clearPathsBtn = document.getElementById('settings-clear-paths');
 if (clearPathsBtn) {
     clearPathsBtn.addEventListener('click', function() {
-        clearWithConfirm('api_clear_paths',
-            'Clear all cached paths? Paths will be re-discovered over time.',
-            'Path table cleared',
-            'Could not clear paths');
+        clearAtOnce('api_clear_paths', 'Routes cleared', 'Could not clear routes');
     });
 }
 
 var clearAnnouncesBtn = document.getElementById('settings-clear-announces');
 if (clearAnnouncesBtn) {
     clearAnnouncesBtn.addEventListener('click', function() {
-        clearWithConfirm('api_clear_announces',
-            'Clear discovered peers and announces? Contacts, blocked users, and people you have messaged stay. Others reappear when they announce again.',
-            'Peers and announces cleared',
-            'Could not clear peers and announces');
+        clearAtOnce('api_clear_announces', 'Peers cleared', 'Could not clear peers');
     });
 }
 
 var clearMessagesBtn = document.getElementById('settings-clear-messages');
 if (clearMessagesBtn) {
     clearMessagesBtn.addEventListener('click', function() {
-        clearWithConfirm('api_clear_messages',
-            'Delete ALL messages? This cannot be undone.',
-            'All messages deleted',
-            'Could not delete messages');
+        deleteWithConfirm('api_clear_messages', 'Delete all messages?',
+            'Every conversation on this device is deleted. This can’t be undone.',
+            'Delete messages', 'All messages deleted', 'Could not delete messages');
     });
 }
 
 var clearContactsBtn = document.getElementById('settings-clear-contacts');
 if (clearContactsBtn) {
     clearContactsBtn.addEventListener('click', function() {
-        clearWithConfirm('api_clear_contacts',
-            'Delete ALL contacts? Blocked users stay blocked. This cannot be undone.',
-            'All contacts deleted',
-            'Could not delete contacts');
+        deleteWithConfirm('api_clear_contacts', 'Delete all contacts?',
+            'Your saved contacts are deleted. Blocked people stay blocked. This can’t be undone.',
+            'Delete contacts', 'All contacts deleted', 'Could not delete contacts');
     });
 }
 
 var resetDatabaseBtn = document.getElementById('settings-reset-database');
 if (resetDatabaseBtn) {
     resetDatabaseBtn.addEventListener('click', function() {
-        clearWithConfirm('api_reset_database',
-            'Clear ALL messages and contacts? Blocked users stay blocked. This cannot be undone.',
-            'All messages and contacts cleared',
-            'Could not clear messages and contacts');
+        deleteWithConfirm('api_reset_database', 'Delete messages and contacts?',
+            'Every conversation and saved contact is deleted. Blocked people stay blocked. This can’t be undone.',
+            'Delete both', 'All messages and contacts deleted', 'Could not delete messages and contacts');
     });
 }
 
@@ -2413,88 +2269,44 @@ function handleManualAnnounceResult(data) {
 
 function confirmDangerAction(action, onClose) {
     function _close() { if (typeof onClose === 'function') try { onClose(); } catch (_) {} }
-    var actions = {
-        'clear-paths': {
-            msg: 'Clear all cached paths? Paths will be re-discovered over time.',
-            command: 'api_clear_paths',
-            success: 'Path table cleared',
-            fail: 'Could not clear paths'
-        },
-        'clear-announces': {
-            msg: 'Clear discovered peers and announces? Contacts, blocked users, and people you have messaged stay. Others reappear when they announce again.',
-            command: 'api_clear_announces',
-            success: 'Peers and announces cleared',
-            fail: 'Could not clear peers and announces'
-        },
-        'clear-messages': {
-            msg: 'Delete ALL messages? This cannot be undone.',
-            command: 'api_clear_messages',
-            success: 'All messages deleted',
-            fail: 'Could not delete messages'
-        },
-        'clear-contacts': {
-            msg: 'Delete ALL contacts? Blocked users stay blocked. This cannot be undone.',
-            command: 'api_clear_contacts',
-            success: 'All contacts deleted',
-            fail: 'Could not delete contacts'
-        },
-        'clear-all-data': {
-            msg: 'Clear ALL messages and contacts? Blocked users stay blocked. This cannot be undone.',
-            command: 'api_reset_database',
-            success: 'All messages and contacts cleared'
-        },
-        'factory-reset': null
-    };
-
+    if (action !== 'factory-reset') return;
     if (typeof closeDangerZone === 'function') closeDangerZone();
-
-    if (action === 'factory-reset') {
-        rsConfirm({
-            message: 'Factory reset?\n\nThis will:\n\u2022 Delete ALL local identities\n\u2022 Delete all contacts and messages\n\u2022 Delete all settings and history\n\u2022 Reset the app to first-run state\n\nHardware identities stored on a YubiKey are not erased. This cannot be undone.',
+    rsConfirm({
+        title: 'Reset Ratspeak?',
+        message: 'This deletes every identity on this device, with all messages, contacts, settings, and history, and starts Ratspeak fresh. Identities on a hardware key aren’t erased. This can’t be undone.',
+        danger: true,
+        confirmText: 'Reset Ratspeak'
+    }).then(function(ok) {
+        if (!ok) { _close(); return; }
+        return rsConfirm({
+            title: 'Delete everything?',
+            message: 'Every identity and all data on this device are deleted for good.',
             danger: true,
-            confirmText: 'Delete Everything'
-        }).then(function(ok) {
-            if (!ok) { _close(); return; }
-            return rsConfirm({ message: 'Are you absolutely sure? ALL identities and data will be permanently deleted.', danger: true, confirmText: 'Confirm Factory Reset' });
-        }).then(function(ok) {
-            if (ok === undefined) return;
-            if (!ok) { _close(); return; }
-            if (typeof haptic === 'function') haptic('warning');
-            showToast('Resetting Ratspeak…', 'toast-progress', 5000);
-            RS.invoke('api_factory_reset')
-                .then(function() {
-                    if (typeof clearFirstRunAnnounceHintDone === 'function') clearFirstRunAnnounceHintDone();
-                    if (RS.appearance) {
-                        RS.appearance.commit(
-                            RS.appearance.DEFAULT_FAMILY,
-                            RS.appearance.DEFAULT_MODE
-                        );
-                    }
-                    // reload() re-requests tauri://localhost/. location.href='/'
-                    // breaks on dev-contaminated builds (TAURI_CONFIG leak → dev URL).
-                    setTimeout(function() { window.location.reload(); }, 1500);
-                })
-                .catch(function() {
-                    if (typeof haptic === 'function') haptic('error');
-                    showToast('Could not reset Ratspeak', 'toast-error', 5000);
-                    _close();
-                });
+            confirmText: 'Delete everything'
         });
-        return;
-    }
-
-    var cfg = actions[action];
-    if (!cfg) return;
-
-    rsConfirm({ message: cfg.msg, danger: true, confirmText: 'Confirm' }).then(function(ok) {
-        if (!ok) return;
-        RS.invoke(cfg.command).then(function() {
-            if (typeof haptic === 'function') haptic('success');
-            showToast(cfg.success, 'toast-success', 3000);
-        }).catch(function(err) {
-            var partial = _showBulkDeleteFailure(err, cfg.fail || 'Could not complete the operation');
-            if (typeof haptic === 'function') haptic(partial ? 'warning' : 'error');
-        });
+    }).then(function(ok) {
+        if (ok === undefined) return;
+        if (!ok) { _close(); return; }
+        if (typeof haptic === 'function') haptic('warning');
+        showToast('Resetting Ratspeak…', 'toast-progress', 5000);
+        RS.invoke('api_factory_reset')
+            .then(function() {
+                if (typeof clearFirstRunAnnounceHintDone === 'function') clearFirstRunAnnounceHintDone();
+                if (RS.appearance) {
+                    RS.appearance.commit(
+                        RS.appearance.DEFAULT_FAMILY,
+                        RS.appearance.DEFAULT_MODE
+                    );
+                }
+                // reload() re-requests tauri://localhost/. location.href='/'
+                // breaks on dev-contaminated builds (TAURI_CONFIG leak → dev URL).
+                setTimeout(function() { window.location.reload(); }, 1500);
+            })
+            .catch(function() {
+                if (typeof haptic === 'function') haptic('error');
+                showToast('Could not reset Ratspeak', 'toast-error', 5000);
+                _close();
+            });
     });
 }
 
@@ -2509,69 +2321,57 @@ function renderThemeFamilyPicker() {
     if (!grid || grid.childElementCount || !RS.appearance) return;
 
     RS.appearance.families.forEach(function(family) {
-        var label = document.createElement('label');
-        label.className = 'theme-family-option';
-        label.setAttribute('data-family', family.id);
+        var tile = document.createElement('button');
+        tile.type = 'button';
+        tile.className = 'settings-choice';
+        tile.setAttribute('role', 'radio');
+        tile.setAttribute('aria-checked', 'false');
+        tile.setAttribute('data-family', family.id);
 
-        var input = document.createElement('input');
-        input.type = 'radio';
-        input.name = 'settings-theme-family';
-        input.value = family.id;
-        input.setAttribute('aria-label', 'Use ' + family.name + ' theme');
-
-        var card = document.createElement('span');
-        card.className = 'theme-family-card';
-
-        var preview = document.createElement('span');
-        preview.className = 'theme-family-preview';
-        preview.setAttribute('aria-hidden', 'true');
-        preview.style.setProperty('--preview-light-bg', family.preview.light[0]);
-        preview.style.setProperty('--preview-light-panel', family.preview.light[1]);
-        preview.style.setProperty('--preview-light-accent', family.preview.light[2]);
-        preview.style.setProperty('--preview-dark-bg', family.preview.dark[0]);
-        preview.style.setProperty('--preview-dark-panel', family.preview.dark[1]);
-        preview.style.setProperty('--preview-dark-accent', family.preview.dark[2]);
-
-        var light = document.createElement('span');
-        light.className = 'theme-family-preview-half theme-family-preview-light';
-        var dark = document.createElement('span');
-        dark.className = 'theme-family-preview-half theme-family-preview-dark';
-        preview.appendChild(light);
-        preview.appendChild(dark);
+        var swatch = document.createElement('span');
+        swatch.className = 'settings-swatch';
+        swatch.setAttribute('aria-hidden', 'true');
+        [family.preview.light, family.preview.dark].forEach(function(colors) {
+            var half = document.createElement('span');
+            half.style.setProperty('--swatch-bg', colors[0]);
+            half.style.setProperty('--swatch-panel', colors[1]);
+            half.style.setProperty('--swatch-accent', colors[2]);
+            swatch.appendChild(half);
+        });
 
         var name = document.createElement('span');
-        name.className = 'theme-family-name';
+        name.className = 'settings-choice-name';
         name.textContent = family.name;
 
-        card.appendChild(preview);
-        card.appendChild(name);
-        label.appendChild(input);
-        label.appendChild(card);
-        grid.appendChild(label);
+        tile.appendChild(swatch);
+        tile.appendChild(name);
+        grid.appendChild(tile);
     });
+}
+
+// Choice tiles: the selection fill and a check, nothing else.
+function _settingsSyncChoice(tile, selected, busy) {
+    tile.setAttribute('aria-checked', selected ? 'true' : 'false');
+    tile.disabled = !!busy;
+    var name = tile.querySelector('.settings-choice-name');
+    if (!name) return;
+    var check = name.querySelector('.ui-ico');
+    if (selected && !check && RS.kit) name.insertAdjacentHTML('beforeend', RS.kit.icon('check'));
+    if (!selected && check) check.remove();
 }
 
 function syncAppearanceControls() {
     var toggle = document.getElementById('theme-toggle');
-    var picker = document.getElementById('theme-family-picker');
-    if (!toggle || !picker || !RS.appearance) return;
+    var grid = document.getElementById('theme-family-grid');
+    if (!toggle || !grid || !RS.appearance) return;
 
     renderThemeFamilyPicker();
     var current = RS.appearance.get();
-    var familyInputs = picker.querySelectorAll('input[name="settings-theme-family"]');
-    familyInputs.forEach(function(input) {
-        input.checked = input.value === current.family;
-        input.disabled = _appearanceSaving;
+    grid.querySelectorAll('.settings-choice[data-family]').forEach(function(tile) {
+        _settingsSyncChoice(tile, tile.getAttribute('data-family') === current.family, _appearanceSaving);
     });
-
-    var btns = toggle.querySelectorAll('.theme-toggle-btn');
-    btns.forEach(function(btn) {
-        var selected = btn.getAttribute('data-theme') === current.preference;
-        btn.classList.toggle('active', selected);
-        btn.setAttribute('aria-pressed', selected ? 'true' : 'false');
-        btn.disabled = _appearanceSaving;
-    });
-    picker.setAttribute('aria-busy', _appearanceSaving ? 'true' : 'false');
+    _settingsSyncSeg(toggle, current.preference, _appearanceSaving);
+    grid.setAttribute('aria-busy', _appearanceSaving ? 'true' : 'false');
     toggle.setAttribute('aria-busy', _appearanceSaving ? 'true' : 'false');
 }
 
@@ -2603,8 +2403,8 @@ function saveAppearance(family, preference) {
 
 function initThemeToggle() {
     var toggle = document.getElementById('theme-toggle');
-    var picker = document.getElementById('theme-family-picker');
-    if (!toggle || !picker || !RS.appearance) return;
+    var grid = document.getElementById('theme-family-grid');
+    if (!toggle || !grid || !RS.appearance) return;
 
     renderThemeFamilyPicker();
     syncAppearanceControls();
@@ -2612,17 +2412,13 @@ function initThemeToggle() {
     if (_appearanceControlsInitialized) return;
     _appearanceControlsInitialized = true;
 
-    picker.addEventListener('change', function(event) {
-        var input = event.target.closest('input[name="settings-theme-family"]');
-        if (!input || !input.checked) return;
-        var current = RS.appearance.get();
-        saveAppearance(input.value, current.preference);
+    grid.addEventListener('click', function(event) {
+        var tile = event.target.closest('.settings-choice[data-family]');
+        if (!tile || tile.disabled || tile.getAttribute('aria-checked') === 'true') return;
+        saveAppearance(tile.getAttribute('data-family'), RS.appearance.get().preference);
     });
-    toggle.querySelectorAll('.theme-toggle-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            var current = RS.appearance.get();
-            saveAppearance(current.family, this.getAttribute('data-theme'));
-        });
+    _settingsBindSeg(toggle, function(mode) {
+        saveAppearance(RS.appearance.get().family, mode);
     });
     window.addEventListener('ratspeak-theme-changed', syncAppearanceControls);
 }
@@ -2630,6 +2426,9 @@ function initThemeToggle() {
 function initHapticsToggle() {
     var toggle = document.getElementById('haptics-enabled-toggle');
     if (!toggle) return;
+    // Vibration means something only on a phone or tablet.
+    var block = document.getElementById('settings-device-block');
+    if (block) block.hidden = !((typeof isTauriMobile === 'function' && isTauriMobile()) || !!window.__RATSPEAK_MOBILE__);
 
     toggle.checked = typeof getHapticsEnabled === 'function' ? getHapticsEnabled() : false;
 
@@ -2644,18 +2443,17 @@ function initHapticsToggle() {
 }
 
 function initTextScaleControl() {
-    var inputs = document.querySelectorAll('input[name="settings-text-scale"]');
-    if (!inputs.length || !RS.textScale) return;
+    var group = document.getElementById('settings-text-scale-tiles');
+    if (!group || !RS.textScale) return;
+    var tiles = group.querySelectorAll('.settings-choice[data-scale]');
 
     function sync(value) {
         var percent = RS.textScale.normalize(value);
-        inputs.forEach(function(input) {
-            var selected = Number(input.value) === percent;
-            input.checked = selected;
-            input.disabled = _textScaleSaving;
+        tiles.forEach(function(tile) {
+            tile.setAttribute('aria-checked', Number(tile.getAttribute('data-scale')) === percent ? 'true' : 'false');
+            tile.disabled = _textScaleSaving;
         });
-        var fieldset = inputs[0].closest('fieldset');
-        if (fieldset) fieldset.setAttribute('aria-busy', _textScaleSaving ? 'true' : 'false');
+        group.setAttribute('aria-busy', _textScaleSaving ? 'true' : 'false');
     }
 
     function save(value) {
@@ -2681,11 +2479,10 @@ function initTextScaleControl() {
     if (_textScaleInitialized) return;
     _textScaleInitialized = true;
 
-    inputs.forEach(function(input) {
-        input.addEventListener('change', function() {
-            if (!input.checked) return;
-            save(input.value);
-        });
+    group.addEventListener('click', function(event) {
+        var tile = event.target.closest('.settings-choice[data-scale]');
+        if (!tile || tile.disabled || tile.getAttribute('aria-checked') === 'true') return;
+        save(Number(tile.getAttribute('data-scale')));
     });
     window.addEventListener('ratspeak-text-scale-changed', function(event) {
         if (event.detail) sync(event.detail.percent);
@@ -2702,193 +2499,131 @@ document.addEventListener('DOMContentLoaded', function() {
 
 function updateBlockedCount() {
     RS.invoke('api_blocked_contacts').then(function(list) {
-        var badge = document.getElementById('settings-blocked-count');
-        if (badge) badge.textContent = 'Manage';
+        var value = document.getElementById('settings-blocked-value');
+        var n = Array.isArray(list) ? list.length : 0;
+        if (value) value.textContent = n ? String(n) : 'None';
     }).catch(function() {});
 }
 
 function openBlockListModal() {
-    var existing = document.getElementById('block-list-modal-overlay');
-    if (existing) {
-        if (typeof existing._ratspeakClose === 'function') existing._ratspeakClose();
-        else existing.remove();
-    }
-
-    var overlay = document.createElement('div');
-    overlay.id = 'block-list-modal-overlay';
-    overlay.className = 'block-list-overlay';
-
-    var modal = document.createElement('div');
-    modal.className = 'block-list-modal';
-    modal.innerHTML =
-        '<div class="block-list-header">' +
-            '<span class="block-list-title">Blocked Users</span>' +
-            '<button class="block-list-close" id="block-list-close-btn" aria-label="Close">&times;</button>' +
-        '</div>' +
-        '<div class="block-list-search-wrap">' +
-            '<input type="text" class="block-list-search" id="block-list-search" placeholder="Search blocked users..." autocomplete="off">' +
-        '</div>' +
-        '<div class="block-list-container" id="block-list-container">' +
-            '<div class="loading-state p-12"><span class="loading-spinner"></span> Loading...</div>' +
-        '</div>';
-
-    overlay.appendChild(modal);
-    document.body.appendChild(overlay);
-
+    if (!RS.kit || typeof RS.kit.dialog !== 'function') return;
     var allBlocked = [];
-
-    var refreshFromServer = function() {
-        RS.invoke('api_blocked_contacts').then(function(list) {
-            if (!document.getElementById('block-list-modal-overlay')) return;
-            allBlocked = list;
-            var q = document.getElementById('block-list-search');
-            renderBlockList(allBlocked, q ? q.value.toLowerCase().trim() : '');
-        }).catch(function() {});
-    };
-
-    var unlistenPromise = RS.listen('blackhole_update', refreshFromServer);
-    var modalClosed = false;
-    var escHandler = null;
-
-    function closeModal() {
-        if (modalClosed) return;
-        modalClosed = true;
-        if (escHandler) document.removeEventListener('keydown', escHandler);
-        unlistenPromise.then(function(unlisten) { if (typeof unlisten === 'function') unlisten(); });
-        overlay.remove();
-    }
-    overlay._ratspeakClose = closeModal;
-    overlay.addEventListener('click', function(e) { if (e.target === overlay) closeModal(); });
-    document.getElementById('block-list-close-btn').addEventListener('click', closeModal);
-    escHandler = function(e) { if (e.key === 'Escape') closeModal(); };
-    document.addEventListener('keydown', escHandler);
-
-    RS.invoke('api_blocked_contacts').then(function(list) {
-        allBlocked = list;
-        renderBlockList(allBlocked, '');
-    }).catch(function() {
-        document.getElementById('block-list-container').innerHTML =
-            '<div class="block-list-empty">Failed to load block list</div>';
-    });
-
-    document.getElementById('block-list-search').addEventListener('input', function() {
-        var q = this.value.toLowerCase().trim();
-        renderBlockList(allBlocked, q);
-    });
-
-    function renderBlockList(list, query) {
-        var container = document.getElementById('block-list-container');
-        if (!container) return;
-
-        var filtered = list;
-        if (query) {
-            filtered = list.filter(function(b) {
-                return (b.display_name || '').toLowerCase().indexOf(query) !== -1 ||
-                       (b.hash || '').toLowerCase().indexOf(query) !== -1;
-            });
+    var unlistenPromise = null;
+    var built = RS.kit.dialog({
+        title: 'Blocked people',
+        size: 'md',
+        className: 'block-list-sheet',
+        focus: '#block-list-search',
+        body: '<div class="ui-search" role="search">' + RS.kit.icon('search') +
+                '<input type="search" id="block-list-search" placeholder="Search blocked people" aria-label="Search blocked people" autocomplete="off" autocapitalize="none" spellcheck="false"></div>' +
+            '<div id="block-list-container" aria-live="polite"><div class="ui-empty ui-empty--inline" role="status"><span class="ui-spin" aria-hidden="true"></span><span>Loading</span></div></div>' +
+            '<p class="ui-help">Blocked people can’t message you, call you, or see your status.</p>',
+        onClose: function() {
+            if (unlistenPromise) unlistenPromise.then(function(unlisten) { if (typeof unlisten === 'function') unlisten(); });
         }
+    });
+    var search = built.dialog.querySelector('#block-list-search');
+    var container = built.dialog.querySelector('#block-list-container');
 
-        if (filtered.length === 0) {
-            container.innerHTML = '<div class="block-list-empty">' +
-                (query ? 'No matches' : 'No blocked users') + '</div>';
+    function query() { return search ? search.value.toLowerCase().trim() : ''; }
+    function refreshFromServer() {
+        RS.invoke('api_blocked_contacts').then(function(list) {
+            allBlocked = Array.isArray(list) ? list : [];
+            renderBlockList(allBlocked, query());
+            updateBlockedCount();
+        }).catch(function() {
+            container.innerHTML = '<p class="ui-help">Couldn’t load blocked people.</p>';
+        });
+    }
+    unlistenPromise = RS.listen('blackhole_update', refreshFromServer);
+    if (search) search.addEventListener('input', function() { renderBlockList(allBlocked, query()); });
+    refreshFromServer();
+
+    function nameOf(b) {
+        return b.display_name || (RS.kit ? RS.kit.hash.short(b.hash) : b.hash);
+    }
+
+    function renderBlockList(list, q) {
+        var filtered = q ? list.filter(function(b) {
+            return (b.display_name || '').toLowerCase().indexOf(q) !== -1 ||
+                (b.hash || '').toLowerCase().indexOf(q) !== -1;
+        }) : list;
+        if (!filtered.length) {
+            container.innerHTML = '<div class="ui-empty ui-empty--inline"><span>' +
+                (q ? 'No blocked people match.' : 'Nobody is blocked.') + '</span></div>';
             return;
         }
-
-        var shieldSvg = '<svg class="block-list-shield" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">' +
-            '<path d="M8 1.5 2.5 3.5v4.2c0 3.4 2.3 6.4 5.5 7.3 3.2-.9 5.5-3.9 5.5-7.3V3.5L8 1.5z" ' +
-            'fill="currentColor" opacity="0.9"/></svg>';
-
-        var html = '';
-        filtered.forEach(function(b) {
-            var name = b.display_name || (typeof shortHash === 'function' ? shortHash(b.hash, 8, 4) : b.hash.substring(0, 12) + '\u2026');
-            var av = (typeof identityAvatar === 'function') ? identityAvatar(b.hash, 32) : '';
-            var dateStr = b.blocked_at ? new Date(b.blocked_at * 1000).toLocaleDateString() : '';
-            var shield = b.is_network_blocked
-                ? '<span class="block-list-shield-wrap" title="Also dropped at the network layer">' + shieldSvg + '</span>'
-                : '';
-            // Pending = "Also block on the network" was requested but we have not yet
-            // seen this contact's announce, so we cannot resolve their identity hash.
-            // The announce-handler escalates on first sighting (Stage 6).
-            var pending = b.is_blackhole_pending
-                ? '<span class="block-list-pending" title="Network blackhole queued \u2014 will activate on their next announce">pending</span>'
-                : '';
-            html += '<div class="block-list-row" data-hash="' + escapeHtml(b.hash) +
-                    '" data-network-blocked="' + (b.is_network_blocked ? '1' : '0') +
-                    '" data-blackhole-pending="' + (b.is_blackhole_pending ? '1' : '0') + '">' +
-                '<div class="block-list-row-avatar">' + av + '</div>' +
-                '<div class="block-list-row-info">' +
-                    '<span class="block-list-row-name">' + escapeHtml(name) + shield + pending + '</span>' +
-                    '<span class="block-list-row-meta">' + escapeHtml(typeof shortHash === 'function' ? shortHash(b.hash, 8, 4) : b.hash.substring(0, 16)) + (dateStr ? ' \u00B7 ' + dateStr : '') + '</span>' +
-                '</div>' +
-            '</div>';
-        });
-        container.innerHTML = html;
-
-        container.querySelectorAll('.block-list-row').forEach(function(row) {
-            row.addEventListener('click', function() {
-                var h = this.dataset.hash;
-                var isNetworkBlocked = this.dataset.networkBlocked === '1';
-                var isPending = this.dataset.blackholePending === '1';
-                var entry = list.find(function(b) { return b.hash === h; });
-                var displayName = entry ? (entry.display_name || (typeof shortHash === 'function' ? shortHash(h, 8, 4) : h.substring(0, 12))) : (typeof shortHash === 'function' ? shortHash(h, 8, 4) : h.substring(0, 12));
-
-                var afterUnblock = function() {
-                    allBlocked = allBlocked.filter(function(b) { return b.hash !== h; });
-                    var q = document.getElementById('block-list-search');
-                    renderBlockList(allBlocked, q ? q.value.toLowerCase().trim() : '');
-                    updateBlockedCount();
-                };
-
-                if ((isNetworkBlocked || isPending) && typeof rsConfirmWithCheckbox === 'function') {
-                    var help = isPending
-                        ? 'Removes the queued network-layer block (it had not yet activated). Uncheck to leave it queued.'
-                        : 'Stops dropping their packets at the transport layer. Uncheck to keep the network-level block while restoring contact visibility.';
-                    rsConfirmWithCheckbox({
-                        message: 'Unblock "' + displayName + '"?',
-                        confirmText: 'Unblock',
-                        checkboxLabel: 'Also remove the network-layer block',
-                        checkboxHelp: help,
-                        defaultChecked: true
-                    }).then(function(result) {
-                        if (!result.confirmed) return;
-                        RS.invoke('unblock_contact', { args: { hash: h, also_remove_blackhole: result.checked } }).catch(function() {});
-                        afterUnblock();
-                    });
-                } else {
-                    rsConfirm({ message: 'Unblock "' + displayName + '"?', confirmText: 'Unblock' }).then(function(ok) {
-                        if (!ok) return;
-                        RS.invoke('unblock_contact', { args: { hash: h } }).catch(function() {});
-                        afterUnblock();
-                    });
-                }
-            });
-        });
+        container.innerHTML = '<div class="ui-group">' + filtered.map(function(b) {
+            var note = b.is_blackhole_pending
+                ? 'Network block starts at their next announce.'
+                : (b.is_network_blocked ? 'Also blocked on the network.' : '');
+            return '<div class="block-list-row" data-hash="' + escapeHtml(b.hash) + '">' + RS.kit.avatar(b.hash, 'row') +
+                '<span class="block-list-row-text"><b>' + escapeHtml(nameOf(b)) + '</b>' +
+                RS.kit.hash.copy(b.hash, { noun: 'LXMF address' }) +
+                (note ? '<small>' + escapeHtml(note) + '</small>' : '') + '</span>' +
+                '<button type="button" class="ui-btn ui-btn--sm" data-unblock="' + escapeHtml(b.hash) + '" aria-label="Unblock ' + escapeHtml(nameOf(b)) + '">Unblock</button></div>';
+        }).join('') + '</div>';
     }
+
+    container.addEventListener('click', function(e) {
+        var btn = e.target.closest && e.target.closest('[data-unblock]');
+        if (!btn) return;
+        var h = btn.getAttribute('data-unblock');
+        var entry = allBlocked.find(function(b) { return b.hash === h; }) || { hash: h };
+        var displayName = nameOf(entry);
+        function done() {
+            allBlocked = allBlocked.filter(function(b) { return b.hash !== h; });
+            renderBlockList(allBlocked, query());
+            updateBlockedCount();
+            showToast('Unblocked ' + displayName, 'toast-success', 2500);
+        }
+        if ((entry.is_network_blocked || entry.is_blackhole_pending) && typeof rsConfirmWithCheckbox === 'function') {
+            rsConfirmWithCheckbox({
+                message: 'Unblock ' + displayName + '?',
+                confirmText: 'Unblock',
+                checkboxLabel: 'Also remove the network block',
+                checkboxHelp: entry.is_blackhole_pending
+                    ? 'Removes the queued network block, which hasn’t started yet. Clear this to leave it queued.'
+                    : 'Stops dropping their packets on the network. Clear this to keep the network block.',
+                defaultChecked: true
+            }).then(function(result) {
+                if (!result.confirmed) return;
+                RS.invoke('unblock_contact', { args: { hash: h, also_remove_blackhole: result.checked } }).then(done).catch(function() {
+                    showToast('Could not unblock ' + displayName, 'toast-error', 3000);
+                });
+            });
+            return;
+        }
+        RS.invoke('unblock_contact', { args: { hash: h } }).then(done).catch(function() {
+            showToast('Could not unblock ' + displayName, 'toast-error', 3000);
+        });
+    });
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-    var badge = document.getElementById('settings-blocked-count');
-    if (badge) {
-        badge.addEventListener('click', openBlockListModal);
-    }
-
-    var systemHeaders = document.querySelectorAll(
-        '#panel-settings-system .system-subsection-header'
-    );
-    for (var i = 0; i < systemHeaders.length; i++) {
-        systemHeaders[i].addEventListener('click', function() {
-            toggleSystemSubsection(this);
+    var row = document.getElementById('settings-blocked-count');
+    if (row) row.addEventListener('click', openBlockListModal);
+    updateBlockedCount();
+    // About: policies open in the app; the web links open in the browser.
+    document.querySelectorAll('#panel-settings-about [data-about-document]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            if (RS.legal && typeof RS.legal.open === 'function') RS.legal.open(btn.getAttribute('data-about-document'));
         });
-        systemHeaders[i].addEventListener('keydown', handleSystemSubsectionKey);
-    }
+    });
+    document.querySelectorAll('#panel-settings-about [data-external-url]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+            RS.openExternalUrl(btn.getAttribute('data-external-url')).catch(function() {
+                showToast('Could not open the link', 'toast-error', 3000);
+            });
+        });
+    });
 });
 
 function updateTrustedLinksButton(hosts) {
-    var btn = document.getElementById('settings-trusted-links-btn');
-    if (!btn) return;
+    var value = document.getElementById('settings-trusted-links-value');
+    if (!value) return;
     var n = hosts.length;
-    btn.textContent = n ? n + (n === 1 ? ' website' : ' websites') : 'None';
-    btn.setAttribute('aria-label', 'Trusted websites: ' + btn.textContent);
+    value.textContent = n ? String(n) : 'None';
 }
 
 function openTrustedLinksSheet() {

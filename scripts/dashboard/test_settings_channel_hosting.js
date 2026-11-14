@@ -10,24 +10,20 @@ var settingsSource = fs.readFileSync(
     'utf8'
 );
 var start = settingsSource.indexOf('var _settingsChannelHostingBound');
-var end = settingsSource.indexOf('\nfunction readDeveloperModePreference', start);
+var end = settingsSource.indexOf('\nfunction syncActivityIdentityProtectionToggleState', start);
 assert(start >= 0 && end > start, 'missing channel hosting settings source');
 
-var handlers = { off: {}, on: {} };
-var groupState = {};
-var group = {
-    setAttribute: function(name, value) { groupState[name] = value; }
+var handlers = {};
+var busy = {};
+var track = { classList: { toggle: function(name, on) { busy[name] = on; } } };
+var toggle = {
+    checked: false,
+    disabled: false,
+    attrs: {},
+    setAttribute: function(name, value) { this.attrs[name] = value; },
+    addEventListener: function(type, handler) { handlers[type] = handler; },
+    closest: function() { return track; }
 };
-function radio(name, checked) {
-    return {
-        checked: checked,
-        disabled: false,
-        addEventListener: function(type, handler) { handlers[name][type] = handler; },
-        closest: function() { return group; }
-    };
-}
-var off = radio('off', true);
-var on = radio('on', false);
 var desc = { textContent: '' };
 var documentElement = { dataset: {} };
 var calls = [];
@@ -44,8 +40,7 @@ var context = {
     document: {
         documentElement: documentElement,
         getElementById: function(id) {
-            if (id === 'settings-channel-hosting-off') return off;
-            if (id === 'settings-channel-hosting-on') return on;
+            if (id === 'settings-channel-hosting-toggle') return toggle;
             if (id === 'settings-channel-hosting-desc') return desc;
             return null;
         }
@@ -74,12 +69,13 @@ vm.runInNewContext(
 
 (async function() {
     context.initHosting();
-    assert.strictEqual(typeof handlers.on.change, 'function',
-        'entering Settings must bind the ON radio to backend state');
+    assert.strictEqual(typeof handlers.change, 'function',
+        'entering Settings must bind the switch to backend state');
 
-    off.checked = false;
-    on.checked = true;
-    handlers.on.change();
+    toggle.checked = true;
+    handlers.change();
+    assert.strictEqual(busy['is-busy'], true, 'the switch spins while hosting turns on');
+    assert.strictEqual(desc.textContent, 'Turning on channel hosting…');
     await new Promise(function(resolve) { setImmediate(resolve); });
 
     assert.strictEqual(calls.length, 1);
@@ -87,10 +83,11 @@ vm.runInNewContext(
     assert.strictEqual(JSON.stringify(calls[0].args), JSON.stringify({ enabled: true }));
     assert.strictEqual(context.hostingEnabled(), true);
     assert.strictEqual(documentElement.dataset.channelHosting, 'on');
-    assert.strictEqual(on.checked, true);
-    assert.strictEqual(off.checked, false);
-    assert(renders > 0, 'persisted ON state must rerender the Channels hosting card');
-    assert.strictEqual(groupState['aria-busy'], 'false');
+    assert.strictEqual(toggle.checked, true);
+    assert(renders > 0, 'persisted on state must rerender the Channels hosting card');
+    assert.strictEqual(toggle.attrs['aria-busy'], 'false');
+    assert.strictEqual(busy['is-busy'], false);
+    assert.strictEqual(desc.textContent, 'Lets this device host channels.');
 
     console.log('settings channel hosting tests passed');
 })().catch(function(error) {

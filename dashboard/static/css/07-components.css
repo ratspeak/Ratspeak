@@ -1095,28 +1095,11 @@ kbd {
     flex: 1;
 }
 
-.settings-section[data-collapsible] .settings-section-header {
-    cursor: pointer;
-    user-select: none;
-}
-
-.settings-section[data-collapsible] .settings-section-header:hover {
-    opacity: 0.85;
-}
-
-.settings-section.collapsed .settings-section-body {
-    display: none;
-}
-
 .collapse-chevron {
     transition: transform var(--transition-base);
     margin-left: auto;
     flex-shrink: 0;
     opacity: 0.5;
-}
-
-.settings-section.collapsed .collapse-chevron {
-    transform: rotate(-90deg);
 }
 
 .conn-row {

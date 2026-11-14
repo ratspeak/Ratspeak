@@ -8,14 +8,17 @@ const vm = require('node:vm');
 // breakpoint/text-size checks also run in the private maintainer harness.
 const html = fs.readFileSync(path.join(__dirname, '../../dashboard/index.html'), 'utf8');
 const section = html.match(/<section id="network-ownership-settings"[\s\S]*?<\/section>/)[0];
-assert.match(section, /id="network-owner-heading"[^>]*>Network Ownership<\/h3>/);
-assert.match(section, /<label class="prop-toggle">\s*<input[^>]*id="network-owner-share"/);
-assert.match(section, /for="network-owner-share"/);
-assert.match(section, /class="network-owner-actions" id="network-owner-actions" hidden/);
+assert.match(section, /id="network-owner-heading"[^>]*>Reticulum on this device<\/h3>/);
+assert.match(section, /<div class="ui-seg" role="radiogroup" id="network-owner-mode" aria-label="Run by">/);
+assert.match(section, /data-value="managed">Ratspeak<\/button><button type="button" role="radio" aria-checked="false" data-value="existing">Another app<\/button>/);
+assert.match(section, /<label class="ui-switch"><input type="checkbox" role="switch" id="network-owner-share"/);
+assert.match(section, /class="settings-field-actions settings-field-actions--end" id="network-owner-actions" hidden/);
 assert.doesNotMatch(section, /settings-row-actions|Reticulum ownership|Internet\/TCP connections remain/);
-assert.match(section, /class="nr-btn nr-btn-primary" id="network-owner-apply"/);
-assert.match(section, /class="nr-btn nr-btn-ghost" id="network-owner-reset"/);
+assert.match(section, /class="ui-btn ui-btn--primary" id="network-owner-apply"/);
+assert.match(section, /class="ui-btn ui-btn--quiet" id="network-owner-reset"/);
 assert.match(section, /id="network-owner-status"[^>]*role="status"[^>]*aria-live="polite" hidden/);
+const developerPanel = html.split('id="panel-settings-developer"')[1].split('id="panel-settings-about"')[0];
+assert(developerPanel.includes('id="network-ownership-settings"'), 'Reticulum on this device lives in Developer');
 for (const id of ['carrier', 'packet', 'control', 'name', 'key', 'import']) {
     assert(section.includes('for="network-owner-' + id + '"'), id + ' has an explicit label');
 }
@@ -24,11 +27,23 @@ const nodes = new Map();
 function node(id) {
     if (!nodes.has(id)) nodes.set(id, { value: '', hidden: false, disabled: false, checked: false,
         textContent: '', events: {}, children: [],
+        querySelectorAll() { return []; },
         addEventListener(name, fn) { this.events[name] = fn; },
         appendChild(child) { this.children.push(child); } });
     return nodes.get(id);
 }
 const field = id => node('network-owner-' + id);
+// Run by is a segmented control: one radio button per owner.
+const modeButtons = ['managed', 'existing'].map(value => ({ value, disabled: false,
+    attrs: { 'data-value': value, 'aria-checked': value === 'managed' ? 'true' : 'false' },
+    getAttribute(name) { return this.attrs[name]; }, setAttribute(name, v) { this.attrs[name] = String(v); },
+    closest() { return this; } }));
+Object.assign(field('mode'), {
+    querySelector: () => modeButtons.find(b => b.attrs['aria-checked'] === 'true') || null,
+    querySelectorAll: () => modeButtons,
+});
+const pickMode = value => field('mode').events.click({ target: modeButtons.find(b => b.value === value) });
+const modeOf = () => (modeButtons.find(b => b.attrs['aria-checked'] === 'true') || {}).value;
 const events = {}, windowEvents = {}, documentEvents = {}, calls = [];
 let importReply = null;
 let applyReply = null;
@@ -185,7 +200,7 @@ function access(port, key) {
         events.network_ownership({...data, error: null, warnings: []});
         assert.equal(field('status').hidden, true);
     }
-    field('mode').value = 'existing'; field('mode').events.change();
+    pickMode('existing');
     assert.equal(field('actions').hidden, false);
     assert.equal(field('apply').disabled, false);
     field('key').value = '1234';
@@ -195,12 +210,12 @@ function access(port, key) {
     assert.equal(data.mode, 'managed');
     assert.equal(field('unix-option').disabled, true, 'busy completion cannot enable unsupported Unix');
     events.stats_update({network_ownership: data});
-    assert.equal(field('mode').value, 'existing', 'poll must not overwrite a dirty form');
+    assert.equal(modeOf(), 'existing', 'poll must not overwrite a dirty form');
     await field('apply').events.click();
     assert.equal(data.mode, 'existing');
     assert.equal(field('actions').hidden, true, 'successful Apply closes the action footer');
     assert.equal(externalClass, true);
-    assert.equal(node('transport-mode-select').disabled, true);
+    assert.equal(node('transport-mode-seg').title, 'Relaying is managed by the other app');
     assert.equal(field('key').value, '');
     field('key').value = 'abcd'; field('import').value = 'secret';
     developer = false; windowEvents['ratspeak-developer-mode-changed']();
@@ -246,7 +261,7 @@ function access(port, key) {
         for (const outcome of ['success', 'error']) {
             await regression('manual ' + editedField + ' edit fences pending import ' + outcome, async () => {
                 field('reset').events.click(); await settle();
-                field('mode').value = 'existing'; field('mode').events.change();
+                pickMode('existing');
                 const pending = beginImport();
                 field(editedField).value = editedField === 'carrier' ? 'unix' : 'manually-edited-value';
                 node('network-ownership-settings').events.input();
@@ -264,7 +279,7 @@ function access(port, key) {
     }
     await regression('editing the form invalidates an outstanding Apply confirmation', async () => {
         field('reset').events.click(); await settle();
-        field('mode').value = 'existing'; field('mode').events.change();
+        pickMode('existing');
         const confirmation = deferred();
         confirmationReply = confirmation.promise;
         const before = appliedRequests.length;
@@ -281,10 +296,10 @@ function access(port, key) {
         for (const outcome of ['success', 'error']) {
             await regression(action + ' fences a pending import ' + outcome, async () => {
                 field('reset').events.click(); await settle();
-                field('mode').value = 'existing'; field('mode').events.change();
+                pickMode('existing');
                 const pending = beginImport();
                 if (action === 'mode') {
-                    field('mode').value = 'managed'; field('mode').events.change();
+                    pickMode('managed');
                     assert.equal(field('existing').hidden, true);
                 } else if (action === 'discard') {
                     field('reset').events.click(); await settle();
@@ -310,7 +325,7 @@ function access(port, key) {
         for (const oldOutcome of ['success', 'error']) {
             await regression('overlapping imports: ' + firstToSettle + ' first, old ' + oldOutcome, async () => {
                 field('reset').events.click(); await settle();
-                field('mode').value = 'existing'; field('mode').events.change();
+                pickMode('existing');
                 const older = beginImport();
                 const newer = beginImport();
                 async function settleOlder() {
@@ -337,7 +352,7 @@ function access(port, key) {
     }
     await regression('a failed newest import still supersedes an older success', async () => {
         field('reset').events.click(); await settle();
-        field('mode').value = 'existing'; field('mode').events.change();
+        pickMode('existing');
         const older = beginImport();
         const newer = beginImport();
         newer.reject(new Error('newest configuration is invalid'));
@@ -350,7 +365,7 @@ function access(port, key) {
     });
     await regression('a pending Apply remains authoritative while its backend reply waits', async () => {
         field('reset').events.click(); await settle();
-        field('mode').value = 'existing'; field('mode').events.change();
+        pickMode('existing');
         field('packet').value = 43000; field('control').value = 43001;
         field('key').value = 'aabb';
         const pending = beginImport();
@@ -375,7 +390,7 @@ function access(port, key) {
         const reply = deferred();
         refreshReply = reply.promise;
         field('reset').events.click();
-        field('mode').value = 'managed'; field('mode').events.change();
+        pickMode('managed');
         const expectedStatus = field('status').textContent;
         reply.reject(new Error('obsolete refresh failure'));
         await settle();
@@ -402,7 +417,7 @@ function access(port, key) {
     });
     await regression('cancelling Apply preserves the pending import', async () => {
         field('reset').events.click(); await settle();
-        field('mode').value = 'existing'; field('mode').events.change();
+        pickMode('existing');
         const pending = beginImport();
         const beforeApply = appliedRequests.length;
         confirmationReply = false;

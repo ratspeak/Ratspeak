@@ -985,7 +985,7 @@ fn spawn_enable_ble_peer_task(
                     "Bluetooth Peer requires an active identity",
                     true,
                     Some(
-                        "No active identity is configured. Create or select one in Settings → Identity, then try again.",
+                        "No active identity is configured. Create or select one in Identity, then try again.",
                     ),
                 );
                 record_interface_activity(

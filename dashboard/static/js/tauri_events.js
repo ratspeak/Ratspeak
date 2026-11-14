@@ -457,8 +457,8 @@ RS.listen('node_operation_status', function(data) {
     var nodeName = data.node ? friendlyNode(data.node) : '?';
 
     if (data.done && data.operation === 'transport') {
-        var select = document.getElementById('transport-mode-select');
-        if (select) select.disabled = false;
+        var seg = document.getElementById('transport-mode-seg');
+        if (seg) seg.querySelectorAll('[role="radio"]').forEach(function(btn) { btn.disabled = false; });
     }
 
     var progressDialog = window._activeProgressDialog;

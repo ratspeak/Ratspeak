@@ -1,5 +1,5 @@
-// Offline Inbox UI — three-mode toggle (Off / Auto / Manual), Ratspeak-node
-// preference toggle, manual hash input, and a path-request refresh button.
+// Settings › Offline Inbox: Off / Automatic / Manual, the Ratspeak-inbox preference,
+// the inbox in use with Check now, inboxes nearby, hosting, and stamp protection.
 
 var propagationStatus = {
     enabled: false,
@@ -65,8 +65,10 @@ var inboxClock = null;
 function inboxTime(ts) {
     var date = new Date(ts * 1000);
     var iso = isNaN(date.getTime()) ? '' : date.toISOString();
-    return '<time datetime="' + escapeHtml(iso) + '" title="' + escapeHtml(isNaN(date.getTime()) ? '' : date.toLocaleString()) + '">' +
-        escapeHtml(formatLastHeard(ts)) + '</time>';
+    var kit = window.RS && RS.kit && RS.kit.time;
+    var full = kit ? kit.full(ts) : (isNaN(date.getTime()) ? '' : date.toLocaleString());
+    var words = kit ? kit.sentence(ts) : formatLastHeard(ts);
+    return '<time datetime="' + escapeHtml(iso) + '" title="' + escapeHtml(full) + '">' + escapeHtml(words) + '</time>';
 }
 
 /** The Offline Inbox card's state, first match wins (issue 79 spec A1). */
@@ -106,7 +108,7 @@ function inboxCardState(status, nowMs) {
     }
     if (node.last_sync_success) {
         if (nowMs / 1000 - node.last_sync_success <= INBOX_WORKING_WINDOW_SECS) {
-            return { dot: 'status-reachable', line1: word('Working') + ' · Checked ' + inboxTime(node.last_sync_success), line2: stored, busy: false };
+            return { dot: 'status-reachable', line1: word('Working') + ' · checked ' + inboxTime(node.last_sync_success), line2: stored, busy: false };
         }
         return { dot: 'status-stale', line1: word('Last checked') + ' ' + inboxTime(node.last_sync_success), line2: stored, busy: false };
     }
@@ -114,15 +116,28 @@ function inboxCardState(status, nowMs) {
 }
 
 function inboxStatusLines(state) {
-    return '<div>' + state.line1 + '</div>' + (state.line2 ? '<div>' + state.line2 + '</div>' : '');
+    return '<span class="ui-status">' + inboxDot(state) + '<span>' + state.line1 + '</span></span>' +
+        (state.line2 ? '<span class="settings-inbox-sub">' + state.line2 + '</span>' : '');
 }
 
 function inboxStatusHtml(state) {
-    return '<div class="relay-card-details" id="inbox-status-lines">' + inboxStatusLines(state) + '</div>';
+    return '<span class="settings-inbox-status" id="inbox-status-lines">' + inboxStatusLines(state) + '</span>';
+}
+
+// The card's state as a kit status dot; the words beside it carry the meaning.
+var INBOX_DOT_TONES = {
+    'status-reachable': ' ui-dot--online',
+    'status-checking': ' ui-dot--online ui-dot--pulse',
+    'status-stale': ' ui-dot--warning',
+    'status-unreachable': ' ui-dot--error'
+};
+
+function inboxDotClass(state) {
+    return 'ui-dot ' + state.dot + (INBOX_DOT_TONES[state.dot] || '');
 }
 
 function inboxDot(state) {
-    return '<span class="conn-status-dot ' + state.dot + '" id="inbox-status-dot" aria-hidden="true"></span>';
+    return '<span class="' + inboxDotClass(state) + '" id="inbox-status-dot" aria-hidden="true"></span>';
 }
 
 function inboxPanelVisible() {
@@ -143,6 +158,23 @@ function keepInboxClock() {
     }, INBOX_CLOCK_MS);
 }
 
+function propSwitch(id, label, desc, checked, extra) {
+    return '<div class="ui-prop"' + (extra || '') + '><span class="ui-prop-text"><span class="ui-prop-label" id="' + id + '-label">' + escapeHtml(label) + '</span>' +
+        (desc ? '<span class="ui-prop-desc" id="' + id + '-desc">' + escapeHtml(desc) + '</span>' : '') + '</span>' +
+        '<label class="ui-switch"><input type="checkbox" role="switch" id="' + id + '"' + (checked ? ' checked' : '') +
+        ' aria-labelledby="' + id + '-label"' + (desc ? ' aria-describedby="' + id + '-desc"' : '') + '><span class="track"></span></label></div>';
+}
+
+function propTitle(text) {
+    return '<h3 class="ui-section-title">' + escapeHtml(text) + '</h3>';
+}
+
+var INBOX_MODE_DESC = {
+    off: 'Messages wait on the sender’s device until you’re reachable.',
+    auto: 'Automatic picks a reachable inbox for you.',
+    manual: 'You choose the inbox.'
+};
+
 function renderPropagationStatus(targetId) {
     var container = document.getElementById(targetId || 'settings-propagation-status');
     if (!container) return;
@@ -154,29 +186,21 @@ function renderPropagationStatus(targetId) {
     var selectedNodeHash = mode === 'auto' ? autoActive : nodeHash;
     var awaiting = !!propagationStatus.awaiting_discovery;
 
-    var html = '';
-
-    html += '<div class="inline-hint relay-intro">' +
-        'When contacts can\'t reach you directly, your Offline Inbox stores their messages until you come back online.' +
+    var html = '<div class="ui-group">' +
+        '<div class="ui-prop settings-prop-wrap"><span class="ui-prop-text"><span class="ui-prop-label" id="prop-mode-label">Use an Offline Inbox</span>' +
+            '<span class="ui-prop-desc">' + escapeHtml(INBOX_MODE_DESC[mode] || '') + '</span></span>' +
+            '<div class="ui-seg" role="radiogroup" id="prop-mode-seg" aria-labelledby="prop-mode-label">' +
+                modeBtnHtml('off', 'Off', mode === 'off') +
+                modeBtnHtml('auto', 'Automatic', mode === 'auto') +
+                modeBtnHtml('manual', 'Manual', mode === 'manual') +
+            '</div></div>' +
+        (mode === 'auto' ? renderFavorStatic(favorStatic) : '') +
     '</div>';
 
-    html += '<div class="relay-mode-toggle" role="tablist">' +
-        modeBtnHtml('off',    'Off',    mode === 'off') +
-        modeBtnHtml('auto',   'Auto',   mode === 'auto') +
-        modeBtnHtml('manual', 'Manual', mode === 'manual') +
-    '</div>';
-
-    if (mode === 'off') {
-        html += '<div class="inline-hint">' +
-            'Offline Inbox is disabled. An active sync is canceled, and no new syncs will start.' +
-        '</div>';
-    } else if (mode === 'auto') {
+    if (mode === 'auto') {
         html += renderAutoBody(autoActive, favorStatic, awaiting);
     } else if (mode === 'manual') {
         html += renderManualBody(nodeHash);
-    }
-
-    if (mode === 'manual') {
         html += renderDiscoveredList(mode, favorStatic, selectedNodeHash);
     }
 
@@ -184,24 +208,16 @@ function renderPropagationStatus(targetId) {
     html += renderHostingSettings();
     html += renderStampSettings();
 
-    // A redraw must not take what the user is doing: typed text, open
-    // sections, or focus.
+    // A redraw must not take what the user is doing: typed text or focus.
     var input = document.getElementById('prop-node-input');
-    var typed = input && input.value !== (nodeHash || '') ? input.value : null;
+    var typed = input && input.value !== '' ? input.value : null;
     var focused = document.activeElement && container.contains(document.activeElement)
         ? document.activeElement.id : '';
-    var openDetails = [];
-    container.querySelectorAll('details[open] > summary').forEach(function(summary) {
-        openDetails.push(summary.textContent);
-    });
 
     container.innerHTML = html;
     lastInboxRenderKey = inboxRenderKey(propagationStatus);
     wireUpHandlers(container, mode);
 
-    container.querySelectorAll('details > summary').forEach(function(summary) {
-        if (openDetails.indexOf(summary.textContent) !== -1) summary.parentElement.open = true;
-    });
     var nextInput = document.getElementById('prop-node-input');
     if (nextInput && typed !== null) nextInput.value = typed;
     var nextFocus = focused ? document.getElementById(focused) : null;
@@ -231,7 +247,7 @@ function refreshInboxCard() {
     var lines = document.getElementById('inbox-status-lines');
     if (!dot || !lines) return false;
     var state = inboxCardState(propagationStatus, Date.now());
-    dot.className = 'conn-status-dot ' + state.dot;
+    dot.className = inboxDotClass(state);
     lines.innerHTML = inboxStatusLines(state);
     var check = document.getElementById('prop-sync-btn');
     if (check) check.disabled = state.busy;
@@ -244,118 +260,72 @@ function updateInboxStatus() {
 }
 
 function modeBtnHtml(value, label, active) {
-    return '<button type="button" class="relay-mode-btn' + (active ? ' relay-mode-btn-active' : '') +
-        '" data-mode="' + value + '" style="flex:1;padding:6px 12px;">' +
-        escapeHtml(label) +
-        '</button>';
+    return '<button type="button" role="radio" aria-checked="' + (active ? 'true' : 'false') + '" data-mode="' + value + '">' +
+        escapeHtml(label) + '</button>';
 }
 
-// Two arrows in a circle; spins while the button is disabled for a check.
-var INBOX_CHECK_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+function renderFavorStatic(favorStatic) {
+    return propSwitch('prop-favor-static-toggle', 'Prefer Ratspeak inboxes',
+        'Uses another reachable inbox when these can’t be reached.', favorStatic, ' id="prop-favor-static-row"');
+}
+
+// Two arrows in a circle; a spinner takes its place while a check runs.
+var INBOX_CHECK_ICON = '<svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' +
     '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>' +
     '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>';
 
-/** The card's title and status, with Check now beside them. `title` is escaped HTML. */
+/** The inbox in use: its name and status, with Check now beside them. `title` is escaped HTML. */
 function inboxCardTop(title, state) {
-    return '<div class="relay-card-top">' +
-        '<div class="relay-card-summary">' +
-            '<div class="relay-card-header">' + inboxDot(state) + '<strong>' + title + '</strong></div>' +
-            inboxStatusHtml(state) +
-        '</div>' +
-        '<button type="button" class="inbox-check-btn" id="prop-sync-btn" aria-label="Check now" title="Check now"' +
+    return '<div class="ui-prop settings-inbox-row"><span class="ui-prop-text"><span class="ui-prop-label">' + title + '</span>' +
+            inboxStatusHtml(state) + '</span>' +
+        '<button type="button" class="ui-icon-btn" id="prop-sync-btn" aria-label="Check now" title="Check now"' +
             (state.busy ? ' disabled' : '') + '>' + INBOX_CHECK_ICON + '</button>' +
     '</div>';
 }
 
-function renderAutoBody(autoActive, favorStatic, awaiting) {
-    var html = '';
-    html += '<div class="settings-row" id="prop-favor-static-row" style="border-bottom:none;">' +
-        '<div class="settings-row-info">' +
-            '<span class="settings-row-label" id="prop-favor-static-label">Favor Ratspeak inbox nodes</span>' +
-            '<span class="settings-row-desc" id="prop-favor-static-desc">Prefer reachable Ratspeak inbox nodes, with fallback when none can be reached.</span>' +
-        '</div>' +
-        '<label class="prop-toggle">' +
-            '<input type="checkbox" id="prop-favor-static-toggle"' + (favorStatic ? ' checked' : '') +
-                ' aria-labelledby="prop-favor-static-label" aria-describedby="prop-favor-static-desc">' +
-            '<span class="prop-slider"></span>' +
-        '</label>' +
-    '</div>';
+function inboxAddressRow(hash) {
+    var copy = window.RS && RS.kit ? RS.kit.hash.copy(hash, { noun: 'Inbox address' }) : '<span class="ui-hash">' + escapeHtml(hash) + '</span>';
+    return '<div class="ui-prop"><span class="ui-prop-text"><span class="ui-prop-label">Inbox address</span>' + copy + '</span></div>';
+}
 
+function renderAutoBody(autoActive, favorStatic, awaiting) {
+    var html = propTitle('In use');
     if (autoActive) {
         var activeNode = findNode(autoActive);
         var nodeName = activeNode ? (activeNode.display_name || findNodeName(autoActive)) : findNodeName(autoActive);
-        var activeLabel = activeNode && activeNode.static
-            ? 'Using Ratspeak inbox'
-            : (favorStatic ? 'Using fallback inbox' : 'Using inbox');
         var autoState = inboxCardState(propagationStatus, Date.now());
-        html += '<div class="relay-card relay-card-active">' +
-            inboxCardTop(escapeHtml(activeLabel) + ': ' + escapeHtml(nodeName), autoState) +
-            '<div class="relay-card-address">' +
-                '<span class="inline-hint-sm">Propagation address</span>' +
-                '<span class="relay-card-address-value">' + escapeHtml(autoActive) + '</span>' +
-            '</div>' +
-        '</div>';
-    } else if (awaiting) {
-        html += '<div class="relay-card relay-card-empty">' +
-            '<div class="inline-hint">' +
-                'Looking for Offline Inbox nodes. Ratspeak inbox nodes are checked carefully to avoid unnecessary network traffic; Auto will use another reachable inbox node if one appears first.' +
-            '</div>' +
-        '</div>';
+        var fallback = activeNode && !activeNode.static && favorStatic;
+        html += '<div class="ui-group">' + inboxCardTop(escapeHtml(nodeName) + (fallback ? ' <span class="settings-inbox-note">(fallback)</span>' : ''), autoState) +
+            inboxAddressRow(autoActive) + '</div>';
     } else {
-        html += '<div class="relay-card relay-card-empty">' +
-            '<div class="inline-hint">Looking for a reachable Offline Inbox&hellip;</div>' +
-        '</div>';
+        html += '<div class="ui-group"><div class="ui-prop"><span class="ui-prop-text"><span class="ui-prop-desc">' +
+            (awaiting
+                ? 'Looking for an Offline Inbox. Ratspeak inboxes are checked carefully to save network traffic; Automatic uses another reachable inbox if one appears first.'
+                : 'Looking for a reachable Offline Inbox…') +
+        '</span></span></div></div>';
     }
     return html;
 }
 
 function renderManualBody(nodeHash) {
-    var html = '';
+    var html = propTitle('Your inbox');
     if (nodeHash) {
-        var nodeName = findNodeName(nodeHash);
         var manualState = inboxCardState(propagationStatus, Date.now());
-        html += '<div class="relay-card relay-card-active">' +
-            inboxCardTop(escapeHtml(nodeName), manualState) +
-            '<div class="relay-card-actions">' +
-                '<button class="nr-btn nr-btn-sm nr-btn-muted" id="prop-clear-btn">Disconnect</button>' +
-            '</div>' +
+        html += '<div class="ui-group">' + inboxCardTop(escapeHtml(findNodeName(nodeHash)), manualState) + inboxAddressRow(nodeHash) +
+            '<button type="button" class="ui-prop ui-prop--danger" id="prop-clear-btn"><span class="ui-prop-text"><span class="ui-prop-label">Stop using this inbox</span></span></button>' +
         '</div>';
     } else {
-        html += '<div class="relay-card relay-card-empty">' +
-            '<div class="inline-hint">Enter an Offline Inbox node hash below to connect manually.</div>' +
-        '</div>';
+        html += '<div class="ui-group"><div class="ui-prop"><span class="ui-prop-text"><span class="ui-prop-desc">Choose an inbox nearby, or paste its address.</span></span></div></div>';
     }
-
-    html += '<div class="relay-manual-section">' +
-        '<div class="inline-hint-sm relay-manual-label">Inbox node hash (hex):</div>' +
-        '<div class="relay-manual-row">' +
-            '<input type="text" id="prop-node-input" class="modal-input text-xs" ' +
-                'placeholder="Offline Inbox node hash (hex)" ' +
-                'value="' + escapeHtml(nodeHash || '') + '" ' +
-                '>' +
-            '<button class="nr-btn nr-btn-sm" id="prop-set-btn">Set</button>' +
-        '</div>' +
-    '</div>';
     return html;
 }
 
 function renderDiscoveredList(mode, favorStatic, activeHash) {
-    var html = '';
-    html += '<div class="relay-section-header">' +
-        '<span>Available inbox nodes</span>' +
-        '<button class="nr-btn nr-btn-xs" id="prop-refresh-btn"' +
-            (refreshInFlight ? ' disabled' : '') + '>' +
-            (refreshInFlight ? 'Refreshing…' : 'Refresh') +
-        '</button>' +
-    '</div>';
+    var html = '<div class="settings-sec">' + propTitle('Inboxes nearby') +
+        '<button type="button" class="ui-icon-btn ui-icon-btn--sm" id="prop-refresh-btn" aria-label="Look again" title="Look again"' +
+            (refreshInFlight ? ' disabled aria-busy="true">' + '<span class="ui-spin" aria-hidden="true"></span>' : '>' + INBOX_CHECK_ICON) + '</button></div>';
 
-    if (!discoveredRelayNodes.length) {
-        html += '<div class="inline-hint" style="padding:8px 0;">' +
-            'No inbox nodes discovered yet. Click Refresh or wait for announces.' +
-        '</div>';
-        return html;
-    }
-
+    var rows = [];
     var sorted = discoveredRelayNodes.slice().sort(function(a, b) {
         if (mode === 'auto' && favorStatic) {
             var aStatic = a.static ? 1 : 0;
@@ -375,40 +345,35 @@ function renderDiscoveredList(mode, favorStatic, activeHash) {
     var visible = sorted.slice(0, MAX_RELAY_ROWS);
     var truncated = sorted.length > MAX_RELAY_ROWS;
 
-    html += '<div class="relay-node-list">';
-    for (var i = 0; i < visible.length; i++) {
-        var node = visible[i];
+    if (!visible.length) {
+        rows.push('<div class="ui-prop"><span class="ui-prop-text"><span class="ui-prop-desc">No inboxes found yet. Look again, or wait for them to announce.</span></span></div>');
+    }
+    visible.forEach(function(node) {
         var isActive = activeHash && node.hash === activeHash;
         var hopLabel;
         if (node.hops === 0) {
-            hopLabel = 'direct';
+            hopLabel = 'Direct';
         } else if (node.hops === null || node.hops === undefined) {
-            hopLabel = node.static_status === 'probing' ? 'checking' : 'not reached';
+            hopLabel = node.static_status === 'probing' ? 'Checking' : 'Not reached';
         } else {
-            hopLabel = node.hops + ' hop' + (node.hops > 1 ? 's' : '');
+            hopLabel = node.hops + (node.hops === 1 ? ' hop' : ' hops');
         }
         var name = node.display_name || ('Inbox ' + (node.hash || '').substring(0, 8));
-        var nameHtml = escapeHtml(name);
-        if (node.static) {
-            nameHtml = '<span class="relay-static-badge" title="Bundled Ratspeak inbox node">★</span> ' + nameHtml;
-        }
-        var actionHtml;
-        if (isActive) {
-            actionHtml = '<span class="relay-node-badge">Active</span>';
-        } else if (mode === 'manual') {
-            actionHtml = '<button class="nr-btn nr-btn-xs relay-select-btn" data-hash="' +
-                escapeHtml(node.hash) + '">Select</button>';
-        } else {
-            actionHtml = '<span class="text-muted-color text-xs">tracked</span>';
-        }
-        html += '<div class="relay-node-row' + (isActive ? ' relay-node-active' : '') +
-            '" data-hash="' + escapeHtml(node.hash) + '">' +
-            '<span class="relay-node-name" title="' + escapeHtml(name) + '">' + nameHtml + '</span>' +
-            '<span class="relay-node-hops">' + hopLabel + '</span>' +
-            actionHtml +
-        '</div>';
-    }
-    html += '</div>';
+        var action = isActive
+            ? '<span class="ui-prop-value">In use</span>'
+            : (mode === 'manual'
+                ? '<button type="button" class="ui-btn ui-btn--sm relay-select-btn" data-hash="' + escapeHtml(node.hash) + '" aria-label="Use ' + escapeHtml(name) + '">Use</button>'
+                : '');
+        rows.push('<div class="ui-prop relay-node-row" data-hash="' + escapeHtml(node.hash) + '"><span class="ui-prop-text">' +
+            '<span class="ui-prop-label relay-node-name" title="' + escapeHtml(name) + '">' + escapeHtml(name) + '</span>' +
+            '<span class="ui-prop-desc">' + (node.static ? 'Ratspeak inbox' : 'Inbox') + ' · ' + hopLabel + '</span></span>' + action + '</div>');
+    });
+
+    rows.push('<div class="ui-prop settings-prop-stack"><span class="ui-prop-text"><label class="ui-prop-label" for="prop-node-input">Inbox address</label></span>' +
+        '<div class="settings-inline-field"><input type="text" id="prop-node-input" class="ui-input ui-input--mono" placeholder="Paste an inbox address" ' +
+            'autocomplete="off" autocapitalize="none" spellcheck="false">' +
+        '<button type="button" class="ui-btn" id="prop-set-btn">Use</button></div></div>');
+    html += '<div class="ui-group">' + rows.join('') + '</div>';
 
     var footnotes = [];
     if (truncated) {
@@ -421,9 +386,7 @@ function renderDiscoveredList(mode, favorStatic, activeHash) {
             ' ignored this session (unparseable PN format).');
     }
     if (footnotes.length) {
-        html += '<div class="relay-footnotes inline-hint">' +
-            footnotes.map(escapeHtml).join('<br>') +
-        '</div>';
+        html += '<p class="ui-group-foot">' + footnotes.map(escapeHtml).join('<br>') + '</p>';
     }
     return html;
 }
@@ -435,20 +398,21 @@ function renderDeferredDownloads() {
     var rejected = Math.max(0, Number(propagationStatus.rejected_count) || 0);
     var committed = Math.max(0, Number(propagationStatus.committed_count) || 0);
     if (!suppressed && !deferred && !paused && !rejected) return '';
-    var html = '<div class="relay-card"><div class="relay-card-header"><strong>' +
-        (paused ? 'Inbox downloads paused' : 'Some messages are waiting') + '</strong></div>';
-    if (rejected) html += '<div class="settings-row-desc">Last check: ' + committed + ' new message' + (committed === 1 ? '' : 's') + ' saved; ' + rejected + ' could not be saved.</div>';
-    if (suppressed) html += '<div class="settings-row-desc">' + suppressed + ' message' + (suppressed === 1 ? '' : 's') + ' could not be accepted. They remain on the inbox node and will be checked again when your keys or settings change.</div>';
-    if (deferred) html += '<div class="settings-row-desc">' + deferred + ' message' + (deferred === 1 ? '' : 's') + ' will be retried after a temporary problem.</div>';
-    if (propagationStatus.suppression_full) html += '<div class="settings-row-desc">The retry list is full. New downloads will resume when entries expire or you retry them.</div>';
-    else if (paused) html += '<div class="settings-row-desc">Local storage is being checked. Messages stay on the inbox node until they can be saved safely.</div>';
+    var lines = ['<b>' + (paused ? 'Inbox downloads paused' : 'Some messages are waiting') + '</b>'];
+    if (rejected) lines.push('Last check: ' + committed + ' new message' + (committed === 1 ? '' : 's') + ' saved; ' + rejected + ' could not be saved.');
+    if (suppressed) lines.push(suppressed + ' message' + (suppressed === 1 ? '' : 's') + ' could not be accepted. They remain on the inbox node and will be checked again when your keys or settings change.');
+    if (deferred) lines.push(deferred + ' message' + (deferred === 1 ? '' : 's') + ' will be retried after a temporary problem.');
+    if (propagationStatus.suppression_full) lines.push('The retry list is full. New downloads will resume when entries expire or you retry them.');
+    else if (paused) lines.push('Local storage is being checked. Messages stay on the inbox node until they can be saved safely.');
     var next = Number(propagationStatus.next_retry);
     if (Number.isFinite(next) && next > 0) {
         var date = new Date(next * 1000);
-        if (!isNaN(date.getTime())) html += '<div class="settings-row-desc">Next retry: ' + escapeHtml(date.toLocaleString()) + '</div>';
+        if (!isNaN(date.getTime())) lines.push('Next retry: ' + escapeHtml(date.toLocaleString()));
     }
-    html += '<div class="relay-card-actions"><button class="nr-btn nr-btn-sm" id="prop-retry-deferred-btn">Retry waiting messages</button></div></div>';
-    return html;
+    return '<div class="ui-notice ui-notice--warning settings-inbox-notice">' +
+        '<svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>' +
+        '<div class="ui-notice-body">' + lines.map(function(line) { return '<p>' + line + '</p>'; }).join('') + '</div>' +
+        '<button type="button" class="ui-btn ui-btn--sm" id="prop-retry-deferred-btn">Retry waiting messages</button></div>';
 }
 
 function renderHostingSettings() {
@@ -456,10 +420,10 @@ function renderHostingSettings() {
     // be unplugged or its session can lock, so hosting isn't offered for it.
     var ai = (typeof activeIdentity === 'function') ? activeIdentity() : null;
     if (ai && ai.is_hardware) {
-        return '<div class="relay-advanced-block">' +
-            '<div class="propagation-section-title">Hosted Offline Inbox</div>' +
-            '<div class="settings-row-desc">Not available for hardware-key identities — a hosted inbox would stop whenever the security key is removed or the session locks.</div>' +
-        '</div>';
+        return propTitle('Host an inbox') + '<div class="ui-group"><div class="ui-prop"><span class="ui-prop-text">' +
+            '<span class="ui-prop-label">Host an Offline Inbox</span>' +
+            '<span class="ui-prop-desc">Not available for hardware-key identities: a hosted inbox would stop whenever the key is removed or its session locks.</span>' +
+        '</span></div></div>';
     }
     var enabled = !!propagationStatus.hosting_requested;
     var effective = !!propagationStatus.hosting_enabled;
@@ -471,85 +435,54 @@ function renderHostingSettings() {
     if (cost === undefined || cost === null) cost = 16;
     var mobile = (typeof isMobile === 'function') ? isMobile() : !!window.__RATSPEAK_MOBILE__;
 
-    var html = '<div class="relay-advanced-block">' +
-        '<div class="propagation-section-title">Hosted Offline Inbox</div>' +
-        '<div class="settings-row propagation-settings-row">' +
-            '<div class="settings-row-info">' +
-                '<span class="settings-row-label" id="prop-host-label">Host inbox node</span>' +
-                '<span class="settings-row-desc" id="prop-host-desc">' +
-                    (mobile
-                        ? 'Mobile inbox hosting can be unreliable when the app is backgrounded.'
-                        : 'Store offline LXMF messages for other people using this device.') +
-                '</span>' +
-            '</div>' +
-            '<label class="prop-toggle">' +
-                '<input type="checkbox" id="prop-host-toggle"' + (enabled ? ' checked' : '') +
-                    ' aria-labelledby="prop-host-label" aria-describedby="prop-host-desc">' +
-                '<span class="prop-slider"></span>' +
-            '</label>' +
-        '</div>';
+    var rows = [propSwitch('prop-host-toggle', 'Host an Offline Inbox', mobile
+        ? 'Phones host poorly while Ratspeak is in the background.'
+        : 'Stores messages for other people on this device.', enabled)];
 
     if (enabled && !effective) {
-        html += '<div class="relay-card"><div class="relay-card-header"><strong>Hosting unavailable</strong></div>' +
-            '<div class="settings-row-desc">' + escapeHtml(host.reason || (readiness === 'opening' || readiness === 'recovering' ? 'Preparing inbox storage…' : 'Inbox storage is not ready.')) + '</div>' +
-            '<div class="settings-row-desc">Identity: ' + escapeHtml(host.identity || 'Current identity') + '</div>';
-        if (readiness !== 'opening' && readiness !== 'recovering') {
-            html += '<div class="relay-card-actions"><button class="nr-btn nr-btn-sm" id="prop-host-retry-btn">Retry storage recovery</button></div>';
-        }
-        html += '</div>';
-    }
-    if (host.quarantined_files > 0) {
-        html += '<div class="inline-hint">' + Number(host.quarantined_files) + ' archived file' + (host.quarantined_files === 1 ? '' : 's') +
-            ' preserved (' + Number(host.quarantined_bytes || 0).toLocaleString() + ' bytes). These files are not shared because their original encrypted form could not be confirmed.</div>';
+        rows.push('<div class="ui-prop"><span class="ui-prop-text"><span class="ui-prop-label">Hosting unavailable</span>' +
+            '<span class="ui-prop-desc">' + escapeHtml(host.reason || (readiness === 'opening' || readiness === 'recovering' ? 'Preparing inbox storage…' : 'Inbox storage is not ready.')) + '</span>' +
+            '<span class="ui-prop-desc">Identity: ' + escapeHtml(host.identity || 'Current identity') + '</span></span>' +
+            (readiness !== 'opening' && readiness !== 'recovering'
+                ? '<button type="button" class="ui-btn ui-btn--sm" id="prop-host-retry-btn">Retry storage recovery</button>' : '') +
+        '</div>');
     }
     if (effective) {
-        html += '<div class="relay-card relay-card-active">' +
-            '<div class="relay-card-header"><strong>' + escapeHtml(nodeHash || 'Local inbox node') + '</strong></div>' +
-            '<div class="relay-card-details">' +
-                '<span>' + count + ' stored message' + (count === 1 ? '' : 's') + '</span>' +
-                ' · <span>Stamp cost ' + cost + '</span>' +
-            '</div>' +
-            '<div class="relay-card-actions">' +
-                '<button class="nr-btn nr-btn-sm" id="prop-host-announce-btn">Announce</button>' +
-                '<button class="nr-btn nr-btn-sm nr-btn-muted" id="prop-host-cost-btn">Stamp Cost</button>' +
-                '<button class="nr-btn nr-btn-sm nr-btn-muted" id="prop-host-import-btn">Recover archived messages</button>' +
-            '</div>' +
-        '</div>';
+        rows.push('<div class="ui-prop"><span class="ui-prop-text"><span class="ui-prop-label">Your inbox</span>' +
+            (nodeHash && window.RS && RS.kit ? RS.kit.hash.copy(nodeHash, { noun: 'Inbox address' }) : '') +
+            '<span class="ui-prop-desc">' + count + ' stored message' + (count === 1 ? '' : 's') + '</span></span>' +
+            '<button type="button" class="ui-btn ui-btn--sm" id="prop-host-announce-btn">Announce</button></div>');
+        rows.push('<div class="ui-prop"><span class="ui-prop-text"><span class="ui-prop-label">Stamp cost</span>' +
+            '<span class="ui-prop-desc">Work senders do before your inbox stores a message.</span></span>' +
+            '<button type="button" class="ui-select ui-select--inline" id="prop-host-cost-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Stamp cost: ' + cost + '">' +
+                '<span class="v">' + cost + '</span>' + (window.RS && RS.kit ? RS.kit.icon('chevron-down') : '') + '</button></div>');
+        rows.push('<button type="button" class="ui-prop" id="prop-host-import-btn"><span class="ui-prop-text"><span class="ui-prop-label">Recover archived messages</span></span>' +
+            (window.RS && RS.kit ? RS.kit.icon('chevron-right') : '') + '</button>');
     }
 
-    html += '</div>';
+    var html = propTitle('Host an inbox') + '<div class="ui-group">' + rows.join('') + '</div>';
+    if (host.quarantined_files > 0) {
+        html += '<p class="ui-group-foot">' + Number(host.quarantined_files) + ' archived file' + (host.quarantined_files === 1 ? '' : 's') +
+            ' preserved (' + Number(host.quarantined_bytes || 0).toLocaleString() + ' bytes). These files are not shared because their original encrypted form could not be confirmed.</p>';
+    }
     return html;
 }
 
 function renderStampSettings() {
     var enforce = !!propagationStatus.enforce_stamps;
     var cost = propagationStatus.required_stamp_cost || 0;
-    var label = enforce && cost > 0 ? ('Cost ' + cost) : 'OFF';
-    return '<details class="relay-advanced-block relay-details">' +
-        '<summary>Message stamp protection</summary>' +
-        '<div class="settings-row propagation-settings-row">' +
-            '<div class="settings-row-info">' +
-                '<span class="settings-row-label" id="stamp-enforce-label">Require stamps</span>' +
-                '<span class="settings-row-desc" id="stamp-enforce-desc">Advertise and require proof-of-work on messages sent directly to you.</span>' +
-            '</div>' +
-            '<label class="prop-toggle">' +
-                '<input type="checkbox" id="stamp-enforce-toggle"' + (enforce ? ' checked' : '') +
-                    ' aria-labelledby="stamp-enforce-label" aria-describedby="stamp-enforce-desc">' +
-                '<span class="prop-slider"></span>' +
-            '</label>' +
-        '</div>' +
-        '<div class="settings-row propagation-settings-row" style="border-bottom:none;">' +
-            '<div class="settings-row-info">' +
-                '<span class="settings-row-label">Required work</span>' +
-                '<span class="settings-row-desc">Higher values make spam harder but slow down senders.</span>' +
-            '</div>' +
-            '<button class="selector-badge' + (label === 'OFF' ? ' settings-state-value' : '') + '" id="stamp-cost-btn">' + escapeHtml(label) + '</button>' +
-        '</div>' +
-    '</details>';
+    var label = enforce && cost > 0 ? ('Cost ' + cost) : 'Off';
+    return propTitle('Stamp protection') + '<div class="ui-group">' +
+        propSwitch('stamp-enforce-toggle', 'Require stamps', 'Senders do a little work first, which stops spam.', enforce) +
+        '<div class="ui-prop"' + (enforce ? '' : ' hidden') + '><span class="ui-prop-text"><span class="ui-prop-label">Required work</span>' +
+            '<span class="ui-prop-desc">More work stops more spam, but slows senders down.</span></span>' +
+            '<button type="button" class="ui-select ui-select--inline" id="stamp-cost-btn" aria-haspopup="menu" aria-expanded="false" aria-label="Required work: ' + escapeHtml(label) + '">' +
+                '<span class="v">' + escapeHtml(label) + '</span>' + (window.RS && RS.kit ? RS.kit.icon('chevron-down') : '') + '</button></div>' +
+    '</div>';
 }
 
 function wireUpHandlers(container, mode) {
-    container.querySelectorAll('.relay-mode-btn').forEach(function(btn) {
+    container.querySelectorAll('#prop-mode-seg [data-mode]').forEach(function(btn) {
         btn.addEventListener('click', function() {
             var newMode = this.getAttribute('data-mode');
             if (!newMode || newMode === mode) return;
@@ -628,31 +561,20 @@ function wireUpHandlers(container, mode) {
     if (stampCostBtn) stampCostBtn.addEventListener('click', chooseMessageStampCost);
 }
 
-function stampCostChoice(title, current, includeOff) {
-    var choices = includeOff ? [{ label: 'OFF', value: '0', hint: 'Do not require proof-of-work.' }] : [];
+function stampCostChoice(title, current, includeOff, anchor, onPick) {
+    var choices = includeOff ? [{ label: 'Off', value: 0, hint: 'Don’t require any work.' }] : [];
     choices = choices.concat([
-        { label: 'Cost 8', value: '8', hint: 'Light protection.' },
-        { label: 'Cost 12', value: '12', hint: 'Balanced protection.' },
-        { label: 'Cost 16', value: '16', hint: 'Offline Inbox default.' }
+        { label: 'Cost 8', value: 8, hint: 'Light protection.' },
+        { label: 'Cost 12', value: 12, hint: 'Balanced protection.' },
+        { label: 'Cost 16', value: 16, hint: 'The Offline Inbox default.' }
     ]);
-    if (typeof rsChoice === 'function') {
-        return rsChoice({ title: title, choices: choices }).then(function(val) {
-            if (val === null || val === undefined) return null;
-            return parseInt(val, 10);
-        });
-    }
-    if (typeof rsPrompt === 'function') {
-        return rsPrompt({
-            title: title,
-            message: 'Enter a stamp cost from 0 to 32.',
-            defaultValue: String(current || (includeOff ? 0 : 16)),
-            placeholder: includeOff ? '0, 8, 12, or 16' : '8, 12, or 16'
-        }).then(function(input) {
-            if (input === null) return null;
-            return parseInt(input, 10);
-        });
-    }
-    return Promise.resolve(null);
+    if (!anchor || !window.RS || !RS.kit || typeof RS.kit.menu !== 'function') return;
+    RS.kit.menu(anchor, {
+        title: title,
+        items: choices.map(function(c) {
+            return { label: c.label, hint: c.hint, checked: c.value === current, onSelect: function() { onPick(c.value); } };
+        })
+    });
 }
 
 function setPropagationHosting(enabled, cost) {
@@ -671,8 +593,9 @@ function setPropagationHosting(enabled, cost) {
     var mobile = (typeof isMobile === 'function') ? isMobile() : !!window.__RATSPEAK_MOBILE__;
     if (enabled && mobile && typeof rsConfirm === 'function') {
         rsConfirm({
-            message: 'Mobile devices may stop serving Offline Inbox requests when the app is backgrounded. Enable anyway?',
-            confirmText: 'Enable'
+            title: 'Host an inbox on this phone?',
+            message: 'Phones can stop serving Offline Inbox requests while Ratspeak is in the background.',
+            confirmText: 'Host anyway'
         }).then(function(ok) {
             if (ok) apply();
             else renderPropagationStatus();
@@ -715,7 +638,7 @@ async function recoverHostedInbox(importManifest) {
 
 function choosePropagationHostCost() {
     var current = propagationStatus.local_node_stamp_cost || 16;
-    stampCostChoice('Hosted Inbox Stamp Cost', current, false).then(function(cost) {
+    stampCostChoice('Stamp cost', current, false, document.getElementById('prop-host-cost-btn'), function(cost) {
         if (cost === null || isNaN(cost)) return;
         setPropagationHosting(!!propagationStatus.hosting_requested, Math.max(0, Math.min(32, cost)));
     });
@@ -736,7 +659,7 @@ function setStampSettings(enforce, cost) {
 
 function chooseMessageStampCost() {
     var current = propagationStatus.required_stamp_cost || 0;
-    stampCostChoice('Message Stamp Cost', current, true).then(function(cost) {
+    stampCostChoice('Required work', current, true, document.getElementById('stamp-cost-btn'), function(cost) {
         if (cost === null || isNaN(cost)) return;
         cost = Math.max(0, Math.min(32, cost));
         setStampSettings(cost > 0, cost);
