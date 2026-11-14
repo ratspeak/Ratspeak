@@ -5206,7 +5206,8 @@ fn lxmf_persistence_and_announce_dispatch_do_not_conflate_ownership_boundaries()
     assert!(!persistence.contains("delete_expired_received_ratchets"));
     assert!(!lxmf.contains("ReceivedRatchet"));
     assert!(!lxmf.contains("received_ratchets_dir"));
-    assert!(lxmf.contains("hand_received_ratchets_to_reticulum"));
+    assert!(lxmf.contains("pub fn remove_earlier_received_ratchets("));
+    assert!(!lxmf.contains("hand_received_ratchets_to_reticulum"));
     assert!(runtime.contains("refresh_outbound_ratchets(&tick_state).await"));
     assert!(runtime.contains("TransportMessage::SendPacket"));
     assert!(runtime.contains("OutboundDispatchResult::Sent"));

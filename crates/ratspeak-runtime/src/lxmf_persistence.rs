@@ -342,18 +342,21 @@ mod tests {
 
     /// Reticulum hears the recipient's announce and stops. After a restart in
     /// which nothing is heard, the runtime must encrypt for the recipient with
-    /// `ratchet`. With `earlier_release_file`, Reticulum heard no ratchet and
-    /// only an earlier release's file in the identity's profile holds it.
-    async fn encrypts_with_the_ratchet_after_a_restart(earlier_release_file: bool) {
+    /// `ratchet`.
+    #[tokio::test]
+    async fn a_ratchet_learned_before_a_restart_encrypts_the_next_message() {
         use rns_identity::destination::{DestType, Destination, Direction};
         use rns_transport::messages::{TransportQuery, TransportQueryResponse};
 
         let state = make_state();
-        let (data_dir, identity_hash) = {
-            let lxmf = state.lxmf.lock().unwrap();
-            let manager = lxmf.as_ref().unwrap();
-            (manager.data_dir.clone(), manager.identity_hash.clone())
-        };
+        let data_dir = state
+            .lxmf
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .data_dir
+            .clone();
         let rns_dir = data_dir.join("reticulum-under-test");
         let recipient = rns_identity::identity::Identity::new();
         let ratchet_key = rns_crypto::x25519::X25519PrivateKey::generate().to_bytes();
@@ -365,13 +368,8 @@ mod tests {
             "lxmf.delivery",
         )
         .unwrap();
-        let heard = (!earlier_release_file).then_some(&ratchet);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64();
         let announce = destination
-            .announce_packet(&recipient, None, heard, false, None, now)
+            .announce_packet(&recipient, None, Some(&ratchet), false, None, now())
             .unwrap();
         let recipient_hash = destination.hash;
         let recipient_hex = hex::encode(recipient_hash);
@@ -395,61 +393,25 @@ mod tests {
         }
         rns.shutdown().await;
 
-        let received = data_dir
-            .join("identities")
-            .join(&identity_hash)
-            .join("ratchets/received");
-        if earlier_release_file {
-            std::fs::create_dir_all(&received).unwrap();
-            rns_identity::ratchet::ReceivedRatchet::new(ratchet)
-                .save(&received.join(format!("{recipient_hex}.ratchet")))
-                .unwrap();
-            crate::lxmf::hand_received_ratchets_to_reticulum(&data_dir, &identity_hash, &rns_dir)
-                .unwrap();
-        }
-        assert!(!received.exists());
-
         state.set_rns(reticulum(&rns_dir).await);
-        if earlier_release_file {
-            // Reticulum, owning its storage, imports the files as it starts.
-            assert_eq!(
-                std::fs::read_dir(rns_dir.join("storage/ratchets"))
-                    .unwrap()
-                    .count(),
-                0
-            );
-        }
-        {
-            let mut lxmf = state.lxmf.lock().unwrap();
-            let manager = lxmf.as_mut().unwrap();
-            manager.update_remote_identity(&recipient_hex, &recipient.get_public_key());
-            let message = manager
-                .create_message(
-                    &recipient_hex,
-                    "after the restart",
-                    "",
-                    lxmf_core::constants::DeliveryMethod::Opportunistic,
-                )
-                .unwrap();
-            manager.router.submit_signed(message).unwrap();
-            // Before Reticulum has answered for this tick nothing is encrypted.
-            assert!(
-                manager
-                    .encrypt_for_destination(&recipient_hex, b"x")
-                    .is_none()
-            );
-        }
-
-        crate::refresh_outbound_ratchets(&state).await;
-
-        let ciphertext = state
-            .lxmf
-            .lock()
-            .unwrap()
-            .as_ref()
-            .unwrap()
-            .encrypt_for_destination(&recipient_hex, b"after the restart")
-            .expect("Reticulum answered for the recipient");
+        submit(
+            &state,
+            &recipient_hex,
+            &recipient.get_public_key(),
+            "after the restart",
+        );
+        // Before Reticulum has answered for this tick nothing is encrypted.
+        assert!(
+            state
+                .lxmf
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .encrypt_for_destination(&recipient_hex, b"x")
+                .is_none()
+        );
+        let ciphertext = encrypt_after_refresh(&state, &recipient_hex, b"after the restart").await;
         // Enforcing ratchets, the recipient opens it only with that ratchet key.
         let opened = recipient
             .decrypt_with_ratchet_id(&ciphertext, Some(&[&ratchet_key]), true)
@@ -460,46 +422,172 @@ mod tests {
         rns.shutdown().await;
     }
 
+    /// An earlier release kept a contact's ratchet in its own file, which
+    /// Reticulum, as upstream, does not import: the file goes, a message sent
+    /// before the contact announces again is encrypted to its identity key, and
+    /// the next announce's ratchet encrypts the message after it.
     #[tokio::test]
-    async fn a_ratchet_learned_before_a_restart_encrypts_the_next_message() {
-        encrypts_with_the_ratchet_after_a_restart(false).await;
+    async fn an_earlier_release_ratchet_file_goes_and_the_next_announce_brings_the_ratchet() {
+        use rns_identity::destination::{DestType, Destination, Direction};
+        use rns_transport::messages::{TransportQuery, TransportQueryResponse};
+
+        let state = make_state();
+        let (data_dir, identity_hash) = {
+            let lxmf = state.lxmf.lock().unwrap();
+            let manager = lxmf.as_ref().unwrap();
+            (manager.data_dir.clone(), manager.identity_hash.clone())
+        };
+        let rns_dir = data_dir.join("reticulum-under-test");
+        let recipient = rns_identity::identity::Identity::new();
+        let mut destination = Destination::new(
+            Some(&recipient),
+            Direction::In,
+            DestType::Single,
+            "lxmf.delivery",
+        )
+        .unwrap();
+        let recipient_hash = destination.hash;
+        let recipient_hex = hex::encode(recipient_hash);
+
+        let received = data_dir
+            .join("identities")
+            .join(&identity_hash)
+            .join("ratchets/received");
+        std::fs::create_dir_all(&received).unwrap();
+        let earlier_key = rns_crypto::x25519::X25519PrivateKey::generate().to_bytes();
+        rns_identity::ratchet::ReceivedRatchet::new(rns_identity::ratchet::ratchet_public_bytes(
+            &earlier_key,
+        ))
+        .save(&received.join(format!("{recipient_hex}.ratchet")))
+        .unwrap();
+        crate::lxmf::remove_earlier_received_ratchets(&data_dir, &identity_hash).unwrap();
+        assert!(!received.exists());
+
+        state.set_rns(reticulum(&rns_dir).await);
+        submit(
+            &state,
+            &recipient_hex,
+            &recipient.get_public_key(),
+            "before it announces",
+        );
+        let ciphertext =
+            encrypt_after_refresh(&state, &recipient_hex, b"before it announces").await;
+        assert!(
+            recipient
+                .decrypt_with_ratchet_id(&ciphertext, Some(&[&earlier_key]), true)
+                .is_err(),
+            "the earlier release's ratchet is not used"
+        );
+        let opened = recipient
+            .decrypt_with_ratchet_id(&ciphertext, None, false)
+            .unwrap();
+        assert_eq!(opened.plaintext, b"before it announces");
+        assert!(opened.ratchet_id.is_none(), "encrypted to the identity key");
+
+        let ratchet_key = rns_crypto::x25519::X25519PrivateKey::generate().to_bytes();
+        let ratchet = rns_identity::ratchet::ratchet_public_bytes(&ratchet_key);
+        let announce = destination
+            .announce_packet(&recipient, None, Some(&ratchet), false, None, now())
+            .unwrap();
+        let rns = state.rns.write().unwrap().take().unwrap();
+        let _driver = hear(&rns, &announce).await;
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while !matches!(
+            rns.handle
+                .query_transport(TransportQuery::RecallDestination {
+                    dest: recipient_hash
+                })
+                .await,
+            Some(TransportQueryResponse::RecalledDestination(Some(ref recalled)))
+                if recalled.ratchet == Some(ratchet)
+        ) {
+            assert!(
+                Instant::now() < deadline,
+                "Reticulum keeps the announced ratchet"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        state.set_rns(rns);
+        submit(
+            &state,
+            &recipient_hex,
+            &recipient.get_public_key(),
+            "after it announces",
+        );
+        let ciphertext = encrypt_after_refresh(&state, &recipient_hex, b"after it announces").await;
+        let opened = recipient
+            .decrypt_with_ratchet_id(&ciphertext, Some(&[&ratchet_key]), true)
+            .unwrap();
+        assert_eq!(opened.plaintext, b"after it announces");
+        assert!(opened.ratchet_id.is_some());
+        let rns = state.rns.write().unwrap().take().unwrap();
+        rns.shutdown().await;
     }
 
-    #[tokio::test]
-    async fn a_ratchet_only_an_earlier_release_file_held_encrypts_after_the_hand_over() {
-        encrypts_with_the_ratchet_after_a_restart(true).await;
+    fn now() -> f64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+    }
+
+    /// Queue an opportunistic message to `recipient_hex`, whose key the runtime knows.
+    fn submit(state: &AppState, recipient_hex: &str, public_key: &[u8; 64], content: &str) {
+        let mut lxmf = state.lxmf.lock().unwrap();
+        let manager = lxmf.as_mut().unwrap();
+        manager.update_remote_identity(recipient_hex, public_key);
+        let message = manager
+            .create_message(
+                recipient_hex,
+                content,
+                "",
+                lxmf_core::constants::DeliveryMethod::Opportunistic,
+            )
+            .unwrap();
+        manager.router.submit_signed(message).unwrap();
+    }
+
+    /// Encrypt as a tick does, once Reticulum has answered for the recipient.
+    async fn encrypt_after_refresh(
+        state: &AppState,
+        recipient_hex: &str,
+        plaintext: &[u8],
+    ) -> Vec<u8> {
+        crate::refresh_outbound_ratchets(state).await;
+        state
+            .lxmf
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .encrypt_for_destination(recipient_hex, plaintext)
+            .expect("Reticulum answered for the recipient")
     }
 
     #[test]
-    fn received_ratchet_files_of_earlier_releases_are_handed_to_reticulum() {
+    fn received_ratchet_files_of_earlier_releases_are_removed() {
         let temp = tempfile::tempdir().unwrap();
         let data_dir = temp.path().join(".ratspeak");
         let identity = "ab".repeat(16);
         let ratchets = data_dir.join("identities").join(&identity).join("ratchets");
         let received = ratchets.join("received");
         std::fs::create_dir_all(&received).unwrap();
-        // The identity's own ratchet keys sit beside the directory and stay.
+        // The identity's own ratchet keys and known identities sit beside it and stay.
         std::fs::write(ratchets.join("ring"), b"own keys").unwrap();
-        let rns = temp.path().join("rns");
-        let import_dir = rns.join("storage/ratchets");
-        std::fs::create_dir_all(&import_dir).unwrap();
-        let (moved, kept) = ("11".repeat(16), "22".repeat(16));
-        std::fs::write(received.join(format!("{moved}.ratchet")), b"moved").unwrap();
-        std::fs::write(received.join(format!("{kept}.ratchet")), b"older copy").unwrap();
+        std::fs::write(ratchets.join("known_identities"), b"known").unwrap();
+        std::fs::write(received.join(format!("{}.ratchet", "11".repeat(16))), b"r").unwrap();
         std::fs::write(received.join("human-label.ratchet"), b"not a destination").unwrap();
-        std::fs::write(import_dir.join(&kept), b"reticulum's own").unwrap();
 
-        crate::lxmf::hand_received_ratchets_to_reticulum(&data_dir, &identity, &rns).unwrap();
+        crate::lxmf::remove_earlier_received_ratchets(&data_dir, &identity).unwrap();
 
-        assert_eq!(std::fs::read(import_dir.join(&moved)).unwrap(), b"moved");
-        assert_eq!(
-            std::fs::read(import_dir.join(&kept)).unwrap(),
-            b"reticulum's own"
-        );
-        assert_eq!(std::fs::read_dir(&import_dir).unwrap().count(), 2);
         assert!(!received.exists());
         assert_eq!(std::fs::read(ratchets.join("ring")).unwrap(), b"own keys");
-        // Nothing left to hand over.
-        crate::lxmf::hand_received_ratchets_to_reticulum(&data_dir, &identity, &rns).unwrap();
+        assert_eq!(
+            std::fs::read(ratchets.join("known_identities")).unwrap(),
+            b"known"
+        );
+        // Nothing left to remove.
+        crate::lxmf::remove_earlier_received_ratchets(&data_dir, &identity).unwrap();
+        assert!(crate::lxmf::remove_earlier_received_ratchets(&data_dir, "not-a-hash").is_err());
     }
 }

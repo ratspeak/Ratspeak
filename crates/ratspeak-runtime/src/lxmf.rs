@@ -1639,28 +1639,15 @@ fn load_encrypted_identity(
     Ok(Identity::from_private_key(unlocked.key())?)
 }
 
-fn received_ratchet_hash_from_path(path: &Path) -> Option<&str> {
-    path.file_stem()
-        .and_then(|name| name.to_str())
-        .filter(|name| crate::helpers::is_protocol_hash_16(name))
-}
-
-/// Hand the received ratchets earlier releases kept under an identity's
-/// `ratchets/received` to Reticulum, which alone keeps them now. The files
-/// have upstream's layout, so each moves to the directory Reticulum's store
-/// imports (`Identity.ratchetpath`) with upstream's filter: a 32-byte
-/// ratchet, not expired, for a destination it knows. A file is removed here
-/// only once its copy is durable there; Reticulum removes that copy after its
-/// own commit. The identity's own ratchet keys (`ratchets/ring`) are not touched.
-///
-/// Call before Reticulum starts on `rns_config_dir`: the instance that owns
-/// the storage imports the files as it starts
-/// (`Identity.load_known_destinations`). `data_dir` is the process's
-/// `.ratspeak` directory.
-pub fn hand_received_ratchets_to_reticulum(
+/// Remove the received ratchets earlier releases kept under an identity's
+/// `ratchets/received`. Reticulum alone keeps received ratchets now and, as
+/// upstream, imports only its own legacy files; until a contact announces
+/// again, a message to it is encrypted to its identity key. The identity's own
+/// ratchet keys and known identities beside the directory stay. `data_dir` is
+/// the process's `.ratspeak` directory.
+pub fn remove_earlier_received_ratchets(
     data_dir: &Path,
     identity_hash: &str,
-    rns_config_dir: &Path,
 ) -> std::io::Result<()> {
     if !crate::helpers::is_protocol_hash_16(identity_hash) {
         return Err(std::io::Error::new(
@@ -1672,31 +1659,10 @@ pub fn hand_received_ratchets_to_reticulum(
         .join("identities")
         .join(identity_hash)
         .join("ratchets/received");
-    if !received.is_dir() {
-        return Ok(());
+    match std::fs::remove_dir_all(&received) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error),
+        _ => Ok(()),
     }
-    let import_dir = rns_runtime::platform::StoragePaths::from_config_dir(rns_config_dir)
-        .storage_dir
-        .join("ratchets");
-    for entry in std::fs::read_dir(&received)? {
-        let path = entry?.path();
-        if !path.is_file() {
-            continue;
-        }
-        if let Some(destination) = received_ratchet_hash_from_path(&path)
-            .filter(|_| path.extension().is_some_and(|ext| ext == "ratchet"))
-        {
-            let target = import_dir.join(destination);
-            // A file already there is Reticulum's own and is not replaced.
-            if !target.try_exists()? {
-                std::fs::create_dir_all(&import_dir)?;
-                let bytes = std::fs::read(&path)?;
-                durable_write(&target, &bytes).map_err(std::io::Error::other)?;
-            }
-        }
-        std::fs::remove_file(&path)?;
-    }
-    std::fs::remove_dir(&received)
 }
 
 /// Read a local identity's public key without borrowing the live LXMF manager.
@@ -8013,21 +7979,6 @@ mod tests {
             }
         }
         panic!("expected initiator endpoint transport message");
-    }
-
-    #[test]
-    fn received_ratchet_loader_rejects_arbitrary_filename_stems() {
-        assert_eq!(
-            received_ratchet_hash_from_path(Path::new("0123456789abcdef0123456789abcdef.ratchet")),
-            Some("0123456789abcdef0123456789abcdef")
-        );
-        for path in [
-            "human-label.ratchet",
-            "0123456789abcdef.ratchet",
-            "0123456789abcdef0123456789abcdeg.ratchet",
-        ] {
-            assert_eq!(received_ratchet_hash_from_path(Path::new(path)), None);
-        }
     }
 
     #[test]

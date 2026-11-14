@@ -2053,17 +2053,16 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
     } else {
         state.config.rns_config_dir.clone()
     };
-    // Reticulum keeps received ratchets; hand it the files earlier releases
-    // kept per identity before it starts, so its store imports them.
-    if let Some(identity_hash) = active_runtime_identity.as_deref()
-        && let Err(error) = lxmf::hand_received_ratchets_to_reticulum(
-            &state.config.data_dir,
-            identity_hash,
-            &config_dir,
-        )
-    {
-        // Left in place, the files are handed over at the next start.
-        tracing::warn!(%error, "could not hand earlier received ratchets to Reticulum");
+    // Earlier releases' received ratchets are unused now; removing thousands
+    // of them stays off the start's path, and an interrupted removal resumes
+    // at the next start.
+    if let Some(identity_hash) = active_runtime_identity.clone() {
+        let data_dir = state.config.data_dir.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(error) = lxmf::remove_earlier_received_ratchets(&data_dir, &identity_hash) {
+                tracing::warn!(%error, "could not remove earlier received ratchets");
+            }
+        });
     }
     if state.config.uses_app_private_rns_config_dir() {
         match rns_config::ensure_app_private_shared_instance(&config_dir) {
