@@ -8,6 +8,8 @@
 .ui-ico { width: 20px; height: 20px; flex: 0 0 auto; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 /* An icon slot exists only when there is a glyph, so a label never sits off centre. */
 .ui-ico:empty { display: none; }
+/* The hidden attribute hides a component whatever display it sets. */
+[class^="ui-"][hidden], [class*=" ui-"][hidden] { display: none !important; }
 .ui-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 @keyframes ui-spin { to { transform: rotate(360deg); } }
 /* A fixed 16 px slot; only the ring turns, so layout never sees a rotating box. */
@@ -35,6 +37,17 @@ a.ui-sidebar-me:focus-visible { outline: 2px solid var(--focus-ring); outline-of
 .ui-pane { --row-surface: var(--surface-workspace); display: flex; flex-direction: column; flex: 0 0 340px; width: 340px; min-height: 0; background: var(--surface-workspace); border-right: 1px solid var(--border-row); }
 .ui-pane-search { padding: 0 var(--ui-gutter) 8px; }
 .ui-pane-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 8px; }
+/* Desktop: the list keeps the app's thin scrollbar in a reserved gutter, and the rows above it
+   inset by the same width, so a pane's header, search, and list share one right edge. */
+@media (min-width: 769px) {
+    .ui-pane-scroll { scrollbar-gutter: stable; }
+    .ui-pane > :is(.ui-pane-head, .ui-pane-search) { padding-right: calc(var(--ui-gutter) + var(--ui-scrollbar)); }
+}
+/* Phone: scroll areas scroll with no drawn scrollbar and none taking width. */
+@media (max-width: 768px) {
+    .ui-pane-scroll, .ui-detail, .ui-dialog-body, .ui-scroll { scrollbar-width: none; }
+    :is(.ui-pane-scroll, .ui-detail, .ui-dialog-body, .ui-scroll)::-webkit-scrollbar { display: none; }
+}
 .ui-detail { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; background: var(--surface-panel); --row-surface: var(--surface-panel); --peer-presence-ring: var(--surface-panel); }
 @media (max-width: 768px) {
     .ui-app { flex-direction: column; padding-top: var(--sat); }
@@ -292,7 +305,7 @@ textarea.ui-input { height: auto; min-height: calc(var(--control-h) * 2); paddin
 .ui-time { font-size: var(--text-xs); color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
 
 /* Pane header and titles. */
-.ui-pane-head { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 0 8px 0 var(--ui-gutter); box-sizing: border-box; flex: 0 0 auto; }
+.ui-pane-head { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 0 var(--ui-gutter); box-sizing: border-box; flex: 0 0 auto; }
 .ui-pane-head.has-back { padding-left: 4px; }
 .ui-pane-title { margin: 0; min-width: 0; font-size: var(--ui-pane-title); font-weight: 600; color: var(--text-primary); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ui-pane-count { font-size: var(--text-sm); color: var(--text-muted); font-variant-numeric: tabular-nums; }
@@ -453,3 +466,80 @@ button.ui-prop, a.ui-prop { cursor: pointer; text-decoration: none; }
 .ui-tab[aria-current="page"] { color: var(--accent); }
 .ui-tab .ui-unread { position: absolute; top: 14px; left: calc(50% + 8px); box-shadow: 0 0 0 2px var(--surface-page); }
 @media (min-width: 769px) { .ui-tabbar { display: none; } }
+
+/* Name mark: the Ratspeak mark after a Ratspeak user's name, at the name's size, muted at 82 %. */
+.ui-name-mark { display: inline-grid; place-items: center; flex: 0 0 auto; color: var(--text-muted); opacity: .82; vertical-align: -0.125em; }
+.ui-name-mark .ui-ico { width: 1em; height: 1em; }
+.ui-row-top > .ui-name-mark { margin-left: -4px; font-size: var(--text-base); }
+.ui-row:is([aria-current="true"], [aria-current="page"]) .ui-name-mark { opacity: 1; }
+
+/* Collapsible group caption: the caption's type with a chevron and a count; sticky over its group. */
+.ui-caption--toggle { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 0 12px; box-sizing: border-box; border: 0; border-radius: var(--radius-control); background: var(--row-surface, var(--surface-workspace)); font: inherit; font-size: var(--text-xs); font-weight: 600; line-height: 1.2; text-align: left; cursor: pointer; }
+.ui-caption--toggle .ui-ico { width: 16px; height: 16px; transition: transform .15s ease; }
+.ui-caption--toggle[aria-expanded="false"] .ui-ico { transform: rotate(-90deg); }
+.ui-caption--toggle .t { flex: 1; min-width: 0; }
+.ui-caption .n { font-weight: 400; font-variant-numeric: tabular-nums; }
+.ui-caption--toggle:is(:hover, .is-hover) { color: var(--text-primary); }
+.ui-caption--toggle:is(:focus-visible, .is-focus) { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+@media (max-width: 768px), (pointer: coarse) { .ui-caption--toggle { min-height: 44px; padding: 0 16px; } }
+@media (prefers-reduced-motion: reduce) { .ui-caption--toggle .ui-ico { transition: none; } }
+
+/* Dense rows: the compact avatar, a title that hugs its name (so a mark sits beside it), one trailing word. */
+.ui-avatar--compact { --s: 32px; }
+@media (max-width: 768px), (pointer: coarse) { .ui-avatar--compact { --s: 40px; } }
+.ui-row-top--hug > .ui-row-title { flex: 0 1 auto; }
+.ui-row-trail { margin-left: auto; padding-left: 4px; font-size: var(--text-xs); color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ui-row:is([aria-current="true"], [aria-current="page"]) .ui-row-trail { color: var(--text-secondary); }
+/* An unnamed row: the short address is the title. */
+.ui-row.is-unnamed .ui-row-title { font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 400; color: var(--text-secondary); }
+
+/* Note at the end of a capped list. */
+.ui-list-note { margin: 8px 12px 4px; padding: 12px 0 4px; border-top: 1px solid var(--border-row); font-size: var(--text-xs); color: var(--text-muted); line-height: 1.45; }
+.ui-list-note .ui-link { font-size: var(--text-xs); }
+@media (max-width: 768px) { .ui-list-note { margin: 8px 16px 4px; } }
+
+/* A menu anchored under its trigger (RS.kit.menu places it). */
+.ui-pop { position: fixed; z-index: var(--z-dropdown); }
+
+/* Detail list, stacked: the label over the value at every width. */
+.ui-dl--stack { grid-template-columns: minmax(0, 1fr); row-gap: 4px; }
+.ui-dl--stack dd { margin-bottom: 12px; }
+.ui-dl--stack dd:last-child { margin-bottom: 0; }
+.ui-dl dd.is-muted { color: var(--text-muted); }
+.ui-dl-hint { display: block; margin-top: 4px; font-size: var(--text-xs); color: var(--text-muted); }
+
+/* Action tile: a large tappable choice with an icon tile, a title, and a hint. */
+.ui-action-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; }
+@media (max-width: 768px) { .ui-action-tiles { grid-template-columns: minmax(0, 1fr); } }
+.ui-action-tile { display: flex; align-items: flex-start; gap: 12px; padding: 16px; box-sizing: border-box; min-width: 0; border: 0; border-radius: var(--radius-card); background: var(--surface-sunken); color: inherit; font: inherit; text-align: left; cursor: pointer; transition: background-color .15s ease; }
+.ui-action-tile:is(:hover, .is-hover) { background: var(--control-hover); }
+.ui-action-tile:is(:focus-visible, .is-focus) { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.ui-action-tile-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ui-action-tile-title { font-size: var(--text-base); font-weight: 600; color: var(--text-primary); line-height: 1.3; }
+.ui-action-tile-hint { font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.4; }
+
+/* Choice list inside a dialog: menu items in a well; pick-and-go, or one picked with a check. */
+.ui-choices { display: flex; flex-direction: column; padding: 4px; border-radius: var(--radius-card); background: var(--surface-sunken); }
+.ui-choices .ui-menu-item .ui-tag { margin-left: 8px; }
+.ui-choices .ui-menu-item .lbl > span { display: flex; align-items: center; }
+
+/* QR plate: dark modules on white in every theme. */
+.ui-qr { display: block; width: 256px; max-width: 100%; aspect-ratio: 1; padding: 8px; box-sizing: border-box; border-radius: var(--radius-card); background: #fff; }
+.ui-qr > canvas, .ui-qr > svg { display: block; width: 100%; height: 100%; }
+.ui-qr.is-loading { display: grid; place-items: center; background: var(--surface-sunken); }
+
+/* Recovery phrase: twelve numbered words, covered until shown. */
+.ui-phrase { position: relative; border-radius: var(--radius-card); background: var(--surface-sunken); }
+.ui-phrase ol { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; margin: 0; padding: 16px; list-style: none; counter-reset: w; }
+@media (max-width: 768px) { .ui-phrase ol { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.ui-phrase li { counter-increment: w; display: flex; align-items: baseline; gap: 8px; min-width: 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-primary); }
+.ui-phrase li::before { content: counter(w); min-width: 2ch; text-align: right; font-size: var(--text-xs); color: var(--text-muted); }
+.ui-phrase.is-covered ol { filter: blur(6px); user-select: none; -webkit-user-select: none; }
+.ui-phrase-cover { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; width: 100%; border: 0; border-radius: inherit; background: transparent; color: var(--text-primary); font: inherit; font-size: var(--text-sm); font-weight: 600; cursor: pointer; }
+.ui-phrase-cover .ui-ico { width: 24px; height: 24px; color: var(--text-secondary); }
+.ui-phrase-cover:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* Camera viewfinder for QR scanning. */
+.ui-viewfinder { position: relative; display: grid; place-items: center; aspect-ratio: 4 / 3; border-radius: var(--radius-card); background: #121315; overflow: hidden; }
+.ui-viewfinder > video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.ui-viewfinder > i { position: absolute; width: 56%; aspect-ratio: 1; border-radius: var(--radius-card); box-shadow: 0 0 0 999px rgba(0, 0, 0, .35); outline: 2px solid rgba(255, 255, 255, .85); outline-offset: -2px; }

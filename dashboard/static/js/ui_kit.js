@@ -150,7 +150,9 @@ function identityAvatar(hashValue, size) {
         image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/>',
         flag: '<path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/>',
         clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
-        eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>'
+        eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
+        // The Ratspeak mark: a filled face with drooping whiskers, legible at 14-18 px.
+        ratspeak: '<g fill="currentColor" stroke="none"><circle cx="6.2" cy="7" r="4.2"/><circle cx="17.8" cy="7" r="4.2"/><path fill-rule="evenodd" d="M12 22.5c-2.3 0-7-4.6-7-9.2C5 9.6 8.1 7.4 12 7.4s7 2.2 7 5.9c0 4.6-4.7 9.2-7 9.2zM9.4 12a1.15 1.15 0 1 0 0 2.3 1.15 1.15 0 0 0 0-2.3zm5.2 0a1.15 1.15 0 1 0 0 2.3 1.15 1.15 0 0 0 0-2.3z"/></g><path d="M5.3 15.1 1.2 16.3M5.9 17.5 1.9 18.9M18.7 15.1 22.8 16.3M18.1 17.5 22.1 18.9" fill="none" stroke-width="1.8"/>'
     };
 
     function esc(value) {
@@ -273,13 +275,15 @@ function identityAvatar(hashValue, size) {
         recent: [' ui-presence--warning', 'Seen recently'],
         older: [' ui-presence--older', 'Older / unknown']
     };
-    var AVATAR_SIZES = { 24: 'ui-avatar--24', 32: 'ui-avatar--32', 40: 'ui-avatar--40', 48: 'ui-avatar--48', 64: 'ui-avatar--64', row: 'ui-avatar--row' };
+    var AVATAR_SIZES = { 24: 'ui-avatar--24', 32: 'ui-avatar--32', 40: 'ui-avatar--40', 48: 'ui-avatar--48', 64: 'ui-avatar--64', row: 'ui-avatar--row', compact: 'ui-avatar--compact' };
+    var AVATAR_FACE = { row: 48, compact: 40 };
 
-    // size: 24, 32, 40, 48, 64, or 'row' (40 desktop, 48 touch). presence: 'active', 'recent',
-    // 'older', or true for active; omit it for no dot. heard adds "last heard …" to the label.
+    // size: 24, 32, 40, 48, 64, 'row' (40 desktop, 48 touch), or 'compact' (32 desktop, 40 touch).
+    // presence: 'active', 'recent', 'older', or true for active; omit it for no dot. heard adds
+    // "last heard …" to the label.
     function avatar(seed, size, presence, heard) {
         var key = AVATAR_SIZES[size] ? size : 40;
-        var face = identityAvatar(seed || '', key === 'row' ? 48 : key);
+        var face = identityAvatar(seed || '', AVATAR_FACE[key] || key);
         var tier = presence === true ? PRESENCE.active : PRESENCE[presence];
         var label = tier ? tier[1] + (heard ? ', ' + lowerFirst(time.lastHeard(heard)) : '') : '';
         var dot = tier ? '<span class="ui-presence' + tier[0] + '" role="img" aria-label="' + esc(label) + '"></span>' : '';
@@ -427,6 +431,198 @@ function identityAvatar(hashValue, size) {
     if (document.body) start();
     else document.addEventListener('DOMContentLoaded', start);
 
+    // The mark after a Ratspeak user's name, at the name's size.
+    function mark() {
+        return '<span class="ui-name-mark" role="img" aria-label="Ratspeak user" title="Ratspeak user">' + icon('ratspeak') + '</span>';
+    }
+
+    function compact() {
+        return typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 768px)').matches;
+    }
+
+    var FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    var dialogSeq = 0;
+
+    // A dialog on desktop and a bottom sheet on a phone. opts: { title, size: 'md' | 'lg', className,
+    // body, foot, sheet (markup in place of body and foot), onClose(value), focus: selector,
+    // locked (no close button; only the dialog's own actions close it) }.
+    // Returns { modal, dialog, body, foot, close(value), q(selector) }.
+    function dialog(opts) {
+        opts = opts || {};
+        var titleId = 'ui-dialog-title-' + (++dialogSeq);
+        var previous = document.activeElement;
+        var modal = document.createElement('div');
+        // rs-sheet-shell + open: native Back closes the top sheet through _ratspeakDismiss.
+        modal.className = 'ui-modal rs-sheet-shell open';
+        modal.setAttribute('role', 'presentation');
+        modal.innerHTML = '<div class="ui-dialog' + (opts.size ? ' ui-dialog--' + esc(opts.size) : '') + (opts.className ? ' ' + esc(opts.className) : '') +
+            '" role="dialog" aria-modal="true" aria-labelledby="' + titleId + '" tabindex="-1">' +
+            '<div class="ui-dialog-handle" aria-hidden="true"></div>' +
+            '<div class="ui-dialog-head">' + (opts.head || '<h2 class="ui-dialog-title">' + esc(opts.title || '') + '</h2>') +
+                (opts.locked ? '' : '<button type="button" class="ui-icon-btn" data-ui-close aria-label="Close" title="Close">' + icon('x') + '</button>') + '</div>' +
+            (opts.sheet != null ? opts.sheet
+                : '<div class="ui-dialog-body">' + (opts.body || '') + '</div>' + (opts.foot ? '<div class="ui-dialog-foot">' + opts.foot + '</div>' : '')) +
+            '</div>';
+        var box = modal.firstElementChild;
+        var heading = box.querySelector('.ui-dialog-head h2, .ui-dialog-head .ui-dialog-title');
+        if (heading) heading.id = titleId;
+        var closed = false;
+
+        function onKey(e) {
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                if (!opts.locked) close(null);
+            } else if (e.key === 'Tab') {
+                var items = Array.prototype.filter.call(box.querySelectorAll(FOCUSABLE), function(el) { return el.offsetParent !== null; });
+                if (!items.length) return;
+                var first = items[0], last = items[items.length - 1];
+                if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+            }
+        }
+
+        function close(value) {
+            if (closed) return;
+            closed = true;
+            modal.removeEventListener('keydown', onKey);
+            if (modal.parentNode) modal.parentNode.removeChild(modal);
+            if (previous && typeof previous.focus === 'function' && document.contains(previous)) {
+                try { previous.focus({ preventScroll: true }); } catch (_) {}
+            }
+            if (typeof opts.onClose === 'function') opts.onClose(value);
+        }
+
+        modal.addEventListener('keydown', onKey);
+        modal.addEventListener('click', function(e) {
+            if (e.target.closest && e.target.closest('[data-ui-close]')) close(null);
+            else if (e.target === modal && !opts.locked) close(null);
+        });
+        modal._ratspeakDismiss = function() { if (!opts.locked) close(null); return true; };
+        document.body.appendChild(modal);
+        if (!opts.locked && compact() && RS.gestures && typeof RS.gestures.attachDragDismiss === 'function') {
+            RS.gestures.attachDragDismiss(box, {
+                axis: 'y',
+                blockIfScrolled: true,
+                skipIf: function(e) { return !!(e.target.closest && e.target.closest('button, input, textarea, select, a, video')); },
+                onCommit: function() { close(null); }
+            });
+        }
+        var target = (opts.focus && box.querySelector(opts.focus)) || (!compact() && box.querySelector('input:not([type="checkbox"]):not([type="radio"]), textarea')) || box;
+        try { target.focus({ preventScroll: true }); } catch (_) {}
+        return {
+            modal: modal,
+            dialog: box,
+            body: box.querySelector('.ui-dialog-body'),
+            foot: box.querySelector('.ui-dialog-foot'),
+            close: close,
+            isOpen: function() { return !closed; },
+            q: function(selector) { return box.querySelector(selector); }
+        };
+    }
+
+    // A menu under its trigger on desktop, a sheet on a phone. opts: { title, caption, items: [{ label,
+    // hint (phone only), icon, checked (radio items), danger, disabled, onSelect }] }.
+    var openMenu = null;
+    function closeMenu() {
+        if (!openMenu) return;
+        var m = openMenu;
+        openMenu = null;
+        m.cleanup();
+    }
+
+    function menuItemsHtml(items, sheet) {
+        return items.map(function(item, index) {
+            var radio = Object.prototype.hasOwnProperty.call(item, 'checked');
+            return '<button type="button" class="ui-menu-item' + (item.danger ? ' ui-menu-item--danger' : '') + '" role="' + (radio ? 'menuitemradio' : 'menuitem') + '"' +
+                (radio ? ' aria-checked="' + (item.checked ? 'true' : 'false') + '"' : '') + (item.disabled ? ' disabled' : '') + ' data-ui-menu-index="' + index + '">' +
+                (item.icon ? icon(item.icon) : '') + '<span class="lbl">' + esc(item.label) + (sheet && item.hint ? '<small>' + esc(item.hint) + '</small>' : '') + '</span>' +
+                (radio && item.checked ? icon('check', 'check') : '') + '</button>';
+        }).join('');
+    }
+
+    function menu(trigger, opts) {
+        opts = opts || {};
+        var items = opts.items || [];
+        if (openMenu && openMenu.trigger === trigger) { closeMenu(); return null; }
+        closeMenu();
+        var caption = opts.caption ? '<div class="ui-menu-caption">' + esc(opts.caption) + '</div>' : '';
+        function choose(index) {
+            var item = items[index];
+            if (!item || item.disabled) return;
+            closeMenu();
+            if (typeof item.onSelect === 'function') item.onSelect();
+        }
+        if (compact()) {
+            var sheet = dialog({
+                title: opts.title || '',
+                sheet: '<div class="ui-menu ui-menu--sheet" role="menu">' + caption + menuItemsHtml(items, true) + '</div>',
+                onClose: function() { if (openMenu && openMenu.sheet === sheet) openMenu = null; }
+            });
+            sheet.dialog.addEventListener('click', function(e) {
+                var btn = e.target.closest && e.target.closest('[data-ui-menu-index]');
+                if (btn) choose(Number(btn.getAttribute('data-ui-menu-index')));
+            });
+            openMenu = { trigger: trigger, sheet: sheet, cleanup: function() { sheet.close(null); } };
+            return openMenu;
+        }
+        var pop = document.createElement('div');
+        pop.className = 'ui-menu ui-pop';
+        pop.setAttribute('role', 'menu');
+        if (opts.title) pop.setAttribute('aria-label', opts.title);
+        pop.innerHTML = caption + menuItemsHtml(items, false);
+        document.body.appendChild(pop);
+        var r = trigger.getBoundingClientRect();
+        var width = pop.offsetWidth, height = pop.offsetHeight;
+        var left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8));
+        var top = r.bottom + 4;
+        if (top + height > window.innerHeight - 8) top = Math.max(8, r.top - height - 4);
+        pop.style.left = left + 'px';
+        pop.style.top = top + 'px';
+        if (trigger.setAttribute) trigger.setAttribute('aria-expanded', 'true');
+        function onDoc(e) {
+            if (pop.contains(e.target)) return;
+            if (trigger.contains && trigger.contains(e.target)) return;
+            closeMenu();
+        }
+        function onKey(e) {
+            var buttons = Array.prototype.slice.call(pop.querySelectorAll('.ui-menu-item:not([disabled])'));
+            var at = buttons.indexOf(document.activeElement);
+            if (e.key === 'Escape') { e.preventDefault(); closeMenu(); if (trigger.focus) trigger.focus(); }
+            else if (e.key === 'ArrowDown') { e.preventDefault(); (buttons[at + 1] || buttons[0]).focus(); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); (buttons[at - 1] || buttons[buttons.length - 1]).focus(); }
+        }
+        pop.addEventListener('click', function(e) {
+            var btn = e.target.closest && e.target.closest('[data-ui-menu-index]');
+            if (btn) choose(Number(btn.getAttribute('data-ui-menu-index')));
+        });
+        setTimeout(function() { document.addEventListener('mousedown', onDoc, true); }, 0);
+        document.addEventListener('keydown', onKey, true);
+        window.addEventListener('resize', closeMenu);
+        window.addEventListener('scroll', closeMenu, true);
+        openMenu = {
+            trigger: trigger,
+            pop: pop,
+            cleanup: function() {
+                document.removeEventListener('mousedown', onDoc, true);
+                document.removeEventListener('keydown', onKey, true);
+                window.removeEventListener('resize', closeMenu);
+                window.removeEventListener('scroll', closeMenu, true);
+                if (trigger.setAttribute) trigger.setAttribute('aria-expanded', 'false');
+                if (pop.parentNode) pop.parentNode.removeChild(pop);
+            }
+        };
+        var firstItem = pop.querySelector('.ui-menu-item[aria-checked="true"], .ui-menu-item:not([disabled])');
+        if (firstItem) firstItem.focus({ preventScroll: true });
+        return openMenu;
+    }
+
+    kit.esc = esc;
+    kit.mark = mark;
+    kit.compact = compact;
+    kit.dialog = dialog;
+    kit.menu = menu;
+    kit.closeMenu = closeMenu;
     kit.icon = icon;
     kit.icons = Object.keys(GLYPHS);
     kit.time = time;
