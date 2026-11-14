@@ -250,15 +250,36 @@ function modeBtnHtml(value, label, active) {
         '</button>';
 }
 
+// Two arrows in a circle; spins while the button is disabled for a check.
+var INBOX_CHECK_ICON = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+    '<polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>' +
+    '<path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>';
+
+/** The card's title and status, with Check now beside them. `title` is escaped HTML. */
+function inboxCardTop(title, state) {
+    return '<div class="relay-card-top">' +
+        '<div class="relay-card-summary">' +
+            '<div class="relay-card-header">' + inboxDot(state) + '<strong>' + title + '</strong></div>' +
+            inboxStatusHtml(state) +
+        '</div>' +
+        '<button type="button" class="inbox-check-btn" id="prop-sync-btn" aria-label="Check now" title="Check now"' +
+            (state.busy ? ' disabled' : '') + '>' + INBOX_CHECK_ICON + '</button>' +
+    '</div>';
+}
+
 function renderAutoBody(autoActive, favorStatic, awaiting) {
     var html = '';
-    html += '<label class="settings-row" style="border-bottom:none;cursor:pointer;">' +
+    html += '<div class="settings-row" id="prop-favor-static-row" style="border-bottom:none;">' +
         '<div class="settings-row-info">' +
-            '<span class="settings-row-label">Favor Ratspeak inbox nodes</span>' +
-            '<span class="settings-row-desc">Prefer reachable Ratspeak inbox nodes, with fallback when none can be reached.</span>' +
+            '<span class="settings-row-label" id="prop-favor-static-label">Favor Ratspeak inbox nodes</span>' +
+            '<span class="settings-row-desc" id="prop-favor-static-desc">Prefer reachable Ratspeak inbox nodes, with fallback when none can be reached.</span>' +
         '</div>' +
-        '<input type="checkbox" id="prop-favor-static-toggle"' + (favorStatic ? ' checked' : '') + '>' +
-    '</label>';
+        '<label class="prop-toggle">' +
+            '<input type="checkbox" id="prop-favor-static-toggle"' + (favorStatic ? ' checked' : '') +
+                ' aria-labelledby="prop-favor-static-label" aria-describedby="prop-favor-static-desc">' +
+            '<span class="prop-slider"></span>' +
+        '</label>' +
+    '</div>';
 
     if (autoActive) {
         var activeNode = findNode(autoActive);
@@ -268,15 +289,10 @@ function renderAutoBody(autoActive, favorStatic, awaiting) {
             : (favorStatic ? 'Using fallback inbox' : 'Using inbox');
         var autoState = inboxCardState(propagationStatus, Date.now());
         html += '<div class="relay-card relay-card-active">' +
-            '<div class="relay-card-header">' +
-                inboxDot(autoState) + '<strong>' + escapeHtml(activeLabel) + ': ' + escapeHtml(nodeName) + '</strong>' +
-            '</div>' +
-            inboxStatusHtml(autoState) +
-            '<div class="inline-hint-sm" style="overflow-wrap:anywhere;margin-top:6px;">' +
-                'Propagation address<br>' + escapeHtml(autoActive) +
-            '</div>' +
-            '<div class="relay-card-actions">' +
-                '<button class="nr-btn nr-btn-sm" id="prop-sync-btn"' + (autoState.busy ? ' disabled' : '') + '>Check Now</button>' +
+            inboxCardTop(escapeHtml(activeLabel) + ': ' + escapeHtml(nodeName), autoState) +
+            '<div class="relay-card-address">' +
+                '<span class="inline-hint-sm">Propagation address</span>' +
+                '<span class="relay-card-address-value">' + escapeHtml(autoActive) + '</span>' +
             '</div>' +
         '</div>';
     } else if (awaiting) {
@@ -299,12 +315,8 @@ function renderManualBody(nodeHash) {
         var nodeName = findNodeName(nodeHash);
         var manualState = inboxCardState(propagationStatus, Date.now());
         html += '<div class="relay-card relay-card-active">' +
-            '<div class="relay-card-header">' +
-                inboxDot(manualState) + '<strong>' + escapeHtml(nodeName) + '</strong>' +
-            '</div>' +
-            inboxStatusHtml(manualState) +
+            inboxCardTop(escapeHtml(nodeName), manualState) +
             '<div class="relay-card-actions">' +
-                '<button class="nr-btn nr-btn-sm" id="prop-sync-btn"' + (manualState.busy ? ' disabled' : '') + '>Check Now</button>' +
                 '<button class="nr-btn nr-btn-sm nr-btn-muted" id="prop-clear-btn">Disconnect</button>' +
             '</div>' +
         '</div>';
@@ -463,15 +475,16 @@ function renderHostingSettings() {
         '<div class="propagation-section-title">Hosted Offline Inbox</div>' +
         '<div class="settings-row propagation-settings-row">' +
             '<div class="settings-row-info">' +
-                '<span class="settings-row-label">Host inbox node</span>' +
-                '<span class="settings-row-desc">' +
+                '<span class="settings-row-label" id="prop-host-label">Host inbox node</span>' +
+                '<span class="settings-row-desc" id="prop-host-desc">' +
                     (mobile
                         ? 'Mobile inbox hosting can be unreliable when the app is backgrounded.'
                         : 'Store offline LXMF messages for other people using this device.') +
                 '</span>' +
             '</div>' +
             '<label class="prop-toggle">' +
-                '<input type="checkbox" id="prop-host-toggle"' + (enabled ? ' checked' : '') + '>' +
+                '<input type="checkbox" id="prop-host-toggle"' + (enabled ? ' checked' : '') +
+                    ' aria-labelledby="prop-host-label" aria-describedby="prop-host-desc">' +
                 '<span class="prop-slider"></span>' +
             '</label>' +
         '</div>';
@@ -516,11 +529,12 @@ function renderStampSettings() {
         '<summary>Message stamp protection</summary>' +
         '<div class="settings-row propagation-settings-row">' +
             '<div class="settings-row-info">' +
-                '<span class="settings-row-label">Require stamps</span>' +
-                '<span class="settings-row-desc">Advertise and require proof-of-work on messages sent directly to you.</span>' +
+                '<span class="settings-row-label" id="stamp-enforce-label">Require stamps</span>' +
+                '<span class="settings-row-desc" id="stamp-enforce-desc">Advertise and require proof-of-work on messages sent directly to you.</span>' +
             '</div>' +
             '<label class="prop-toggle">' +
-                '<input type="checkbox" id="stamp-enforce-toggle"' + (enforce ? ' checked' : '') + '>' +
+                '<input type="checkbox" id="stamp-enforce-toggle"' + (enforce ? ' checked' : '') +
+                    ' aria-labelledby="stamp-enforce-label" aria-describedby="stamp-enforce-desc">' +
                 '<span class="prop-slider"></span>' +
             '</label>' +
         '</div>' +

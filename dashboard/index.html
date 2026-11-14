@@ -696,7 +696,7 @@
                             <span id="channel-room-meta">Waiting for hub</span>
                         </div>
                         <div class="channel-room-actions">
-                            <button class="nr-btn nr-btn-ghost channels-icon-btn" id="channel-members-toggle" type="button" title="Members" aria-label="Show channel members">
+                            <button class="nr-btn nr-btn-ghost channels-icon-btn" id="channel-members-toggle" type="button" title="People here" aria-label="People here" aria-controls="channel-members-pane" aria-expanded="false">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/></svg>
                             </button>
                             <button class="nr-btn nr-btn-ghost channels-icon-btn" id="channel-room-menu-btn" type="button" title="Channel options" aria-label="Channel options">
@@ -1648,11 +1648,11 @@
                             </div>
                             <section class="discovery-settings" id="discovery-settings-body" aria-labelledby="discovery-settings-heading">
                                 <h3 class="settings-panel-section-title" id="discovery-settings-heading">Discovery</h3>
-                                <p class="settings-panel-caption">Changes here restart the network for a moment.</p>
+                                <p class="settings-panel-caption">Changes below restart the network for a moment.</p>
                                 <div class="settings-row" id="ns-discover-row">
                                     <div class="settings-row-info">
                                         <span class="settings-row-label" id="ns-discover-label">Discover Connections</span>
-                                        <span class="settings-row-desc" id="ns-discover-desc">List servers and radios that others publish, in Network › Discovered.</span>
+                                        <span class="settings-row-desc" id="ns-discover-desc">Shows shared servers and radios in Network › Discovered.</span>
                                     </div>
                                     <label class="prop-toggle">
                                         <input type="checkbox" id="ns-discover-toggle" aria-labelledby="ns-discover-label" aria-describedby="ns-discover-desc">
@@ -1662,14 +1662,14 @@
                                 <div class="settings-row" id="ns-autojoin-row" hidden>
                                     <div class="settings-row-info">
                                         <span class="settings-row-label">Join Automatically</span>
-                                        <span class="settings-row-desc">Connect to discovered Backbone servers and keep this many online. Their operators can see your IP address.</span>
+                                        <span class="settings-row-desc">Connects to this many discovered servers, which can see your IP address.</span>
                                     </div>
                                     <button class="selector-badge settings-state-value" id="ns-autojoin-select" type="button">OFF</button>
                                 </div>
                                 <div class="settings-row" id="ns-unknown-impl-row" hidden>
                                     <div class="settings-row-info">
                                         <span class="settings-row-label" id="ns-unknown-impl-label">Auto-connect to unknown implementations</span>
-                                        <span class="settings-row-desc" id="ns-unknown-impl-desc">Off joins only servers running Python Reticulum 1.5.7 or later, or rsReticulum 1.5.0 or later.</span>
+                                        <span class="settings-row-desc" id="ns-unknown-impl-desc">When off, joins only Python Reticulum 1.5.7+ and rsReticulum 1.5.0+ servers.</span>
                                     </div>
                                     <label class="prop-toggle">
                                         <input type="checkbox" id="ns-unknown-impl-toggle" aria-labelledby="ns-unknown-impl-label" aria-describedby="ns-unknown-impl-desc">
@@ -1693,11 +1693,10 @@
                             </section>
                             <section class="discovery-settings" id="stamp-settings-body" aria-labelledby="stamp-settings-heading">
                                 <h3 class="settings-panel-section-title" id="stamp-settings-heading">Network Stamps</h3>
-                                <p class="settings-panel-caption">Changes here restart the network for a moment.</p>
                                 <div class="settings-row" id="ns-stamp-row">
                                     <div class="settings-row-info">
                                         <span class="settings-row-label" id="ns-stamp-label">Stamp my announces and path requests</span>
-                                        <span class="settings-row-desc" id="ns-stamp-desc">Adds proof-of-work, so nodes that require stamps pass them on. Takes some CPU and battery: once for each address, and a little for every path request.</span>
+                                        <span class="settings-row-desc" id="ns-stamp-desc">Lets nodes that require stamps pass yours on, at some battery cost.</span>
                                     </div>
                                     <label class="prop-toggle">
                                         <input type="checkbox" id="ns-stamp-toggle" aria-labelledby="ns-stamp-label" aria-describedby="ns-stamp-desc">
@@ -1707,7 +1706,7 @@
                                 <div class="settings-row" id="ns-require-stamps-row">
                                     <div class="settings-row-info">
                                         <span class="settings-row-label" id="ns-require-stamps-label">Require stamps from others</span>
-                                        <span class="settings-row-desc" id="ns-require-stamps-desc">Ignore announces, path requests, and link requests without enough proof-of-work. Nodes on older software don't stamp, so they won't be heard.</span>
+                                        <span class="settings-row-desc" id="ns-require-stamps-desc">Nodes on older software don't stamp, so they won't be heard.</span>
                                     </div>
                                     <label class="prop-toggle">
                                         <input type="checkbox" id="ns-require-stamps-toggle" aria-labelledby="ns-require-stamps-label" aria-describedby="ns-require-stamps-desc">
@@ -1717,11 +1716,10 @@
                             </section>
                             <section class="discovery-settings" id="link-settings-body" aria-labelledby="link-settings-heading">
                                 <h3 class="settings-panel-section-title" id="link-settings-heading">Links</h3>
-                                <p class="settings-panel-caption">Changes here restart the network for a moment.</p>
                                 <div class="settings-row" id="ns-mtu-row">
                                     <div class="settings-row-info">
                                         <span class="settings-row-label" id="ns-mtu-label">Link MTU discovery</span>
-                                        <span class="settings-row-desc" id="ns-mtu-desc">Uses larger packets on fast links, so transfers finish sooner. Turn off only to troubleshoot.</span>
+                                        <span class="settings-row-desc" id="ns-mtu-desc">Uses larger packets on fast links so transfers finish sooner.</span>
                                     </div>
                                     <label class="prop-toggle">
                                         <input type="checkbox" id="ns-mtu-toggle" checked aria-labelledby="ns-mtu-label" aria-describedby="ns-mtu-desc">

@@ -2577,6 +2577,7 @@ function _channelsRenderRoom(scrollRestore) {
 
     if (!room) {
         if (layout) layout.classList.remove('members-open');
+        _channelsSyncMembersToggle();
         header.hidden = true;
         compose.hidden = true;
         var offered = _channelsRenderRoomEmpty(transcript);
@@ -2605,6 +2606,7 @@ function _channelsRenderRoom(scrollRestore) {
     if (room.phase !== 'joined' && layout) layout.classList.remove('members-open');
     var membersToggle = _channelsEl('channel-members-toggle');
     if (membersToggle) membersToggle.hidden = room.phase !== 'joined';
+    _channelsSyncMembersToggle();
     var roomMenu = _channelsEl('channel-room-menu-btn');
     if (roomMenu) roomMenu.hidden = false;
     _channelsSetText('channel-room-title', _channelsRoomDisplayName(room.name));
@@ -3304,10 +3306,11 @@ function _channelsBuildTranscriptItem(item, hubNotice, messageGroup) {
     authorLabel.textContent = item.ours ? authorText + ' (you)' : authorText;
     author.appendChild(authorLabel);
     if (mentioned) {
-        var mentionMarker = document.createElement('span');
-        mentionMarker.className = 'channel-mention-marker';
-        mentionMarker.textContent = 'Mention';
-        author.appendChild(mentionMarker);
+        // The row's tint and accent bar show it; this says it.
+        var mentionNote = document.createElement('span');
+        mentionNote.className = 'sr-only';
+        mentionNote.textContent = ', mentions you';
+        author.appendChild(mentionNote);
     }
     var time = document.createElement('time');
     time.className = 'channel-event-time';
@@ -4234,6 +4237,14 @@ function channelsCloseMemberPane() {
     _channelsRenderMembers(channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null);
     var layout = _channelsEl('channels-layout');
     if (layout) layout.classList.remove('members-open');
+    _channelsSyncMembersToggle();
+}
+
+// The people toggle reports whether its overlay pane is open.
+function _channelsSyncMembersToggle() {
+    var layout = _channelsEl('channels-layout');
+    var toggle = _channelsEl('channel-members-toggle');
+    if (toggle) toggle.setAttribute('aria-expanded', String(!!layout && layout.classList.contains('members-open')));
 }
 
 function channelsHandleMemberPaneBack() {
@@ -6376,6 +6387,7 @@ function _channelsBindUI() {
     if (members) members.addEventListener('click', function() {
         var layout = _channelsEl('channels-layout');
         if (layout) layout.classList.toggle('members-open');
+        _channelsSyncMembersToggle();
     });
     var membersClose = _channelsEl('channel-members-close');
     if (membersClose) membersClose.addEventListener('click', channelsCloseMemberPane);

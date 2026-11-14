@@ -95,5 +95,21 @@ vm.runInContext(source.slice(0, source.indexOf("RS.listen(")), ctx);
     ctx.propagationStatus = Object.assign({}, ctx.propagationStatus, { mode: 'auto' });
     ctx.updateInboxStatus();
     assert.equal(fullRenders, 1, 'a mode change redraws the panel');
-    console.log('propagation recovery: 42 assertions passed');
+    // Auto card: favoring Ratspeak nodes is a switch; Check now is an icon beside the status.
+    const hub = 'f'.repeat(32);
+    ctx.discoveredRelayNodes = [{ hash: hub, display_name: 'Hub', static: true, hops: 1 }];
+    ctx.propagationStatus = { mode: 'auto', network_available: true, auto_active_node: hub,
+        active_node: node({ last_sync_success: Math.floor(Date.now() / 1000) }) };
+    const auto = ctx.renderAutoBody(hub, true, false);
+    assert.match(auto, /<label class="prop-toggle"><input type="checkbox" id="prop-favor-static-toggle" checked aria-labelledby="prop-favor-static-label" aria-describedby="prop-favor-static-desc"><span class="prop-slider"><\/span><\/label>/);
+    assert(auto.includes('<button type="button" class="inbox-check-btn" id="prop-sync-btn" aria-label="Check now" title="Check now"><svg'));
+    assert(!auto.includes('Check Now'));
+    assert(auto.indexOf('id="prop-sync-btn"') < auto.indexOf('class="relay-card-address"'), 'Check now sits with the status, apart from the address');
+    assert(auto.includes('<span class="relay-card-address-value">' + hub + '</span>'));
+    ctx.inboxCheckRequestedAt = Date.now();
+    assert(ctx.renderAutoBody(hub, true, false).includes('title="Check now" disabled>'), 'a running check blocks repeat presses');
+    ctx.inboxCheckRequestedAt = 0;
+    const manual = ctx.renderManualBody(hub);
+    assert(manual.includes('id="prop-sync-btn" aria-label="Check now"') && manual.includes('>Disconnect</button>'));
+    console.log('propagation recovery: 50 assertions passed');
 })().catch(error => {console.error(error);process.exitCode=1;});

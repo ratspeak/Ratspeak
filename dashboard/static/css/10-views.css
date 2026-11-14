@@ -603,15 +603,15 @@
     padding: 0 var(--space-2);
 }
 
+/* Rows bleed into the gutter: icons stay on the content edge and the highlight wraps them evenly. */
 .peer-action-rows {
     display: flex;
     flex-direction: column;
     gap: var(--space-1);
+    margin-inline: calc(var(--space-3) * -1);
 }
 .peer-action-rows .action-popover-item {
     min-height: 44px;
-    padding-left: 0;
-    padding-right: 0;
 }
 
 .network-layout {
@@ -1957,12 +1957,6 @@
     flex: 1;
 }
 .network-ownership-settings .prop-toggle { flex-shrink: 0; }
-.network-ownership-settings .prop-toggle:focus-within {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: var(--space-2);
-    border-radius: var(--radius-pill);
-}
-.network-ownership-settings .prop-toggle input:disabled + .prop-slider { opacity: var(--opacity-disabled); }
 .network-ownership-settings .nr-btn {
     justify-self: start;
     white-space: normal;
@@ -2513,6 +2507,8 @@ html[data-text-scale-tier="xlarge"] .settings-detail-header p {
     cursor: pointer;
     top: 0; left: 0; right: 0; bottom: 0;
     background: var(--surface-control);
+    /* Off is an outlined track (≥3:1 against cards in every theme); on fills it. */
+    box-shadow: inset 0 0 0 1.5px var(--border-control);
     border-radius: var(--radius-pill);
     transition: var(--transition-slow);
 }
@@ -2523,16 +2519,25 @@ html[data-text-scale-tier="xlarge"] .settings-detail-header p {
     width: 14px;
     left: 2px;
     bottom: 2px;
-    background: var(--text-muted);
+    background: var(--border-control);
     border-radius: var(--radius-full);
     transition: var(--transition-slow);
 }
 .prop-toggle input:checked + .prop-slider {
     background: var(--accent-border);
+    box-shadow: inset 0 0 0 1.5px transparent;
 }
 .prop-toggle input:checked + .prop-slider::before {
     transform: translateX(16px);
     background: var(--accent);
+}
+.prop-toggle input:focus-visible + .prop-slider {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
+.prop-toggle input:disabled + .prop-slider {
+    opacity: var(--opacity-disabled);
+    cursor: not-allowed;
 }
 
 .relay-card {
@@ -2566,6 +2571,63 @@ html[data-text-scale-tier="xlarge"] .settings-detail-header p {
 .relay-card-actions {
     display: flex;
     gap: var(--space-3);
+}
+.relay-card-top {
+    display: flex;
+    align-items: center;
+    gap: var(--space-6);
+}
+.relay-card-summary { flex: 1; min-width: 0; }
+.relay-card-top .relay-card-details { margin-bottom: 0; }
+.relay-card-top + .relay-card-actions { margin-top: var(--space-6); }
+.inbox-check-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: var(--control-height-sm);
+    height: var(--control-height-sm);
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-lg);
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: background var(--transition-base), color var(--transition-base);
+    -webkit-tap-highlight-color: transparent;
+}
+.inbox-check-btn:hover:not(:disabled) {
+    background: var(--surface-control-hover);
+    color: var(--accent);
+}
+.inbox-check-btn:focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 2px;
+}
+.inbox-check-btn:disabled { color: var(--text-muted); cursor: default; }
+.inbox-check-btn:disabled svg { animation: spin 0.9s linear infinite; }
+@media (max-width: 768px), (pointer: coarse) {
+    .inbox-check-btn { width: var(--touch-target); height: var(--touch-target); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .inbox-check-btn:disabled svg { animation: none; }
+    .inbox-check-btn:disabled { opacity: var(--opacity-disabled); }
+}
+.relay-card-address {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    margin-top: var(--space-6);
+    padding-top: var(--space-6);
+    border-top: 1px solid var(--border-row);
+}
+.relay-card-address-value {
+    font-family: var(--font-mono);
+    font-size: var(--type-id-size);
+    color: var(--type-id-color);
+    overflow-wrap: anywhere;
+    user-select: text;
+    -webkit-user-select: text;
 }
 .relay-section-header {
     display: flex;
@@ -3405,8 +3467,7 @@ body.setup-active .main-content {
     color: var(--accent);
     background: var(--accent-bg-strong);
     padding: var(--space-1) var(--space-4);
-    border-radius: var(--radius-lg-plus);
-    text-transform: uppercase;
+    border-radius: var(--chip-radius);
     letter-spacing: var(--type-badge-tracking);
     flex-shrink: 0;
 }
@@ -3516,14 +3577,13 @@ body.setup-active .main-content {
     align-items: center;
     min-height: 22px;
     padding: 0 var(--space-4);
-    border-radius: var(--radius-lg-plus);
+    border-radius: var(--chip-radius);
     color: var(--text-secondary);
     background: var(--surface-control);
     border: 1px solid var(--border-control);
     font-size: var(--type-badge-size);
     font-weight: var(--type-badge-weight);
     letter-spacing: var(--type-badge-tracking);
-    text-transform: uppercase;
 }
 
 .identity-private-badge--list {
@@ -3788,7 +3848,8 @@ body.setup-active .main-content {
     display: flex;
     align-items: center;
     gap: var(--space-4);
-    padding: var(--space-3) var(--space-4);
+    /* Start inset equals the vertical one, so the 32px icon sits evenly inside a 44px highlight. */
+    padding: var(--space-3) var(--space-5) var(--space-3) var(--space-3);
     background: transparent;
     border: none;
     border-radius: var(--radius-md);
@@ -5134,13 +5195,12 @@ body.setup-active .main-content {
     gap: var(--space-2);
     min-height: 22px;
     padding: 0 var(--space-4);
-    border-radius: var(--radius-lg-plus);
+    border-radius: var(--chip-radius);
     color: var(--accent);
     background: var(--accent-bg-strong);
     font-size: var(--type-badge-size);
     font-weight: var(--type-badge-weight);
     letter-spacing: var(--type-badge-tracking);
-    text-transform: uppercase;
     flex-shrink: 0;
 }
 .identity-hardware-badge-icon {

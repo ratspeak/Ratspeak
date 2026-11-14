@@ -572,6 +572,7 @@
 
     /* Hash displays: select-all so one tap copies the whole value. */
     .hash-copy,
+    .relay-card-address-value,
     .rnode-ble-unavailable code {
         -webkit-user-select: all;
         user-select: all;
@@ -4386,5 +4387,17 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
     html:not([data-text-scale-tier="xlarge"]) .channels-layout.room-live .channel-transcript,
     html:not([data-text-scale-tier="xlarge"]) .channels-layout.room-live .channel-compose {
         border-right-width: 0;
+    }
+    /* That column is always shown, so its toggle has nothing to do. */
+    html:not([data-text-scale-tier="xlarge"]) #channel-members-toggle {
+        display: none;
+    }
+}
+
+@media (pointer: coarse) {
+    .channels-icon-btn {
+        width: var(--touch-target);
+        height: var(--touch-target);
+        flex-basis: var(--touch-target);
     }
 }

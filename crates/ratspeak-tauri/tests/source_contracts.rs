@@ -7556,7 +7556,8 @@ fn settings_information_architecture_groups_one_off_settings() {
     assert!(discovery.contains(
         r#"<h3 class="settings-panel-section-title" id="discovery-settings-heading">Discovery</h3>"#
     ));
-    assert!(discovery.contains("Changes here restart the network for a moment."));
+    // One caption above the three restart groups covers them all.
+    assert!(discovery.contains("Changes below restart the network for a moment."));
     assert!(discovery.contains(
         r#"<span class="settings-row-label" id="ns-discover-label">Discover Connections</span>"#
     ));
@@ -7612,7 +7613,7 @@ fn settings_information_architecture_groups_one_off_settings() {
     toggle_row(
         "unknown-impl",
         "Auto-connect to unknown implementations",
-        "Off joins only servers running Python Reticulum 1.5.7 or later, or rsReticulum 1.5.0 or later.",
+        "When off, joins only Python Reticulum 1.5.7+ and rsReticulum 1.5.0+ servers.",
         false,
     );
     // Network Stamps and Links follow Discovery as groups of their own, hidden with it.
@@ -7627,24 +7628,24 @@ fn settings_information_architecture_groups_one_off_settings() {
         at = found;
         let section = network_panel[found..].split("</section>").next().unwrap();
         assert!(section.contains(&format!(">{heading}</h3>")), "{group}");
-        assert!(section.contains("Changes here restart the network for a moment."));
+        assert!(!section.contains("settings-panel-caption"), "{group}");
     }
     toggle_row(
         "stamp",
         "Stamp my announces and path requests",
-        "Adds proof-of-work, so nodes that require stamps pass them on. Takes some CPU and battery: once for each address, and a little for every path request.",
+        "Lets nodes that require stamps pass yours on, at some battery cost.",
         false,
     );
     toggle_row(
         "require-stamps",
         "Require stamps from others",
-        "Ignore announces, path requests, and link requests without enough proof-of-work. Nodes on older software don't stamp, so they won't be heard.",
+        "Nodes on older software don't stamp, so they won't be heard.",
         false,
     );
     toggle_row(
         "mtu",
         "Link MTU discovery",
-        "Uses larger packets on fast links, so transfers finish sooner. Turn off only to troubleshoot.",
+        "Uses larger packets on fast links so transfers finish sooner.",
         true,
     );
     assert!(discovery.contains(r#"id="ns-accept-row" hidden"#));
@@ -10297,7 +10298,7 @@ fn offline_inbox_auto_settings_use_ratspeak_node_preference() {
         "the card is the only Offline Inbox status"
     );
     assert!(propagation_js.contains("if (mode === 'manual')"));
-    assert!(propagation_js.contains("Propagation address<br>"));
+    assert!(propagation_js.contains(r#"<span class="inline-hint-sm">Propagation address</span>"#));
     assert!(!propagation_js.contains("Connecting..."));
     assert!(!settings_html.contains("Relay Node"));
     assert!(settings_html.contains("Offline Inbox"));
