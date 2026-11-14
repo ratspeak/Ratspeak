@@ -58,8 +58,8 @@ async fn concurrent_save_and_get_scales_with_pool() {
                 db::save_message(
                     &p,
                     &msg_w,
-                    &dest_w,
                     &id_w,
+                    &dest_w,
                     &content_w,
                     "",
                     1_700_000_000.0 + i as f64,
