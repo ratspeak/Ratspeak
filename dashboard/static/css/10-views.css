@@ -2470,16 +2470,6 @@ body.setup-active .main-content {
     .progress-meter-fill::after { display: none; }
     .progress-step-dot { animation: none !important; }
 }
-
-/* Recovery phrase: numbered words in a well, covered until shown. */
-.phrase { position: relative; border-radius: var(--radius-card); background: var(--surface-sunken); overflow: hidden; }
-.phrase-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; margin: 0; padding: 16px; list-style: none; counter-reset: phrase-word; text-align: left; }
-.phrase-grid li { counter-increment: phrase-word; display: flex; align-items: baseline; gap: 6px; min-width: 0; font-family: var(--font-mono); font-size: var(--text-sm); color: var(--text-primary); overflow-wrap: anywhere; }
-.phrase-grid li::before { content: counter(phrase-word); min-width: 2ch; text-align: right; font-size: var(--text-xs); color: var(--text-muted); font-variant-numeric: tabular-nums; }
-.phrase.is-covered .phrase-grid { filter: blur(6px); user-select: none; -webkit-user-select: none; }
-.phrase-cover { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(var(--theme-page-rgb), 0.35); }
-.phrase:not(.is-covered) .phrase-cover { display: none; }
-
 /* First run steps. */
 .setup-alt { display: flex; justify-content: center; flex-wrap: wrap; gap: 8px; }
 .setup-block { display: flex; flex-direction: column; gap: 16px; margin-top: 24px; text-align: left; }
@@ -3718,67 +3708,6 @@ body.setup-active .main-content {
     stroke-linecap: round;
     stroke-linejoin: round;
 }
-
-/* Mnemonic reveal grid */
-.hw-mnemonic-shell {
-    position: relative;
-    border-radius: var(--radius-lg);
-}
-.hw-mnemonic-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: var(--space-3);
-    filter: blur(7px);
-    transition: filter 0.2s ease;
-    pointer-events: none;
-}
-.hw-mnemonic-shell.revealed .hw-mnemonic-grid {
-    filter: none;
-    pointer-events: auto;
-}
-.hw-mnemonic-word {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-    padding: var(--space-3) var(--space-4);
-    border: 1px solid var(--border-control);
-    border-radius: var(--radius-md);
-    background: var(--surface-control);
-    min-width: 0;
-}
-.hw-mnemonic-index {
-    font-size: var(--text-xs);
-    color: var(--text-muted);
-    font-variant-numeric: tabular-nums;
-    width: 18px;
-    text-align: right;
-    flex-shrink: 0;
-}
-.hw-mnemonic-text {
-    font-family: var(--font-mono);
-    font-size: var(--text-sm);
-    color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-.hw-mnemonic-cover {
-    position: absolute;
-    inset: 0;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-4);
-    border: 1px dashed var(--border-control);
-    border-radius: var(--radius-lg);
-    background: var(--surface-control);
-    color: var(--text-secondary);
-    font-size: var(--text-sm);
-    cursor: pointer;
-    transition: color 0.15s, border-color 0.15s;
-}
-.hw-mnemonic-cover:hover { color: var(--accent); border-color: var(--accent); }
-
 .hw-confirm-check {
     display: flex;
     align-items: flex-start;

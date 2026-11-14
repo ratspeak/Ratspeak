@@ -276,7 +276,6 @@
 .conn-age.age-old   { color: var(--status-error-fg); }
 .conn-age.age-none  { color: var(--text-muted); }
 
-
 .conn-row-meta {
     display: flex;
     gap: var(--space-4);
@@ -535,8 +534,6 @@
     opacity: 0.5;
 }
 
-
-
 .toolbar-dropdown {
     position: relative;
 }
@@ -635,7 +632,6 @@
     margin-left: var(--space-1);
 }
 
-
 /* Toasts (toasts.js) on the kit toast. An inbound one opens from anywhere on the card; Dismiss stays on top. */
 .ui-toast.is-actionable { position: relative; }
 .toast-action-target { position: absolute; inset: 0; z-index: 1; width: 100%; height: 100%; padding: 0; border: 0; border-radius: inherit; background: transparent; color: inherit; cursor: pointer; }
@@ -656,13 +652,6 @@
     color: var(--status-error-fg);
     border-left-color: var(--status-error);
 }
-
-
-.tooltip-trigger {
-    position: relative;
-    cursor: help;
-}
-
 /* Help popover (ui_shared.js): the kit tooltip, fixed beside its trigger; it fades in toward it. */
 .rs-help-popover {
     position: fixed;
@@ -677,35 +666,6 @@
 .rs-help-popover[data-placement="above"] { transform: translateY(3px); }
 .rs-help-popover.open { opacity: 1; transform: none; }
 .rs-help-popover[hidden] { display: none; }
-
-.tooltip-trigger:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: 2px;
-}
-
-
-.help-icon {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 14px;
-    height: 14px;
-    border-radius: var(--radius-full);
-    background: var(--border);
-    color: var(--text-muted);
-    font-size: var(--text-2xs);
-    font-weight: 700;
-    cursor: help;
-    margin-left: var(--space-2);
-    vertical-align: middle;
-    transition: background var(--transition-base);
-}
-
-@media (hover: hover) and (pointer: fine) {
-    .help-icon:hover {
-        background: var(--border-light);
-    }
-}
 
 /* Shared underline navigation for compact subviews and list filters. */
 .section-subtabs {
@@ -744,7 +704,6 @@
         color: var(--text-secondary);
     }
 }
-
 
 .interfaces-panel {
     display: flex;
@@ -843,7 +802,6 @@
     border-left: 3px solid var(--status-info);
 }
 
-
 .interface-lora-stats {
     display: flex;
     flex-wrap: wrap;
@@ -877,8 +835,6 @@
     padding: var(--space-2) 0 0;
     line-height: 1.4;
 }
-
-
 
 .announce-list {
     display: flex;
@@ -934,7 +890,6 @@
     color: var(--accent);
 }
 
-
 .path-table {
     width: 100%;
     border-collapse: collapse;
@@ -959,7 +914,6 @@
 .path-table tr:hover td {
     background: var(--hover-subtle);
 }
-
 
 .loading-spinner {
     display: inline-block;
@@ -1026,7 +980,6 @@
     font-size: var(--text-xs);
     color: var(--text-muted);
 }
-
 
 #alert-container {
     position: fixed;
@@ -1198,7 +1151,6 @@
     flex-shrink: 0;
 }
 
-
 kbd {
     background: var(--bg-primary);
     border: 1px solid var(--border);
@@ -1274,7 +1226,6 @@ kbd {
     color: var(--text-muted);
     opacity: 0.7;
 }
-
 
 .conn-cards-grid {
     gap: var(--space-4);

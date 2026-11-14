@@ -195,7 +195,6 @@
 }
 
 @media (max-width: 768px) {
-    .tooltip-trigger { position: static; }
     .cockpit-grid {
         grid-template-columns: 1fr;
         grid-template-rows: 1fr;
@@ -1355,7 +1354,6 @@
 
     .conn-cards-grid { gap: 6px; }
 
-
     
 
     .log-filter { font-size: var(--text-xs); padding: 4px 10px; }
@@ -1898,7 +1896,6 @@
     .solo-card { padding: 32px 24px; }
     .solo-title { font-size: var(--text-xl); }
     .setup-alt { flex-direction: column; }
-    .phrase-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 @media (max-width: 768px) and (orientation: landscape) and (max-height: 500px) {
@@ -2399,12 +2396,6 @@
         max-width: 440px;
         padding: var(--space-8) var(--space-6);
     }
-    /* Reflow to 2 columns on narrow widths — covers both the recovery backup
-       and the hardware-wizard grid (a desktop Tauri window can size < 768px). */
-    .hw-mnemonic-grid {
-        grid-template-columns: repeat(2, 1fr);
-        gap: var(--space-2);
-    }
 }
 
 @media (max-width: 360px) {
@@ -2415,9 +2406,6 @@
     }
     .hw-unlock-card {
         padding: var(--space-6) var(--space-5);
-    }
-    .hw-mnemonic-word {
-        padding: var(--space-2) var(--space-3);
     }
 }
 

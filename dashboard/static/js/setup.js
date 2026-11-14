@@ -168,6 +168,8 @@ function renderSetupPhrase(words) {
     grid.setAttribute('aria-hidden', shown ? 'false' : 'true');
     var shell = document.getElementById('setup-mnemonic-shell');
     if (shell) shell.classList.toggle('is-covered', !shown);
+    var cover = document.getElementById('setup-mnemonic-cover');
+    if (cover) cover.hidden = shown;
     var copy = document.getElementById('setup-mnemonic-copy-btn');
     if (copy) copy.disabled = !shown;
     var confirm = document.getElementById('setup-mnemonic-confirm');

@@ -920,15 +920,7 @@ function recoveryPhraseWords(mnemonic) {
     return String(mnemonic || '').trim().split(/\s+/).filter(Boolean);
 }
 
-function renderRecoveryPhraseGrid(words) {
-    return (words || []).map(function(w, i) {
-        return '<div class="hw-mnemonic-word"><span class="hw-mnemonic-index">' + (i + 1) +
-            '</span><span class="hw-mnemonic-text">' + escapeHtml(w) + '</span></div>';
-    }).join('');
-}
-
 window.recoveryPhraseWords = recoveryPhraseWords;
-window.renderRecoveryPhraseGrid = renderRecoveryPhraseGrid;
 
 // Recovery-phrase reveal as a standalone full-screen overlay. Software and
 // hardware setup flows share the reveal/copy/check pattern so users learn
