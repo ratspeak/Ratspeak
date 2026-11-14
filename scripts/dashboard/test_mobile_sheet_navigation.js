@@ -168,8 +168,13 @@ assert(constantsSource.includes('sheet._ratspeakDismiss = function()'),
     'all dynamic sheet shells need a native Back dismissal hook');
 assert(constantsSource.includes("sheet.className = 'rs-sheet-shell '"),
     'custom runtime sheets need a style-free marker for native Back');
-assert(contactCardSource.includes('built.sheet._ratspeakDismiss = closeAll;'),
-    'the QR scanner must stop its camera through its native Back hook');
+var kitSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'ui_kit.js'), 'utf8');
+assert(kitSource.includes("modal._ratspeakDismiss = function() { if (!opts.locked) close(null); return true; };") &&
+    kitSource.includes("modal.className = 'ui-modal rs-sheet-shell open';"),
+    'kit dialogs close through the native Back hook');
+assert(contactCardSource.includes('onClose: function() { stop(); }'),
+    'the QR scanner must stop its camera on every close, native Back included');
+assert(navSource.includes('.ui-modal:not([hidden])'), 'swipes must not navigate beneath an open kit dialog');
 assert(dialogsSource.includes('return _rsHandleNativeBack(opts, dismiss);'),
     'rich sheets must preserve their state-aware dismissal callback');
 assert(dialogsSource.includes("sheet.classList.add('rs-dialog-sheet');"),

@@ -71,6 +71,8 @@ function load({ confirm = true, protectedIdentity = false, format = 'reticulum',
     vm.runInNewContext([
         functionSource(stateSource, 'escapeHtml'),
         functionSource(identitySource, 'identityPinError'),
+        functionSource(identitySource, 'identityField'),
+        functionSource(identitySource, 'identityErrorHtml'),
         functionSource(identitySource, 'base64ToBytes'),
         functionSource(identitySource, 'backupPinFieldsHtml'),
         functionSource(identitySource, 'readBackupPin'),
@@ -154,7 +156,8 @@ const opts = { title: 'Copy Secret', message: 'A <secret>.', confirmText: 'Copy'
     h.context.viewRecoveryPhrase(h.target);
     await settle();
     let sheet2 = h.seen.modals[0];
-    assert.equal(sheet2.title, 'View Recovery Phrase');
+    assert.equal(sheet2.title, 'Show the recovery phrase?');
+    assert.match(sheet2.body, /Fir\u2019s PIN/);
     h.field('identity-key-pin').value = 'wrong pin';
     await sheet2.onConfirm();
     assert.equal(h.field('identity-key-error').textContent, 'Incorrect PIN');
@@ -196,8 +199,8 @@ const opts = { title: 'Copy Secret', message: 'A <secret>.', confirmText: 'Copy'
     await settle();
     let backup = h.seen.modals[0];
     assert.doesNotMatch(backup.body, /Identity PIN/);
-    assert.match(backup.body, /<label>Backup PIN<\/label>/);
-    assert.match(backup.body, /<label>Confirm backup PIN<\/label>/);
+    assert.match(backup.body, /<label class="ui-label" for="identity-export-backup-pin">Backup PIN<\/label>/);
+    assert.match(backup.body, /<label class="ui-label" for="identity-export-backup-pin-confirm">Confirm backup PIN<\/label>/);
     h.field('identity-export-backup-pin').value = 'backup pin';
     h.field('identity-export-backup-pin-confirm').value = 'backup pin';
     await backup.onConfirm();
@@ -215,7 +218,7 @@ const opts = { title: 'Copy Secret', message: 'A <secret>.', confirmText: 'Copy'
     h.context.exportIdentityBackup(HASH);
     await settle();
     backup = h.seen.modals[0];
-    assert.match(backup.body, /<label>Identity PIN<\/label>/);
+    assert.match(backup.body, /for="identity-export-identity-pin">Identity PIN<\/label>/);
     h.field('identity-export-backup-pin').value = 'backup pin';
     h.field('identity-export-backup-pin-confirm').value = 'backup pin';
     assert.equal(backup.onConfirm(), undefined, 'no identity PIN, no request');

@@ -426,7 +426,7 @@ const PREVIEW = {
         ['m-2', 'paper', 'paper', URI]);
     assert.deepEqual([sent.shares[0].uri, sent.shares[0].recipientName], [URI, 'Field Rat'], 'the popup opens on success');
     assert(!('renderer' in sent.appended[0]), 'the sender\'s bubble is plain text, like the receiver\'s');
-    assert(contactSource.includes('\'<button class="nr-btn nr-btn-primary" id="contact-scan-add">Add</button>\''),
+    assert(contactSource.includes('<button type="button" class="ui-btn ui-btn--primary" id="contact-scan-add">Add contact</button>'),
         'the contact scan result uses the primary action too');
     const viewsCss = fs.readFileSync(path.join(js, '..', 'css', '10-views.css'), 'utf8');
     assert(/\.paper-share-sheet \.paper-share-copy\s*\{[^}]*padding:\s*0;/s.test(viewsCss) &&
@@ -437,7 +437,7 @@ const PREVIEW = {
     assert(/\.contact-share-sheet\.paper-share-sheet\s*\{[^}]*880px\)/s.test(viewsCss));
 
     // Scanner: lxm:// payloads route to the paper preview; new default copy.
-    assert(contactSource.includes("var scannerTitle = options.title || 'Scan QR Code';"));
+    assert(contactSource.includes("var scannerTitle = options.title || 'Add from QR code';"));
     assert(contactSource.includes("var checkingText = options.checkingText || 'Checking QR\\u2026';"));
     assert(contactSource.includes("var invalidText = options.invalidText || 'That QR isn\\'t a contact card, paper message, or lxma:// address.';"));
     assert(contactSource.includes("'No QR code found in that image.'"));

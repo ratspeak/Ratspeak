@@ -55,33 +55,7 @@ function isOriginalIdentity(hash) {
     return !!hash && hash === originalIdentityHash();
 }
 
-function copyIdentityValue(value, noun) {
-    if (!value) return;
-    RS.copyText(value).then(function(ok) {
-        if (ok) showCopyConfirmationToast(noun || 'Value');
-        else shareAddress(value, '');
-    });
-}
 
-function identityAddressRowHtml(label, value) {
-    var rawValue = value || '';
-    var safeLabel = escapeHtml(label || 'Value');
-    var safeValue = escapeHtml(rawValue);
-    var unavailable = rawValue ? '' : ' disabled aria-disabled="true"';
-    var actionLabel = rawValue ? 'Copy ' + safeLabel : safeLabel + ' unavailable';
-    return '<button type="button" class="identity-address-row"' +
-        ' data-copy-value="' + safeValue + '"' +
-        ' data-copy-label="' + safeLabel + '"' +
-        ' aria-label="' + actionLabel + '" title="' + actionLabel + '"' + unavailable + '>' +
-            '<span class="identity-address-meta">' +
-                '<span class="identity-label">' + safeLabel + '</span>' +
-                '<span class="identity-value mono" dir="ltr">' + (safeValue || '&mdash;') + '</span>' +
-            '</span>' +
-            '<span class="identity-address-action" aria-hidden="true">' +
-                '<svg viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><rect x="2" y="2" width="13" height="13" rx="2"/></svg>' +
-            '</span>' +
-        '</button>';
-}
 
 function identitySetInlineError(id, message) {
     var errEl = document.getElementById(id);
@@ -118,10 +92,9 @@ function authorizeIdentityKey(target, opts, send) {
     }
     return new Promise(function(resolve) {
         showIdentityModal(opts.title,
-            '<p class="recovery-warn">' + escapeHtml(opts.message) + '</p>' +
-            '<div class="modal-field"><label>PIN</label>' +
-                '<input type="password" id="identity-key-pin" class="modal-input" maxlength="128" autocomplete="off"></div>' +
-            '<div class="modal-error" id="identity-key-error" style="display:none"></div>',
+            '<p>' + escapeHtml(opts.message) + '</p>' +
+            identityField('identity-key-pin', opts.pinLabel || 'PIN', { type: 'password', maxlength: 128, help: opts.pinHelp ? escapeHtml(opts.pinHelp) : '' }) +
+            identityErrorHtml('identity-key-error'),
             function() {
                 var pin = document.getElementById('identity-key-pin').value;
                 var errEl = document.getElementById('identity-key-error');
@@ -142,26 +115,17 @@ window.authorizeIdentityKey = authorizeIdentityKey;
 
 function identityPasscodeOptionHtml(prefix, opts) {
     opts = opts || {};
-    var label = opts.label || 'Encrypt this identity on this device';
-    var help = opts.help || 'Require a PIN when Ratspeak opens. Keep your ' +
-        RECOVERY_PHRASE_WORDS + '-word phrase; forgotten PINs cannot be recovered.';
+    var label = opts.label || 'Protect with a PIN';
+    var help = opts.help || 'Ratspeak asks for it when it opens. A forgotten PIN can’t be recovered; your recovery phrase still works.';
     return '' +
-        '<label class="rs-dialog-checkbox-wrap identity-passcode-option">' +
-            '<input type="checkbox" id="' + prefix + '-passcode-enable" class="rs-dialog-checkbox">' +
-            '<span class="rs-dialog-checkbox-label">' + escapeHtml(label) + '</span>' +
-            '<span class="rs-dialog-checkbox-help">' + escapeHtml(help) + '</span>' +
-        '</label>' +
-        '<div class="identity-passcode-fields" id="' + prefix + '-passcode-fields" hidden>' +
-            '<div class="modal-field">' +
-                '<label>PIN</label>' +
-                '<input type="password" id="' + prefix + '-passcode-new" class="modal-input" maxlength="128" autocomplete="off" placeholder="At least 6 characters">' +
-            '</div>' +
-            '<div class="modal-field">' +
-                '<label>Confirm PIN</label>' +
-                '<input type="password" id="' + prefix + '-passcode-confirm" class="modal-input" maxlength="128" autocomplete="off">' +
-            '</div>' +
+        '<div class="ui-group"><label class="ui-prop" for="' + prefix + '-passcode-enable"><span class="ui-prop-text">' +
+            '<span class="ui-prop-label">' + escapeHtml(label) + '</span><span class="ui-prop-desc">' + escapeHtml(help) + '</span></span>' +
+            '<span class="ui-switch"><input type="checkbox" role="switch" id="' + prefix + '-passcode-enable"><span class="track"></span></span></label></div>' +
+        '<div class="identity-fields" id="' + prefix + '-passcode-fields" hidden>' +
+            identityField(prefix + '-passcode-new', 'PIN', { type: 'password', maxlength: 128, help: 'At least 6 characters.' }) +
+            identityField(prefix + '-passcode-confirm', 'Confirm PIN', { type: 'password', maxlength: 128 }) +
         '</div>' +
-        '<div class="modal-error" id="' + prefix + '-passcode-error" style="display:none;"></div>';
+        identityErrorHtml(prefix + '-passcode-error');
 }
 
 function bindIdentityPasscodeOption(prefix) {
@@ -260,73 +224,58 @@ function resetPendingIdentityImport() {
 
 function identityImportFormatChoices() {
     return [
-        {
-            label: 'Ratspeak Identity Backup',
-            value: 'ratspeak',
-            hint: 'Import a PIN-encrypted .rsi identity backup created by Ratspeak.'
-        },
-        {
-            label: 'Reticulum Identity Key',
-            value: 'reticulum',
-            hint: 'Import a raw, base32, base64, or hex Reticulum private identity key.'
-        },
-        {
-            label: 'Recovery Phrase',
-            value: 'phrase',
-            hint: 'Restore from a 12-word recovery phrase (creates a software identity).'
-        }
+        { label: 'Ratspeak backup', value: 'ratspeak', hint: 'A .rsi file and the backup PIN you set.' },
+        { label: 'Reticulum identity key', value: 'reticulum', hint: 'A key file, or the key as base32, base64, or hex text.' },
+        { label: 'Recovery phrase', value: 'phrase', hint: 'Your ' + RECOVERY_PHRASE_WORDS + ' words. Restores the identity and its address.' }
     ];
 }
 
 function identityExportFormatChoices() {
     return [
-        {
-            label: 'Ratspeak Identity Backup',
-            value: 'ratspeak',
-            hint: 'PIN-encrypted .rsi private-key backup with display-name metadata.'
-        },
-        {
-            label: 'Reticulum Identity File',
-            value: 'reticulum',
-            hint: 'Raw unencrypted 64-byte Reticulum private identity key.'
-        },
-        {
-            label: 'Reticulum Base32 Key',
-            value: 'reticulum-base32',
-            hint: 'Unencrypted text form of the same private identity key.'
-        }
+        { label: 'Ratspeak backup', value: 'ratspeak', tag: 'Recommended', hint: 'A .rsi file locked with a backup PIN. Restores your name too.' },
+        { label: 'Reticulum identity file', value: 'reticulum', hint: 'The raw private key, unencrypted. For other Reticulum apps.' },
+        { label: 'Reticulum key as text', value: 'reticulum-base32', hint: 'The same key in base32, unencrypted.' }
     ];
 }
 
-function chooseIdentityImportFormat() {
-    return rsChoice({
-        title: 'Import Identity',
-        message: 'Choose the source format.',
-        choices: identityImportFormatChoices()
+// A pick-and-go list: choosing an option is the action. Resolves its value, or null.
+function identityChoiceDialog(title, intro, choices) {
+    return new Promise(function(resolve) {
+        var picked = null;
+        var built = RS.kit.dialog({
+            title: title,
+            size: 'md',
+            body: (intro ? '<p>' + escapeHtml(intro) + '</p>' : '') +
+                '<div class="ui-choices" role="menu">' + choices.map(function(c, i) {
+                    return '<button type="button" class="ui-menu-item" role="menuitem" data-choice="' + i + '"><span class="lbl"><span>' + escapeHtml(c.label) +
+                        (c.tag ? '<span class="ui-tag ui-tag--accent">' + escapeHtml(c.tag) + '</span>' : '') + '</span>' +
+                        (c.hint ? '<small>' + escapeHtml(c.hint) + '</small>' : '') + '</span>' + RS.kit.icon('chevron-right', 'trail') + '</button>';
+                }).join('') + '</div>',
+            onClose: function() { resolve(picked); }
+        });
+        built.dialog.addEventListener('click', function(e) {
+            var btn = e.target.closest('[data-choice]');
+            if (!btn) return;
+            picked = choices[Number(btn.getAttribute('data-choice'))].value;
+            built.close(picked);
+        });
     });
 }
 
-function chooseIdentityExportFormat() {
-    return rsChoice({
-        title: 'Export Identity',
-        message: 'Ratspeak backups are PIN-encrypted. Reticulum exports are raw unencrypted private-key material.',
-        choices: identityExportFormatChoices()
-    });
+function chooseIdentityImportFormat() {
+    return identityChoiceDialog('Import or restore', '', identityImportFormatChoices());
+}
+
+function chooseIdentityExportFormat(name) {
+    return identityChoiceDialog('Export identity', 'Choose a format for ' + (name || 'this identity') + '. Messages and settings stay on this device.', identityExportFormatChoices());
 }
 
 // `noun` names the PIN in its labels: 'PIN' (default) or 'backup PIN'.
 function backupPinFieldsHtml(prefix, confirm, noun) {
     noun = noun || 'PIN';
-    return '' +
-        '<div class="modal-field">' +
-            '<label>' + noun.charAt(0).toUpperCase() + noun.slice(1) + '</label>' +
-            '<input type="password" id="' + prefix + '-pin" class="modal-input" maxlength="128" autocomplete="off" placeholder="At least 6 characters">' +
-        '</div>' +
-        (confirm ? '<div class="modal-field">' +
-            '<label>Confirm ' + noun + '</label>' +
-            '<input type="password" id="' + prefix + '-pin-confirm" class="modal-input" maxlength="128" autocomplete="off">' +
-        '</div>' : '') +
-        '<div class="modal-error" id="' + prefix + '-pin-error" style="display:none;"></div>';
+    return identityField(prefix + '-pin', noun.charAt(0).toUpperCase() + noun.slice(1), { type: 'password', maxlength: 128, help: 'At least 6 characters.' }) +
+        (confirm ? identityField(prefix + '-pin-confirm', 'Confirm ' + noun, { type: 'password', maxlength: 128 }) : '') +
+        identityErrorHtml(prefix + '-pin-error');
 }
 
 function readBackupPin(prefix, confirm) {
@@ -520,6 +469,337 @@ function renderNetworkIdentityCard() {
         '</div>';
 }
 
+// One page for identities: the list, and the chosen identity's profile,
+// security and backup, and addresses. On a phone the list is its own screen.
+var _identitySwitchingHash = null;
+var _identitySwitchFailed = null;
+var _identityPhoneDetailOpen = false;
+var _identityAutoLockSeconds = null;
+
+function identityField(id, label, opts) {
+    opts = opts || {};
+    return '<div class="ui-field"' + (opts.fieldId ? ' id="' + opts.fieldId + '"' : '') + (opts.hidden ? ' hidden' : '') + '>' +
+        '<label class="ui-label" for="' + id + '">' + escapeHtml(label) + '</label>' +
+        '<input class="ui-input' + (opts.mono ? ' ui-input--mono' : '') + '" id="' + id + '" type="' + (opts.type || 'text') + '"' +
+            (opts.maxlength ? ' maxlength="' + opts.maxlength + '"' : '') +
+            (opts.inputmode ? ' inputmode="' + opts.inputmode + '"' : '') +
+            (opts.placeholder ? ' placeholder="' + escapeHtml(opts.placeholder) + '"' : '') +
+            (opts.value ? ' value="' + escapeHtml(opts.value) + '"' : '') +
+            ' autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"' +
+            (opts.help ? ' aria-describedby="' + id + '-help"' : '') + '>' +
+        (opts.help ? '<p class="ui-help" id="' + id + '-help">' + opts.help + '</p>' : '') +
+    '</div>';
+}
+
+// The inline error under a dialog's fields; identitySetInlineError fills it.
+function identityErrorHtml(id) {
+    return '<p class="ui-error" id="' + id + '" style="display:none"></p>';
+}
+
+function identityWhereText(ident) {
+    if (ident.is_active) return 'In use on this device';
+    if (ident.is_hardware) return 'On a YubiKey, not in use';
+    return 'Stored on this device, not in use';
+}
+
+function identityCreatedText(ident) {
+    if (!ident.created_at) return '';
+    var ms = ident.created_at < 1e11 ? ident.created_at * 1000 : ident.created_at;
+    return new Date(ms).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+function _identityProp(label, desc, control, id) {
+    return '<div class="ui-prop"' + (id ? ' id="' + id + '"' : '') + '><span class="ui-prop-text"><span class="ui-prop-label">' + label + '</span>' +
+        '<span class="ui-prop-desc">' + desc + '</span></span>' + (control || '') + '</div>';
+}
+
+function _identitySmallBtn(label, action, quiet) {
+    return '<button type="button" class="ui-btn ui-btn--sm' + (quiet ? ' ui-btn--quiet' : '') + '" data-identity-action="' + action + '">' + label + '</button>';
+}
+
+function _identityAutoLockLabel(seconds) {
+    if (!seconds || seconds <= 0) return 'Off';
+    if (seconds % 3600 === 0) { var h = seconds / 3600; return h + (h === 1 ? ' hour' : ' hours'); }
+    if (seconds % 60 === 0) { var m = seconds / 60; return m + (m === 1 ? ' minute' : ' minutes'); }
+    return seconds + ' seconds';
+}
+
+function identityRowHtml(ident, current) {
+    var tag = ident.is_active ? '<span class="ui-tag ui-tag--accent">In use</span>' : '';
+    var address = ident.lxmf_hash || ident.hash || '';
+    return '<li><button type="button" class="ui-row" data-identity="' + escapeHtml(ident.hash) + '"' + (current ? ' aria-current="true"' : '') + '>' +
+        RS.kit.avatar(address, 'row') +
+        '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + escapeHtml(identityDisplayName(ident)) + '</span>' + tag + '</span>' +
+        '<span class="ui-row-sub"><span class="t">' + (ident.is_hardware ? 'Hardware key · ' : '') +
+            '<span class="ui-hash" dir="ltr">' + escapeHtml(RS.kit.hash.short(address)) + '</span></span></span></span></button></li>';
+}
+
+function identityDetailHtml(ident) {
+    var name = identityDisplayName(ident);
+    var original = isOriginalIdentity(ident.hash);
+    var switching = _identitySwitchingHash === ident.hash;
+    var actions;
+    if (ident.is_active) {
+        actions = '<div class="person-actions"><button type="button" class="ui-btn ui-btn--primary ui-btn--pair" data-identity-action="share">' + RS.kit.icon('qr') + 'Share contact card</button></div>';
+    } else {
+        actions = '<div class="person-actions">' +
+            (switching
+                ? '<button type="button" class="ui-btn ui-btn--primary ui-btn--pair" aria-busy="true" disabled><span class="ui-spin" aria-hidden="true"></span>Switching…</button>'
+                : '<button type="button" class="ui-btn ui-btn--primary ui-btn--pair" data-identity-action="switch">Switch to this identity</button>') +
+            '<button type="button" class="ui-btn ui-btn--pair" data-identity-action="share">' + RS.kit.icon('qr') + 'Share card</button></div>';
+    }
+    var head = '<header class="person-head"><div class="person-wrap">' +
+        RS.kit.avatar(ident.lxmf_hash || ident.hash, 64) +
+        '<div class="person-id"><div class="person-name-row"><h2 class="ui-detail-title" id="identity-detail-name">' + escapeHtml(name) + '</h2>' +
+            (ident.is_active ? '<button type="button" class="ui-icon-btn ui-icon-btn--sm" aria-label="Rename" title="Rename" data-identity-action="rename">' + RS.kit.icon('edit') + '</button>' : '') + '</div>' +
+            '<p class="person-status">' + escapeHtml(identityWhereText(ident)) + '</p></div>' +
+        actions + '</div></header>';
+
+    var failed = _identitySwitchFailed && _identitySwitchFailed.hash === ident.hash
+        ? '<div class="ui-notice ui-notice--error" role="alert">' + RS.kit.icon('alert') + '<div class="ui-notice-body"><b>Couldn’t switch to ' + escapeHtml(name) + '.</b> Ratspeak kept ' +
+            escapeHtml(_identitySwitchFailed.kept || 'your identity') + ' in use. Check its PIN and try again.</div>' +
+            '<button type="button" class="ui-btn ui-btn--sm" data-identity-action="switch">Try again</button></div>'
+        : '';
+
+    var profile = '';
+    if (ident.is_active) {
+        var status = typeof resolveActiveProfileStatus === 'function' ? String(resolveActiveProfileStatus() || '').trim() : '';
+        profile = '<section aria-labelledby="identity-g-profile"><h3 class="ui-section-title" id="identity-g-profile">Profile</h3><div class="ui-group">' +
+            _identityProp('Status', status ? '“' + escapeHtml(status) + '”' : 'Not set. Ratspeak users see it under your name.', _identitySmallBtn(status ? 'Edit' : 'Set status', 'status')) +
+            '</div></section>';
+    }
+
+    var protectedIdentity = ident.is_hardware || ident.passcode_protected;
+    var autoLock = protectedIdentity
+        ? _identityProp('Auto-lock', 'Locks again this long after you unlock it.',
+            '<button type="button" class="ui-select ui-select--inline" data-identity-action="autolock" aria-haspopup="menu"><span class="v">' +
+                escapeHtml(_identityAutoLockLabel(_identityAutoLockSeconds)) + '</span>' + RS.kit.icon('chevron-down') + '</button>')
+        : '';
+    var security;
+    if (ident.is_hardware) {
+        var canChangePin = typeof isMobile !== 'function' || !isMobile();
+        security = '<section aria-labelledby="identity-g-sec"><h3 class="ui-section-title" id="identity-g-sec">Security and backup</h3><div class="ui-group">' +
+            _identityProp('Hardware key', 'YubiKey' + (ident.hw_serial ? ' · serial ' + escapeHtml(String(ident.hw_serial)) : ''), canChangePin ? _identitySmallBtn('Change PIN', 'hardware-pin') : '') +
+            autoLock +
+            '</div><p class="ui-group-foot">The private key never leaves the key, so there’s no recovery phrase or export. Keep the key safe.</p></section>';
+    } else {
+        security = '<section aria-labelledby="identity-g-sec"><h3 class="ui-section-title" id="identity-g-sec">Security and backup</h3><div class="ui-group">' +
+            (ident.passcode_protected
+                ? _identityProp('PIN', 'On. Ratspeak asks for it when it opens.', _identitySmallBtn('Change PIN', 'pin-change'))
+                : _identityProp('PIN', 'Off. Ratspeak opens without asking.', _identitySmallBtn('Set PIN', 'pin-set'))) +
+            (ident.has_mnemonic
+                ? _identityProp('Recovery phrase', RECOVERY_PHRASE_WORDS + ' words that restore this identity on any device.', _identitySmallBtn('View', 'phrase'))
+                : _identityProp('Recovery phrase', 'This identity has no recovery phrase on this device. Export a backup instead.', '')) +
+            _identityProp('Export', 'Save a backup file or a Reticulum key.', _identitySmallBtn('Export…', 'export')) +
+            autoLock +
+            '</div></section>';
+    }
+
+    var lxmf = ident.lxmf_hash || '';
+    var addresses = '<section aria-labelledby="identity-g-addr"><h3 class="ui-section-title" id="identity-g-addr">Addresses</h3>' +
+        personDlHtml([
+            ['LXMF address', RS.kit.hash.copy(lxmf, { form: 'full', noun: 'LXMF address' }) + '<span class="ui-dl-hint">Share this so people can message you.</span>'],
+            ['Identity hash', RS.kit.hash.copy(ident.hash, { form: 'full', noun: 'Identity hash' })]
+        ], true) + '</section>';
+    var created = identityCreatedText(ident);
+    var detailRows = [];
+    if (created) detailRows.push(['Created', escapeHtml(created)]);
+    detailRows.push(['Key', ident.is_hardware ? 'Hardware key' : 'Kept on this device' + (ident.passcode_protected ? ', locked with a PIN' : '')]);
+    var details = '<section aria-labelledby="identity-g-det"><h3 class="ui-section-title" id="identity-g-det">Details</h3>' + personDlHtml(detailRows, true) + '</section>';
+    var deleteLabel = ident.is_hardware ? 'Remove identity' : 'Delete identity';
+    var danger = '<div class="person-danger">' +
+        (original
+            ? '<button type="button" class="ui-menu-item ui-menu-item--danger" disabled aria-describedby="identity-delete-why">' + RS.kit.icon('trash') + '<span class="lbl">' + deleteLabel + '</span></button>' +
+                '<p class="ui-group-foot" id="identity-delete-why">Your first identity can’t be deleted.</p>'
+            : '<button type="button" class="ui-menu-item ui-menu-item--danger" data-identity-action="delete">' + RS.kit.icon('trash') + '<span class="lbl">' + deleteLabel + '</span></button>') +
+        '</div>';
+
+    return head + '<div class="person-wrap person-body"><div class="person-main">' + failed + profile + security + '</div>' +
+        '<aside class="person-side" aria-label="Addresses and identity actions">' + addresses + details + danger + '</aside></div>';
+}
+
+function renderIdentityPage() {
+    var list = document.getElementById('identity-list');
+    var detail = document.getElementById('identity-detail');
+    var pane = document.getElementById('identity-pane');
+    var count = document.getElementById('identity-count');
+    if (!list || !detail) return;
+    var sorted = sortedIdentities();
+    if (count) count.innerHTML = sorted.length ? '<span class="ui-sr">, </span>' + sorted.length : '';
+    var phone = isCompactLayout();
+    var selected = selectedIdentity();
+    if (selected) selectedIdentityHash = selected.hash;
+
+    var listHtml = sorted.length
+        ? '<div class="ui-list"><ul class="person-rows">' + sorted.map(function(ident) {
+            return identityRowHtml(ident, !phone && selected && ident.hash === selected.hash);
+        }).join('') + '</ul></div>' +
+            (sorted.length === 1 ? '<p class="ui-list-note">Keep separate identities for work, family, or testing. Each one has its own address, contacts, and messages.</p>' : '')
+        : '<div class="ui-empty ui-empty--quiet"><p class="ui-empty-body">No identity is loaded.</p></div>';
+    if (list._rsLastHtml !== listHtml) {
+        list._rsLastHtml = listHtml;
+        list.innerHTML = listHtml;
+    }
+
+    var open = phone && _identityPhoneDetailOpen && !!selected;
+    if (pane) pane.classList.toggle('is-covered', open);
+    detail.classList.toggle('is-open', open);
+    var html = selected
+        ? (phone ? '<header class="ui-pane-head has-back"><button type="button" class="ui-icon-btn" data-identity-action="back" aria-label="Back to identities" title="Back">' + RS.kit.icon('chevron-left') + '</button></header>' : '') +
+            identityDetailHtml(selected)
+        : '';
+    if (detail._rsLastHtml !== html) {
+        detail._rsLastHtml = html;
+        detail.innerHTML = html;
+    }
+}
+
+function selectIdentity(hash) {
+    selectedIdentityHash = hash;
+    if (isCompactLayout()) _identityPhoneDetailOpen = true;
+    renderIdentityPage();
+    var detail = document.getElementById('identity-detail');
+    if (detail) detail.scrollTop = 0;
+}
+
+// Settings' Identity row and the sidebar open this; it shows the identity in use.
+function openIdentityPage(hash) {
+    selectedIdentityHash = hash || activeIdentityHash || selectedIdentityHash;
+    _identityPhoneDetailOpen = !!hash;
+    if (typeof switchView === 'function') switchView('identity');
+    renderIdentityPage();
+}
+window.openIdentityPage = openIdentityPage;
+
+function openIdentityAddMenu(trigger) {
+    var items = [
+        { label: 'Create identity', hint: 'A new address with its own contacts and messages.', icon: 'plus', onSelect: createNewIdentity },
+        { label: 'Import or restore', hint: 'From a backup file, a key, or a recovery phrase.', icon: 'download', onSelect: function() {
+            window._identityImportFromSetup = false;
+            importIdentity();
+        } }
+    ];
+    var hideHardware = typeof supportsHardwareIdentities === 'function' && !supportsHardwareIdentities();
+    if (!hideHardware) {
+        items.push({ label: 'Add hardware key', hint: 'Keep the private key on a YubiKey.', icon: 'key', onSelect: function() { openHardwareWizard({ fromSetup: false }); } });
+    }
+    RS.kit.menu(trigger, { title: 'Add identity', items: items });
+}
+
+function openIdentityAutoLockMenu(trigger) {
+    var options = [0, 300, 900, 1800, 3600];
+    RS.kit.menu(trigger, {
+        title: 'Auto-lock',
+        caption: 'Lock after',
+        items: options.map(function(seconds) {
+            return {
+                label: _identityAutoLockLabel(seconds),
+                checked: (_identityAutoLockSeconds || 0) === seconds,
+                onSelect: function() {
+                    var previous = _identityAutoLockSeconds;
+                    _identityAutoLockSeconds = seconds;
+                    renderIdentityPage();
+                    RS.invoke('set_hardware_lock_timeout', { seconds: seconds }).catch(function(err) {
+                        _identityAutoLockSeconds = previous;
+                        renderIdentityPage();
+                        showToast((err && err.message) || 'Could not update auto-lock', 'toast-error', 5000);
+                    });
+                }
+            };
+        })
+    });
+}
+
+function _identityRunAction(action, trigger) {
+    var ident = selectedIdentity();
+    if (action === 'back') {
+        _identityPhoneDetailOpen = false;
+        renderIdentityPage();
+        return;
+    }
+    if (!ident) return;
+    if (action === 'switch') switchToIdentity(ident.hash);
+    else if (action === 'share') {
+        if (typeof openIdentityShareScreen === 'function') openIdentityShareScreen(ident.hash);
+        else shareAddress(ident.lxmf_hash || ident.hash, identityDisplayName(ident));
+    } else if (action === 'rename') openRenameIdentityDialog(ident);
+    else if (action === 'status') { if (typeof openIdentityStatusEditor === 'function') openIdentityStatusEditor(); }
+    else if (action === 'pin-set') openSetPasscodeModal(ident, false);
+    else if (action === 'pin-change') openSetPasscodeModal(ident, true);
+    else if (action === 'pin-remove') openRemovePasscodeModal(ident);
+    else if (action === 'hardware-pin') openHardwareChangePinModal(ident);
+    else if (action === 'phrase') viewRecoveryPhrase(ident);
+    else if (action === 'export') exportIdentityBackup(ident.hash);
+    else if (action === 'autolock') openIdentityAutoLockMenu(trigger);
+    else if (action === 'delete') deleteIdentityByHash(ident.hash);
+}
+
+// Rename the identity in use: Ratspeak announces it and retires the old name everywhere it was shared.
+function openRenameIdentityDialog(ident) {
+    var oldName = ident.display_name || ident.nickname || '';
+    var built = RS.kit.dialog({
+        title: 'Rename identity',
+        body: identityField('identity-rename-input', 'Name', { value: oldName, maxlength: 32, help: 'Up to 32 characters.' }) +
+            identityErrorHtml('identity-rename-error') +
+            (oldName ? '<div class="ui-notice ui-notice--info">' + RS.kit.icon('info') + '<div class="ui-notice-body">Ratspeak announces the new name and stops using “' + escapeHtml(oldName) +
+                '” everywhere it was shared, including channel nicknames and saved hubs that still use it. Names you set for a single hub stay.</div></div>' : ''),
+        foot: '<button type="button" class="ui-btn ui-btn--quiet ui-desk-only" data-ui-close>Cancel</button><button type="button" class="ui-btn ui-btn--primary" id="identity-rename-save">Rename</button>'
+    });
+    var input = built.q('#identity-rename-input');
+    var save = built.q('#identity-rename-save');
+    function submit() {
+        var name = input.value.trim();
+        if (!name) { identitySetInlineError('identity-rename-error', 'Enter a name.'); return; }
+        if (name === oldName) { built.close(null); return; }
+        save.disabled = true;
+        RS.invoke('api_set_display_name', { args: { display_name: name, identity_id: ident.hash } }).then(function() {
+            // Refresh the cached name so no consumer keeps offering the superseded one.
+            try { localStorage.setItem('ratspeak_identity_name', name); } catch (_) {}
+            // The backend retired the old name from saved hub bookmarks; reload them.
+            if (typeof channelsRefreshSavedHubs === 'function') channelsRefreshSavedHubs();
+            built.close(name);
+            showToast('Name saved and announced', 'toast-success', 3000);
+            loadIdentities();
+        }).catch(function(err) {
+            save.disabled = false;
+            identitySetInlineError('identity-rename-error', (err && err.message) ? err.message : 'Could not save the name');
+        });
+    }
+    save.addEventListener('click', submit);
+    input.addEventListener('keydown', function(e) { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
+    if (!RS.kit.compact()) input.select();
+}
+
+function _hydrateIdentityAutoLock() {
+    if (!window.RS || typeof RS.invoke !== 'function') return;
+    RS.invoke('api_app_settings').then(function(data) {
+        if (data && data.hardware_session_timeout !== undefined) {
+            _identityAutoLockSeconds = parseInt(data.hardware_session_timeout, 10) || 0;
+            renderIdentityPage();
+        }
+    }).catch(function() {});
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    var view = document.getElementById('view-identity');
+    var addBtn = document.getElementById('identity-add-btn');
+    if (addBtn) addBtn.addEventListener('click', function() { openIdentityAddMenu(addBtn); });
+    if (view) view.addEventListener('click', function(e) {
+        var row = e.target.closest('.ui-row[data-identity]');
+        if (row) { selectIdentity(row.getAttribute('data-identity')); return; }
+        var action = e.target.closest('[data-identity-action]');
+        if (action && !action.disabled) _identityRunAction(action.getAttribute('data-identity-action'), action);
+    });
+    if (typeof watchViewLayout === 'function') watchViewLayout('identity', renderIdentityPage);
+    _hydrateIdentityAutoLock();
+});
+
+RS.listen('app_settings_updated', function(data) {
+    if (!data || data.hardware_session_timeout === undefined) return;
+    _identityAutoLockSeconds = parseInt(data.hardware_session_timeout, 10) || 0;
+    renderIdentityPage();
+});
+
 function loadIdentities(retryCount) {
     retryCount = retryCount || 0;
     RS.invoke('api_list_identities').then(function(data) {
@@ -541,16 +821,9 @@ function loadIdentities(retryCount) {
             );
         }
         document.body.classList.toggle('multi-identity', identityList.length > 1);
-        var titleEl = document.getElementById('identity-page-title');
-        if (titleEl) {
-            titleEl.textContent = _activeIdent ? 'Identity Management' : 'No identity loaded';
-        }
         // Per-section try/catch — one render failure shouldn't block others.
-        try { renderActiveIdentityCard(); }
-        catch(e) { window.RS.diag('error', '[Identity] Active card render error:', e); }
-
-        try { renderIdentityList(); }
-        catch(e) { window.RS.diag('error', '[Identity] List render error:', e); }
+        try { renderIdentityPage(); }
+        catch(e) { window.RS.diag('error', '[Identity] Page render error:', e); }
 
         try { renderNetworkIdentityCard(); }
         catch(e) {}
@@ -568,308 +841,47 @@ function loadIdentities(retryCount) {
     });
 }
 
-function renderActiveIdentityCard() {
-    var container = document.getElementById('identity-active-card');
-    if (!container) return;
 
-    var identity = selectedIdentity();
 
-    if (!identity) {
-        container.innerHTML = '<div class="text-muted-color text-sm">No active identity.</div>';
-        return;
-    }
-
-    var nickname = escapeHtml(identityDisplayName(identity));
-    var displayName = identity.display_name || '';
-    var lxmfHash = identity.lxmf_hash || '';
-    var identityHash = identity.hash || '';
-    var isActive = !!identity.is_active;
-    var isHardware = !!identity.is_hardware;
-    var isOriginal = isOriginalIdentity(identityHash);
-    var canDelete = !isOriginal && (!isActive || identityList.length > 1);
-    var activeLabel = isActive ? 'Active' : 'Stored';
-    var deleteTitle = isOriginal ? 'The original identity cannot be deleted' :
-        (identityList.length <= 1 ? 'The only identity cannot be deleted' : 'Delete identity');
-
-    var avatarHtml = identityAvatar(lxmfHash || identityHash, 72);
-    var switchAction = isActive ? '' :
-        '<button class="identity-action-row identity-action-row--primary" id="identity-switch-detail-btn">' +
-            '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><path d="M16 3h5v5"/><path d="M4 20l17-17"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg></span>' +
-            '<span>Switch to Identity</span>' +
-        '</button>';
-    var editorHtml = isActive ?
-        '<div class="identity-detail-editor">' +
-            '<div class="modal-field">' +
-                '<label>Display Name</label>' +
-                '<div class="settings-display-name-row">' +
-                    '<input type="text" id="identity-display-name" class="modal-input" placeholder="Optional" maxlength="32" value="' + escapeHtml(displayName) + '">' +
-                    '<button class="nr-btn" id="identity-save-name-btn" style="display:none;">Save</button>' +
-                '</div>' +
-            '</div>' +
-        '</div>' : '';
-    var pinAction = '';
-    if (isHardware) {
-        var canChangeHardwarePin = (typeof isMobile !== 'function' || !isMobile());
-        if (canChangeHardwarePin) {
-            pinAction =
-                '<button class="identity-action-row" id="identity-change-pin-detail-btn">' +
-                    '<span class="identity-action-icon">' + HW_BADGE_ICON + '</span>' +
-                    '<span>Change PIN</span>' +
-                '</button>';
-        }
-    } else {
-        pinAction =
-            '<button class="identity-action-row" id="identity-change-pin-detail-btn">' +
-                '<span class="identity-action-icon">' + HW_BADGE_ICON + '</span>' +
-                '<span>' + (identity.passcode_protected ? 'Change PIN' : 'Set PIN') + '</span>' +
-            '</button>';
-    }
-
-    container.innerHTML =
-        '<div class="identity-detail-hero">' +
-            '<div class="identity-avatar identity-detail-avatar">' + avatarHtml + '</div>' +
-            '<div class="identity-detail-heading">' +
-                '<div class="identity-card-nickname">' + nickname + '</div>' +
-                '<div class="identity-status-row">' +
-                    '<span class="identity-active-badge">' + activeLabel + '</span>' +
-                    (isHardware ? '<span class="identity-hardware-badge" title="' + (identity.hw_serial ? 'YubiKey serial ' + escapeHtml(String(identity.hw_serial)) : 'Hardware key identity') + '">' + HW_BADGE_ICON + 'Hardware Key' + (identity.hw_serial ? ' · ' + escapeHtml(String(identity.hw_serial)) : '') + '</span>' : '<span class="identity-private-badge">Private Key</span>') +
-                    (isOriginal ? '<span class="identity-private-badge">Original</span>' : '') +
-                '</div>' +
-            '</div>' +
-        '</div>' +
-        '<div class="identity-address-stack">' +
-            identityAddressRowHtml('LXMF Address', lxmfHash) +
-            identityAddressRowHtml('Identity Hash', identityHash) +
-        '</div>' +
-        editorHtml +
-        '<div class="identity-detail-actions">' +
-            switchAction +
-            pinAction +
-            '<button class="identity-action-row" id="identity-share-address-btn">' +
-                '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg></span>' +
-                '<span>Share Contact Card</span>' +
-            '</button>' +
-            '<button class="identity-action-row identity-action-row--danger" id="identity-delete-btn"' + (canDelete ? '' : ' disabled aria-disabled="true"') + ' title="' + escapeHtml(deleteTitle) + '">' +
-                '<span class="identity-action-icon"><svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg></span>' +
-                '<span>' + (isHardware ? 'Remove Identity' : 'Delete Identity') + '</span>' +
-            '</button>' +
-        '</div>';
-
-    var copyRows = container.querySelectorAll('[data-copy-value]');
-    Array.prototype.forEach.call(copyRows, function(row) {
-        row.addEventListener('click', function() {
-            copyIdentityValue(row.getAttribute('data-copy-value'), row.getAttribute('data-copy-label'));
-        });
-    });
-
-    var switchBtn = document.getElementById('identity-switch-detail-btn');
-    if (switchBtn) switchBtn.addEventListener('click', function() { switchToIdentity(identityHash); });
-
-    var pinBtn = document.getElementById('identity-change-pin-detail-btn');
-    if (pinBtn) pinBtn.addEventListener('click', function() {
-        if (isHardware) openHardwareChangePinModal(identity);
-        else openSetPasscodeModal(identity, !!identity.passcode_protected);
-    });
-
-    var shareBtn = document.getElementById('identity-share-address-btn');
-    if (shareBtn) shareBtn.addEventListener('click', function() {
-        if (typeof openIdentityShareScreen === 'function') {
-            openIdentityShareScreen(identityHash);
-        } else {
-            shareAddress(lxmfHash || identityHash, identityDisplayName(identity));
-        }
-    });
-
-    var deleteBtn = document.getElementById('identity-delete-btn');
-    if (deleteBtn) deleteBtn.addEventListener('click', function() {
-        if (!deleteBtn.disabled) deleteIdentityByHash(identityHash);
-    });
-
-    var nameInput = document.getElementById('identity-display-name');
-    var saveBtn = document.getElementById('identity-save-name-btn');
-    if (nameInput && saveBtn) {
-        nameInput.addEventListener('input', function() {
-            var current = nameInput.value.trim();
-            saveBtn.style.display = (current !== displayName) ? '' : 'none';
-        });
-        nameInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                if (saveBtn.style.display !== 'none' && !saveBtn.disabled) saveBtn.click();
-            }
-        });
-        saveBtn.addEventListener('click', function() {
-            var newName = nameInput.value.trim();
-            saveBtn.disabled = true;
-            saveBtn.textContent = 'Saving...';
-            RS.invoke('api_set_display_name', { args: { display_name: newName, identity_id: activeIdentityHash } }).then(function() {
-                // Refresh the cached name so no consumer keeps offering the
-                // superseded one (channel nicknames, header, modals).
-                try { localStorage.setItem('ratspeak_identity_name', newName); } catch (_) {}
-                // The backend retired the old name from saved hub bookmarks;
-                // reload them so an open session sees it without a restart.
-                if (typeof channelsRefreshSavedHubs === 'function') channelsRefreshSavedHubs();
-                showToast('Display name saved and announced', 'toast-success', 3000);
-                saveBtn.textContent = 'Saved!';
-                saveBtn.className = 'nr-btn nr-btn-success';
-                setTimeout(function() {
-                    saveBtn.style.display = 'none';
-                    saveBtn.textContent = 'Save';
-                    saveBtn.className = 'nr-btn';
-                    saveBtn.disabled = false;
-                }, 1500);
-                loadIdentities();
-            }).catch(function(err) {
-                saveBtn.textContent = 'Save';
-                saveBtn.disabled = false;
-                showToast((err && err.message) ? err.message : 'Could not save the display name', 'toast-error', 3000);
-            });
-        });
-    }
-
-}
-
-function renderIdentityList() {
-    var container = document.getElementById('identity-list');
-    if (!container) return;
-
-    if (identityList.length === 0) {
-        container.innerHTML = '<div class="inline-hint" style="padding:12px;">No identities found.</div>';
-        return;
-    }
-
-    // Sort by creation time: original identity stays at position 0.
-    var sorted = sortedIdentities();
-
-    container.innerHTML = '';
-    sorted.forEach(function(ident, index) {
-        var item = document.createElement('div');
-        item.className = 'identity-list-item';
-        if (ident.hash === selectedIdentityHash) item.classList.add('selected');
-        if (ident.is_active) item.classList.add('active-identity');
-
-        var nickname = escapeHtml(identityDisplayName(ident));
-        var lxmfHash = ident.lxmf_hash || '';
-        var isOriginal = (index === 0);
-
-        var badgeHtml = '';
-        if (isOriginal) {
-            badgeHtml += '<span class="identity-private-badge identity-private-badge--list">Original</span>';
-        }
-        if (ident.is_hardware) {
-            var hwTitle = ident.hw_serial ? ('Hardware key · YubiKey serial ' + ident.hw_serial) : 'Hardware key identity';
-            badgeHtml += '<span class="identity-hardware-badge identity-hardware-badge--list" title="' + escapeHtml(hwTitle) + '">' + HW_BADGE_ICON + 'HW</span>';
-        }
-        if (ident.is_active) {
-            badgeHtml += '<span class="identity-active-badge">Active</span>';
-        } else {
-            badgeHtml += '<button type="button" class="identity-select-btn" data-hash="' + escapeHtml(ident.hash) + '">Switch</button>';
-        }
-
-        item.innerHTML =
-            '<div class="identity-list-avatar">' + identityAvatar(ident.lxmf_hash || ident.hash || '', 32) + '</div>' +
-            '<div class="identity-list-info">' +
-                '<span class="identity-list-name">' + nickname + '</span>' +
-                '<span class="identity-list-hash mono">' + escapeHtml(lxmfHash) + '</span>' +
-            '</div>' +
-            '<div class="identity-list-badges">' + badgeHtml + '</div>';
-
-        item.addEventListener('click', function(e) {
-            if (e.target.closest && e.target.closest('.identity-select-btn')) return;
-            selectedIdentityHash = ident.hash;
-            renderIdentityList();
-            renderActiveIdentityCard();
-            if (typeof isMobile === 'function' && isMobile()) {
-                openIdentityActions(ident.hash);
-            }
-        });
-
-        container.appendChild(item);
-    });
-
-    if (!container._selectDelegated) {
-        container._selectDelegated = true;
-        container.addEventListener('click', function(e) {
-            var btn = e.target.closest ? e.target.closest('.identity-select-btn') : null;
-            if (btn) {
-                var hash = btn.getAttribute('data-hash');
-                if (hash) switchToIdentity(hash);
-            }
-        });
-    }
-
-    updateRemoveButtonState();
-}
-
-function updateRemoveButtonState() {
-    var removeBtn = document.getElementById('identity-remove-btn');
-    if (!removeBtn) return;
-
-    var sorted = identityList.slice().sort(function(a, b) {
-        return (a.created_at || 0) - (b.created_at || 0);
-    });
-    var originalHash = sorted.length > 0 ? sorted[0].hash : null;
-
-    var isOriginal = selectedIdentityHash && selectedIdentityHash === originalHash;
-    var isActive = selectedIdentityHash && selectedIdentityHash === activeIdentityHash;
-
-    if (!selectedIdentityHash || isOriginal || isActive) {
-        removeBtn.disabled = true;
-        if (isOriginal) removeBtn.title = 'The original identity cannot be removed';
-        else if (isActive) removeBtn.title = 'The active identity cannot be removed';
-        else removeBtn.title = 'Select an identity to remove';
-    } else {
-        removeBtn.disabled = false;
-        removeBtn.title = 'Remove selected identity';
-    }
-}
 
 // Switches this window asked for; their own replies say why one failed.
 var _switchRequestsPending = 0;
 
 function switchToIdentity(hash) {
-    var card = document.getElementById('identity-active-card');
-    if (card) {
-        card.innerHTML = '<div class="identity-switching-overlay"><div class="identity-switching-text">Switching identity...</div></div>';
-    }
+    // The detail shows the switch in its button; a failure becomes a notice there.
+    _identitySwitchingHash = hash;
+    _identitySwitchFailed = null;
+    renderIdentityPage();
     // Backend reloads LXMF manager + emits identity_switched, which drives
     // full state cleanup + re-emits initial state for the new identity.
     _switchRequestsPending += 1;
     RS.invoke('switch_identity', { hash: hash }).then(function() {
         _switchRequestsPending -= 1;
+        _identitySwitchingHash = null;
     }, function(err) {
         _switchRequestsPending -= 1;
-        showToast((err && err.message) ? err.message : 'Could not switch identity', 'toast-error', 4000);
+        _identitySwitchingHash = null;
+        _identityNoteSwitchFailure(hash, (err && err.message) ? err.message : 'Could not switch identity');
         loadIdentities();
     });
 }
 
-function openIdentitySwitcher() {
-    if (!identityList || identityList.length <= 1) return;
-    var choices = identityList.slice().sort(function(a, b) {
-        return (a.created_at || 0) - (b.created_at || 0);
-    }).map(function(ident) {
-        var name = ident.display_name || ident.nickname || 'Unnamed';
-        var hash = ident.lxmf_hash || '';
-        var shortLabel = hash ? (typeof shortHash === 'function' ? shortHash(hash, 8, 4) : hash.substring(0, 12) + '\u2026') : '';
-        return {
-            label: name + (shortLabel ? '  ' + shortLabel : ''),
-            value: ident.hash,
-            hint: ident.is_active ? 'Currently active' : null
-        };
-    });
-    rsChoice({ title: 'Switch Identity', choices: choices }).then(function(hash) {
-        if (!hash || hash === activeIdentityHash) return;
-        switchToIdentity(hash);
-    });
+// On the Identity page the failure is a notice with Try again; elsewhere it is a toast.
+function _identityNoteSwitchFailure(hash, message) {
+    var kept = activeIdentity();
+    if (typeof isViewActive === 'function' && isViewActive('identity') && hash) {
+        _identitySwitchFailed = { hash: hash, kept: kept ? identityDisplayName(kept) : '' };
+        renderIdentityPage();
+        return;
+    }
+    showToast(message, 'toast-error', 4000);
 }
 
+
 function createNewIdentity() {
-    showIdentityModal('Create New Identity',
-        '<div class="modal-field">' +
-            '<label>Display Name</label>' +
-            '<input type="text" id="identity-modal-nickname" class="modal-input" placeholder="e.g. Rat King" maxlength="32">' +
-        '</div>' +
+    showIdentityModal('Create an identity',
+        '<p>A new identity has its own address, contacts, and messages. Switch between identities at any time.</p>' +
+        identityField('identity-modal-nickname', 'Name', { maxlength: 32, help: 'People see this name when you message them. You can change it later.' }) +
         identityPasscodeOptionHtml('identity-create'),
         function() {
             var nickname = document.getElementById('identity-modal-nickname').value.trim();
@@ -889,7 +901,7 @@ function createNewIdentity() {
                         showRecoveryPhraseBackup(mnemonic, function() {
                             showToast('Identity created', 'toast-success', 3000);
                             loadIdentities();
-                        }, { passcodeProtected: !!passcode });
+                        }, { passcodeProtected: !!passcode, name: nickname });
                     } else {
                         showToast('Identity created', 'toast-success', 3000);
                         loadIdentities();
@@ -899,7 +911,7 @@ function createNewIdentity() {
                 showToast(err && err.message ? err.message : 'Could not create the identity', 'toast-error', 3000);
                 loadIdentities();
             });
-        }
+        }, '', 'Create identity'
     );
     bindIdentityPasscodeOption('identity-create');
 }
@@ -921,6 +933,17 @@ window.renderRecoveryPhraseGrid = renderRecoveryPhraseGrid;
 // Recovery-phrase reveal as a standalone full-screen overlay. Software and
 // hardware setup flows share the reveal/copy/check pattern so users learn
 // one recovery ritual instead of separate backup flows.
+// The twelve words in the kit's phrase component; covered until shown when asked.
+function recoveryPhraseHtml(words, covered, id) {
+    return '<div class="ui-phrase' + (covered ? ' is-covered' : '') + '"' + (id ? ' id="' + id + '"' : '') + '><ol' + (covered ? ' aria-hidden="true"' : '') + '>' +
+        (words || []).map(function(w) { return '<li>' + escapeHtml(w) + '</li>'; }).join('') + '</ol>' +
+        (covered ? '<button type="button" class="ui-phrase-cover">' + RS.kit.icon('lock') + 'Show the ' + RECOVERY_PHRASE_WORDS + ' words</button>' : '') + '</div>';
+}
+window.recoveryPhraseHtml = recoveryPhraseHtml;
+
+// First backup (opts.requireConfirm, the default): the phrase in full and an
+// acknowledgement. Viewing again (requireConfirm false): covered until shown.
+// opts: { name, requireConfirm, button, title }
 function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
     opts = opts || {};
     var words = recoveryPhraseWords(mnemonic);
@@ -928,90 +951,53 @@ function showRecoveryPhraseBackup(mnemonic, onDone, opts) {
         if (typeof onDone === 'function') onDone();
         return;
     }
-    var grid = renderRecoveryPhraseGrid(words);
-    var storageWarn = opts.passcodeProtected
-        ? 'Ratspeak encrypts this identity and phrase with your PIN on this device.'
-        : 'Ratspeak stores this phrase on this device so you can view it again; set a PIN to encrypt it at rest.';
-    var defaultWarn = 'Write down these ' + RECOVERY_PHRASE_WORDS + ' words in order and store them somewhere safe. ' +
-        'Anyone with them controls your identity. ' + storageWarn;
+    var name = opts.name || 'this identity';
     var requireConfirm = opts.requireConfirm !== false;
-    var confirmHtml = requireConfirm
-        ? '<label class="hw-confirm-check">' +
-              '<input type="checkbox" id="recovery-backup-confirm">' +
-              '<span>I have written down my ' + RECOVERY_PHRASE_WORDS + '-word phrase and stored it safely.</span>' +
-          '</label>'
-        : '';
-    var doneLabel = opts.button || 'Continue';
-    var doneDisabled = requireConfirm ? ' disabled' : '';
-    var existing = document.getElementById('recovery-backup-overlay');
-    if (existing) existing.remove();
-    var overlay = document.createElement('div');
-    overlay.id = 'recovery-backup-overlay';
-    overlay.className = 'hw-unlock-overlay';
-    overlay.style.display = 'flex';
-    document.body.appendChild(overlay);
-
+    var copyBtn = '<button type="button" class="ui-btn ui-btn--quiet ui-btn--sm identity-phrase-copy" id="recovery-backup-copy"' + (requireConfirm ? '' : ' hidden') + '>' + RS.kit.icon('copy') + 'Copy phrase</button>';
+    var body = requireConfirm
+        ? '<p>These ' + RECOVERY_PHRASE_WORDS + ' words are the only way back into ' + escapeHtml(name) + ' if this device is lost. Write them down in order and keep them offline.</p>' +
+            recoveryPhraseHtml(words, false) + copyBtn +
+            '<label class="ui-check-row"><input type="checkbox" id="recovery-backup-confirm"><span class="ui-check">' + RS.kit.icon('check') + '</span><span>I’ve written down the ' + RECOVERY_PHRASE_WORDS + ' words and stored them safely.</span></label>'
+        : '<p>These ' + RECOVERY_PHRASE_WORDS + ' words restore ' + escapeHtml(name) + ' on any device. Write them down in order and keep them offline.</p>' +
+            recoveryPhraseHtml(words, true, 'recovery-backup-shell') + copyBtn;
+    var done = false;
     function finish() {
-        overlay.remove();
+        if (done) return;
+        done = true;
         if (typeof onDone === 'function') onDone();
     }
-
-    function showPhraseStep() {
-        overlay.innerHTML =
-        '<div class="hw-unlock-card recovery-backup-card" role="dialog" aria-modal="true" aria-labelledby="recovery-backup-title">' +
-            '<div class="hw-unlock-title" id="recovery-backup-title">' + escapeHtml(opts.title || 'Backup Phrase') + '</div>' +
-            '<p class="recovery-warn">' + (opts.warn || defaultWarn) + '</p>' +
-            '<div class="hw-mnemonic-shell" id="recovery-backup-shell">' +
-                '<div class="hw-mnemonic-grid" id="recovery-backup-grid" aria-hidden="true">' + grid + '</div>' +
-                '<button type="button" class="hw-mnemonic-cover" id="recovery-backup-cover" aria-label="Reveal recovery phrase">' +
-                    '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>' +
-                    '<span>Tap to reveal phrase</span>' +
-                '</button>' +
-            '</div>' +
-            '<button type="button" class="nr-btn nr-btn-ghost w-full recovery-backup-copy" id="recovery-backup-copy">' +
-                '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>' +
-                '<span>Copy phrase</span>' +
-            '</button>' +
-            confirmHtml +
-            '<button type="button" class="nr-btn w-full recovery-backup-done" id="recovery-backup-done"' + doneDisabled + '>' + escapeHtml(doneLabel) + '</button>' +
-        '</div>';
-
-        var cover = document.getElementById('recovery-backup-cover');
-        var shell = document.getElementById('recovery-backup-shell');
-        var gridEl = document.getElementById('recovery-backup-grid');
-        if (cover) {
-            cover.addEventListener('click', function() {
-                cover.style.display = 'none';
-                if (shell) shell.classList.add('revealed');
-                if (gridEl) gridEl.setAttribute('aria-hidden', 'false');
-            });
-            setTimeout(function() { cover.focus(); }, 50);
-        }
-
-        var copyBtn = document.getElementById('recovery-backup-copy');
-        if (copyBtn) {
-            copyBtn.addEventListener('click', function() {
-                RS.copySecret(mnemonic).then(function(ok) {
-                    if (ok) showSecretCopiedToast('Recovery phrase');
-                    else showToast('Could not copy the recovery phrase', 'toast-error', 2000);
-                });
-            });
-        }
-
-        var confirm = document.getElementById('recovery-backup-confirm');
-        var done = document.getElementById('recovery-backup-done');
-        if (confirm && done) {
-            confirm.addEventListener('change', function() {
-                done.disabled = !confirm.checked;
-            });
-        }
-        if (done) done.addEventListener('click', function() {
-            if (done.disabled) return;
-            finish();
+    var built = RS.kit.dialog({
+        title: opts.title || (requireConfirm ? 'Write down your recovery phrase' : 'Recovery phrase'),
+        size: 'md',
+        locked: requireConfirm,
+        body: body,
+        foot: '<button type="button" class="ui-btn ui-btn--primary" id="recovery-backup-done"' + (requireConfirm ? ' disabled' : '') + '>' + escapeHtml(opts.button || (requireConfirm ? 'Continue' : 'Done')) + '</button>',
+        onClose: finish
+    });
+    var cover = built.q('.ui-phrase-cover');
+    var copy = built.q('#recovery-backup-copy');
+    if (cover) {
+        cover.addEventListener('click', function() {
+            var shell = built.q('#recovery-backup-shell');
+            shell.classList.remove('is-covered');
+            shell.querySelector('ol').removeAttribute('aria-hidden');
+            cover.remove();
+            copy.hidden = false;
         });
+        cover.focus();
     }
-
-    showPhraseStep();
+    copy.addEventListener('click', function() {
+        RS.copySecret(mnemonic).then(function(ok) {
+            if (ok) showSecretCopiedToast('Recovery phrase');
+            else showToast('Could not copy the recovery phrase', 'toast-error', 2000);
+        });
+    });
+    var confirm = built.q('#recovery-backup-confirm');
+    var doneBtn = built.q('#recovery-backup-done');
+    if (confirm) confirm.addEventListener('change', function() { doneBtn.disabled = !confirm.checked; });
+    doneBtn.addEventListener('click', function() {
+        if (!doneBtn.disabled) built.close(true);
+    });
 }
 window.showRecoveryPhraseBackup = showRecoveryPhraseBackup;
 
@@ -1019,22 +1005,17 @@ window.showRecoveryPhraseBackup = showRecoveryPhraseBackup;
 // after a confirmation. Hardware identities never reach here (no stored phrase).
 function viewRecoveryPhrase(target) {
     if (!target || target.is_hardware) return;
-    var viewOpts = {
-        title: 'Recovery Phrase',
-        warn: 'These ' + RECOVERY_PHRASE_WORDS + ' words restore this identity on any device. Keep them secret and ' +
-            'offline — anyone with them controls your identity. Make sure no one can see your screen.',
-        button: 'Done',
-        requireConfirm: false
-    };
+    var name = identityDisplayName(target);
     authorizeIdentityKey(target, {
-        title: 'View Recovery Phrase',
-        message: 'Anyone who sees these ' + RECOVERY_PHRASE_WORDS + ' words controls this identity. ' +
-            'Make sure no one can see your screen.',
-        confirmText: 'Reveal'
+        title: 'Show the recovery phrase?',
+        message: 'Anyone who sees these ' + RECOVERY_PHRASE_WORDS + ' words can take over ' + name + '. Check that no one can see your screen.',
+        confirmText: 'Show phrase',
+        pinLabel: name + '’s PIN',
+        pinHelp: 'This identity is locked with a PIN.'
     }, function(auth) {
         return RS.invoke('reveal_identity_mnemonic', { args: Object.assign({ hash: target.hash }, auth) });
     }).then(function(data) {
-        if (data) showRecoveryPhraseBackup(data.mnemonic, null, viewOpts);
+        if (data) showRecoveryPhraseBackup(data.mnemonic, null, { name: name, requireConfirm: false });
     }).catch(function(err) {
         showToast((err && err.message) || 'Could not reveal phrase', 'toast-error', 3000);
     });
@@ -1060,19 +1041,13 @@ function viewActiveRecoveryPhrase() {
 window.viewActiveRecoveryPhrase = viewActiveRecoveryPhrase;
 
 function openRestorePhraseModal(fromSetup) {
-    showIdentityModal('Restore from Recovery Phrase',
-        '<div class="modal-field">' +
-            '<label>Recovery Phrase</label>' +
-            '<textarea id="restore-phrase-input" class="modal-input restore-phrase-textarea" rows="3" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Enter your ' + RECOVERY_PHRASE_WORDS + '-word recovery phrase, separated by spaces"></textarea>' +
-            '<span class="restore-phrase-count" id="restore-phrase-count">0 / ' + RECOVERY_PHRASE_WORDS + ' words</span>' +
-        '</div>' +
-        '<div class="modal-field">' +
-            '<label>Display Name <span class="text-xs">(optional)</span></label>' +
-            '<input type="text" id="restore-phrase-nickname" class="modal-input" placeholder="e.g. Rat King" maxlength="32">' +
-        '</div>' +
+    showIdentityModal('Restore from a recovery phrase',
+        '<div class="ui-field"><label class="ui-label" for="restore-phrase-input">Recovery phrase</label>' +
+            '<textarea id="restore-phrase-input" class="ui-input ui-input--mono" rows="3" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Your ' + RECOVERY_PHRASE_WORDS + ' words, separated by spaces" aria-describedby="restore-phrase-count"></textarea>' +
+            '<p class="ui-help" id="restore-phrase-count">0 of ' + RECOVERY_PHRASE_WORDS + ' words</p></div>' +
+        identityField('restore-phrase-nickname', 'Name', { maxlength: 32, placeholder: 'Optional' }) +
         identityPasscodeOptionHtml('restore-phrase') +
-        '<p class="recovery-warn">Restored software identities can be encrypted on this device with an optional PIN.</p>' +
-        '<div class="modal-error" id="restore-phrase-error" style="display:none;"></div>',
+        identityErrorHtml('restore-phrase-error'),
         function() {
             var ta = document.getElementById('restore-phrase-input');
             var phrase = (ta ? ta.value : '').trim().replace(/\s+/g, ' ');
@@ -1083,7 +1058,7 @@ function openRestorePhraseModal(fromSetup) {
             var passcode = passcodeOption.passcode;
             var count = phrase ? phrase.split(' ').length : 0;
             if (count !== RECOVERY_PHRASE_WORDS) {
-                if (errEl) { errEl.textContent = 'Recovery phrase must be exactly ' + RECOVERY_PHRASE_WORDS + ' words.'; errEl.style.display = ''; }
+                if (errEl) { errEl.textContent = 'A recovery phrase is exactly ' + RECOVERY_PHRASE_WORDS + ' words.'; errEl.style.display = ''; }
                 return;
             }
             if (errEl) errEl.style.display = 'none';
@@ -1116,7 +1091,7 @@ function openRestorePhraseModal(fromSetup) {
                 if (errEl) { errEl.textContent = msg; errEl.style.display = ''; }
                 else showToast(msg, 'toast-error', 4000);
             });
-        }
+        }, '', 'Restore'
     );
 
     var ta = document.getElementById('restore-phrase-input');
@@ -1124,7 +1099,7 @@ function openRestorePhraseModal(fromSetup) {
     if (ta && countEl) {
         ta.addEventListener('input', function() {
             var words = ta.value.trim().split(/\s+/).filter(Boolean);
-            countEl.textContent = words.length + ' / ' + RECOVERY_PHRASE_WORDS + ' words';
+            countEl.textContent = words.length + ' of ' + RECOVERY_PHRASE_WORDS + ' words';
         });
     }
     bindIdentityPasscodeOption('restore-phrase');
@@ -1154,14 +1129,14 @@ function importIdentity() {
 }
 
 function openRatspeakBackupImportPinModal(onPin) {
-    var body = backupPinFieldsHtml('identity-import-backup', false) +
-        '<p class="recovery-warn">Enter the PIN that was set when this .rsi backup was exported. The imported identity will be encrypted on this device with the same PIN.</p>';
-    showIdentityModal('Unlock Backup', body, function() {
+    var body = '<p>Enter the PIN that was set when this .rsi backup was exported. The imported identity is locked on this device with the same PIN.</p>' +
+        backupPinFieldsHtml('identity-import-backup', false, 'backup PIN');
+    showIdentityModal('Unlock the backup', body, function() {
         var pin = readBackupPin('identity-import-backup', false);
         if (!pin) return;
         closeIdentityModal();
         onPin(pin);
-    });
+    }, '', 'Unlock');
 }
 
 function startIdentityFileImport(format) {
@@ -1245,20 +1220,14 @@ function handleImportBackupPayload(fileName, fileSize, b64, expectedFormat) {
             return;
         }
         var activateHtml = fromSetup ? '' :
-            '<label class="identity-import-activate"><input type="checkbox" id="identity-import-activate"> <span>Activate after import</span></label>';
-        showIdentityModal('Import Identity',
-            '<div class="modal-field">' +
-                '<label>File</label>' +
-                '<span class="modal-value text-xs">' + escapeHtml(fileName || 'identity file') + ' (' + (fileSize || 0) + ' bytes)</span>' +
-            '</div>' +
-            '<div class="identity-import-preview">' +
-                '<div class="identity-field"><span class="identity-label">LXMF Address</span><span class="identity-value mono">' + escapeHtml(preview.lxmf_hash || '') + '</span></div>' +
-                '<div class="identity-field"><span class="identity-label">Identity Hash</span><span class="identity-value mono">' + escapeHtml(preview.identity_hash || '') + '</span></div>' +
-            '</div>' +
-            '<div class="modal-field">' +
-                '<label>Display Name</label>' +
-                '<input type="text" id="identity-modal-nickname" class="modal-input" placeholder="e.g. Rat King" maxlength="32">' +
-            '</div>' +
+            '<label class="ui-check-row"><input type="checkbox" id="identity-import-activate"><span class="ui-check">' + RS.kit.icon('check') + '</span><span>Switch to it after the import</span></label>';
+        showIdentityModal('Import identity',
+            '<p>' + escapeHtml(fileName || 'Identity file') + ' \u00b7 ' + (fileSize || 0) + ' bytes</p>' +
+            personDlHtml([
+                ['LXMF address', RS.kit.hash.copy(preview.lxmf_hash || '', { form: 'fit', noun: 'LXMF address' })],
+                ['Identity hash', RS.kit.hash.copy(preview.identity_hash || '', { form: 'fit', noun: 'Identity hash' })]
+            ]) +
+            identityField('identity-modal-nickname', 'Name', { maxlength: 32, placeholder: 'Optional' }) +
             activateHtml,
             function() {
                 var nickname = document.getElementById('identity-modal-nickname').value.trim();
@@ -1376,13 +1345,12 @@ function handleIdentityExportError(err) {
 
 function openEncryptedIdentityExportModal(hash, target) {
     var protectedIdentity = !!(target && target.passcode_protected);
-    var body = (protectedIdentity
-            ? '<div class="modal-field"><label>Identity PIN</label>' +
-                  '<input type="password" id="identity-export-identity-pin" class="modal-input" maxlength="128" autocomplete="off"></div>'
+    var body = '<p>The backup PIN locks the .rsi file. You need it to import this identity on another device.</p>' +
+        (protectedIdentity
+            ? identityField('identity-export-identity-pin', 'Identity PIN', { type: 'password', maxlength: 128 })
             : '') +
-        backupPinFieldsHtml('identity-export-backup', true, 'backup PIN') +
-        '<p class="recovery-warn">The backup PIN encrypts the .rsi file. You will need it to import this identity on another device.</p>';
-    showIdentityModal('Export Identity Backup', body, function() {
+        backupPinFieldsHtml('identity-export-backup', true, 'backup PIN');
+    showIdentityModal('Export a Ratspeak backup', body, function() {
         var errEl = document.getElementById('identity-export-backup-pin-error');
         function fail(text) { if (errEl) { errEl.textContent = text; errEl.style.display = ''; } }
         // Opening this sheet and choosing Export is the confirmation.
@@ -1401,7 +1369,7 @@ function openEncryptedIdentityExportModal(hash, target) {
         }, function(err) {
             fail(identityPinError(err, 'Could not export the identity'));
         });
-    });
+    }, '', 'Export');
 }
 
 function exportIdentityBackup(hash) {
@@ -1415,14 +1383,14 @@ function exportIdentityBackup(hash) {
         return;
     }
     var targetName = target ? identityDisplayName(target) : 'Identity';
-    chooseIdentityExportFormat().then(function(format) {
+    chooseIdentityExportFormat(targetName).then(function(format) {
         if (!format) return null;
         if (format === 'ratspeak') {
             openEncryptedIdentityExportModal(hash, target);
             return null;
         }
         return authorizeIdentityKey(target, {
-            title: 'Export Private Identity',
+            title: 'Export the private key?',
             message: exportWarningForFormat(format, targetName),
             confirmText: 'Export',
             danger: true
@@ -1433,61 +1401,16 @@ function exportIdentityBackup(hash) {
     }).catch(handleIdentityExportError);
 }
 
-function openIdentityActions(hash) {
-    var target = identityByHash(hash);
-    if (!target) return;
-
-    var choices = [];
-    if (!target.is_active) {
-        choices.push({ label: 'Switch to Identity', value: 'switch' });
-    }
-    if (!target.is_hardware) {
-        if (target.passcode_protected) {
-            choices.push({ label: 'Change PIN', value: 'passcode-change' });
-            choices.push({ label: 'Remove PIN', value: 'passcode-remove', danger: true });
-        } else {
-            choices.push({ label: 'Set PIN', value: 'passcode-set', hint: 'Encrypt this identity at rest; required when you open Ratspeak.' });
-        }
-    } else if (typeof isMobile !== 'function' || !isMobile()) {
-        choices.push({ label: 'Change PIN', value: 'hardware-pin', hint: 'Change the YubiKey PIV PIN on this key.' });
-    }
-    choices.push({ label: 'Share Contact Card', value: 'share' });
-    if (!isOriginalIdentity(target.hash) && (!target.is_active || identityList.length > 1)) {
-        choices.push({ label: target.is_hardware ? 'Remove Identity' : 'Delete Identity', value: 'delete', danger: true });
-    }
-
-    rsChoice({
-        title: identityDisplayName(target),
-        message: target.lxmf_hash || target.hash || '',
-        choices: choices
-    }).then(function(choice) {
-        if (choice === 'switch') switchToIdentity(target.hash);
-        if (choice === 'passcode-set') openSetPasscodeModal(target, false);
-        if (choice === 'passcode-change') openSetPasscodeModal(target, true);
-        if (choice === 'passcode-remove') openRemovePasscodeModal(target);
-        if (choice === 'hardware-pin') openHardwareChangePinModal(target);
-        if (choice === 'share') {
-            if (typeof openIdentityShareScreen === 'function') openIdentityShareScreen(target.hash);
-            else shareAddress(target.lxmf_hash || target.hash || '', identityDisplayName(target));
-        }
-        if (choice === 'delete') deleteIdentityByHash(target.hash);
-    });
-}
 
 // Add or change a passcode (at-rest encryption) on a software identity.
 function openSetPasscodeModal(target, isChange) {
     var body =
-        (isChange
-            ? '<div class="modal-field"><label>Current PIN</label>' +
-              '<input type="password" id="passcode-current" class="modal-input" maxlength="128" autocomplete="off"></div>'
-            : '') +
-        '<div class="modal-field"><label>' + (isChange ? 'New PIN' : 'PIN') + '</label>' +
-            '<input type="password" id="passcode-new" class="modal-input" maxlength="128" autocomplete="off" placeholder="At least 6 characters"></div>' +
-        '<div class="modal-field"><label>Confirm PIN</label>' +
-            '<input type="password" id="passcode-confirm" class="modal-input" maxlength="128" autocomplete="off"></div>' +
-        '<p class="recovery-warn">This identity will be encrypted on this device and require the PIN each time you open Ratspeak. There is <strong>no recovery</strong> if you forget it; keep your 12-word phrase as a backup.</p>' +
-        '<div class="modal-error" id="passcode-error" style="display:none"></div>';
-    showIdentityModal(isChange ? 'Change PIN' : 'Set PIN', body, function() {
+        '<p>' + escapeHtml(identityDisplayName(target)) + ' is locked on this device and asks for the PIN each time Ratspeak opens. A forgotten PIN can’t be recovered; keep your ' + RECOVERY_PHRASE_WORDS + '-word phrase.</p>' +
+        (isChange ? identityField('passcode-current', 'Current PIN', { type: 'password', maxlength: 128 }) : '') +
+        identityField('passcode-new', isChange ? 'New PIN' : 'PIN', { type: 'password', maxlength: 128, help: 'At least 6 characters.' }) +
+        identityField('passcode-confirm', 'Confirm PIN', { type: 'password', maxlength: 128 }) +
+        identityErrorHtml('passcode-error');
+    showIdentityModal(isChange ? 'Change PIN' : 'Set a PIN', body, function() {
         var cur = isChange ? document.getElementById('passcode-current').value : '';
         var pw = document.getElementById('passcode-new').value;
         var confirm = document.getElementById('passcode-confirm').value;
@@ -1509,22 +1432,25 @@ function openSetPasscodeModal(target, isChange) {
         }).catch(function(err) {
             if (errEl) { errEl.textContent = identityPinError(err, 'Could not set PIN'); errEl.style.display = ''; }
         });
+    }, '', isChange ? 'Change PIN' : 'Set PIN');
+    // Turning the PIN off starts from changing it.
+    var cancel = isChange && document.getElementById('identity-modal-cancel');
+    if (cancel) cancel.insertAdjacentHTML('beforebegin', '<button type="button" class="ui-btn ui-btn--quiet identity-pin-remove" id="identity-pin-remove">Remove PIN</button>');
+    var remove = isChange && document.getElementById('identity-pin-remove');
+    if (remove) remove.addEventListener('click', function() {
+        closeIdentityModal();
+        openRemovePasscodeModal(target);
     });
-    var btn = document.getElementById('identity-modal-confirm');
-    if (btn) { var l = isChange ? 'Change' : 'Set'; btn.textContent = l; btn.dataset.baseLabel = l; }
 }
 
 function openHardwareChangePinModal(target) {
     var name = identityDisplayName(target);
     var body =
-        '<div class="modal-field"><label>Current PIN</label>' +
-            '<input type="password" id="hardware-pin-current" class="modal-input" inputmode="numeric" maxlength="8" autocomplete="off"></div>' +
-        '<div class="modal-field"><label>New PIN</label>' +
-            '<input type="password" id="hardware-pin-new" class="modal-input" inputmode="numeric" maxlength="8" autocomplete="off" placeholder="6-8 characters"></div>' +
-        '<div class="modal-field"><label>Confirm PIN</label>' +
-            '<input type="password" id="hardware-pin-confirm" class="modal-input" inputmode="numeric" maxlength="8" autocomplete="off"></div>' +
-        '<p class="recovery-warn">This changes the YubiKey PIV PIN for ' + escapeHtml(name) + '. Keep the key plugged in until it completes.</p>' +
-        '<div class="modal-error" id="hardware-pin-error" style="display:none"></div>';
+        '<p>This changes the YubiKey PIN for ' + escapeHtml(name) + '. Keep the key plugged in until it finishes.</p>' +
+        identityField('hardware-pin-current', 'Current PIN', { type: 'password', maxlength: 8, inputmode: 'numeric' }) +
+        identityField('hardware-pin-new', 'New PIN', { type: 'password', maxlength: 8, inputmode: 'numeric', help: '6 to 8 characters.' }) +
+        identityField('hardware-pin-confirm', 'Confirm PIN', { type: 'password', maxlength: 8, inputmode: 'numeric' }) +
+        identityErrorHtml('hardware-pin-error');
     showIdentityModal('Change PIN', body, function() {
         var current = document.getElementById('hardware-pin-current').value;
         var pin = document.getElementById('hardware-pin-new').value;
@@ -1548,17 +1474,14 @@ function openHardwareChangePinModal(target) {
         }).catch(function(err) {
             if (errEl) { errEl.textContent = identityPinError(err, 'Could not change PIN'); errEl.style.display = ''; }
         });
-    });
-    var btn = document.getElementById('identity-modal-confirm');
-    if (btn) { btn.textContent = 'Change'; btn.dataset.baseLabel = 'Change'; }
+    }, '', 'Change PIN');
 }
 
 function openRemovePasscodeModal(target) {
-    showIdentityModal('Remove PIN',
-        '<div class="modal-field"><label>PIN</label>' +
-            '<input type="password" id="passcode-remove-input" class="modal-input" maxlength="128" autocomplete="off"></div>' +
-        '<p class="recovery-warn">This decrypts the identity on this device; it will no longer require a PIN when you open Ratspeak.</p>' +
-        '<div class="modal-error" id="passcode-error" style="display:none"></div>',
+    showIdentityModal('Remove the PIN?',
+        '<p>' + escapeHtml(identityDisplayName(target)) + ' is unlocked on this device and no longer asks for a PIN when Ratspeak opens.</p>' +
+        identityField('passcode-remove-input', 'PIN', { type: 'password', maxlength: 128 }) +
+        identityErrorHtml('passcode-error'),
         function() {
             var pw = document.getElementById('passcode-remove-input').value;
             var errEl = document.getElementById('passcode-error');
@@ -1573,17 +1496,11 @@ function openRemovePasscodeModal(target) {
             }).catch(function(err) {
                 if (errEl) { errEl.textContent = identityPinError(err, 'Could not remove PIN'); errEl.style.display = ''; }
             });
-        }
+        }, 'danger', 'Remove PIN'
     );
 }
 
-function removeSelectedIdentity() {
-    deleteIdentityByHash(selectedIdentityHash);
-}
 
-function deleteActiveIdentity() {
-    deleteIdentityByHash(activeIdentityHash);
-}
 
 function deleteIdentityByHash(hash) {
     if (!hash) {
@@ -1609,24 +1526,34 @@ function deleteIdentityByHash(hash) {
         return;
     }
 
-    rsConfirm({
-        title: 'Delete Identity',
-        message: 'This identity will be removed from your device completely, and can not be recovered. Are you sure you want to delete it?',
-        confirmText: 'Delete',
-        danger: true
-    }).then(function(ok) {
-        if (!ok) return;
-        return rsChoice({
-            title: 'Delete Identity Data?',
-            message: 'Do you also want to remove any stored contacts, messages, or other data related to this identity?',
-            choices: [
-                { label: 'Yes, delete everything', value: 'cascade', danger: true, hint: 'Contacts, messages, games, and all other data will be permanently deleted.' },
-                { label: 'No, just the identity', value: 'keep', hint: 'Data will be preserved and reappear if this identity is re-imported.' }
-            ]
+    var name = identityDisplayName(target);
+    var cascade = false;
+    // One dialog: the identity goes, and its data stays (the default) or goes with it.
+    var built = RS.kit.dialog({
+        title: 'Delete ' + name + '?',
+        body: '<p>The identity is removed from this device. Without a backup or its recovery phrase, it can’t be restored.</p>' +
+            '<div class="ui-choices" role="radiogroup" aria-label="Its data">' +
+                '<button type="button" class="ui-menu-item" role="radio" aria-checked="true" data-cascade="0"><span class="lbl">Keep its contacts and messages<small>They come back if you import this identity again.</small></span>' + RS.kit.icon('check', 'check') + '</button>' +
+                '<button type="button" class="ui-menu-item" role="radio" aria-checked="false" data-cascade="1"><span class="lbl">Delete them too<small>Contacts, messages, and games for ' + escapeHtml(name) + ' are erased.</small></span></button>' +
+            '</div>',
+        foot: '<button type="button" class="ui-btn ui-btn--quiet ui-desk-only" data-ui-close>Cancel</button>' +
+            '<button type="button" class="ui-btn ui-btn--danger ui-btn--primary" id="identity-delete-confirm">Delete identity</button>'
+    });
+    built.dialog.addEventListener('click', function(e) {
+        var radio = e.target.closest('[data-cascade]');
+        if (!radio) return;
+        cascade = radio.getAttribute('data-cascade') === '1';
+        built.dialog.querySelectorAll('[data-cascade]').forEach(function(btn) {
+            var on = btn === radio;
+            btn.setAttribute('aria-checked', on ? 'true' : 'false');
+            var check = btn.querySelector('.ui-ico.check');
+            if (on && !check) btn.insertAdjacentHTML('beforeend', RS.kit.icon('check', 'check'));
+            if (!on && check) check.remove();
         });
-    }).then(function(choice) {
-        if (!choice) return;
-        var cascade = (choice === 'cascade');
+    });
+    var confirmBtn = built.q('#identity-delete-confirm');
+    confirmBtn.addEventListener('click', function() {
+        confirmBtn.disabled = true;
         var deletePromise;
         if (target.is_active) {
             var firstRemaining = null;
@@ -1637,6 +1564,7 @@ function deleteIdentityByHash(hash) {
                 }
             }
             if (!firstRemaining) {
+                built.close(null);
                 showPreConditionToast('No other identity to switch to');
                 return;
             }
@@ -1651,42 +1579,50 @@ function deleteIdentityByHash(hash) {
 
         deletePromise
             .then(function() {
+                built.close(true);
                 showToast('Identity deleted', 'toast-success', 3000);
                 selectedIdentityHash = null;
+                _identityPhoneDetailOpen = false;
                 loadIdentities();
             })
             .catch(function(err) {
+                confirmBtn.disabled = false;
                 showToast(err && err.message ? err.message : 'Could not delete the identity', 'toast-error', 3000);
             });
     });
 }
 
-function showIdentityModal(title, bodyHtml, onConfirm, confirmClass) {
-    var modal = document.getElementById('identity-modal');
-    if (!modal) return;
-
-    document.getElementById('identity-modal-title').textContent = title;
-    document.getElementById('identity-modal-body').innerHTML = bodyHtml;
-
-    var confirmBtn = document.getElementById('identity-modal-confirm');
-    var confirmClasses = 'rs-dialog-confirm';
-    if (confirmClass && (confirmClass.indexOf('danger') !== -1 || confirmClass.indexOf('error') !== -1)) {
-        confirmClasses += ' rs-dialog-danger';
-    }
-    confirmBtn.className = confirmClasses;
-    confirmBtn.disabled = false;
-    var baseLabel = title.indexOf('Delete') !== -1 ? 'Delete' :
+// The identity dialogs' shared shell: one kit dialog at a time, with the confirm
+// button that shows the work while it runs. confirmLabel names the action.
+var _identityModal = null;
+function showIdentityModal(title, bodyHtml, onConfirm, confirmClass, confirmLabel) {
+    if (_identityModal) _identityModal.close(null);
+    var danger = !!(confirmClass && (confirmClass.indexOf('danger') !== -1 || confirmClass.indexOf('error') !== -1));
+    var baseLabel = confirmLabel || (title.indexOf('Delete') !== -1 ? 'Delete' :
         (title.indexOf('Remove') !== -1 ? 'Remove' :
         (title.indexOf('Import') !== -1 ? 'Import' :
         (title.indexOf('Restore') !== -1 ? 'Restore' :
         (title.indexOf('Export') !== -1 ? 'Export' :
-        (title.indexOf('Unlock') !== -1 ? 'Unlock' : 'Create')))));
-    confirmBtn.textContent = baseLabel;
+        (title.indexOf('Unlock') !== -1 ? 'Unlock' : 'Create'))))));
+    var built = RS.kit.dialog({
+        title: title,
+        className: 'identity-modal',
+        body: '<div class="identity-modal-body" id="identity-modal-body">' + bodyHtml + '</div>',
+        foot: '<button type="button" class="ui-btn ui-btn--quiet ui-desk-only" id="identity-modal-cancel">Cancel</button>' +
+            '<button type="button" class="ui-btn ui-btn--primary' + (danger ? ' ui-btn--danger' : '') + '" id="identity-modal-confirm">' + escapeHtml(baseLabel) + '</button>',
+        onClose: function() {
+            if (_identityModal === built) _identityModal = null;
+            if (/^Import/.test(title)) resetPendingIdentityImport();
+        }
+    });
+    _identityModal = built;
+    var confirmBtn = built.q('#identity-modal-confirm');
     confirmBtn.dataset.baseLabel = baseLabel;
+    built.q('#identity-modal-cancel').addEventListener('click', closeIdentityModal);
     confirmBtn.onclick = function() {
         if (confirmBtn.disabled) return;
         confirmBtn.disabled = true;
-        confirmBtn.textContent = 'Working\u2026';
+        confirmBtn.textContent = 'Working…';
         var restore = function() {
             confirmBtn.disabled = false;
             confirmBtn.textContent = confirmBtn.dataset.baseLabel || baseLabel;
@@ -1706,47 +1642,16 @@ function showIdentityModal(title, bodyHtml, onConfirm, confirmClass) {
             restore();
         }
     };
-
-    if (RS.ui && typeof RS.ui.openExistingSheet === 'function') {
-        RS.ui.openExistingSheet('identity-modal', 'identity-modal-overlay');
-    } else {
-        var overlay = document.getElementById('identity-modal-overlay');
-        modal.classList.add('open');
-        if (overlay) overlay.classList.add('active');
-    }
-
-    modal.onkeydown = function(e) {
-        if (e.key === 'Enter' && e.target.tagName === 'INPUT') {
+    built.dialog.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && e.target.tagName === 'INPUT' && e.target.type !== 'checkbox') {
             e.preventDefault();
-            var btn = document.getElementById('identity-modal-confirm');
-            if (btn) btn.click();
+            confirmBtn.click();
         }
-    };
-
-    setTimeout(function() {
-        var input = modal.querySelector('.modal-input');
-        if (input && !isMobile()) input.focus();
-    }, 100);
+    });
 }
 
 function closeIdentityModal() {
-    var modal = document.getElementById('identity-modal');
-    var overlay = document.getElementById('identity-modal-overlay');
-    var title = document.getElementById('identity-modal-title');
-    if (title && title.textContent.indexOf('Import') !== -1) {
-        resetPendingIdentityImport();
-    }
-    if (RS.ui && typeof RS.ui.closeExistingSheet === 'function') {
-        RS.ui.closeExistingSheet('identity-modal', 'identity-modal-overlay');
-    } else {
-        if (modal) modal.classList.remove('open');
-        if (overlay) overlay.classList.remove('active');
-    }
-    var confirmBtn = document.getElementById('identity-modal-confirm');
-    if (confirmBtn) {
-        confirmBtn.disabled = false;
-        if (confirmBtn.dataset.baseLabel) confirmBtn.textContent = confirmBtn.dataset.baseLabel;
-    }
+    if (_identityModal) _identityModal.close(null);
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -1763,57 +1668,6 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    var identityAddBtn = document.getElementById('identity-add-btn');
-    if (identityAddBtn) identityAddBtn.addEventListener('click', createNewIdentity);
-
-    var identityImportBtn = document.getElementById('identity-import-btn');
-    if (identityImportBtn) identityImportBtn.addEventListener('click', function() {
-        window._identityImportFromSetup = false;
-        importIdentity();
-    });
-
-    var identityExportBtn = document.getElementById('identity-export-btn');
-    if (identityExportBtn) identityExportBtn.addEventListener('click', exportActiveIdentity);
-
-    var identityCopyBtn = document.getElementById('identity-copy-address-btn');
-    if (identityCopyBtn) identityCopyBtn.addEventListener('click', function() {
-        var active = activeIdentity();
-        var address = active && (active.lxmf_hash || active.hash);
-        if (!address) return;
-        RS.copyText(address).then(function(ok) {
-            if (ok) showCopyConfirmationToast('Address');
-            else shareAddress(address, active.display_name || active.nickname || '');
-        });
-    });
-
-    var identityShareBtn = document.getElementById('identity-share-address-btn');
-    if (identityShareBtn) identityShareBtn.addEventListener('click', function() {
-        var active = activeIdentity();
-        if (!active) return;
-        shareAddress(active.lxmf_hash || active.hash || '', active.display_name || active.nickname || '');
-    });
-
-    var identityDeleteBtn = document.getElementById('identity-delete-btn');
-    if (identityDeleteBtn) identityDeleteBtn.addEventListener('click', deleteActiveIdentity);
-
-    var modalClose = document.getElementById('identity-modal-close');
-    if (modalClose) modalClose.addEventListener('click', closeIdentityModal);
-
-    var modalCancel = document.getElementById('identity-modal-cancel');
-    if (modalCancel) modalCancel.addEventListener('click', closeIdentityModal);
-
-    if (typeof initSheetSwipeDismiss === 'function') {
-        initSheetSwipeDismiss('identity-modal', 'identity-modal-overlay', closeIdentityModal);
-    }
-
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') {
-            var modal = document.getElementById('identity-modal');
-            if (modal && modal.classList.contains('open')) {
-                closeIdentityModal();
-            }
-        }
-    });
 });
 
 RS.listen('identity_switching', function() {
@@ -1833,7 +1687,7 @@ RS.listen('identity_switching', function() {
 // A switch that did not finish: the previous identity is back, or none is.
 RS.listen('identity_switch_failed', function(data) {
     window._identitySwitchInProgress = false;
-    if (!_switchRequestsPending && data && data.error) showToast(data.error, 'toast-error', 4000);
+    if (!_switchRequestsPending && data && data.error) _identityNoteSwitchFailure(data.hash, data.error);
     loadIdentities();
     if (typeof loadConversations === 'function') loadConversations();
 });
@@ -1976,26 +1830,26 @@ function _hwClearSecrets() {
 }
 
 function _hwOpenSheet() {
-    if (RS.ui && typeof RS.ui.openExistingSheet === 'function') {
-        RS.ui.openExistingSheet('hw-modal', 'hw-modal-overlay');
-    } else {
-        var modal = document.getElementById('hw-modal');
-        var overlay = document.getElementById('hw-modal-overlay');
-        if (modal) modal.classList.add('open');
-        if (overlay) overlay.classList.add('active');
-    }
+    var modal = document.getElementById('hw-modal');
+    var overlay = document.getElementById('hw-modal-overlay');
+    if (!modal || !overlay) return;
+    overlay.hidden = false;
+    // rs-sheet-shell + open: native Back closes the wizard and clears its secrets.
+    modal.classList.add('open');
+    modal._ratspeakDismiss = function() { closeHardwareWizard(); return true; };
+    if (typeof _trapFocus === 'function' && !modal._focusTrapHandler) _trapFocus(modal);
+    try { modal.focus({ preventScroll: true }); } catch (_) {}
 }
 
 function closeHardwareWizard() {
     _hwClearSecrets();
-    if (RS.ui && typeof RS.ui.closeExistingSheet === 'function') {
-        RS.ui.closeExistingSheet('hw-modal', 'hw-modal-overlay');
-    } else {
-        var modal = document.getElementById('hw-modal');
-        var overlay = document.getElementById('hw-modal-overlay');
-        if (modal) modal.classList.remove('open');
-        if (overlay) overlay.classList.remove('active');
+    var modal = document.getElementById('hw-modal');
+    var overlay = document.getElementById('hw-modal-overlay');
+    if (modal) {
+        modal.classList.remove('open');
+        if (typeof _releaseFocus === 'function') _releaseFocus(modal);
     }
+    if (overlay) overlay.hidden = true;
     _hwCtx = null;
 }
 
@@ -2031,7 +1885,7 @@ window.openHardwareWizard = openHardwareWizard;
 function _hwBeginDetect(next) {
     if (!_hwCtx) _hwCtx = { fromSetup: false };
     _hwCtx.afterDetect = next;
-    _hwSetTitle('Hardware Key');
+    _hwSetTitle('Add a hardware key');
     _hwShowStep('hw-step-detect');
     _hwOpenSheet();
     _hwRunDetect();
@@ -2077,25 +1931,22 @@ function _hwDeviceSummaryHtml(device) {
     var model = device.device_type || 'Security key';
     var parts = [];
     if (device.serial) parts.push('Serial ' + device.serial);
-    if (device.firmware) parts.push('Firmware ' + device.firmware);
-    return '<div class="hw-device-card">' +
-        '<span class="hw-device-icon">' + HW_BADGE_ICON + '</span>' +
-        '<span class="hw-device-meta">' +
-            '<span class="hw-device-name">' + escapeHtml(model) + '</span>' +
-            (parts.length ? '<span class="hw-device-detail">' + escapeHtml(parts.join('  ·  ')) + '</span>' : '') +
-        '</span>' +
-    '</div>';
+    if (device.firmware) parts.push('firmware ' + device.firmware);
+    return '<div class="ui-well hw-device"><span class="ui-tile" aria-hidden="true">' + RS.kit.icon('key') + '</span>' +
+        '<span class="hw-device-text"><span class="ui-card-title">' + escapeHtml(model) + '</span>' +
+            (parts.length ? '<span class="person-status">' + escapeHtml(parts.join(' \u00b7 ')) + '</span>' : '') +
+        '</span></div>';
 }
 
 function _hwShowModeStep() {
-    _hwSetTitle('Backup Mode');
+    _hwSetTitle('Add a hardware key');
     var deviceEl = document.getElementById('hw-mode-device');
     if (deviceEl) deviceEl.innerHTML = _hwDeviceSummaryHtml(_hwCtx.device);
     _hwShowStep('hw-step-mode');
 }
 
 function _hwShowImportStep() {
-    _hwSetTitle('Use Existing Key');
+    _hwSetTitle('Use a key you set up');
     var deviceEl = document.getElementById('hw-import-device');
     if (deviceEl) deviceEl.innerHTML = _hwDeviceSummaryHtml(_hwCtx.device);
     var err = document.getElementById('hw-import-error');
@@ -2211,7 +2062,7 @@ function _hwDispatchProvision() {
 function _hwShowWorking(text) {
     var t = document.getElementById('hw-working-text');
     if (t) t.textContent = text || 'Provisioning your security key…';
-    _hwSetTitle('Working');
+    _hwSetTitle('Setting up the key');
     _hwShowStep('hw-step-working');
 }
 
@@ -2341,19 +2192,20 @@ function _hwProvisionHardwareOnly() {
 }
 
 function _hwShowMnemonic(mnemonic) {
-    _hwSetTitle('Backup Phrase');
+    _hwSetTitle('Write down your recovery phrase');
     var words = recoveryPhraseWords(mnemonic);
     _hwCtx.mnemonic = mnemonic;
     _hwCtx.mnemonicWords = words;
 
     var grid = document.getElementById('hw-mnemonic-grid');
     if (grid) {
-        grid.innerHTML = renderRecoveryPhraseGrid(words);
+        grid.innerHTML = words.map(function(w) { return '<li>' + escapeHtml(w) + '</li>'; }).join('');
+        grid.setAttribute('aria-hidden', 'true');
     }
     var cover = document.getElementById('hw-mnemonic-cover');
-    if (cover) cover.style.display = '';
-    var shell = document.querySelector('.hw-mnemonic-shell');
-    if (shell) shell.classList.remove('revealed');
+    if (cover) cover.hidden = false;
+    var shell = document.getElementById('hw-mnemonic-shell');
+    if (shell) shell.classList.add('is-covered');
 
     var confirmChk = document.getElementById('hw-mnemonic-confirm');
     if (confirmChk) confirmChk.checked = false;
@@ -2368,7 +2220,7 @@ function _hwShowMnemonic(mnemonic) {
 function _hwBeginRestore() {
     if (!_hwCtx) _hwCtx = { fromSetup: false };
     _hwCtx.currentPin = null;
-    _hwSetTitle('Restore from Phrase');
+    _hwSetTitle('Restore to a hardware key');
     ['hw-restore-phrase', 'hw-restore-nickname', 'hw-restore-pin', 'hw-restore-pin-confirm'].forEach(function(id) {
         var el = document.getElementById(id);
         if (el) el.value = '';
@@ -2512,20 +2364,6 @@ function _hwCopyMnemonic() {
 }
 
 document.addEventListener('DOMContentLoaded', function() {
-    // Hardware (YubiKey/PIV) identities are desktop-only for now: the `hardware`
-    // feature + hw_* commands are gated off on mobile. Hide the entry points there.
-    // TODO(ratkey-mobile): add the wrapped-session model — see HARDWARE_STATUS.md.
-    var hideHardware = (typeof supportsHardwareIdentities === 'function')
-        && !supportsHardwareIdentities();
-
-    var identityHwBtn = document.getElementById('identity-hardware-btn');
-    if (identityHwBtn) {
-        if (hideHardware) identityHwBtn.style.display = 'none';
-        identityHwBtn.addEventListener('click', function() {
-            openHardwareWizard({ fromSetup: false });
-        });
-    }
-
     var hwClose = document.getElementById('hw-modal-close');
     if (hwClose) hwClose.addEventListener('click', closeHardwareWizard);
 
@@ -2577,9 +2415,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
     var revealCover = document.getElementById('hw-mnemonic-cover');
     if (revealCover) revealCover.addEventListener('click', function() {
-        revealCover.style.display = 'none';
-        var shell = document.querySelector('.hw-mnemonic-shell');
-        if (shell) shell.classList.add('revealed');
+        revealCover.hidden = true;
+        var shell = document.getElementById('hw-mnemonic-shell');
+        if (shell) shell.classList.remove('is-covered');
+        var grid = document.getElementById('hw-mnemonic-grid');
+        if (grid) grid.removeAttribute('aria-hidden');
     });
     var copyBtn = document.getElementById('hw-mnemonic-copy-btn');
     if (copyBtn) copyBtn.addEventListener('click', _hwCopyMnemonic);
@@ -2627,9 +2467,10 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    if (typeof initSheetSwipeDismiss === 'function') {
-        initSheetSwipeDismiss('hw-modal', 'hw-modal-overlay', closeHardwareWizard);
-    }
+    var hwOverlay = document.getElementById('hw-modal-overlay');
+    if (hwOverlay) hwOverlay.addEventListener('click', function(e) {
+        if (e.target === hwOverlay) closeHardwareWizard();
+    });
 
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') {

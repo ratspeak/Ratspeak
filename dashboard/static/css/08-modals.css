@@ -163,7 +163,6 @@
 
 .bottom-sheet-footer[hidden] { display: none; }
 
-
 .modal-header {
     display: flex;
     align-items: center;
@@ -248,13 +247,6 @@
     box-shadow: 0 0 0 2px var(--focus-ring-bg);
 }
 
-/* Software seed-phrase restore modal */
-.restore-phrase-textarea {
-    resize: vertical;
-    min-height: 72px;
-    font-family: var(--font-mono);
-    line-height: 1.6;
-}
 .restore-phrase-count {
     display: block;
     margin-top: var(--space-2);
@@ -276,22 +268,7 @@
    restore-phrase, and view-recovery-phrase modals place these adjacently.
    Scoped to siblings so single-field modals and margin-spaced wrappers
    (e.g. .identity-import-preview) are untouched. */
-.modal-field + .modal-field,
-.modal-field + .recovery-warn,
-.recovery-warn + .modal-field { margin-top: var(--space-5); }
-
-.identity-passcode-option {
-    margin-top: var(--space-5);
-}
-
-.identity-passcode-fields {
-    margin-top: var(--space-5);
-}
-
-.identity-passcode-fields[hidden] {
-    display: none;
-}
-
+.modal-field + .modal-field { margin-top: var(--space-5); }
 
 .hub-iface-row {
     display: flex;
@@ -341,7 +318,6 @@
     flex-shrink: 0;
 }
 
-
 .modal-op-status {
     margin-top: var(--space-5);
     padding: var(--space-4) var(--space-6);
@@ -365,7 +341,6 @@
     color: var(--status-error-fg);
     border: 1px solid var(--status-error-border);
 }
-
 
 .quick-connect-options {
     display: flex;
@@ -661,7 +636,6 @@
         min-width: 36px;
     }
 }
-
 
 .ble-scan-section {
     display: flex;
@@ -997,7 +971,6 @@
     border-left: 3px solid var(--ble-accent);
 }
 
-
 .hub-iface-status {
     width: 8px;
     height: 8px;
@@ -1017,14 +990,12 @@
     background: var(--text-muted);
 }
 
-
 .interface-flow-active {
     color: var(--accent);
     font-size: var(--type-badge-size);
     animation: pulse-flow 2s ease-in-out infinite;
     margin-left: var(--space-2);
 }
-
 
 .settings-section {
     border-bottom: 1px solid var(--border);
@@ -1061,7 +1032,6 @@
     min-width: 32px;
     text-align: center;
 }
-
 
 .rs-dialog-message {
     font-size: var(--text-base);

@@ -2940,90 +2940,6 @@ function _gateClean(container, html) {
     return false;
 }
 
-function renderStandaloneContactList() {
-    var container = document.getElementById('contacts-standalone-list');
-    if (!container) return;
-
-    if (!container._ptrAttached) {
-        RS.gestures.attachPullToRefresh(container, { onRefresh: renderStandaloneContactList });
-    }
-    if (_gateHidden('view-contacts', container)) return;
-
-    var countEl = document.getElementById('contacts-count');
-
-    if (lxmfContacts.length === 0) {
-        if (countEl) countEl.textContent = '0 contacts';
-        var emptyHtml = '<div class="empty-state">' +
-            '<svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>' +
-            '<span class="empty-state-primary">No contacts yet</span>' +
-            '<span class="empty-state-hint">Add a contact from Peers, or tap +</span>' +
-        '</div>';
-        if (_gateClean(container, emptyHtml)) return;
-        container.innerHTML = emptyHtml;
-        return;
-    }
-
-    var searchInput = document.getElementById('contacts-search');
-    var query = searchInput ? searchInput.value.toLowerCase().trim() : '';
-
-    var sorted = lxmfContacts.slice().sort(function(a, b) {
-        var la = contactSectionLetter(a);
-        var lb = contactSectionLetter(b);
-        var aIsHash = la === '#';
-        var bIsHash = lb === '#';
-        if (aIsHash !== bIsHash) return aIsHash ? 1 : -1;
-        var na = (a.display_name || '').toLowerCase();
-        var nb = (b.display_name || '').toLowerCase();
-        if (na < nb) return -1;
-        if (na > nb) return 1;
-        return 0;
-    });
-
-    if (query) {
-        sorted = sorted.filter(function(c) {
-            var name = (c.display_name || '').toLowerCase();
-            return name.indexOf(query) !== -1 || c.hash.toLowerCase().indexOf(query) !== -1;
-        });
-    }
-
-    if (sorted.length === 0) {
-        var noMatchHtml = '<div class="empty-state"><span class="empty-state-primary">No matches</span></div>';
-        if (_gateClean(container, noMatchHtml)) return;
-        container.innerHTML = noMatchHtml;
-        return;
-    }
-
-    if (countEl) countEl.textContent = lxmfContacts.length + (lxmfContacts.length === 1 ? ' contact' : ' contacts');
-
-    var html = '';
-    var lastLetter = null;
-    sorted.forEach(function(c) {
-        var letter = contactSectionLetter(c);
-        if (letter !== lastLetter) {
-            html += '<div class="contacts-group-header">' + escapeHtml(letter) + '</div>';
-            lastLetter = letter;
-        }
-        var name = c.display_name || 'Anonymous';
-        var avatarHtml = '<span class="contacts-avatar">' + identityAvatar(c.hash, 40) + '</span>';
-        html += '<div role="button" tabindex="0" class="contacts-row" data-hash="' + escapeHtml(c.hash) + '">' +
-            avatarHtml +
-            '<div class="contacts-row-content">' +
-                '<span class="contacts-row-name">' + ratspeakDisplayNameHtml(name, c) + '</span>' +
-                '<span class="contacts-row-hash">' + escapeHtml(c.hash) + '</span>' +
-            '</div>' +
-        '</div>';
-    });
-    if (_gateClean(container, html)) return;
-    container.innerHTML = html;
-
-    container.querySelectorAll('.contacts-row').forEach(function(el) {
-        if (RS.ui) RS.ui.bindKeyboardActivation(el);
-        el.addEventListener('click', function() {
-            showContactDetailSheet(this.dataset.hash);
-        });
-    });
-}
-
 function renderNetworkContactList() {
     var container = document.getElementById('dashboard-contacts-list');
     if (!container) return;
@@ -3067,15 +2983,8 @@ function renderNetworkContactList() {
 document.addEventListener('DOMContentLoaded', function() {
     var addBtn = document.getElementById('dashboard-contacts-add-btn');
     if (addBtn) {
-        addBtn.addEventListener('click', function(e) {
-            if (typeof openContactAddOptions === 'function') {
-                openContactAddOptions(addBtn);
-                return;
-            }
-            rsPromptContact({ title: 'Add Contact' }).then(function(result) {
-                if (!result) return;
-                RS.invokeOrToast('add_contact', { args: { hash: result.hash, display_name: result.display_name } }, 'Could not add contact');
-            });
+        addBtn.addEventListener('click', function() {
+            openContactAddOptions(addBtn);
         });
     }
     var dashAnnounce = document.getElementById('dash-announce');
@@ -3108,113 +3017,6 @@ document.addEventListener('DOMContentLoaded', function() {
             switchView('peers');
         });
     }
-});
-
-function showContactDetailSheet(hash) {
-    var existing = document.getElementById('contact-detail-overlay');
-    if (existing) existing.remove();
-    var existingSheet = document.getElementById('contact-detail-sheet');
-    if (existingSheet) existingSheet.remove();
-
-    var contact = lxmfContacts.find(function(c) { return c.hash === hash; });
-    var name = contact ? (contact.display_name || 'Anonymous') : '';
-    var peer = _peerInfo(hash);
-
-    var overlay = document.createElement('div');
-    overlay.id = 'contact-detail-overlay';
-    overlay.className = 'bottom-sheet-overlay';
-
-    var sheet = document.createElement('div');
-    sheet.id = 'contact-detail-sheet';
-    sheet.className = 'bottom-sheet';
-    sheet.innerHTML =
-        '<div class="bottom-sheet-handle"></div>' +
-        '<div class="bottom-sheet-body">' +
-            '<button class="contact-detail-edit-btn" id="cd-edit-name-btn" title="Edit display name" aria-label="Edit display name">' +
-                '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>' +
-            '</button>' +
-            peerAvatarHtml('contact-detail-avatar', hash, 64, peer) +
-            peerNameHtml('contact-detail-name', name ? ratspeakDisplayNameHtml(name, contact || hash) : '') +
-            '<div class="contact-detail-hash-row">' + peerAddressButtonHtml(hash) + '</div>' +
-            peerActionPairHtml('contact-detail-actions contact-detail-primary-actions entity-action-grid', 'cd', hash) +
-            '<div class="contact-detail-fields">' + peerDetailsHtml('cd-detail-rows', peer, { trust: contact ? contact.trust : '' }) + '</div>' +
-            '<div class="contact-detail-action-rows">' + peerActionRowsHtml(!!contact) + '</div>' +
-        '</div>';
-    syncPeerDetails(sheet);
-
-    document.body.appendChild(overlay);
-    document.body.appendChild(sheet);
-    // Force layout flush so the .open transition runs.
-    // eslint-disable-next-line no-unused-expressions
-    sheet.offsetHeight;
-    sheet.classList.add('open');
-    overlay.classList.add('active');
-
-    function closeSheet() {
-        sheet.classList.remove('open');
-        overlay.classList.remove('active');
-        setTimeout(function() {
-            if (overlay.parentNode) overlay.remove();
-            if (sheet.parentNode) sheet.remove();
-        }, 200);
-    }
-
-    if (typeof initSheetSwipeDismiss === 'function') {
-        initSheetSwipeDismiss('contact-detail-sheet', 'contact-detail-overlay', closeSheet);
-    }
-
-    // add_contact is upsert-by-hash; new display_name renames in place.
-    var editBtn = document.getElementById('cd-edit-name-btn');
-    if (editBtn) {
-        editBtn.addEventListener('click', function(ev) {
-            ev.stopPropagation();
-            if (typeof rsPrompt !== 'function') return;
-            var currentName = contact ? (contact.display_name || '') : '';
-            rsPrompt({
-                message: 'Display name:',
-                defaultValue: currentName,
-                placeholder: 'Display name',
-            }).then(function(newName) {
-                if (newName === null) return;
-                var trimmed = newName.trim();
-                RS.invokeOrToast('add_contact', { args: { hash: hash, display_name: trimmed || null } }, 'Could not add contact');
-                closeSheet();
-            });
-        });
-    }
-
-    wirePeerActionPair('cd', hash, closeSheet);
-    wirePeerActionRows(sheet, hash, { name: name, before: closeSheet });
-}
-
-document.addEventListener('DOMContentLoaded', function() {
-    var searchInput = document.getElementById('contacts-search');
-    if (searchInput) {
-        searchInput.addEventListener('input', function() {
-            if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
-        });
-        searchInput.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter') { e.preventDefault(); this.blur(); }
-        });
-    }
-    function openAddContactPrompt(trigger) {
-        if (typeof openContactAddOptions === 'function' && trigger) {
-            openContactAddOptions(trigger);
-            return;
-        }
-        rsPromptContact({ title: 'Add Contact' }).then(function(result) {
-            if (!result) return;
-            RS.invokeOrToast('add_contact', { args: { hash: result.hash, display_name: result.display_name } }, 'Could not add contact');
-        });
-    }
-
-    RS.gestures.bindViewFabClick('contacts-add-fab', function() {
-        openAddContactPrompt(document.getElementById('contacts-add-fab'));
-    });
-    var contactsHeaderAddBtn = document.getElementById('contacts-add-btn');
-    if (contactsHeaderAddBtn) contactsHeaderAddBtn.addEventListener('click', function() {
-        openAddContactPrompt(contactsHeaderAddBtn);
-    });
 });
 
 window.renderConversation = renderConversation;

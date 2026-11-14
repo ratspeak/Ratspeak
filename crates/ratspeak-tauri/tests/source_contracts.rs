@@ -2530,15 +2530,16 @@ fn peers_sort_preference_defaults_to_last_seen_and_persists() {
     let root = repo_root();
 
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
-    assert!(index.contains(
-        r#"<button class="toolbar-dropdown-item" data-sort="name">Alphabetical</button>"#
-    ));
-    assert!(index.contains(
-        r#"<button class="toolbar-dropdown-item active" data-sort="last_seen">Last Seen</button>"#
-    ));
+    // Search and sort are one control; the options button opens the sort menu.
+    assert!(index.contains(r#"id="peers-sort-btn" aria-label="Sort, sorted by last heard""#));
+    assert!(index.contains(r#"aria-haspopup="menu""#));
 
     let peers_js = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
     assert!(peers_js.contains("var PEERS_SORT_DEFAULT = 'last_seen';"));
+    assert!(peers_js.contains(
+        "var PEERS_SORT_LABELS = { name: 'Name', last_seen: 'Last heard', hops: 'Hops' };"
+    ));
+    assert!(peers_js.contains("RS.kit.menu(trigger, {"));
     assert!(peers_js.contains("function hydratePeersSortPreference()"));
     assert!(peers_js.contains("RS.invoke('api_app_settings')"));
     assert!(peers_js.contains("RS.invoke('set_peers_sort', { sort: peersSort })"));
@@ -2561,13 +2562,21 @@ fn ratspeak_capability_marker_drives_name_badge() {
     let peers_cache_js =
         read_source(root.join("dashboard/static/js/peers_cache.js")).expect("peers cache");
     assert!(peers_cache_js.contains("function ratspeakDisplayNameHtml"));
-    assert!(peers_cache_js.contains("ratspeak-name-badge"));
+    assert!(peers_cache_js.contains("return RS.kit.mark();"));
+    assert!(
+        !peers_cache_js.contains("&#9733;"),
+        "the star is retired for the Ratspeak mark"
+    );
     assert!(peers_cache_js.contains("ratspeak.client"));
     assert!(peers_cache_js.contains("supports_ratspeak"));
     assert!(peers_cache_js.contains("supportsRatspeakFeatures"));
 
-    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(views_css.contains(".ratspeak-name-badge"));
+    let ui_css =
+        read_source(root.join("dashboard/static/css/07-ui-components.css")).expect("ui css");
+    assert!(ui_css.contains(".ui-name-mark {"));
+    let kit_js = read_source(root.join("dashboard/static/js/ui_kit.js")).expect("ui kit js");
+    assert!(kit_js.contains("aria-label=\"Ratspeak user\" title=\"Ratspeak user\""));
+    assert!(kit_js.contains("        ratspeak: '<g fill=\"currentColor\""));
 
     let identity_js =
         read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
@@ -2645,8 +2654,11 @@ fn contact_list_renders_are_gated() {
     assert!(lxmf_js.contains("function _gateHidden"));
     assert!(lxmf_js.contains("function _gateClean"));
     assert!(!lxmf_js.contains("function renderContactList("));
-    assert!(lxmf_js.contains("_gateHidden('view-contacts'"));
     assert!(lxmf_js.contains("_gateHidden('view-dashboard'"));
+    let contacts_js =
+        read_source(root.join("dashboard/static/js/contacts.js")).expect("contacts js");
+    assert!(contacts_js.contains("_gateHidden('view-contacts'"));
+    assert!(contacts_js.contains("if (!_gateClean(container, html)) container.innerHTML = html;"));
     // Reactions map resets on conversation switch.
     assert!(lxmf_js.contains("_msgReactions = {};"));
 
@@ -2656,9 +2668,7 @@ fn contact_list_renders_are_gated() {
 
     // The live Contacts view heals gated skips on activation.
     let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
-    assert!(
-        nav_js.contains("contacts: function() {\n        if (typeof renderStandaloneContactList")
-    );
+    assert!(nav_js.contains("contacts: function() {\n        if (typeof contactsViewActivated"));
 }
 
 #[test]
@@ -2708,8 +2718,10 @@ fn profile_status_frontend_contract_is_wired() {
     assert!(peers_cache_js.contains("existing.profile_status = n.profile_status"));
 
     let peers_js = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
-    assert!(peers_js.contains("class=\"peers-row-status\""));
-    assert!(peers_js.contains("statusRowHeight"));
+    assert!(peers_js.contains("var status = _peerRowProfileStatus(c);"));
+    assert!(
+        peers_js.contains("return _peerRowProfileStatus(item.data) ? rows.status : rows.base;")
+    );
     assert!(peers_js.contains("_peerListMetrics"));
 
     let health_js = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
@@ -2735,7 +2747,6 @@ fn profile_status_frontend_contract_is_wired() {
     assert!(responsive_css.contains(".header-mobile-status"));
 
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(views_css.contains(".peers-row-status"));
     assert!(views_css.contains(".dashboard-peers-status"));
     assert!(views_css.contains(".dashboard-peers-row.has-profile-status"));
     assert!(!views_css.contains("calc(var(--type-row-meta-size)"));
@@ -4471,20 +4482,18 @@ fn modal_action_footers_use_shared_dialog_buttons() {
     let modals_css =
         read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
 
-    let identity_modal = index
-        .split(r#"id="identity-modal""#)
+    // Identity dialogs open in the kit shell; there is no static identity sheet.
+    assert!(!index.contains(r#"id="identity-modal""#));
+    let shell = identity_js
+        .split("function showIdentityModal(")
         .nth(1)
-        .and_then(|tail| tail.split(r#"id="identity-file-input""#).next())
-        .expect("identity modal markup");
-    assert!(identity_modal.contains(r#"class="bottom-sheet-footer""#));
-    assert!(identity_modal.contains(r#"class="rs-dialog-cancel" id="identity-modal-cancel""#));
-    assert!(identity_modal.contains(r#"class="rs-dialog-confirm" id="identity-modal-confirm""#));
-    assert!(!identity_modal.contains("u-flex gap-4"));
-    assert!(!identity_modal.contains("nr-btn flex-1"));
-    assert!(!identity_modal.contains("nr-btn nr-btn-ghost flex-1"));
-
-    assert!(identity_js.contains("var confirmClasses = 'rs-dialog-confirm';"));
-    assert!(identity_js.contains("confirmClasses += ' rs-dialog-danger';"));
+        .and_then(|tail| tail.split("\nfunction closeIdentityModal(").next())
+        .expect("identity dialog shell");
+    assert!(shell.contains("RS.kit.dialog({"));
+    assert!(
+        shell.contains(r#"class="ui-btn ui-btn--quiet ui-desk-only" id="identity-modal-cancel""#)
+    );
+    assert!(shell.contains(r#"'<button type="button" class="ui-btn ui-btn--primary' + (danger ? ' ui-btn--danger' : '') + '" id="identity-modal-confirm">'"#));
     assert!(!identity_js.contains("confirmBtn.className = confirmClass || 'nr-btn'"));
 
     assert!(modals_css.contains(".bottom-sheet-footer {\n    display: flex;\n    justify-content: flex-end;\n    flex-wrap: wrap;"));
@@ -7866,15 +7875,8 @@ fn mobile_primary_lists_share_readable_row_scale() {
     assert!(responsive_css.contains("--mobile-list-title-size: var(--text-base);"));
     assert!(responsive_css.contains("--mobile-list-detail-size: var(--text-sm);"));
     assert!(responsive_css.contains("--mobile-list-meta-size: var(--text-xs);"));
-    assert!(responsive_css.contains(
-        ".conv-row,\n    .contacts-row,\n    .identity-list-item,\n    .games-session-row"
-    ));
-    assert!(responsive_css.contains(
-        ".conv-avatar-wrap,\n    .conv-avatar,\n    .contacts-avatar,\n    .identity-list-avatar"
-    ));
-    assert!(responsive_css.contains(
-        ".conv-name,\n    .contacts-row-name,\n    .identity-list-name,\n    .games-session-name"
-    ));
+    assert!(responsive_css.contains(".conv-row,"));
+    assert!(responsive_css.contains(".games-session-row"));
     assert!(responsive_css.contains(".conn-section-label,\n    .conn-iface-name"));
     assert!(responsive_css.contains(".conn-iface-empty,"));
     assert!(responsive_css.contains(".activity-empty,"));
@@ -7895,11 +7897,8 @@ fn mobile_primary_lists_share_readable_row_scale() {
     );
     assert!(responsive_css.contains(".pulse-announce-btn {\n        min-height: 38px;"));
     assert!(responsive_css.contains(".pulse-announce-btn svg {\n        width: 16px;"));
-    assert!(responsive_css.contains(".contacts-standalone .contacts-row-hash"));
     assert!(responsive_css.contains(".games-session-game {\n        display: none;"));
-    assert!(responsive_css.contains(".peers-list-scroll,\n    #lxmf-conversations-list,"));
     assert!(responsive_css.contains(".dashboard-peers-scroll,"));
-    assert!(responsive_css.contains(".peers-list-scroll::-webkit-scrollbar,"));
     assert!(responsive_css.contains(".dashboard-peers-scroll::-webkit-scrollbar,"));
     assert!(responsive_css.contains(".conn-group-header {\n        font-size: var(--text-sm);"));
     assert!(responsive_css.contains(".system-action-label,"));
@@ -7960,8 +7959,8 @@ fn mobile_peers_toolbar_uses_search_plus_icon_sort_only() {
     assert!(!index.contains("id=\"peers-filter-pills\""));
     assert!(!index.contains("data-filter=\"reachable\""));
     assert!(!peers_js.contains("peersFilter"));
-    assert!(peers_js.contains("return 'Local';"));
-    assert!(index.contains("class=\"peers-sort-icon\""));
+    assert!(index.contains(r#"<div class="ui-search" role="search">"#));
+    assert!(index.contains(r#"id="peers-search" placeholder="Search peers""#));
     let bottom_bar = index
         .split("<nav class=\"bottom-bar\"")
         .nth(1)
@@ -7973,25 +7972,6 @@ fn mobile_peers_toolbar_uses_search_plus_icon_sort_only() {
     assert!(!bottom_bar.contains("<span>Messages</span>"));
     assert!(!bottom_bar.contains("<span>Contacts</span>"));
     assert!(!bottom_bar.contains("<span>More</span>"));
-    assert!(responsive_css.contains(".peers-toolbar {\n        padding:"));
-    let toolbar = responsive_css.split(".peers-toolbar {").nth(1).unwrap();
-    assert!(
-        toolbar
-            .split('}')
-            .next()
-            .unwrap()
-            .contains("flex-wrap: nowrap;")
-    );
-    assert!(responsive_css.contains(".peers-sort-label {\n        display: none;"));
-    assert!(
-        responsive_css
-            .contains(".peers-sort-dropdown .toolbar-dropdown-btn {\n        width: 44px;")
-    );
-    assert!(responsive_css.contains("background: var(--input-bg);"));
-    assert!(
-        responsive_css
-            .contains(".peers-sort-dropdown .toolbar-dropdown-item {\n        min-height: 48px;")
-    );
     assert!(
         responsive_css.contains(".bottom-bar-item span:not(.bottom-bar-badge) { display: none; }")
     );
@@ -8010,154 +7990,88 @@ fn mobile_peers_toolbar_uses_search_plus_icon_sort_only() {
 #[test]
 fn contact_detail_sheet_centers_identity_and_separates_primary_actions() {
     let root = repo_root();
-    let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
+    let details =
+        read_source(root.join("dashboard/static/js/peer_details.js")).expect("peer details js");
+    let detail = details
+        .split("function personDetailHtml(model, kind, idPrefix)")
+        .nth(1)
+        .and_then(|tail| tail.split("\nfunction wirePersonActions(").next())
+        .expect("person detail");
+    // Header (name, heard line, Message and Call), then the facts, then identity and the relationship actions.
+    let head = detail
+        .find("personActionsHtml(model, idPrefix, false)")
+        .expect("actions");
+    let facts = detail
+        .find("personFactsHtml(model, idPrefix)")
+        .expect("facts");
+    let identity = detail
+        .find("personIdentityHtml(model, idPrefix)")
+        .expect("identity");
+    let relation = detail
+        .find("personRelationHtml(model)")
+        .expect("relationship actions");
+    assert!(head < facts && facts < identity && identity < relation);
+    assert!(details.contains("'Message</button>'"));
+    assert!(details.contains("ui-btn ui-btn--primary ui-btn--pair"));
+    let person_start = details
+        .find("function personFactsHtml")
+        .expect("facts builder");
+    let person_end = details
+        .find("// ---------------------------------------------------------------- legacy helpers")
+        .expect("legacy helpers");
+    assert!(
+        !details[person_start..person_end].contains("Trust"),
+        "the Trust row is gone from the person views"
+    );
+
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-
-    let hash_row = lxmf_js.find("contact-detail-hash-row").expect("hash row");
-    let primary_actions = lxmf_js
-        .find("contact-detail-primary-actions")
-        .expect("primary actions");
-    let fields = lxmf_js.find("contact-detail-fields").expect("fields");
-    let danger_actions = lxmf_js
-        .find("contact-detail-action-rows")
-        .expect("danger actions");
-    assert!(hash_row < primary_actions);
-    assert!(primary_actions < fields);
-    assert!(fields < danger_actions);
-
-    assert!(views_css.contains(".contact-detail-avatar {\n    display: flex;"));
-    assert!(views_css.contains("margin: var(--space-4) auto 0;"));
-    assert!(views_css.contains(".contact-detail-avatar svg,"));
-    assert!(views_css.contains(".contact-detail-primary-actions"));
-    assert!(views_css.contains(".contact-detail-action-rows"));
+    assert!(views_css.contains(".person-danger { display: flex; flex-direction: column;"));
+    assert!(views_css.contains(".person-sheet-head"));
 }
 
 #[test]
 fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
     let root = repo_root();
     let peers = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
-    assert!(peers.contains("var mobileRows = isCompactLayout();"));
-    assert!(peers.contains("function _measurePeerRowHeights(compact, scrollContainer)"));
-    assert!(peers.contains("var minimumBase = compact ? 58 : 36;"));
-    assert!(peers.contains("var minimumStatus = compact ? 68 : 48;"));
-    assert!(peers.contains("var baseRowHeight = measuredRows.base;"));
-    assert!(peers.contains("var statusRowHeight = measuredRows.status;"));
-    assert!(peers.contains("_peersRowHeight = baseRowHeight;"));
-    assert!(peers.contains("var avatarSize = isCompactLayout() ? 44 : 28;"));
+    // Row, caption, and note heights are measured from the kit components per width and text size.
+    assert!(peers.contains("function _measurePeerRowHeights(compact, body)"));
+    assert!(
+        peers.contains("var key = (compact ? 'compact' : 'wide') + '|' + rootSize + '|' + width;")
+    );
+    assert!(peers.contains("RS.kit.avatar(c.hash, 'compact'"));
     assert!(peers.contains("window.addEventListener('ratspeak-text-scale-changed'"));
-    assert!(peers.contains("showConnectionDetailSheet(hash, { progressive: true });"));
+    // A height-only resize (the Android keyboard) re-renders the visible window only.
+    assert!(peers.contains("var relayoutPeers = watchViewLayout('peers', _invalidatePeerRowMetrics, function() {\n            scheduleRenderPeersList(true);"));
+    // A phone opens the person sheet, as Contacts does.
+    assert!(peers.contains("openPersonSheet(hash, 'peer');"));
+    let details =
+        read_source(root.join("dashboard/static/js/peer_details.js")).expect("peer details js");
+    assert!(details.contains("function openPersonSheet(hash, kind)"));
+    assert!(details.contains("className: 'person-sheet',"));
 
-    let connections =
-        read_source(root.join("dashboard/static/js/connections.js")).expect("connections js");
-    assert!(connections.contains("function showConnectionDetailSheet(hash, options)"));
-    assert!(connections.contains("Swipe up for more info"));
-    assert!(connections.contains("function expandConnectionDetailSheet()"));
-    assert!(connections.contains("function wireConnectionDetailExpansion(sheet)"));
-    assert!(
-        connections
-            .contains("sheet.classList.toggle('conn-detail-sheet--progressive', progressive);")
-    );
-    assert!(
-        connections.contains("sheet.classList.toggle('conn-detail-sheet--compact', progressive);")
-    );
-    assert!(connections.contains(
-        "sheet.classList.remove('conn-detail-sheet--progressive', 'conn-detail-sheet--expanded', 'conn-detail-sheet--compact');"
-    ));
-    assert!(connections.contains("dy < -28"));
-    let sheet_start = connections
-        .find("function showConnectionDetailSheet")
-        .expect("connection detail sheet renderer");
-    let sheet_tail = &connections[sheet_start..];
-    let sheet_end = sheet_tail
-        .find("function expandConnectionDetailSheet")
-        .expect("connection detail sheet renderer end");
-    let sheet_source = &sheet_tail[..sheet_end];
-    assert!(
-        sheet_source
-            .contains("peerAvatarHtml('conn-detail-sheet-avatar', contact.hash, 64, contact)")
-    );
-    assert!(sheet_source.contains("conn-detail-sheet-identity"));
-    assert!(sheet_source.contains("conn-detail-sheet-header-actions"));
-    assert!(sheet_source.contains("peerActionRowsHtml(contact.is_contact)"));
-    assert!(sheet_source.contains("wirePeerActionRows(content, contact.hash"));
-    assert!(!sheet_source.contains("id=\"conn-sheet-block-btn\""));
-    assert!(sheet_source.contains("conn-detail-sheet-primary-actions entity-action-grid"));
-    assert!(sheet_source.contains("peerDetailRowsHtml(contact"));
-    assert!(!sheet_source.contains("<span>Hops</span><strong>"));
-
-    let responsive_css =
-        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("css");
-    assert!(responsive_css.contains(".peers-row {\n        min-height: 58px;"));
-    assert!(
-        responsive_css.contains(".peers-row-avatar {\n        width: 44px;\n        height: 44px;")
-    );
-    assert!(responsive_css.contains(".conn-detail-sheet.conn-detail-sheet--progressive"));
-    assert!(responsive_css.contains(".conn-detail-sheet-identity"));
-    assert!(responsive_css.contains(".conn-detail-sheet-avatar"));
-    assert!(responsive_css.contains(".conn-detail-sheet-header-actions"));
-    assert!(responsive_css.contains(".conn-detail-sheet-icon-btn"));
-    assert!(responsive_css.contains(".conn-detail-sheet-primary-actions"));
-    assert!(
-        responsive_css.contains(
-            ".conn-detail-sheet.conn-detail-sheet--progressive.conn-detail-sheet--compact"
-        )
-    );
-    assert!(responsive_css.contains(".conn-detail-sheet--compact .conn-detail-sheet-expand-hint"));
-    let conn_sheet_css = responsive_css
-        .split(".conn-detail-sheet {")
-        .nth(1)
-        .and_then(|tail| tail.split('}').next())
-        .expect("mobile connection detail sheet rule");
-    assert!(conn_sheet_css.contains("max-width: 100vw;"));
-    assert!(
-        responsive_css.contains(".conn-detail-sheet--compact .conn-detail-sheet-primary-actions")
-    );
-    assert!(
-        responsive_css
-            .contains(".conn-detail-sheet--compact .conn-detail-sheet-actions .entity-action-btn")
-    );
-    assert!(responsive_css.contains("overflow-x: hidden;"));
-    assert!(responsive_css.contains("grid-template-areas: \"avatar title actions\";"));
-    assert!(responsive_css.contains("grid-template-columns: 64px minmax(0, 1fr) auto;"));
-    assert!(responsive_css.contains(
-        ".conn-detail-sheet-primary-actions .entity-action-btn {\n    min-height: 44px;"
-    ));
-    assert!(responsive_css.contains(".conn-detail-sheet-expand-hint {\n    appearance: none;"));
-    assert!(!responsive_css.contains("margin-top: auto;"));
-    assert!(responsive_css.contains(
-        ".conn-detail-sheet--progressive .conn-detail-sheet-fields {\n    display: none;"
-    ));
-    assert!(responsive_css.contains(
-        ".conn-detail-sheet--progressive.conn-detail-sheet--expanded .conn-detail-sheet-fields"
+    let ui_css =
+        read_source(root.join("dashboard/static/css/07-ui-components.css")).expect("ui css");
+    assert!(ui_css.contains(
+        "@media (max-width: 768px), (pointer: coarse) { .ui-avatar--compact { --s: 40px; } }"
     ));
 }
 
 #[test]
 fn peers_avatars_are_circle_cropped_like_contacts() {
     let root = repo_root();
-    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(views_css.contains(
-        ".peers-row-avatar {\n    width: 28px;\n    height: 28px;\n    border-radius: var(--radius-full);"
+    let ui_css =
+        read_source(root.join("dashboard/static/css/07-ui-components.css")).expect("ui css");
+    assert!(ui_css.contains("width: var(--s); height: var(--s); border-radius: 50%; }"));
+    assert!(ui_css.contains(
+        ".ui-avatar > svg { display: block; width: 100%; height: 100%; border-radius: 50%; }"
     ));
-    assert!(views_css.contains(
-        ".peers-detail-avatar {\n    width: 64px;\n    height: 64px;\n    border-radius: var(--radius-full);"
-    ));
-    assert!(views_css.contains("clip-path: circle(50% at 50% 50%);"));
-    assert!(views_css.contains(
-        ".contacts-avatar {\n    flex-shrink: 0;\n    width: 40px;\n    height: 40px;\n    border-radius: var(--radius-full);"
-    ));
-
-    let responsive_css =
-        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
-    assert!(responsive_css.contains(
-        ".peers-row-avatar {\n        width: 44px;\n        height: 44px;\n        border-radius: var(--radius-full);"
-    ));
-    assert!(
-        !responsive_css.contains(
-            ".peers-row-avatar {\n        width: 44px;\n        height: 44px;\n        border-radius: var(--radius-lg);"
-        ),
-        "mobile peers avatars must not override contact-style circle cropping"
-    );
+    for file in ["peers.js", "contacts.js", "peer_details.js"] {
+        let source = read_source(root.join("dashboard/static/js").join(file)).expect(file);
+        assert!(
+            source.contains("RS.kit.avatar("),
+            "{file} must use the kit avatar"
+        );
+    }
 }
 
 #[test]
@@ -8176,22 +8090,17 @@ fn identity_avatars_are_circle_cropped_everywhere() {
     );
     assert!(identicon_js.contains("clip-path:circle(50% at 50% 50%)"));
     assert!(identicon_js.contains("<circle cx=\""));
-    assert!(views_css.contains(
-        ".identity-avatar {\n    flex-shrink: 0;\n    border-radius: var(--radius-full);"
-    ));
-    assert!(views_css.contains(
-        ".identity-list-avatar {\n    flex-shrink: 0;\n    width: 32px;\n    height: 32px;\n    border-radius: var(--radius-full);"
-    ));
-    assert!(views_css.contains(
-        ".identity-detail-avatar {\n    width: 72px;\n    height: 72px;\n    border-radius: var(--radius-full);"
-    ));
+    let identity_js =
+        read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    assert!(identity_js.contains("RS.kit.avatar(address, 'row')"));
+    assert!(identity_js.contains("RS.kit.avatar(ident.lxmf_hash || ident.hash, 64)"));
     assert!(views_css.contains(
         ".settings-identity-avatar {\n    flex-shrink: 0;\n    border-radius: var(--radius-full);"
     ));
     assert!(views_css.contains(
         ".identity-summary-avatar {\n    flex-shrink: 0;\n    border-radius: var(--radius-full);"
     ));
-    assert!(responsive_css.contains(".identity-list-avatar,\n    .identity-list-avatar svg,"));
+    let _ = responsive_css;
 }
 
 #[test]
@@ -8215,7 +8124,7 @@ fn lxmf_conversation_rows_use_peer_display_names_when_available() {
         .expect("conversation renderer");
     let render_tail = &lxmf[render_start..];
     let render_end = render_tail
-        .find("\nfunction renderStandaloneContactList")
+        .find("\nfunction renderNetworkContactList")
         .expect("conversation renderer end");
     let render_fn = &render_tail[..render_end];
     assert!(
@@ -8291,9 +8200,14 @@ fn contacts_tab_is_first_class_on_desktop_and_shows_full_addresses() {
             "settings"
         ]
     );
-    assert!(index.contains(r#"class="contacts-standalone-header""#));
+    assert!(index.contains(r#"<h2 class="ui-pane-title" id="contacts-title">Contacts</h2>"#));
     assert!(index.contains(r#"id="contacts-count""#));
-    assert!(index.contains(r#"id="contacts-add-btn""#));
+    assert!(index.contains(r#"id="contacts-add-btn" aria-label="Add contact""#));
+    assert!(index.contains(r#"<section class="ui-detail" id="contacts-detail""#));
+    assert!(
+        !index.contains(r#"id="contacts-add-fab""#),
+        "Add moved from the floating button to the header"
+    );
     assert!(!index.contains(r#"id="dashboard-contacts-search""#));
 
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
@@ -8301,34 +8215,23 @@ fn contacts_tab_is_first_class_on_desktop_and_shows_full_addresses() {
     assert!(lxmf.contains("var hash = c.hash || c.dest_hash || '';"));
     assert!(lxmf.contains("lxmfContacts = normalizeContactList(data);"));
     assert!(!lxmf.contains("dashboard-contacts-search"));
+    assert!(!lxmf.contains("function renderStandaloneContactList()"));
 
-    let start = lxmf
+    let contacts = read_source(root.join("dashboard/static/js/contacts.js")).expect("contacts js");
+    let start = contacts
         .find("function renderStandaloneContactList()")
-        .expect("standalone contacts renderer");
-    let tail = &lxmf[start..];
-    let end = tail
-        .find("\nfunction renderNetworkContactList")
-        .expect("standalone contacts renderer end");
-    let renderer = &tail[..end];
+        .expect("contacts renderer");
+    let renderer = &contacts[start..];
+    // C4: the first contact is selected on desktop; rows show short addresses, the detail the full one.
+    assert!(renderer.contains("if (!known) contactsSelectedHash = groups[0].items[0].hash;"));
+    assert!(contacts.contains("escapeHtml(RS.kit.hash.short(c.hash))"));
+    assert!(contacts.contains("function openContactAddOptions(trigger)"));
+    assert!(contacts.contains("function openAddContactDialog(opts)"));
+    let details =
+        read_source(root.join("dashboard/static/js/peer_details.js")).expect("peer details js");
     assert!(
-        renderer.contains("'<span class=\"contacts-row-hash\">' + escapeHtml(c.hash) + '</span>'")
+        details.contains("RS.kit.hash.copy(model.hash, { form: 'full', noun: 'LXMF address' })")
     );
-    assert!(lxmf.contains("function openAddContactPrompt(trigger)"));
-    assert!(lxmf.contains("RS.gestures.bindViewFabClick('contacts-add-fab', function()"));
-    assert!(
-        !renderer.contains("shortHash(c.hash"),
-        "standalone Contacts tab must not shorten LXMF addresses"
-    );
-
-    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(views_css.contains(".contacts-standalone .contacts-row-hash"));
-    assert!(views_css.contains("overflow-wrap: anywhere;"));
-    assert!(views_css.contains("max-width: none;"));
-
-    let responsive_css =
-        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
-    assert!(responsive_css.contains(".contacts-add-btn"));
-    assert!(responsive_css.contains("display: none;"));
 }
 
 #[test]
@@ -8370,8 +8273,8 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     );
     assert!(js_qr.contains("root[\"jsQR\"] = factory();"));
     assert!(js_qr_license.contains("Apache License"));
-    assert!(identity.contains("Share Contact Card"));
-    assert!(identity.contains("openIdentityShareScreen(identityHash)"));
+    assert!(identity.contains("Share contact card"));
+    assert!(identity.contains("openIdentityShareScreen(ident.hash)"));
     assert!(settings.contains("function openActiveIdentityContactCard()"));
     assert!(settings.contains("openIdentityShareScreen(identityHash);"));
     assert!(settings.contains("mobileId.addEventListener('keydown'"));
@@ -8385,8 +8288,9 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
         .find("</div>\n    </div>\n    <div class=\"header-right\">")
         .expect("mobile identity header end");
     assert!(!header_mobile_tail[..header_mobile_end].contains("header-identity-chevron"));
-    assert!(lxmf.contains("openContactAddOptions(trigger)"));
-    assert!(lxmf.contains("openAddContactPrompt(document.getElementById('contacts-add-fab'))"));
+    assert!(lxmf.contains("openContactAddOptions(addBtn)"));
+    let contacts = read_source(root.join("dashboard/static/js/contacts.js")).expect("contacts js");
+    assert!(contacts.contains("RS.kit.menu(trigger, { title: 'Add contact', items: items });"));
 
     assert!(contact_card_js.contains("BarcodeDetector"));
     assert!(contact_card_js.contains("RS.mediaPermissions.ensure({ camera: true })"));
@@ -8407,12 +8311,13 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
         .map(|offset| share_start + offset)
         .expect("identity share flow end");
     let share_flow = &contact_card_js[share_start..share_end];
-    assert!(share_flow.contains("Preparing contact card&hellip;"));
-    assert!(share_flow.contains("built.sheet.setAttribute('aria-busy', 'true')"));
+    assert!(share_flow.contains("Making your card\\u2026"));
+    assert!(share_flow.contains("built.dialog.setAttribute('aria-busy', 'true')"));
     assert!(share_flow.contains("window.requestAnimationFrame"));
+    assert!(share_flow.contains("data-format=\"legacy\">Other apps</button>"));
     let share_sheet_pos = share_flow
-        .find("buildSheet('contact-share-sheet')")
-        .expect("share sheet is created");
+        .find("RS.kit.dialog({")
+        .expect("share dialog is created");
     let share_request_pos = share_flow
         .find("RS.invoke('api_contact_card'")
         .expect("contact-card request is made");
@@ -8439,8 +8344,8 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(contact_card_js.contains("detector.detect(scanCanvas)"));
     assert!(contact_card_js.contains("window.jsQR(image.data, width, height"));
     assert!(contact_card_js.contains("contact-scan-file-input"));
-    assert!(contact_card_js.contains("'<span>Live Scan</span></button>'"));
-    assert!(contact_card_js.contains("'<span>Scan Photo</span></button>'"));
+    assert!(contact_card_js.contains("'Use camera</button>'"));
+    assert!(contact_card_js.contains("'Choose image</button>'"));
     assert!(!contact_card_js.contains("Take Photo"));
     assert!(!contact_card_js.contains("Choose Photo"));
     assert!(contact_card_js.contains("getQrScannerEnvironment"));
@@ -8448,36 +8353,21 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(contact_card_js.contains("RATSPEAK_MARK_PATHS"));
     assert!(contact_card_js.contains("drawOfficialRatspeakMark"));
     assert!(contact_card_js.contains("new Path2D(RATSPEAK_MARK_PATHS[i])"));
-    assert!(contact_card_js.contains("'<span>Copy</span></button>'"));
-    assert!(contact_card_js.contains(r#"<circle cx="9" cy="7" r="4"/>"#));
     assert!(
-        !contact_card_js.contains("M12 21s7-4.35"),
-        "address contact action should use a peer/person icon, not a map pin"
+        contact_card_js
+            .contains("RS.kit.hash.copy(address, { form: 'full', noun: 'LXMF address' })")
     );
     assert!(!contact_card_js.contains("Share Card"));
     assert!(!contact_card_js.contains("contact-share-card"));
     assert!(!contact_card_js.contains("contact-scan-check"));
-    assert!(contact_card_js.contains("function showContactAddDial"));
-    assert!(
-        contact_card_js.contains("isMobileContactFlow() && showContactAddDial(trigger, items)")
-    );
+    assert!(!contact_card_js.contains("function showContactAddDial"));
+    // The paper share popup keeps its centred sheet; the contact card and scanner are kit dialogs.
     assert!(views_css.contains(".contact-share-sheet"));
-    assert!(views_css.contains(".contact-scan-sheet"));
-    assert!(views_css.contains(
-        "top: 50%;\n    left: calc(50% + (var(--sal) - var(--sar)) / 2);\n    height: auto;"
+    assert!(contact_card_js.contains("className: 'qr-scan',"));
+    assert!(contact_card_js.contains(
+        "'<div class=\"ui-viewfinder qr-scan-camera\" role=\"img\" aria-label=\"Camera preview\">"
     ));
-    assert!(views_css.contains("transform: translate(-50%, calc(-50% + 12px)) scale(0.98);"));
-    assert!(views_css.contains("transform: translate(-50%, -50%) scale(1);"));
-    assert!(views_css.contains(".contact-share-qr-shell"));
-    assert!(views_css.contains(".contact-share-loading-qr"));
-    assert!(views_css.contains(".contact-share-error-title"));
-    assert!(views_css.contains(".contact-scan-camera-wrap"));
-    assert!(views_css.contains(".contact-scan-avatar {\n    width: 72px;\n    height: 72px;\n    border-radius: var(--radius-full);"));
-    assert!(views_css.contains(".contact-scan-avatar canvas"));
-    assert!(
-        !views_css.contains(".contact-scan-check"),
-        "scan preview should lead with the peer avatar, not a separate success check"
-    );
+    assert!(views_css.contains(".contact-card-address"));
     assert!(views_css.contains("overflow-wrap: anywhere;"));
     assert!(responsive_css.contains(
         ".fab-dial-btn svg {\n        display: block;\n        width: 22px;\n        height: 22px;"
@@ -8514,19 +8404,21 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
 #[test]
 fn mobile_contacts_tab_keeps_desktop_header_out_of_search_flow() {
     let root = repo_root();
-    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(views_css.contains(".contacts-standalone-toolbar .list-search-input"));
-    assert!(views_css.contains("flex: 1 1 auto;"));
-    assert!(views_css.contains("min-width: 0;"));
-    assert!(views_css.contains("margin: 0;"));
-
-    let responsive_css =
-        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
-    assert!(responsive_css.contains(".contacts-standalone {\n        max-width: none;"));
-    assert!(responsive_css.contains(".contacts-standalone-header {\n        display: none;"));
-    assert!(responsive_css.contains(".contacts-standalone-toolbar #contacts-search"));
-    assert!(responsive_css.contains("width: 100%;"));
-    assert!(responsive_css.contains("margin: 0;"));
+    // One pane header on every platform: the title, the count, and Add; search below it.
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    let contacts_view = index
+        .split(r#"<div class="view" id="view-contacts">"#)
+        .nth(1)
+        .and_then(|tail| tail.split(r#"<div class="view" id="view-network">"#).next())
+        .expect("contacts view");
+    let head = contacts_view.find("ui-pane-head").expect("pane header");
+    let search = contacts_view.find("ui-pane-search").expect("search");
+    assert!(head < search);
+    assert!(contacts_view.contains(r#"id="contacts-search" placeholder="Search contacts""#));
+    let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    assert!(
+        nav.contains("if (el.closest('.connections-header, .lxmf-sidebar, .ui-pane-search')) {")
+    );
 }
 
 #[test]
@@ -8609,7 +8501,6 @@ fn mobile_haptics_use_tauri_plugin_commands_and_semantic_feedback() {
     assert!(lxmf.contains("_voiceHaptic('success')"));
     assert!(lxmf.contains("_voiceHaptic('warning')"));
     assert!(lxmf.contains("RS.gestures.bindViewFabClick(mainFab"));
-    assert!(lxmf.contains("RS.gestures.bindViewFabClick('contacts-add-fab'"));
     assert!(games.contains("RS.gestures.bindViewFabClick('games-fab-btn'"));
 
     for path in js_files
@@ -8888,11 +8779,11 @@ fn identity_management_is_first_class_tab() {
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     assert!(index.contains(r#"data-view="identity""#));
     assert!(index.contains(r#"id="view-identity""#));
-    assert!(index.contains(r#"id="identity-import-btn""#));
+    // One Add menu replaces the Import, Hardware, and Create toolbar buttons.
+    assert!(index.contains(r#"id="identity-add-btn" aria-label="Add identity""#));
+    assert!(!index.contains(r#"id="identity-import-btn""#));
     assert!(index.contains(r#"id="setup-import-identity-btn""#));
     assert!(index.contains("application/json,application/octet-stream,text/plain"));
-    assert!(index.contains("title=\"Import or restore identity\""));
-    assert!(index.contains(r#"<path d="M7 10l5 5 5-5"/>"#));
     assert!(index.contains("M2.6 17.4A2 2 0 0 0 2 18.8V21"));
     let identity_nav_start = index
         .find(r#"<a class="nav-item" data-view="identity""#)
@@ -8920,9 +8811,11 @@ fn identity_management_is_first_class_tab() {
     assert!(identity_js.contains("api_export_identity_backup_base64"));
     assert!(identity_js.contains("api_export_identity_reticulum_base64"));
     assert!(identity_js.contains("api_export_identity_reticulum_base32"));
-    assert!(identity_js.contains("Export Private Identity"));
+    assert!(identity_js.contains("Export the private key?"));
     assert!(identity_js.contains("function exportIdentityBackup(hash)"));
-    assert!(identity_js.contains("PIN-encrypted .rsi identity backup"));
+    assert!(identity_js.contains("A .rsi file locked with a backup PIN. Restores your name too."));
+    assert!(identity_js.contains("function openIdentityAddMenu(trigger)"));
+    assert!(identity_js.contains("supportsHardwareIdentities()"));
     assert!(identity_js.contains("function openRatspeakBackupImportPinModal"));
     assert!(identity_js.contains("function openEncryptedIdentityExportModal"));
     assert!(identity_js.contains("passcode: importPasscode"));
@@ -8932,8 +8825,8 @@ fn identity_management_is_first_class_tab() {
     assert!(!identity_js.contains(r#"<path d="M7 16l5 5 5-5"/>"#));
     assert!(identity_js.contains("function identityImportFormatChoices()"));
     assert!(identity_js.contains("function identityExportFormatChoices()"));
-    assert!(identity_js.contains("Reticulum Identity Key"));
-    assert!(identity_js.contains("Reticulum Base32 Key"));
+    assert!(identity_js.contains("Reticulum identity key"));
+    assert!(identity_js.contains("Reticulum key as text"));
     assert!(identity_js.contains("reticulum-base32"));
     assert!(!identity_js.contains("NomadNet"));
     assert!(!identity_js.contains("Sideband"));
@@ -8967,10 +8860,9 @@ fn identity_management_is_first_class_tab() {
     assert!(!identity_js.contains("navigator.share({ files"));
     assert!(!identity_js.contains("Identity backup ready"));
     assert!(!identity_js.contains("Export Backup"));
-    assert!(identity_js.contains("function openIdentityActions(hash)"));
     assert!(identity_js.contains("function deleteIdentityByHash(hash)"));
-    assert!(identity_js.contains("id=\"identity-change-pin-detail-btn\""));
-    assert!(identity_js.contains("Change PIN"));
+    assert!(identity_js.contains("_identitySmallBtn('Change PIN', 'pin-change')"));
+    assert!(identity_js.contains("_identitySmallBtn('Change PIN', 'hardware-pin')"));
     assert!(identity_js.contains("function viewActiveRecoveryPhrase()"));
     assert!(identity_js.contains("var active = activeIdentity();"));
     assert!(identity_js.contains("viewRecoveryPhrase(active);"));
@@ -8983,27 +8875,34 @@ fn identity_management_is_first_class_tab() {
     assert!(identity_js.contains("RS.invoke('hw_change_pin', { hash: target.hash"));
     assert!(identity_js.contains("M2.6 17.4A2 2 0 0 0 2 18.8V21"));
 
-    let active_card_start = identity_js
-        .find("function renderActiveIdentityCard()")
-        .expect("active identity card renderer");
-    let active_card_tail = &identity_js[active_card_start..];
-    let active_card_end = active_card_tail
-        .find("function renderIdentityList()")
-        .expect("active card renderer end");
-    let active_card_source = &active_card_tail[..active_card_end];
-    assert!(!active_card_source.contains("id=\"identity-export-detail-btn\""));
-    assert!(!active_card_source.contains("id=\"identity-view-phrase-btn\""));
-
-    let actions_start = identity_js
-        .find("function openIdentityActions(hash)")
-        .expect("identity actions renderer");
-    let actions_tail = &identity_js[actions_start..];
-    let actions_end = actions_tail
-        .find("// Add or change a passcode")
-        .expect("identity actions renderer end");
-    let actions_source = &actions_tail[..actions_end];
-    assert!(!actions_source.contains("value: 'export'"));
-    assert!(!actions_source.contains("value: 'view-phrase'"));
+    // Status, PIN, recovery phrase, and export live on the identity's page.
+    let detail_start = identity_js
+        .find("function identityDetailHtml(ident)")
+        .expect("identity detail renderer");
+    let detail_tail = &identity_js[detail_start..];
+    let detail_end = detail_tail
+        .find("\nfunction renderIdentityPage()")
+        .expect("identity detail renderer end");
+    let detail_source = &detail_tail[..detail_end];
+    for action in [
+        "status",
+        "pin-set",
+        "pin-change",
+        "phrase",
+        "export",
+        "autolock",
+        "delete",
+        "share",
+        "switch",
+        "rename",
+    ] {
+        assert!(
+            detail_source.contains(&format!("'{action}'"))
+                || detail_source.contains(&format!("\"{action}\"")),
+            "identity detail offers {action}"
+        );
+    }
+    assert!(detail_source.contains("Your first identity can\u{2019}t be deleted."));
 
     let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
     assert!(dialogs_js.contains("built.sheet.addEventListener('keydown'"));
@@ -9013,8 +8912,8 @@ fn identity_management_is_first_class_tab() {
     assert!(dialogs_js.contains("text.appendChild(hint);"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
-    assert!(index.contains("Identity Management"));
-    assert!(index.contains("Identity Detail"));
+    assert!(index.contains(r#"<h2 class="ui-pane-title" id="identity-title">Identities</h2>"#));
+    assert!(!index.contains("Identity Management"));
     assert!(!index.contains("id=\"identity-export-btn\""));
     assert!(!index.contains("identity-panel-actions"));
     assert!(index.contains(r#"data-settings-panel="panel-settings-identity""#));
@@ -9051,17 +8950,9 @@ fn identity_management_is_first_class_tab() {
     );
 
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(views_css.contains(".identity-page-header"));
-    assert!(views_css.contains(".identity-management-grid"));
-    assert!(views_css.contains(".identity-detail-hero"));
-    assert!(views_css.contains(".identity-address-row"));
-    assert!(views_css.contains(".identity-detail-actions"));
+    assert!(views_css.contains(".person-head > .person-wrap"));
+    assert!(!views_css.contains(".identity-management-grid"));
     assert!(views_css.contains(".selector-badge:disabled"));
-
-    let responsive_css =
-        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
-    assert!(responsive_css.contains(".identity-toolbar-btn span"));
-    assert!(responsive_css.contains("display: none;"));
 
     let modals_css =
         read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
@@ -9190,12 +9081,12 @@ fn software_identity_creation_uses_passcode_and_backup_acknowledgement_flow() {
     assert!(identity_js.contains("identityPasscodeOptionHtml('restore-phrase')"));
     assert!(identity_js.contains("} else {\n            restore();\n        }"));
 
-    assert!(identity_js.contains("Tap to reveal phrase"));
-    assert!(
-        identity_js.contains("I have written down my ' + RECOVERY_PHRASE_WORDS + '-word phrase")
-    );
-    assert!(identity_js.contains("id=\"recovery-backup-cover\""));
+    assert!(identity_js.contains("'Show the ' + RECOVERY_PHRASE_WORDS + ' words</button>'"));
+    assert!(identity_js.contains(
+        "I\u{2019}ve written down the ' + RECOVERY_PHRASE_WORDS + ' words and stored them safely."
+    ));
     assert!(identity_js.contains("id=\"recovery-backup-copy\""));
+    assert!(identity_js.contains("locked: requireConfirm,"));
     assert!(identity_js.contains("opts.requireConfirm !== false"));
     assert!(!identity_js.contains("function pickRecoveryVerifyPositions"));
     assert!(!identity_js.contains("function renderRecoveryVerifyFields"));
@@ -9220,9 +9111,13 @@ fn software_identity_creation_uses_passcode_and_backup_acknowledgement_flow() {
     assert_eq!(index.matches(r#"class="setup-dot"#).count(), 4);
     assert_eq!(index.matches(r#"class="setup-dot active"#).count(), 1);
 
-    assert!(modals_css.contains(".identity-passcode-option"));
-    assert!(views_css.contains(".recovery-backup-card .hw-mnemonic-shell"));
-    assert!(views_css.contains(".recovery-backup-copy"));
+    let _ = (modals_css, views_css);
+    let ui_css =
+        read_source(root.join("dashboard/static/css/07-ui-components.css")).expect("ui css");
+    assert!(ui_css.contains(".ui-phrase.is-covered ol { filter: blur(6px);"));
+    assert!(
+        identity_js.contains("<span class=\"ui-switch\"><input type=\"checkbox\" role=\"switch\"")
+    );
 }
 
 #[test]
@@ -10025,9 +9920,14 @@ fn peer_reachability_uses_uncapped_path_index() {
 #[test]
 fn peer_transport_badges_use_compact_ble_label() {
     let root = repo_root();
-    let peers = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
-    assert!(peers.contains("return 'BLE';"));
-    assert!(!peers.contains("return 'Bluetooth Peer';"));
+    let details =
+        read_source(root.join("dashboard/static/js/peer_details.js")).expect("peer details js");
+    // Peers rows end in one word: the live connection kind, or the route when sorted by hops.
+    assert!(details.contains("function personRowTrail(peer, sort)"));
+    assert!(details.contains(
+        "{ lora: 'Radio', ble: 'Bluetooth', tcp: 'Internet', host: 'Internet', local: 'Local' }"
+    ));
+    assert!(details.contains("? 'Bluetooth Peer' : String(name);"));
 
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     assert!(lxmf.contains("function _peerCompactIfaceLabel(iface)"));

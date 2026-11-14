@@ -94,8 +94,14 @@ function fire() { const batch = [...timers.values()]; timers.clear(); batch.forE
     assert(!dashboard.includes('RS.invoke('), 'Home must not maintain a parallel conversation read path');
     const nav = fs.readFileSync(path.join(__dirname, '../../dashboard/static/js/nav.js'), 'utf8');
     const contactStart = nav.indexOf('    contacts: function() {');
-    const contactEnd = nav.indexOf('\n};', contactStart);
-    vm.runInContext('var contactViewLoad = ' + nav.slice(contactStart, contactEnd).replace('    contacts: ', '') + ';', context);
+    assert(nav.slice(contactStart, nav.indexOf('\n    }', contactStart)).includes('contactsViewActivated()'), 'Contacts loads through its own view');
+    const contactsSource = fs.readFileSync(path.join(__dirname, '../../dashboard/static/js/contacts.js'), 'utf8');
+    const activatedStart = contactsSource.indexOf('function contactsViewActivated()');
+    const activatedEnd = contactsSource.indexOf('\n}\n', activatedStart) + 2;
+    context.renderStandaloneContactList = () => {};
+    if (!context.normalizeContactList) context.normalizeContactList = data => data;
+    vm.runInContext('var _contactsLoading = false, _contactsLoadFailed = false;\n' + contactsSource.slice(activatedStart, activatedEnd) +
+        '\nvar contactViewLoad = contactsViewActivated;', context);
     context.RS.conversationOwner = {
         snapshot: context._conversationOwnerSnapshot,
         isIdentityCurrent: context._conversationOwnerIdentityIsCurrent

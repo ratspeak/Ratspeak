@@ -1,20 +1,19 @@
 var PEERS_SORT_DEFAULT = 'last_seen';
 var PEERS_SORT_OPTIONS = { name: true, hops: true, last_seen: true };
+var PEERS_SORT_LABELS = { name: 'Name', last_seen: 'Last heard', hops: 'Hops' };
 var peersSort = PEERS_SORT_DEFAULT;
 var peersSearch = '';
+// Unnamed active peers and Older / unknown start collapsed.
 var peersCollapsedGroups = { 'online_star': true, 'offline': true };
 var peersSelectedHash = null;
 var _peersScrollTop = 0;
-var _peersRowHeight = 36;
 var _peersBufferRows = 10;
 var _peersLastDirtyKey = '';
 var _peersInitialized = false;
-var _peersContactCache = null;
 var _peersSearchTimer = null;
 var _peersDataStale = true;
-var _peersLastGen = -1;
 var _peersAutoRefreshTimer = null;
-var _peersMeasuredRows = { key: '', base: 36, status: 48 };
+var _peersMeasuredRows = { key: '', base: 48, status: 60, header: 32, cap: 64, gap: 2 };
 var _peersPendingScrollAnchor = null;
 var PEERS_AUTO_REFRESH_MS = 5000;
 // Bumped on PeersCache change or path_table delta — both alter render output.
@@ -30,12 +29,13 @@ function normalizePeersSort(sort) {
     return PEERS_SORT_OPTIONS[sort] ? sort : PEERS_SORT_DEFAULT;
 }
 
+// The options button says the sort, and fills when it is not the default.
 function syncPeersSortMenu() {
-    var sortMenu = document.getElementById('peers-sort-menu');
-    if (!sortMenu) return;
-    sortMenu.querySelectorAll('.toolbar-dropdown-item').forEach(function(item) {
-        item.classList.toggle('active', item.dataset.sort === peersSort);
-    });
+    var btn = document.getElementById('peers-sort-btn');
+    if (!btn) return;
+    var label = 'Sort, sorted by ' + PEERS_SORT_LABELS[peersSort].toLowerCase();
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('aria-pressed', peersSort !== PEERS_SORT_DEFAULT ? 'true' : 'false');
 }
 
 function applyPeersSortPreference(sort, opts) {
@@ -72,27 +72,44 @@ function hydratePeersSortPreference() {
     });
 }
 
+function openPeersSortMenu(trigger) {
+    RS.kit.menu(trigger, {
+        title: 'Sort peers',
+        caption: 'Sort by',
+        items: ['name', 'last_seen', 'hops'].map(function(key) {
+            return {
+                label: PEERS_SORT_LABELS[key],
+                checked: peersSort === key,
+                onSelect: function() { applyPeersSortPreference(key, { persist: true }); }
+            };
+        })
+    });
+}
+
 function _peerRowProfileStatus(peer) {
     if (typeof ratspeakProfileStatusText === 'function') return ratspeakProfileStatusText(peer);
     if (!peer || !peer.supports_ratspeak || !peer.profile_status) return '';
     return String(peer.profile_status).trim();
 }
 
-function _peerRowHeight(item, baseHeight, statusHeight) {
-    return item && item.type === 'row' && _peerRowProfileStatus(item.data) ? statusHeight : baseHeight;
+// Slots: each item's height plus the list gap after it, so offsets match the flex layout.
+function _peerItemHeight(item, rows) {
+    if (item.type === 'header') return rows.header;
+    if (item.type === 'cap') return rows.cap;
+    return _peerRowProfileStatus(item.data) ? rows.status : rows.base;
 }
 
-function _peerListMetrics(flatItems, baseHeight, statusHeight) {
+function _peerListMetrics(flatItems, rows) {
     var offsets = new Array(flatItems.length);
     var heights = new Array(flatItems.length);
     var total = 0;
     for (var i = 0; i < flatItems.length; i++) {
         offsets[i] = total;
-        var h = _peerRowHeight(flatItems[i], baseHeight, statusHeight);
+        var h = _peerItemHeight(flatItems[i], rows);
         heights[i] = h;
-        total += h;
+        total += h + rows.gap;
     }
-    return { offsets: offsets, heights: heights, total: total };
+    return { offsets: offsets, heights: heights, total: flatItems.length ? total - rows.gap : 0, gap: rows.gap };
 }
 
 function _peerIndexAtScrollTop(metrics, scrollTop) {
@@ -113,42 +130,39 @@ function _peerIndexAtScrollTop(metrics, scrollTop) {
     return result;
 }
 
-function _measurePeerRowHeights(compact, scrollContainer) {
+// Row heights follow width, text size, and the touch sizes; measured once per layout.
+function _measurePeerRowHeights(compact, body) {
     var rootSize = window.getComputedStyle
         ? getComputedStyle(document.documentElement).fontSize
         : '16px';
-    var width = Math.max(240, scrollContainer.clientWidth || 0);
+    var width = Math.max(240, body.clientWidth || 0);
     var key = (compact ? 'compact' : 'wide') + '|' + rootSize + '|' + width;
     if (_peersMeasuredRows.key === key) return _peersMeasuredRows;
 
-    function row(withStatus) {
-        var probe = document.createElement('div');
-        probe.className = 'peers-row' + (withStatus ? ' has-profile-status' : '');
-        probe.setAttribute('aria-hidden', 'true');
-        probe.style.position = 'absolute';
-        probe.style.visibility = 'hidden';
-        probe.style.pointerEvents = 'none';
-        probe.style.width = width + 'px';
-        probe.style.height = 'auto';
-        probe.style.inset = '0 auto auto -10000px';
-        probe.innerHTML = '<span class="conn-status-dot status-reachable"></span>' +
-            '<div class="peers-row-avatar"></div>' +
-            '<span class="peers-row-main"><span class="peers-row-name">Measured peer name</span>' +
-            (withStatus ? '<span class="peers-row-status">A representative profile status</span>' : '') +
-            '</span><span class="peers-row-meta"></span>';
-        document.body.appendChild(probe);
-        var height = Math.ceil(probe.getBoundingClientRect().height);
-        probe.remove();
-        return height;
-    }
-
-    var minimumBase = compact ? 58 : 36;
-    var minimumStatus = compact ? 68 : 48;
+    var probe = document.createElement('div');
+    probe.className = 'ui-list';
+    probe.setAttribute('aria-hidden', 'true');
+    probe.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;left:-10000px;top:0;width:' + width + 'px';
+    probe.innerHTML =
+        '<button type="button" class="ui-caption ui-caption--toggle">' + RS.kit.icon('chevron-down') + '<span class="t">Active <span class="n">1</span></span></button>' +
+        '<button type="button" class="ui-row ui-row--one">' + RS.kit.avatar('', 'compact') + '<span class="ui-row-main"><span class="ui-row-top ui-row-top--hug"><span class="ui-row-title">Measured peer</span><span class="ui-row-trail">Radio</span></span></span></button>' +
+        '<button type="button" class="ui-row">' + RS.kit.avatar('', 'compact') + '<span class="ui-row-main"><span class="ui-row-top ui-row-top--hug"><span class="ui-row-title">Measured peer</span></span><span class="ui-row-sub"><span class="t">A representative status</span></span></span></button>' +
+        '<p class="ui-list-note">Showing the 300 most recent of 1,120. <button type="button" class="ui-link">Search to find others</button></p>';
+    var host = document.getElementById('peers-list-body') || document.body;
+    host.appendChild(probe);
+    var kids = probe.children;
+    var gap = parseFloat(getComputedStyle(probe).rowGap) || 0;
+    var noteStyle = getComputedStyle(kids[3]);
+    var note = kids[3].getBoundingClientRect().height + (parseFloat(noteStyle.marginTop) || 0) + (parseFloat(noteStyle.marginBottom) || 0);
     _peersMeasuredRows = {
         key: key,
-        base: Math.max(minimumBase, row(false)),
-        status: Math.max(minimumStatus, row(true))
+        header: Math.ceil(kids[0].getBoundingClientRect().height),
+        base: Math.ceil(kids[1].getBoundingClientRect().height),
+        status: Math.ceil(kids[2].getBoundingClientRect().height),
+        cap: Math.ceil(note),
+        gap: gap
     };
+    probe.remove();
     return _peersMeasuredRows;
 }
 
@@ -158,7 +172,7 @@ function _capturePeerScrollAnchor() {
     var body = document.getElementById('peers-list-body');
     if (!scrollContainer || !body) return;
     var scrollTop = scrollContainer.scrollTop;
-    var rendered = body.querySelectorAll('[data-peer-index]');
+    var rendered = body.querySelectorAll('[data-peer-index]:not(.is-pinned)');
     for (var index = 0; index < rendered.length; index++) {
         var row = rendered[index];
         var height = Math.max(1, row.offsetHeight || 0);
@@ -194,28 +208,14 @@ function scheduleRenderPeersList(scrollOnly) {
     });
 }
 
-var PEERS_STATUS_ORDER = { reachable: 0, direct: 0, stale: 1, offline: 2, unreachable: 3, unknown: 4 };
-
-// Compact iface badge labels; full names like `rns.ratspeak.org:4242` blow
-// out the row width on mobile. Unknown values fall through to the raw value.
-function ifaceShortLabel(name) {
-    if (!name) return '';
-    var lower = String(name).toLowerCase();
-    if (lower.indexOf('ble_peer') === 0 || lower.indexOf('ble peer') === 0 || lower.indexOf('ble mesh') === 0 || lower.indexOf('bluetooth peer') === 0) return 'BLE';
-    if (lower.indexOf('ble_rnode') === 0 || lower.indexOf('rnode_ble') === 0) return 'LoRa (BLE)';
-    if (lower.indexOf('rnode') === 0 || lower.indexOf('serial') === 0 || lower.indexOf('kiss') === 0) return 'LoRa';
-    if (lower.indexOf('androidusb') === 0 || lower.indexOf('android_usb') === 0) return 'LoRa (USB)';
-    if (lower.indexOf('local') === 0 || lower.indexOf('shared') === 0) return 'Local';
-    if (lower.indexOf('udp') === 0) return 'UDP';
-    // Listed before the TCP catch-all so "Backbone to host:port" doesn't
-    // fall through to TCP via the colon-substring branch below.
-    if (lower.indexOf('backbone') === 0) return 'BB';
-    if (lower.indexOf('tcp') === 0 || lower.indexOf(':') > 0) return 'TCP';
-    return name;
-}
-
 function enrichPeersFromCache() {
     return (typeof PeersCache !== 'undefined' && PeersCache) ? PeersCache.enriched() : [];
+}
+
+function _syncPeersSearchClear() {
+    var clear = document.getElementById('peers-search-clear');
+    var input = document.getElementById('peers-search');
+    if (clear && input) clear.hidden = !input.value;
 }
 
 function initPeersView() {
@@ -242,6 +242,7 @@ function initPeersView() {
         if (searchInput) {
             searchInput.addEventListener('input', function() {
                 clearTimeout(_peersSearchTimer);
+                _syncPeersSearchClear();
                 var val = this.value.toLowerCase().trim();
                 _peersSearchTimer = setTimeout(function() {
                     peersSearch = val;
@@ -251,32 +252,23 @@ function initPeersView() {
             });
             searchInput.addEventListener('keydown', function(e) {
                 if (e.key === 'Enter') { e.preventDefault(); this.blur(); }
+                if (e.key === 'Escape' && this.value) { e.preventDefault(); clearPeersSearch(); }
             });
         }
+        var clearBtn = document.getElementById('peers-search-clear');
+        if (clearBtn) clearBtn.addEventListener('click', function() {
+            clearPeersSearch();
+            if (searchInput) searchInput.focus();
+        });
 
         var sortBtn = document.getElementById('peers-sort-btn');
-        var sortMenu = document.getElementById('peers-sort-menu');
-        if (sortBtn && sortMenu) {
+        if (sortBtn) {
             syncPeersSortMenu();
             hydratePeersSortPreference();
             sortBtn.addEventListener('click', function(e) {
                 e.stopPropagation();
-                var isOpen = sortMenu.classList.toggle('open');
-                if (isOpen) {
-                    var rect = sortBtn.getBoundingClientRect();
-                    sortMenu.style.top = (rect.bottom + 4) + 'px';
-                    sortMenu.style.right = (window.innerWidth - rect.right) + 'px';
-                }
+                openPeersSortMenu(sortBtn);
             });
-            sortMenu.querySelectorAll('.toolbar-dropdown-item').forEach(function(item) {
-                item.addEventListener('click', function() {
-                    applyPeersSortPreference(this.dataset.sort, { persist: true });
-                    sortMenu.classList.remove('open');
-                });
-            });
-            document.addEventListener('click', function() { sortMenu.classList.remove('open'); });
-            var scrollEl2 = document.getElementById('peers-list-scroll');
-            if (scrollEl2) scrollEl2.addEventListener('scroll', function() { sortMenu.classList.remove('open'); }, { passive: true });
         }
 
         var scrollEl = document.getElementById('peers-list-scroll');
@@ -292,40 +284,46 @@ function initPeersView() {
 
         if (container) {
             container.addEventListener('click', function(e) {
-                var header = e.target.closest('.conn-group-header');
+                var header = e.target.closest('.ui-caption--toggle[data-group]');
                 if (header) {
-                    peersCollapsedGroups[header.dataset.group] = !peersCollapsedGroups[header.dataset.group];
+                    var group = header.dataset.group;
+                    peersCollapsedGroups[group] = !peersCollapsedGroups[group];
                     _peersLastDirtyKey = '';
                     scheduleRenderPeersList();
                     return;
                 }
-                var row = e.target.closest('.peers-row');
+                if (e.target.closest('[data-peers-search-focus]')) {
+                    if (searchInput) searchInput.focus();
+                    return;
+                }
+                if (e.target.closest('[data-peers-retry]')) {
+                    if (PeersCache && PeersCache.init) PeersCache.init().catch(function() {});
+                    return;
+                }
+                if (e.target.closest('[data-peers-clear]')) { clearPeersSearch(); return; }
+                if (e.target.closest('[data-peers-network]')) { switchView('network'); return; }
+                var row = e.target.closest('.ui-row[data-hash]');
                 if (row) {
                     var hash = row.dataset.hash;
                     if (isCompactLayout()) {
-                        showPeersDetailSheet(hash);
+                        openPersonSheet(hash, 'peer');
+                    } else if (peersSelectedHash === hash) {
+                        hidePeersDetail();
                     } else {
-                        if (peersSelectedHash === hash) {
-                            peersSelectedHash = null;
-                            hidePeersDetail();
-                        } else {
-                            peersSelectedHash = hash;
-                            _peersLastDirtyKey = '';
-                            scheduleRenderPeersList();
-                            renderPeersDetailPanel(hash);
-                        }
+                        peersSelectedHash = hash;
+                        _peersLastDirtyKey = '';
+                        scheduleRenderPeersList();
+                        renderPeersDetailPanel(hash);
                     }
                 }
             });
-            container.addEventListener('keydown', function(e) {
-                if (e.key !== 'Enter' && e.key !== ' ') return;
-                var target = e.target.closest('.conn-group-header, .peers-row');
-                if (!target) return;
-                e.preventDefault();
-                target.click();
-            });
         }
+        var detail = document.getElementById('peers-detail-panel');
+        if (detail) detail.addEventListener('click', function(e) {
+            if (e.target.closest('[data-peers-network]')) switchView('network');
+        });
 
+        // A height-only resize (the Android keyboard) re-renders the visible window only.
         var relayoutPeers = watchViewLayout('peers', _invalidatePeerRowMetrics, function() {
             scheduleRenderPeersList(true);
         });
@@ -344,34 +342,86 @@ function initPeersView() {
     }
 }
 
+function clearPeersSearch() {
+    var input = document.getElementById('peers-search');
+    if (input) input.value = '';
+    clearTimeout(_peersSearchTimer);
+    peersSearch = '';
+    _syncPeersSearchClear();
+    _peersLastDirtyKey = '';
+    scheduleRenderPeersList();
+}
+
+function _peersFirstRunHtml() {
+    return '<div class="person-onboard"><span class="ui-tile ui-tile--lg" aria-hidden="true">' + RS.kit.icon('globe') + '</span>' +
+        '<h3 class="ui-empty-title">No peers yet</h3>' +
+        '<p class="ui-empty-body">Peers are the people and devices your connections hear. Connect to a network to start.</p>' +
+        '<div class="ui-empty-actions"><button type="button" class="ui-btn ui-btn--primary ui-btn--lg" data-peers-network>Connect to a network</button></div></div>';
+}
+
+function _peersErrorHtml() {
+    return '<div class="ui-empty"><span class="ui-tile ui-tile--lg ui-tile--error" aria-hidden="true">' + RS.kit.icon('alert') + '</span>' +
+        '<h3 class="ui-empty-title">Peers didn’t load</h3>' +
+        '<p class="ui-empty-body">Ratspeak couldn’t read the peer list. Messages and connections still work.</p>' +
+        '<div class="ui-empty-actions"><button type="button" class="ui-btn" data-peers-retry>' + RS.kit.icon('refresh') + 'Try again</button></div></div>';
+}
+
+function _setPeersChrome(count, hasList) {
+    var countEl = document.getElementById('peers-count');
+    if (countEl) countEl.innerHTML = hasList ? '<span class="ui-sr">, </span>' + count.toLocaleString('en-US') : '';
+    var search = document.getElementById('peers-search-wrap');
+    if (search) search.hidden = !hasList;
+}
+
+function _peersEmptyDetail(state) {
+    var empty = document.getElementById('peers-detail-empty');
+    if (!empty) return;
+    var html = state === 'empty' ? _peersFirstRunHtml()
+        : state === 'error' ? ''
+        : '<div class="ui-empty ui-empty--quiet ui-empty--center"><h3 class="ui-empty-title">Select a peer</h3><p class="ui-empty-body">Their route, connection, and actions show here.</p></div>';
+    if (empty._rsLastHtml !== html) {
+        empty._rsLastHtml = html;
+        empty.innerHTML = html;
+    }
+}
+
+function _peersUnreadByHash() {
+    var map = Object.create(null);
+    if (typeof lxmfConversations === 'undefined' || !Array.isArray(lxmfConversations)) return map;
+    for (var i = 0; i < lxmfConversations.length; i++) {
+        var c = lxmfConversations[i];
+        if (c && c.hash && c.unread > 0) map[c.hash] = c.unread;
+    }
+    return map;
+}
+
 function renderPeersList(scrollOnly) {
     var container = document.getElementById('peers-list-body');
     var scrollContainer = document.getElementById('peers-list-scroll');
     if (!container || !scrollContainer) return;
     if (typeof PeersCache === 'undefined' || !PeersCache) return;
-    var mobileRows = isCompactLayout();
-    var measuredRows = _measurePeerRowHeights(mobileRows, scrollContainer);
-    var baseRowHeight = measuredRows.base;
-    var statusRowHeight = measuredRows.status;
-    _peersRowHeight = baseRowHeight;
+    var compact = isCompactLayout();
+    var measured = _measurePeerRowHeights(compact, container);
 
     if (!scrollOnly) {
-        var dirtyKey = peersSearch + '|' + peersSort + '|' + JSON.stringify(peersCollapsedGroups) + '|' + peersSelectedHash + '|' + _peersCacheGen + '|' + measuredRows.key;
+        var dirtyKey = peersSearch + '|' + peersSort + '|' + JSON.stringify(peersCollapsedGroups) + '|' + peersSelectedHash + '|' + _peersCacheGen + '|' + measured.key;
         if (dirtyKey === _peersLastDirtyKey) return;
         _peersLastDirtyKey = dirtyKey;
-        _peersLastGen = _peersCacheGen;
     }
 
     var peers = enrichPeersFromCache();
 
-    if (peers.length === 0 && !scrollOnly) {
-        container.innerHTML = '<div class="empty-state">' +
-            '<svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>' +
-            '<span class="empty-state-primary">No peers yet</span>' +
-            '<span class="empty-state-hint">Connect to a network to discover peers</span>' +
-            '</div>';
+    if (peers.length === 0) {
+        if (scrollOnly) return;
+        var failed = typeof PeersCache.loadFailed === 'function' && PeersCache.loadFailed();
+        _setPeersChrome(0, false);
+        container.innerHTML = failed ? _peersErrorHtml()
+            : compact ? _peersFirstRunHtml()
+            : '<div class="ui-empty ui-empty--quiet"><p class="ui-empty-body">Peers you hear show here.</p></div>';
+        _peersEmptyDetail(failed ? 'error' : 'empty');
         return;
     }
+    if (!scrollOnly) _setPeersChrome(peers.length, true);
 
     var filtered = peers;
     if (peersSearch) {
@@ -381,39 +431,42 @@ function renderPeersList(scrollOnly) {
             var statusText = _peerRowProfileStatus(c).toLowerCase();
             return name.indexOf(peersSearch) >= 0 || hash.indexOf(peersSearch) >= 0 || statusText.indexOf(peersSearch) >= 0;
         });
+    } else {
+        filtered = filtered.slice();
     }
 
     filtered.sort(function(a, b) {
         if (peersSort === 'name') {
-            var na = (a.display_name || a.hash || '').toLowerCase();
-            var nb = (b.display_name || b.hash || '').toLowerCase();
-            var aLetter = na.length > 0 && na[0] >= 'a' && na[0] <= 'z';
-            var bLetter = nb.length > 0 && nb[0] >= 'a' && nb[0] <= 'z';
-            if (aLetter !== bLetter) return aLetter ? -1 : 1;
-            return na.localeCompare(nb);
+            var aNamed = typeof hasRealDisplayName === 'function' ? hasRealDisplayName(a) : !!a.display_name;
+            var bNamed = typeof hasRealDisplayName === 'function' ? hasRealDisplayName(b) : !!b.display_name;
+            if (aNamed !== bNamed) return aNamed ? -1 : 1;
+            return (a.display_name || a.hash || '').localeCompare(b.display_name || b.hash || '', undefined, { sensitivity: 'base' });
         }
         if (peersSort === 'hops') {
             var ha = a.hops !== null && a.hops !== undefined ? a.hops : 999;
             var hb = b.hops !== null && b.hops !== undefined ? b.hops : 999;
-            return ha - hb;
+            return (ha - hb) || PeersCache.compareByLastSeen(a, b);
         }
-        if (peersSort === 'last_seen') return PeersCache.compareByLastSeen(a, b);
-        return 0;
+        return PeersCache.compareByLastSeen(a, b);
     });
 
-    var flatItems = RS.buildPeerGroupItems(filtered, peersCollapsedGroups, function(c) {
-        return typeof hasRealDisplayName === 'function' && hasRealDisplayName(c);
-    }, { olderDisplayCap: peersSearch ? 0 : RS.PEERS_OLDER_DISPLAY_CAP });
-
-    if (filtered.length === 0 && !scrollOnly) {
-        container.innerHTML = '<div class="dashboard-peers-empty" style="padding:32px;">No peers match your filter</div>';
+    if (filtered.length === 0) {
+        if (scrollOnly) return;
+        container.innerHTML = '<div class="ui-empty"><h3 class="ui-empty-title">No peers match “' + escapeHtml(peersSearch) + '”</h3>' +
+            '<p class="ui-empty-body">Search checks names, addresses, and status.</p>' +
+            '<div class="ui-empty-actions"><button type="button" class="ui-link" data-peers-clear>Clear search</button></div></div>';
+        if (!peersSelectedHash) _peersEmptyDetail('list');
         return;
     }
 
-    // Virtualized: only visible window + buffer is in the DOM, spacer divs
-    // preserve total scroll height. Avoids rebuilding ~1.6k rows per poll on mobile.
+    // Search opens every group with matches and lifts the cap, so a collapsed group never hides a result.
+    var flatItems = RS.buildPeerGroupItems(filtered, peersSearch ? {} : peersCollapsedGroups, function(c) {
+        return typeof hasRealDisplayName === 'function' && hasRealDisplayName(c);
+    }, { olderDisplayCap: peersSearch ? 0 : RS.PEERS_OLDER_DISPLAY_CAP });
+
+    // Virtualized: only the visible window and a buffer are in the DOM; spacers keep the scroll height.
     var viewportHeight = scrollContainer.clientHeight;
-    var metrics = _peerListMetrics(flatItems, baseRowHeight, statusRowHeight);
+    var metrics = _peerListMetrics(flatItems, measured);
     if (_peersPendingScrollAnchor) {
         var anchorIndex = Math.max(0, Math.min(flatItems.length - 1, _peersPendingScrollAnchor.index));
         if (flatItems.length > 0) {
@@ -425,141 +478,95 @@ function renderPeersList(scrollOnly) {
     }
     if (viewportHeight < 50) viewportHeight = Math.max(metrics.total, 500);
     var totalHeight = metrics.total;
+    var gap = metrics.gap;
 
     var startIdx = Math.max(0, _peerIndexAtScrollTop(metrics, _peersScrollTop) - _peersBufferRows);
     startIdx = Math.min(startIdx, flatItems.length);
     var endIdx = Math.min(flatItems.length, _peerIndexAtScrollTop(metrics, _peersScrollTop + viewportHeight) + _peersBufferRows);
     if (endIdx < startIdx) endIdx = startIdx;
 
-    var html = '';
-    // flex-shrink:0 — #peers-list-body is a flex column on mobile.
-    var startOffset = startIdx < flatItems.length ? metrics.offsets[startIdx] : totalHeight;
-    if (startIdx > 0) html += '<div style="height:' + startOffset + 'px;flex-shrink:0"></div>';
-    html += buildPeersHTML(flatItems, startIdx, endIdx, metrics.heights);
-    var endOffset = endIdx < flatItems.length ? metrics.offsets[endIdx] : totalHeight;
-    var remaining = totalHeight - endOffset;
-    if (remaining > 0) html += '<div style="height:' + remaining + 'px;flex-shrink:0"></div>';
-
-    container.innerHTML = html;
-}
-
-function buildPeersHTML(flatItems, start, end, rowHeights) {
-    var html = '';
-    for (var i = start; i < end; i++) {
-        var item = flatItems[i];
-        var rowHeight = rowHeights && rowHeights[i] ? rowHeights[i] : _peersRowHeight;
-        if (item.type === 'header') {
-            var isCollapsed = peersCollapsedGroups[item.group];
-            var chevron = isCollapsed ? '&#9654;' : '&#9660;';
-            html += '<div class="conn-group-header" role="button" tabindex="0" aria-expanded="' + (!isCollapsed) + '" data-group="' + item.group + '" data-peer-index="' + i + '" style="height:' + rowHeight + 'px;flex-shrink:0">' +
-                '<span class="conn-group-chevron">' + chevron + '</span>' +
-                '<span class="conn-group-label">' + item.label + '</span>' +
-                '<span class="conn-group-count">(' + item.count + ')</span>' +
-            '</div>';
-        } else if (item.type === 'cap') {
-            html += '<div class="dashboard-peers-empty text-xs" data-peer-index="' + i + '" style="height:' + rowHeight + 'px;flex-shrink:0;padding:0 var(--space-7);display:flex;align-items:center;justify-content:center">' +
-                escapeHtml(item.label) +
-            '</div>';
-        } else {
-            var c = item.data;
-            var isSelected = peersSelectedHash === c.hash;
-            var displayName = c.display_name || (typeof shortHash === 'function' ? shortHash(c.hash, 8, 4) : c.hash);
-            var hasName = c.display_name && c.display_name !== '' && c.display_name !== c.hash;
-            var nameClass = 'peers-row-name' + (hasName ? '' : ' is-hash');
-            var statusClass = 'status-' + c.status;
-            var avatarSize = isCompactLayout() ? 44 : 28;
-            var av = (typeof identityAvatar === 'function') ? identityAvatar(c.hash, avatarSize) : '';
-            var ifaceLabel = c.iface_is_live ? ifaceShortLabel(c.iface) : '';
-            var ifaceBadge = ifaceLabel
-                ? '<span class="peers-iface-badge" title="' + escapeHtml('Live via ' + (c.iface || '')) + '">'
-                  + escapeHtml(ifaceLabel) + '</span>'
-                : '';
-            var profileStatus = _peerRowProfileStatus(c);
-            var statusHtml = profileStatus
-                ? '<span class="peers-row-status" title="' + escapeHtml(profileStatus) + '">' + escapeHtml(profileStatus) + '</span>'
-                : '';
-
-            html += '<div class="peers-row' + (isSelected ? ' selected' : '') + (profileStatus ? ' has-profile-status' : '') + '" role="button" tabindex="0" aria-label="Open ' + escapeHtml(displayName) + ', address ' + escapeHtml(c.hash) + '" data-hash="' + escapeHtml(c.hash) + '" data-peer-index="' + i + '" style="height:' + rowHeight + 'px;flex-shrink:0">' +
-                '<span class="conn-status-dot ' + statusClass + '"></span>' +
-                '<div class="peers-row-avatar">' + av + '</div>' +
-                '<span class="peers-row-main">' +
-                    '<span class="' + nameClass + '">' + ratspeakDisplayNameHtml(displayName, c) + '</span>' +
-                    statusHtml +
-                '</span>' +
-                '<span class="peers-row-meta">' +
-                    ifaceBadge +
-                '</span>' +
-            '</div>';
+    // The caption of the group the window starts in stays in the DOM, so it stays stuck over its rows.
+    var pinned = -1;
+    if (startIdx > 0 && startIdx < flatItems.length && flatItems[startIdx].type !== 'header') {
+        for (var h = startIdx - 1; h >= 0; h--) {
+            if (flatItems[h].type === 'header') { pinned = h; break; }
         }
     }
-    return html;
+
+    var unread = _peersUnreadByHash();
+    var html = '';
+    var top = startIdx > 0 ? metrics.offsets[startIdx] - gap : 0;
+    if (pinned >= 0) top -= metrics.heights[pinned] + gap;
+    if (top > 0) html += '<div class="peers-spacer" style="height:' + top + 'px"></div>';
+    if (pinned >= 0) html += _peerItemHtml(flatItems[pinned], pinned, metrics.heights[pinned], unread, true);
+    for (var i = startIdx; i < endIdx; i++) html += _peerItemHtml(flatItems[i], i, metrics.heights[i], unread, false);
+    var endOffset = endIdx < flatItems.length ? metrics.offsets[endIdx] : totalHeight + gap;
+    var remaining = totalHeight - endOffset;
+    if (remaining > 0) html += '<div class="peers-spacer" style="height:' + remaining + 'px"></div>';
+
+    container.innerHTML = html;
+    if (!peersSelectedHash) _peersEmptyDetail('list');
+}
+
+function _peerItemHtml(item, index, height, unread, pinned) {
+    var style = ' data-peer-index="' + index + '" style="height:' + height + 'px"';
+    if (item.type === 'header') {
+        var open = !!peersSearch || !peersCollapsedGroups[item.group];
+        return '<button type="button" class="ui-caption ui-caption--toggle' + (pinned ? ' is-pinned' : '') + '" aria-expanded="' + open + '" data-group="' + item.group + '"' + style + '>' +
+            RS.kit.icon('chevron-down') + '<span class="t">' + escapeHtml(item.label) + ' <span class="n">' + item.count.toLocaleString('en-US') + '</span></span></button>';
+    }
+    if (item.type === 'cap') {
+        return '<div class="peers-slot"' + style + '><p class="ui-list-note">' + escapeHtml(item.label) + ' <button type="button" class="ui-link" data-peers-search-focus>Search to find others</button></p></div>';
+    }
+    return '<div class="peers-slot"' + style + '>' + peerRowHtml(item.data, unread[item.data.hash] || 0) + '</div>';
+}
+
+// Compact row: the mark beside the name, one trailing word, and a second line only for a Ratspeak user's status.
+function peerRowHtml(c, unread) {
+    var named = typeof hasRealDisplayName === 'function' ? hasRealDisplayName(c) : !!c.display_name;
+    var status = _peerRowProfileStatus(c);
+    var title = named
+        ? '<bdi dir="auto">' + escapeHtml(c.display_name) + '</bdi>'
+        : '<span class="ui-sr">Unnamed peer, address </span>' + escapeHtml(RS.kit.hash.short(c.hash));
+    var tier = RS.kit.presenceFor(c.last_seen);
+    var trail = personRowTrail(c, peersSort);
+    var mark = named && typeof ratspeakSupportsFeaturesFor === 'function' && ratspeakSupportsFeaturesFor(c) ? RS.kit.mark() : '';
+    return '<button type="button" class="ui-row' + (status ? '' : ' ui-row--one') + (named ? '' : ' is-unnamed') + (unread ? ' is-unread' : '') +
+            '" data-hash="' + escapeHtml(c.hash) + '"' + (!isCompactLayout() && peersSelectedHash === c.hash ? ' aria-current="true"' : '') + '>' +
+        RS.kit.avatar(c.hash, 'compact', tier === 'active' ? 'active' : null, c.last_seen) +
+        '<span class="ui-row-main"><span class="ui-row-top ui-row-top--hug"><span class="ui-row-title">' + title + '</span>' + mark +
+            '<span class="ui-row-trail">' + escapeHtml(trail) + '</span>' +
+            (unread ? '<span class="ui-count" aria-label="' + unread + ' unread">' + unread + '</span>' : '') + '</span>' +
+            (status ? '<span class="ui-row-sub"><span class="t" title="' + escapeHtml(status) + '">' + escapeHtml(status) + '</span></span>' : '') +
+        '</span></button>';
 }
 
 function renderPeersDetailPanel(hash) {
-    var panel = document.getElementById('peers-detail-panel');
     var content = document.getElementById('peers-detail-content');
     var empty = document.getElementById('peers-detail-empty');
-    if (!panel || !content) return;
+    if (!content) return;
+    var model = personModel(hash);
+    if (!model.peer) { hidePeersDetail(); return; }
 
-    var enriched = enrichPeersFromCache();
-    var peer = null;
-    for (var ei = 0; ei < enriched.length; ei++) {
-        if (enriched[ei].hash === hash) { peer = enriched[ei]; break; }
-    }
-    if (!peer) { hidePeersDetail(); return; }
-
-    var hasName = peer.display_name && peer.display_name !== '' && peer.display_name !== peer.hash;
-    var trust = '';
-    if (peer.is_contact && _peersContactCache) {
-        _peersContactCache.forEach(function(ct) { if (ct.dest_hash === hash || ct.hash === hash) trust = ct.trust || ''; });
-    }
-
-    var html = '<div class="peers-detail-header">' +
-        peerAvatarHtml('peers-detail-avatar', hash, 64, peer) +
-        peerNameHtml('peers-detail-name', hasName ? ratspeakDisplayNameHtml(peer.display_name, peer) : '') +
-        peerAddressButtonHtml(hash) +
-    '</div>' +
-    peerActionPairHtml('peers-detail-actions entity-action-grid', 'peers-detail', hash) +
-    peerDetailsHtml('peers-detail-rows', peer, { trust: trust }) +
-    peerActionRowsHtml(peer.is_contact);
-
-    if (empty) empty.style.display = 'none';
-    content.style.display = '';
+    var html = personDetailHtml(model, 'peer', 'peers-detail');
+    if (empty) empty.hidden = true;
+    content.hidden = false;
     // The panel re-renders on a timer; leave unchanged markup in place so focus and hover survive.
     if (content._rsLastHtml !== html) {
         content._rsLastHtml = html;
         content.innerHTML = html;
-        syncPeerDetails(content);
-        wirePeerActionPair('peers-detail', hash);
-        wirePeerActionRows(content, hash, { name: hasName ? peer.display_name : '', onBlocked: hidePeersDetail });
-    }
-
-    if (peer.is_contact && !_peersContactCache) {
-        RS.invoke('api_contacts').then(function(contacts) {
-            _peersContactCache = contacts;
-            if (peersSelectedHash === hash) renderPeersDetailPanel(hash);
-        }).catch(function() {});
+        wirePersonActions(content, model, 'peers-detail', { onBlocked: hidePeersDetail });
     }
 }
 
 function hidePeersDetail() {
     var content = document.getElementById('peers-detail-content');
     var empty = document.getElementById('peers-detail-empty');
-    if (content) content.style.display = 'none';
-    if (empty) empty.style.display = '';
+    if (content) { content.hidden = true; content._rsLastHtml = null; }
+    if (empty) empty.hidden = false;
     peersSelectedHash = null;
     _peersLastDirtyKey = '';
     scheduleRenderPeersList();
-}
-
-function showPeersDetailSheet(hash) {
-    if (typeof showConnectionDetailSheet === 'function') {
-        showConnectionDetailSheet(hash, { progressive: true });
-        return;
-    }
-}
-
-function closePeersDetailSheet() {
 }
 
 function updatePeersFromStats() {
@@ -594,7 +601,6 @@ function resetPeersAutoRefresh() {
 }
 
 RS.listen('contacts_update', function() {
-    _peersContactCache = null;
     var peersView = document.getElementById('view-peers');
     if (peersView && peersView.classList.contains('active')) {
         _peersLastDirtyKey = '';

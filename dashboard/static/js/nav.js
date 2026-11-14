@@ -129,7 +129,7 @@ function _mobileBlockingOverlayOpen() {
         '.bottom-sheet.open, .bottom-sheet-overlay.active, ' +
         '.modal-overlay.active, .game-modal-overlay, .block-list-overlay, ' +
         '#rs-image-viewer.open, .action-popover.open, ' +
-        '[class*="-scrim"].active, .channels-layout.members-open'
+        '[class*="-scrim"].active, .channels-layout.members-open, .ui-modal:not([hidden])'
     );
 }
 
@@ -538,19 +538,7 @@ var VIEW_LIFECYCLE = {
     },
 
     contacts: function() {
-        if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
-        // Re-fetch if contacts_update event was missed.
-        if (typeof lxmfContacts !== 'undefined' && lxmfContacts.length === 0) {
-            var owner = RS.conversationOwner.snapshot();
-            var contacts = lxmfContacts;
-            RS.invoke('api_contacts').then(function(data) {
-                if (!RS.conversationOwner.isIdentityCurrent(owner) || lxmfContacts !== contacts) return;
-                if (Array.isArray(data)) {
-                    lxmfContacts = (typeof normalizeContactList === 'function') ? normalizeContactList(data) : data;
-                    if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
-                }
-            }).catch(function() {});
-        }
+        if (typeof contactsViewActivated === 'function') contactsViewActivated();
     }
 };
 
@@ -1475,7 +1463,7 @@ function initKeyboardDetection() {
         var el = e.target;
         if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return;
 
-        if (el.closest('.connections-header, .lxmf-sidebar, .contacts-standalone')) {
+        if (el.closest('.connections-header, .lxmf-sidebar, .ui-pane-search')) {
             return;
         }
 

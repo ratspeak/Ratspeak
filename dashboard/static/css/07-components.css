@@ -141,8 +141,7 @@
     background: var(--surface-row-hover);
 }
 .conn-group-header:focus-visible,
-.conn-row:focus-visible,
-.peers-row:focus-visible {
+.conn-row:focus-visible {
     outline: 2px solid var(--focus-ring);
     outline-offset: -2px;
 }

@@ -19,7 +19,6 @@ function fn(source, name) {
 const state = read('static/js/state.js');
 const lxmf = read('static/js/lxmf.js');
 const health = read('static/js/health.js');
-const contact = read('static/js/contact_card.js');
 const shared = read('static/js/ui_shared.js');
 const html = read('index.html');
 
@@ -45,23 +44,28 @@ const context = {
 };
 vm.createContext(context);
 vm.runInContext(['isCompactLayout', 'isTouchDevice', 'isMobile'].map(name => fn(state, name)).join('\n') +
-    '\n' + fn(contact, 'isMobileContactFlow') + '\n' + health.slice(health.lastIndexOf('(function() {')), context);
+    '\n' + health.slice(health.lastIndexOf('(function() {')), context);
 const row = { dataset: { ifaceType: 'tcp', ifaceName: 'Test' } };
 for (const [width, touch, expected] of [[390, 0, 'sheet'], [768, 1, 'sheet'], [769, 1, 'popover'], [1024, 1, 'popover'], [1366, 0, 'popover']]) {
     context.window.innerWidth = width; context.navigator.maxTouchPoints = touch;
     handlers.click({ target: { closest: () => row } });
     assert.equal(actions.at(-1), expected, 'interface actions at ' + width + 'px');
-    assert.equal(context.isMobileContactFlow(), width <= 768, 'contact actions must follow the same layout');
 }
 const picker = html.match(/<div class="[^"]+" id="fab-contact-picker-sheet"[^>]*>/)[0];
 assert(!picker.includes('--mobile-only'), 'desktop Contacts must open a visible picker');
 assert(picker.includes('bottom-sheet rs-dialog-sheet'), 'the shared picker must use the canonical shell');
 assert(html.includes('class="bottom-sheet-body fab-contact-picker-list"'), 'picker content must own its scroll region');
 assert(!read('static/css/13-responsive.css').includes('.fab-picker-row {'), 'contact rows cannot be styled only on phones');
-for (const id of ['peers-search', 'msg-search-input', 'contacts-search']) {
+for (const id of ['msg-search-input']) {
     const input = html.match(new RegExp('<input[^>]*id="' + id + '"[^>]*>'))[0];
     assert(input.includes('nr-input-sm list-search-input'), id + ' must use the shared form primitive');
     assert(input.includes('aria-label="Search '), id + ' needs a specific accessible name');
+}
+// People panes use the kit search field: glyph, input, and clear in one control.
+for (const id of ['peers-search', 'contacts-search']) {
+    const field = html.match(new RegExp('<div class="ui-search" role="search">(?:(?!</div>).)*id="' + id + '"(?:(?!</div>).)*</div>'));
+    assert(field, id + ' must sit in the kit search field');
+    assert(field[0].includes('aria-label="Search ') && field[0].includes('aria-label="Clear search"'), id + ' needs a specific accessible name and a clear button');
 }
 
 // A FAB can become visible after startup/resizing, even with no touch input.

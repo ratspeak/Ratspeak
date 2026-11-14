@@ -180,10 +180,10 @@ var safeEdges = responsiveCss.slice(responsiveCss.lastIndexOf('/* Safe-area edge
 var wideEdges = safeEdges.slice(safeEdges.indexOf('@media (min-width: 769px)'));
 var rightEdges = wideEdges.split('border-right: var(--sar) solid transparent;')[0];
 var bottomEdges = wideEdges.split('border-right: var(--sar) solid transparent;')[1].split('border-bottom: var(--sab) solid transparent;')[0];
-['.lxmf-chat,', '.peers-detail-panel,', '.games-detail,', '.channel-members-pane,', '.channel-compose,', '.settings-page {'].forEach(function(selector) {
+['.lxmf-chat,', '.people-split > .ui-detail,', '.games-detail,', '.channel-members-pane,', '.channel-compose,', '.settings-page {'].forEach(function(selector) {
     assert(rightEdges.includes(selector), selector + ' must paint under the right inset where it meets the screen edge');
 });
-['.lxmf-sidebar,', '.lxmf-chat,', '.peers-list-panel,', '.peers-detail-panel,', '.settings-page {'].forEach(function(selector) {
+['.lxmf-sidebar,', '.lxmf-chat,', '.people-split > .ui-pane,', '.people-split > .ui-detail,', '.settings-page {'].forEach(function(selector) {
     assert(bottomEdges.includes(selector), selector + ' must paint under the bottom inset');
 });
 assert(/\.sidebar\s*\{\s*padding-bottom:\s*max\(var\(--space-8\), var\(--sab\)\);/.test(safeEdges),

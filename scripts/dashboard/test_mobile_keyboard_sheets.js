@@ -128,9 +128,8 @@ context.reveal(field);
 assert.strictEqual(scrollOwner.scrollTop, 20,
     'a stale focus callback must not move a newly focused form');
 
-var contactPrompt = namedFunctionSource(dialogsSource, 'rsPromptContact');
-assert(contactPrompt.includes("_rsBuildSheet({ title: opts.title || 'Add Contact' }"),
-    'Add Contact must inherit the canonical keyboard-aware sheet');
+assert(responsiveCss.includes('html[data-keyboard-platform="ios"].keyboard-open .ui-modal:focus-within {\n        bottom: var(--keyboard-inset, 0px);'),
+    'Add contact and the other kit sheets must rise above the iOS keyboard');
 assert(navSource.includes("style.setProperty('--visual-viewport-height'"));
 assert(navSource.includes("style.setProperty('--visual-viewport-top'"));
 assert(navSource.includes("style.setProperty('--keyboard-inset'"));

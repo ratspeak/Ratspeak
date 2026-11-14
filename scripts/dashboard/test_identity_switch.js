@@ -69,7 +69,12 @@ vm.createContext(page);
 var pendingDeclaration = identity.slice(identity.indexOf('var _switchRequestsPending'),
     identity.indexOf(';', identity.indexOf('var _switchRequestsPending')) + 1);
 assert(pendingDeclaration, 'missing the pending-switch count');
-vm.runInContext(pendingDeclaration + '\n' + functionSource('switchToIdentity') + '\n' +
+page.renderIdentityPage = function() { calls.push('renderIdentityPage'); };
+page.activeIdentity = function() { return { display_name: 'A' }; };
+page.identityDisplayName = function(ident) { return ident.display_name; };
+page.isViewActive = function() { return false; };
+vm.runInContext(pendingDeclaration + '\nvar _identitySwitchingHash = null, _identitySwitchFailed = null;\n' +
+    functionSource('switchToIdentity') + '\n' + functionSource('_identityNoteSwitchFailure') + '\n' +
     functionSource('resetConversationCaches') + '\n' +
     listenerSource('identity_switching') + '\n' +
     listenerSource('identity_switched') + '\n' +
@@ -120,6 +125,8 @@ async function setupFailureIsShownOnce() {
             functionSource('createToastStatusIcon', toastsSource) + '\n' +
             functionSource('showToast', toastsSource) + '\n' +
             pendingDeclaration + '\n' +
+            'var _identitySwitchFailed = null; function activeIdentity() { return null; } function isViewActive() { return false; }\n' +
+            functionSource('_identityNoteSwitchFailure') + '\n' +
             listenerSource('identity_switch_failed') + '\n' +
             functionSource('completeSetupAfterHardwareIdentity', setup),
             screen,
@@ -168,7 +175,7 @@ async function setupFailureIsShownOnce() {
 
     // The switch began and failed: its closing event ends it.
     page.switchToIdentity(target);
-    assert(card.innerHTML.indexOf('Switching identity') !== -1);
+    assert.strictEqual(page._identitySwitchingHash, target, 'the detail shows the switch in its button');
     page.window._identitySwitchInProgress = true;
     calls = [];
     handlers.identity_switch_failed({ hash: target, generation: '9', error: reason });

@@ -4,7 +4,6 @@
     var CONTACT_SCAN_MAX_IMAGE_DIMENSION = 1800;
     // The longest payload a scan accepts is a paper link.
     var CONTACT_SCAN_MAX_TEXT_CHARS = 4096;
-    var activeContactAddDial = null;
 
     function contactScanDiag(step, detail) {
         if (!window.RS || typeof RS.diag !== 'function') return;
@@ -17,23 +16,8 @@
         if (name === 'qr') {
             return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg>';
         }
-        if (name === 'scan') {
-            return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3H5a2 2 0 0 0-2 2v2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/><path d="M7 12h10"/></svg>';
-        }
-        if (name === 'image') {
-            return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/></svg>';
-        }
         if (name === 'copy') {
             return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><rect x="2" y="2" width="13" height="13" rx="2"/></svg>';
-        }
-        if (name === 'paste') {
-            return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>';
-        }
-        if (name === 'share') {
-            return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.59 13.51l6.82 3.98"/><path d="M15.41 6.51 8.59 10.49"/></svg>';
-        }
-        if (name === 'address') {
-            return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="7" r="4"/><path d="M15 19a6 6 0 0 0-12 0"/><path d="M19 8v6"/><path d="M22 11h-6"/></svg>';
         }
         return '';
     }
@@ -829,120 +813,84 @@ z`,
     }
 
     function showIdentityShareScreen(identityHash) {
-        if (document.querySelector('.contact-share-sheet.open')) return;
-        var built = buildSheet('contact-share-sheet');
+        if (document.querySelector('.contact-card-dialog')) return;
         var closed = false;
         var loadGeneration = 0;
-        built.sheet.setAttribute('role', 'dialog');
-        built.sheet.setAttribute('aria-modal', 'true');
-        built.sheet.setAttribute('tabindex', '-1');
-        built.sheet.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                e.stopPropagation();
-                closeShareScreen();
-            }
+        var phone = RS.kit.compact();
+        var built = RS.kit.dialog({
+            title: 'Your contact card',
+            className: 'contact-card-dialog',
+            body: '',
+            foot: '<button type="button" class="ui-btn ui-btn--primary" id="contact-share-qr" disabled>' +
+                RS.kit.icon(phone ? 'qr' : 'download') + (phone ? 'Share QR code' : 'Save image') + '</button>',
+            onClose: function() { closed = true; }
         });
+        var body = built.body;
+        var foot = built.foot;
+        var shareButton = built.q('#contact-share-qr');
 
-        function closeShareScreen() {
-            if (closed) return;
-            closed = true;
-            closeSheet(built.overlay, built.sheet);
-        }
-
-        function bindCloseButton() {
-            var closeButton = built.sheet.querySelector('.contact-card-close');
-            if (closeButton) closeButton.addEventListener('click', closeShareScreen);
+        function addressHtml(address) {
+            return '<div class="contact-card-address"><span class="ui-label">LXMF address</span>' +
+                RS.kit.hash.copy(address, { form: 'full', noun: 'LXMF address' }) + '</div>';
         }
 
         function renderLoading() {
-            built.sheet.setAttribute('aria-busy', 'true');
-            built.sheet.innerHTML =
-                '<div class="contact-card-topbar">' +
-                    '<button class="contact-card-close" type="button" aria-label="Close">&times;</button>' +
-                '</div>' +
-                '<div class="contact-share-loading" role="status" aria-live="polite">' +
-                    '<div class="contact-share-loading-qr" aria-hidden="true">' +
-                        '<span class="loading-spinner"></span>' +
-                    '</div>' +
-                    '<div class="contact-share-loading-label">Preparing contact card&hellip;</div>' +
-                '</div>';
-            bindCloseButton();
+            built.dialog.setAttribute('aria-busy', 'true');
+            shareButton.disabled = true;
+            foot.innerHTML = '';
+            foot.appendChild(shareButton);
+            body.innerHTML = '<div class="contact-card"><div class="ui-qr is-loading"><div class="contact-card-loading" role="status">' +
+                '<span class="ui-spin ui-spin--ring" aria-hidden="true"></span>Making your card\u2026</div></div></div>';
         }
 
         function renderError(err, generation) {
             if (closed || generation !== loadGeneration) return;
-            built.sheet.removeAttribute('aria-busy');
-            var message = err && err.message ? err.message : 'Could not build contact card';
-            built.sheet.innerHTML =
-                '<div class="contact-card-topbar">' +
-                    '<button class="contact-card-close" type="button" aria-label="Close">&times;</button>' +
-                '</div>' +
-                '<div class="contact-share-error" role="alert">' +
-                    '<div class="contact-share-error-title">Contact card unavailable</div>' +
-                    '<div class="contact-share-error-message">' + escapeHtml(message) + '</div>' +
-                    '<button class="nr-btn contact-share-retry" type="button">Try again</button>' +
-                '</div>';
-            bindCloseButton();
-            built.sheet.querySelector('.contact-share-retry').addEventListener('click', loadCard);
+            built.dialog.removeAttribute('aria-busy');
+            var address = (typeof activeIdentity === 'function' && activeIdentity() && !identityHash) ? activeIdentity().lxmf_hash : '';
+            if (identityHash && typeof identityByHash === 'function' && identityByHash(identityHash)) address = identityByHash(identityHash).lxmf_hash || '';
+            body.innerHTML = '<div class="ui-notice ui-notice--error" role="alert">' + RS.kit.icon('alert') +
+                '<div class="ui-notice-body"><b>Your card isn\u2019t ready.</b> Ratspeak couldn\u2019t read this identity\u2019s key. Your address still works.</div></div>' +
+                (address ? addressHtml(address) : '');
+            foot.innerHTML = '<button type="button" class="ui-btn ui-btn--primary contact-share-retry">' + RS.kit.icon('refresh') + 'Try again</button>';
+            foot.querySelector('.contact-share-retry').addEventListener('click', loadCard);
+            if (err) RS.diag('warn', '[contact-card] build failed:', err && err.message ? err.message : err);
         }
 
         function renderCard(card, generation) {
             if (closed || generation !== loadGeneration) return;
-            var name = card.display_name || 'Ratspeak Contact';
+            var name = card.display_name || 'Ratspeak contact';
             var fileBase = safeFileBase(name);
             var formats = {
                 ratspeak: {
-                    subtitle: 'Ratspeak Contact Card',
                     hint: 'Scans in Ratspeak. Carries your name, address, and key.',
                     ariaLabel: 'Ratspeak contact card QR for ' + name,
                     file: fileBase + '-' + CONTACT_QR_FILE
                 },
                 legacy: {
-                    subtitle: 'Legacy Contact QR',
                     hint: 'For Columba and other Reticulum apps. Address and key only, no name.',
-                    ariaLabel: 'Legacy contact QR for ' + name,
+                    ariaLabel: 'QR for other apps for ' + name,
                     file: fileBase + '-' + LEGACY_QR_FILE
                 }
             };
             var format = 'ratspeak';
             var drawSequence = 0;
-            built.sheet.removeAttribute('aria-busy');
-            built.sheet.innerHTML =
-                '<div class="contact-card-topbar">' +
-                    '<button class="contact-card-close" type="button" aria-label="Close">&times;</button>' +
-                '</div>' +
-                '<div class="contact-share-identity">' +
-                    '<div class="contact-share-avatar">' + (typeof identityAvatar === 'function' ? identityAvatar(card.lxmf_hash, 56) : '') + '</div>' +
-                    '<div class="contact-share-name">' + escapeHtml(name) + '</div>' +
-                    '<div class="contact-share-subtitle">' + escapeHtml(formats.ratspeak.subtitle) + '</div>' +
-                '</div>' +
-                '<div class="contact-share-qr-shell">' +
-                    '<canvas class="contact-share-qr" aria-label="' + escapeHtml(formats.ratspeak.ariaLabel) + '"></canvas>' +
-                '</div>' +
-                '<div class="sheet-segmented-tabs contact-share-format" role="group" aria-label="QR format">' +
-                    '<button type="button" class="contact-share-format-option active" data-format="ratspeak" aria-pressed="true">Ratspeak</button>' +
-                    '<button type="button" class="contact-share-format-option" data-format="legacy" aria-pressed="false">Legacy</button>' +
-                '</div>' +
-                '<div class="contact-share-subtitle contact-share-format-hint">' + escapeHtml(formats.ratspeak.hint) + '</div>' +
-                '<div class="contact-share-address-block">' +
-                    '<div class="contact-share-address-label">LXMF Address</div>' +
-                    '<div class="contact-share-address mono">' + escapeHtml(card.lxmf_hash || '') + '</div>' +
-                '</div>' +
-                '<div class="contact-share-actions">' +
-                    '<button class="nr-btn contact-share-action" id="contact-copy-address">' + iconSvg('copy') + '<span>Copy</span></button>' +
-                    '<button class="nr-btn contact-share-action" id="contact-share-qr" disabled aria-busy="true">' + iconSvg('qr') + '<span>Share QR</span></button>' +
+            built.dialog.removeAttribute('aria-busy');
+            body.innerHTML =
+                '<div class="contact-card">' +
+                    '<div class="contact-card-who">' + RS.kit.avatar(card.lxmf_hash, 48) + '<span class="ui-card-title">' + escapeHtml(name) + '</span></div>' +
+                    '<div class="ui-qr"><canvas class="contact-share-qr" role="img" aria-label="' + escapeHtml(formats.ratspeak.ariaLabel) + '"></canvas></div>' +
+                    '<div class="ui-seg ui-seg--block contact-card-format" role="radiogroup" aria-label="QR format">' +
+                        '<button type="button" role="radio" aria-checked="true" data-format="ratspeak">Ratspeak</button>' +
+                        '<button type="button" role="radio" aria-checked="false" data-format="legacy">Other apps</button>' +
+                    '</div>' +
+                    '<p class="ui-help contact-card-hint">' + escapeHtml(formats.ratspeak.hint) + '</p>' +
+                    addressHtml(card.lxmf_hash || '') +
                 '</div>';
 
-            var canvas = built.sheet.querySelector('canvas');
-            var shareButton = built.sheet.querySelector('#contact-share-qr');
-            var subtitle = built.sheet.querySelector('.contact-share-identity .contact-share-subtitle');
-            var hint = built.sheet.querySelector('.contact-share-format-hint');
-            var formatButtons = Array.prototype.slice.call(built.sheet.querySelectorAll('.contact-share-format-option'));
-            bindCloseButton();
-            built.sheet.querySelector('#contact-copy-address').addEventListener('click', function() {
-                copyText(card.lxmf_hash, 'Address');
-            });
-            shareButton.addEventListener('click', function() {
+            var canvas = body.querySelector('canvas');
+            var hint = body.querySelector('.contact-card-hint');
+            var formatButtons = Array.prototype.slice.call(body.querySelectorAll('[data-format]'));
+            shareButton.onclick = function() {
                 canvasBlob(canvas).then(function(blob) {
                     return saveQrBlob(blob, formats[format].file);
                 }).then(function(method) {
@@ -951,9 +899,9 @@ z`,
                 }).catch(function(err) {
                     showToast(err && err.message ? err.message : 'Could not share QR', 'toast-error', 3000);
                 });
-            });
+            };
 
-            // Let the ready sheet paint before the synchronous QR encoder runs.
+            // Let the ready dialog paint before the synchronous QR encoder runs.
             // Two animation frames guarantee one complete rendering opportunity.
             var nextFrame = window.requestAnimationFrame || function(callback) {
                 return window.setTimeout(callback, 0);
@@ -981,11 +929,8 @@ z`,
                 if (next === format || !formats[next]) return;
                 format = next;
                 formatButtons.forEach(function(button) {
-                    var selected = button.getAttribute('data-format') === format;
-                    button.classList.toggle('active', selected);
-                    button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+                    button.setAttribute('aria-checked', button.getAttribute('data-format') === format ? 'true' : 'false');
                 });
-                subtitle.textContent = formats[format].subtitle;
                 hint.textContent = formats[format].hint;
                 canvas.setAttribute('aria-label', formats[format].ariaLabel);
                 drawCurrentFormat();
@@ -996,7 +941,6 @@ z`,
                 });
             });
             drawCurrentFormat();
-            try { built.sheet.focus({ preventScroll: true }); } catch (_) { built.sheet.focus(); }
         }
 
         function loadCard() {
@@ -1010,10 +954,6 @@ z`,
             });
         }
 
-        built.overlay.addEventListener('click', function(e) {
-            if (e.target === built.overlay) closeShareScreen();
-        });
-        built.sheet._ratspeakDismiss = closeShareScreen;
         loadCard();
     }
 
@@ -1228,42 +1168,50 @@ z`,
         return { close: closeShareScreen };
     }
 
-    function showScannedCardPreview(parent, payload, card, closeAll) {
+    // A found card: who it is, the name to save (editable), and the addresses with copy.
+    function showScannedCardPreview(parent, payload, card, closeAll, built) {
         var legacy = !!card.legacy;
-        var name = card.display_name || (legacy ? shortValue(card.lxmf_hash, 8, 4) : 'Unnamed Contact');
-        var subtitle = legacy ? 'Legacy contact QR \u00b7 no name included'
+        var subtitle = legacy ? 'QR from another app, no name included'
             : (card.is_device ? 'Device card verified' : 'Contact card verified');
         var caps = Array.isArray(card.caps) ? card.caps : [];
-        var deviceRow = card.is_device
-            ? '<div class="contact-card-detail-row"><span>Device</span><code>' +
-                escapeHtml(caps.indexOf('rsnode') !== -1 ? 'rsNode Repeater' : 'Device') + '</code></div>'
-            : '';
+        var device = card.is_device ? (caps.indexOf('rsnode') !== -1 ? 'rsNode Repeater' : 'Device') : '';
+        var title = built && built.q('.ui-dialog-title');
+        if (title) title.textContent = 'Add contact';
         parent.innerHTML =
-            '<div class="contact-scan-success">' +
-                '<div class="contact-scan-avatar">' + (typeof identityAvatar === 'function' ? identityAvatar(card.lxmf_hash, 72) : '') + '</div>' +
-                '<div class="contact-scan-name' + (legacy && !card.display_name ? ' mono' : '') + '">' + escapeHtml(name) + '</div>' +
-                '<div class="contact-scan-subtitle">' + subtitle + '</div>' +
-                '<div class="contact-card-detail-list">' + deviceRow +
-                    '<div class="contact-card-detail-row"><span>LXMF Address</span><code>' + escapeHtml(shortValue(card.lxmf_hash, 12, 8)) + '</code></div>' +
-                    '<div class="contact-card-detail-row"><span>Identity Hash</span><code>' + escapeHtml(shortValue(card.identity_hash, 12, 8)) + '</code></div>' +
-                    '<div class="contact-card-detail-row"><span>Public Identity Key</span><code>' + escapeHtml(shortValue(card.public_key, 12, 10)) + '</code></div>' +
-                '</div>' +
-                '<div class="contact-scan-actions">' +
-                    '<button class="nr-btn nr-btn-ghost" id="contact-scan-cancel">Cancel</button>' +
-                    '<button class="nr-btn nr-btn-primary" id="contact-scan-add">Add</button>' +
-                '</div>' +
-            '</div>';
-        parent.querySelector('#contact-scan-cancel').addEventListener('click', closeAll);
-        parent.querySelector('#contact-scan-add').addEventListener('click', function() {
-            var btn = parent.querySelector('#contact-scan-add');
+            '<div class="qr-scan-card">' + RS.kit.avatar(card.lxmf_hash, 64) +
+                '<span class="ui-status"><span class="ui-dot ui-dot--online" aria-hidden="true"></span>' + escapeHtml(subtitle) + '</span></div>' +
+            '<div class="ui-field"><label class="ui-label" for="contact-scan-name">Name</label>' +
+                '<input class="ui-input" id="contact-scan-name" maxlength="64" autocomplete="off" placeholder="Optional" value="' + escapeHtml(card.display_name || '') + '" aria-describedby="contact-scan-name-help">' +
+                '<p class="ui-help" id="contact-scan-name-help">Only you see this name.</p></div>' +
+            '<dl class="ui-dl">' +
+                (device ? '<dt>Device</dt><dd>' + escapeHtml(device) + '</dd>' : '') +
+                '<dt>LXMF address</dt><dd>' + RS.kit.hash.copy(card.lxmf_hash, { form: 'fit', noun: 'LXMF address' }) + '</dd>' +
+                (card.identity_hash ? '<dt>Identity hash</dt><dd>' + RS.kit.hash.copy(card.identity_hash, { form: 'fit', noun: 'Identity hash' }) + '</dd>' : '') +
+                (card.public_key ? '<dt>Public key</dt><dd>' + RS.kit.hash.copy(card.public_key, { form: 'fit', noun: 'Public key' }) + '</dd>' : '') +
+            '</dl>';
+        var foot = built && built.foot;
+        if (foot) {
+            foot.hidden = false;
+            foot.innerHTML = '<button type="button" class="ui-btn ui-btn--quiet ui-desk-only" id="contact-scan-cancel">Cancel</button>' +
+                '<button type="button" class="ui-btn ui-btn--primary" id="contact-scan-add">Add contact</button>';
+        }
+        var root = foot || parent;
+        root.querySelector('#contact-scan-cancel').addEventListener('click', closeAll);
+        root.querySelector('#contact-scan-add').addEventListener('click', function() {
+            var btn = root.querySelector('#contact-scan-add');
+            var nameInput = parent.querySelector('#contact-scan-name');
+            var name = nameInput ? nameInput.value.trim() : '';
             btn.disabled = true;
-            btn.textContent = 'Adding...';
             RS.invoke('import_contact_card', { payload: payload }).then(function() {
+                // The card's own name is saved with it; an edited name replaces it.
+                if (name !== (card.display_name || '')) {
+                    return RS.invokeOrToast('add_contact', { args: { hash: card.lxmf_hash, display_name: name || null } }, 'Could not save the name');
+                }
+            }).then(function() {
                 showToast('Contact added', 'toast-success', 3000);
                 closeAll();
             }).catch(function(err) {
                 btn.disabled = false;
-                btn.textContent = 'Add';
                 showToast(err && err.message ? err.message : 'Could not add contact', 'toast-error', 3000);
             });
         });
@@ -1271,7 +1219,7 @@ z`,
 
     function openContactQrScanner(options) {
         options = options || {};
-        var scannerTitle = options.title || 'Scan QR Code';
+        var scannerTitle = options.title || 'Add from QR code';
         var checkingText = options.checkingText || 'Checking QR\u2026';
         var invalidText = options.invalidText || 'That QR isn\'t a contact card, paper message, or lxma:// address.';
         var invalidImageText = options.invalidImageText || invalidText;
@@ -1280,7 +1228,8 @@ z`,
         var emptyImageText = options.emptyImageText ||
             'No QR code found in that image.';
         var previewCommand = options.previewCommand || 'api_preview_contact_card';
-        var built = buildSheet('contact-scan-sheet');
+        var scanningText = options.scanningText ||
+            (previewCommand === 'api_preview_contact_card' ? 'Looking for a contact card\u2026' : 'Point the camera at a Ratspeak QR.');
         var stream = null;
         var stopped = false;
         var accepted = false;
@@ -1291,34 +1240,33 @@ z`,
         var liveGeneration = 0;
         var detecting = false;
         var firstDetectLogged = false;
-        built.sheet.innerHTML =
-            '<div class="contact-card-topbar">' +
-                '<div class="contact-scan-title">' + escapeHtml(scannerTitle) + '</div>' +
-                '<button class="contact-card-close" type="button" aria-label="Close">&times;</button>' +
-            '</div>' +
-            '<div class="contact-scan-body">' +
-                '<div class="contact-scan-camera-wrap">' +
-                    '<video class="contact-scan-video" autoplay muted playsinline></video>' +
-                    '<div class="contact-scan-fallback-label">' + iconSvg('image') + '<span>Scan Photo</span></div>' +
-                    '<div class="contact-scan-frame"></div>' +
-                '</div>' +
-                '<div class="contact-scan-status">Preparing scanner...</div>' +
-                '<div class="contact-scan-picker-actions">' +
-                    '<button class="nr-btn contact-scan-live-btn" type="button" id="contact-scan-live">' + iconSvg('scan') + '<span>Live Scan</span></button>' +
-                    '<button class="nr-btn nr-btn-ghost contact-scan-file-btn" type="button" id="contact-scan-file">' + iconSvg('image') + '<span>Scan Photo</span></button>' +
-                    '<button class="nr-btn nr-btn-ghost contact-scan-paste-btn" type="button" id="contact-scan-paste" hidden>' + iconSvg('paste') + '<span>Paste</span></button>' +
-                '</div>' +
-                '<input class="contact-scan-file-input" type="file" accept="image/*">' +
-            '</div>';
+        var built = RS.kit.dialog({
+            title: scannerTitle,
+            size: 'md',
+            className: 'qr-scan',
+            body: '<div class="qr-scan-body">' +
+                    '<div class="ui-viewfinder qr-scan-camera" role="img" aria-label="Camera preview"><video class="contact-scan-video" autoplay muted playsinline></video><i></i></div>' +
+                    '<div class="ui-notice ui-notice--warning qr-scan-nocam" hidden>' + RS.kit.icon('alert') +
+                        '<div class="ui-notice-body"><b>The camera isn\u2019t available.</b> Choose a photo of their QR code, or paste the card they sent you.</div></div>' +
+                    '<p class="ui-status qr-scan-status" role="status" aria-live="polite"><span class="ui-spin" aria-hidden="true"></span><span class="t">Preparing the camera\u2026</span></p>' +
+                    '<input class="contact-scan-file-input" type="file" accept="image/*" hidden>' +
+                '</div>',
+            foot: '<button type="button" class="ui-btn ui-btn--quiet" id="contact-scan-live" hidden>' + RS.kit.icon('eye') + 'Use camera</button>' +
+                '<button type="button" class="ui-btn ui-btn--quiet" id="contact-scan-paste" hidden>' + RS.kit.icon('clip') + 'Paste</button>' +
+                '<button type="button" class="ui-btn" id="contact-scan-file">' + RS.kit.icon('image') + 'Choose image</button>',
+            onClose: function() { stop(); }
+        });
 
-        var body = built.sheet.querySelector('.contact-scan-body');
-        var status = built.sheet.querySelector('.contact-scan-status');
-        var video = built.sheet.querySelector('video');
-        var cameraWrap = built.sheet.querySelector('.contact-scan-camera-wrap');
-        var fileInput = built.sheet.querySelector('.contact-scan-file-input');
-        var fileButton = built.sheet.querySelector('#contact-scan-file');
-        var liveButton = built.sheet.querySelector('#contact-scan-live');
-        var pasteButton = built.sheet.querySelector('#contact-scan-paste');
+        var body = built.q('.qr-scan-body');
+        var statusLine = built.q('.qr-scan-status');
+        var status = statusLine.querySelector('.t');
+        var video = built.q('video');
+        var cameraWrap = built.q('.qr-scan-camera');
+        var noCameraNotice = built.q('.qr-scan-nocam');
+        var fileInput = built.q('.contact-scan-file-input');
+        var fileButton = built.q('#contact-scan-file');
+        var liveButton = built.q('#contact-scan-live');
+        var pasteButton = built.q('#contact-scan-paste');
         var scanCanvas = document.createElement('canvas');
         var scanCtx = null;
         try {
@@ -1372,36 +1320,35 @@ z`,
             endPaste();
         }
 
-        // The sheet now shows what was scanned; nothing more is read into it.
+        // The dialog now shows what was scanned; nothing more is read into it.
         function accept() {
             accepted = true;
             endPaste();
+            if (built.foot && !built.foot.querySelector('#contact-scan-add')) built.foot.hidden = true;
         }
 
+        // Every close (the button, Escape, the scrim, native Back) stops the camera first.
         function closeAll() {
             stop();
-            closeSheet(built.overlay, built.sheet);
+            built.close(null);
         }
 
-        // Native Android Back must take the same path as the visible close
-        // controls so an active camera stream is stopped before removal.
-        built.sheet._ratspeakDismiss = closeAll;
-
+        // The viewfinder shows only while the camera runs; the spinner only while it looks.
         function setFallbackReady(ready) {
-            if (!cameraWrap) return;
-            cameraWrap.classList.toggle('fallback-ready', !!ready);
+            if (cameraWrap) cameraWrap.hidden = !!ready;
         }
 
         function setScannerMode(mode) {
             var fallback = mode === 'fallback';
-            built.sheet.classList.toggle('contact-scan-prefers-fallback', fallback);
-            built.sheet.classList.toggle('contact-scan-prefers-live', !fallback);
-            liveButton.classList.toggle('nr-btn-ghost', fallback);
-            fileButton.classList.toggle('nr-btn-ghost', !fallback);
+            statusLine.classList.toggle('is-looking', !fallback);
+            liveButton.hidden = !fallback || liveButton.disabled;
         }
 
+        // No camera here: the notice says so, and a photo or a paste still works.
         function setLiveButtonEnabled(enabled) {
             liveButton.disabled = !enabled;
+            if (!enabled) liveButton.hidden = true;
+            if (noCameraNotice) noCameraNotice.hidden = !!enabled;
         }
 
         function handleScannedPayload(payload, source, invalidMessage, retry) {
@@ -1430,7 +1377,7 @@ z`,
                 if (typeof options.onPreview === 'function') {
                     options.onPreview(body, payload, preview, closeAll);
                 } else {
-                    showScannedCardPreview(body, payload, preview, closeAll);
+                    showScannedCardPreview(body, payload, preview, closeAll, built);
                 }
                 accept();
             }).catch(function(err) {
@@ -1470,7 +1417,7 @@ z`,
             setFallbackReady(true);
             setScannerMode('fallback');
             setLiveButtonEnabled(true);
-            status.textContent = 'Reading QR image...';
+            status.textContent = 'Reading the image\u2026';
             contactScanDiag('file_selected', {
                 type: file.type || '',
                 size: file.size || 0,
@@ -1584,7 +1531,7 @@ z`,
 
         function clipboardReadFailed(err) {
             contactScanDiag('clipboard_read_failed', scanErrorDetail(err));
-            if (!stopped && !accepted && !busy) status.textContent = 'Clipboard access was unavailable. Use Scan Photo.';
+            if (!stopped && !accepted && !busy) status.textContent = 'Clipboard access was unavailable. Choose an image instead.';
         }
 
         function readClipboardText() {
@@ -1627,7 +1574,7 @@ z`,
 
         // On the document, capturing: a paste goes to whatever has focus, often the composer behind the sheet.
         function onPaste(e) {
-            if (stopped || accepted || !built.sheet.isConnected) {
+            if (stopped || accepted || !built.isOpen()) {
                 endPaste();
                 return;
             }
@@ -1663,7 +1610,7 @@ z`,
             setFallbackReady(false);
             setScannerMode('live');
             setLiveButtonEnabled(true);
-            status.textContent = 'Opening camera...';
+            status.textContent = 'Opening the camera\u2026';
             contactScanDiag('live_start_requested', { reason: reason || 'manual' });
             var generation = ++liveGeneration;
 
@@ -1674,7 +1621,7 @@ z`,
                     setFallbackReady(true);
                     setScannerMode('fallback');
                     setLiveButtonEnabled(false);
-                    status.textContent = 'Live QR scanning is not available in this WebView. Use Scan Photo.';
+                    status.textContent = '';
                     return;
                 }
                 if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
@@ -1682,7 +1629,7 @@ z`,
                     setFallbackReady(true);
                     setScannerMode('fallback');
                     setLiveButtonEnabled(false);
-                    status.textContent = 'Camera access is not available in this WebView. Use Scan Photo.';
+                    status.textContent = '';
                     contactScanDiag('get_user_media_missing');
                     return;
                 }
@@ -1699,7 +1646,7 @@ z`,
                         setFallbackReady(true);
                         setScannerMode('fallback');
                         setLiveButtonEnabled(true);
-                        status.textContent = 'Camera permission is required for live scan. You can still use Scan Photo.';
+                        status.textContent = 'Ratspeak needs camera access to scan. You can still choose an image.';
                         return null;
                     }
                     var constraints = {
@@ -1718,7 +1665,7 @@ z`,
                     liveStarting = false;
                     liveActive = true;
                     video.srcObject = stream;
-                    status.textContent = 'Point the camera at a Ratspeak QR.';
+                    status.textContent = scanningText;
                     var tracks = stream.getVideoTracks ? stream.getVideoTracks() : [];
                     contactScanDiag('get_user_media_ready', { video_tracks: tracks.length });
                     var detector = null;
@@ -1731,7 +1678,7 @@ z`,
                         setFallbackReady(true);
                         setScannerMode('fallback');
                         setLiveButtonEnabled(false);
-                        status.textContent = 'Live QR scanning is not available in this WebView. Use Scan Photo.';
+                        status.textContent = '';
                         contactScanDiag('detector_create_failed', scanErrorDetail(err));
                         return;
                     }
@@ -1796,7 +1743,7 @@ z`,
                                 handleScannedPayload(codes[0].rawValue, 'live', invalidText, function() {
                                     setTimeout(function() {
                                         if (!stopped && liveActive) {
-                                            status.textContent = 'Point the camera at a Ratspeak QR.';
+                                            status.textContent = scanningText;
                                             scheduleScan();
                                         }
                                     }, 1200);
@@ -1833,15 +1780,10 @@ z`,
                     setScannerMode('fallback');
                     setLiveButtonEnabled(true);
                     contactScanDiag('get_user_media_failed', scanErrorDetail(err));
-                    status.textContent = err && err.message ? err.message : 'Could not open camera. Use Scan Photo.';
+                    status.textContent = err && err.message ? err.message : 'Could not open the camera. Choose an image instead.';
                 });
             });
         }
-
-        built.overlay.addEventListener('click', function(e) {
-            if (e.target === built.overlay) closeAll();
-        });
-        built.sheet.querySelector('.contact-card-close').addEventListener('click', closeAll);
 
         function openImageInput(input, message, diagStep) {
             contactScanDiag(diagStep);
@@ -1852,7 +1794,7 @@ z`,
         }
 
         fileButton.addEventListener('click', function() {
-            openImageInput(fileInput, 'Choose a QR image.', 'file_picker_open');
+            openImageInput(fileInput, 'Choose an image of the QR code.', 'file_picker_open');
         });
         fileInput.addEventListener('change', function() {
             decodeImageFile(fileInput.files && fileInput.files[0]);
@@ -1883,7 +1825,7 @@ z`,
             setFallbackReady(true);
             setScannerMode('fallback');
             setLiveButtonEnabled(true);
-            status.textContent = 'Use Scan Photo on this WebView, or try Live Scan.';
+            status.textContent = 'Choose a photo of the QR code, or use the camera.';
         } else {
             setScannerMode('live');
             setLiveButtonEnabled(true);
@@ -1894,155 +1836,11 @@ z`,
         }
     }
 
-    function addContactByAddress() {
-        rsPromptContact({ title: 'Add Contact' }).then(function(result) {
-            if (!result) return;
-            RS.invokeOrToast('add_contact', { args: { hash: result.hash, display_name: result.display_name } }, 'Could not add contact');
-        });
-    }
-
-    function isMobileContactFlow() {
-        return isCompactLayout();
-    }
-
-    function closeContactAddDial() {
-        if (!activeContactAddDial) return;
-        var dial = activeContactAddDial;
-        activeContactAddDial = null;
-
-        if (dial.trigger) {
-            dial.trigger.classList.remove('dial-open');
-            dial.trigger.setAttribute('aria-expanded', 'false');
-        }
-        dial.actions.classList.remove('open');
-        dial.scrim.classList.remove('active');
-        document.removeEventListener('keydown', dial.onKey, true);
-
-        setTimeout(function() {
-            if (dial.scrim.parentNode) dial.scrim.remove();
-            if (dial.actions.parentNode) dial.actions.remove();
-        }, 130);
-    }
-
-    function showContactAddDial(trigger, items) {
-        if (!trigger || !items || !items.length) return false;
-        if (activeContactAddDial && activeContactAddDial.trigger === trigger) {
-            closeContactAddDial();
-            return true;
-        }
-        closeContactAddDial();
-
-        var scrim = document.createElement('div');
-        scrim.className = 'fab-dial-scrim contact-add-dial-scrim';
-        scrim.addEventListener('mousedown', function(e) { e.preventDefault(); });
-        scrim.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });
-        scrim.addEventListener('touchend', function(e) { e.preventDefault(); closeContactAddDial(); });
-        scrim.addEventListener('click', closeContactAddDial);
-
-        var actions = document.createElement('div');
-        actions.className = 'fab-dial-actions contact-add-dial-actions';
-        actions.setAttribute('role', 'menu');
-
-        items.forEach(function(item) {
-            var row = document.createElement('div');
-            row.className = 'fab-dial-item';
-            row.setAttribute('role', 'menuitem');
-
-            var label = document.createElement('span');
-            label.className = 'fab-dial-label';
-            label.textContent = item.label;
-
-            var btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'fab-dial-btn';
-            btn.setAttribute('aria-label', item.label);
-            btn.innerHTML = item.icon || '';
-
-            var activated = false;
-            function activate(e) {
-                if (activated) return;
-                activated = true;
-                if (e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                }
-                if (typeof haptic === 'function') haptic('selection');
-                closeContactAddDial();
-                if (typeof item.onSelect === 'function') setTimeout(item.onSelect, 0);
-            }
-
-            row.addEventListener('mousedown', function(e) { e.preventDefault(); });
-            row.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });
-            row.addEventListener('touchend', function(e) {
-                var t = (e.changedTouches && e.changedTouches[0]) || null;
-                if (t) {
-                    var hit = document.elementFromPoint(t.clientX, t.clientY);
-                    if (hit !== row && !row.contains(hit)) return;
-                }
-                activate(e);
-            });
-            row.addEventListener('click', activate);
-
-            row.appendChild(label);
-            row.appendChild(btn);
-            actions.appendChild(row);
-        });
-
-        function onKey(e) {
-            if (e.key === 'Escape') {
-                e.stopPropagation();
-                closeContactAddDial();
-            }
-        }
-
-        document.body.appendChild(scrim);
-        document.body.appendChild(actions);
-        activeContactAddDial = {
-            trigger: trigger,
-            scrim: scrim,
-            actions: actions,
-            onKey: onKey,
-        };
-        document.addEventListener('keydown', onKey, true);
-
-        trigger.classList.add('dial-open');
-        trigger.setAttribute('aria-expanded', 'true');
-        requestAnimationFrame(function() {
-            scrim.classList.add('active');
-            actions.classList.add('open');
-        });
-        return true;
-    }
-
-    function openContactAddOptions(trigger) {
-        var items = [
-            {
-                label: 'Address',
-                icon: iconSvg('address'),
-                onSelect: addContactByAddress,
-            },
-            {
-                label: 'QR',
-                icon: iconSvg('qr'),
-                onSelect: openContactQrScanner,
-            },
-        ];
-        if (isMobileContactFlow() && showContactAddDial(trigger, items)) {
-            return;
-        }
-        if (typeof actionPopover === 'function') {
-            actionPopover(trigger, items, { mobileSheet: false });
-        } else {
-            addContactByAddress();
-        }
-    }
-
     window.RSContactCard = {
         renderQrCanvas: renderQrCanvas,
         shareQrCanvas: shareQrCanvas,
         openIdentityShareScreen: showIdentityShareScreen,
         openContactQrScanner: openContactQrScanner,
-        openContactAddOptions: openContactAddOptions,
     };
     window.RS.qr = {
         openPaperShare: showPaperShareScreen,
@@ -2059,8 +1857,6 @@ z`,
         shareCanvas: shareQrCanvas,
         openScanner: openContactQrScanner,
     };
-    window.closeContactAddDial = closeContactAddDial;
     window.openIdentityShareScreen = showIdentityShareScreen;
-    window.openContactAddOptions = openContactAddOptions;
     window.openContactQrScanner = openContactQrScanner;
 })();

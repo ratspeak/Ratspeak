@@ -33,7 +33,7 @@ function ratspeakSupportsFeaturesFor(recordOrHash) {
 
 function ratspeakNameBadgeHtml(recordOrHash) {
     if (!ratspeakSupportsFeaturesFor(recordOrHash)) return '';
-    return '<span class="ratspeak-name-badge" title="Ratspeak user" aria-label="Ratspeak user">&#9733;</span>';
+    return RS.kit.mark();
 }
 
 function ratspeakProfileStatusText(recordOrHash) {
@@ -69,6 +69,7 @@ var PeersCache = (function() {
     var _subs = [];
     var _initialized = false;
     var _initPromise = null;
+    var _loadFailed = false;
     var _retierTimer = null;
     // Product preference, default-on until the durable app-settings payload
     // arrives. This is presentation filtering only; it never creates an RNS
@@ -193,6 +194,18 @@ var PeersCache = (function() {
             last_interface: typeof r.last_interface === 'string' ? r.last_interface : '',
             services: services,
             supports_ratspeak: services.indexOf('ratspeak.client') !== -1,
+            signal: _normalizeSignal(r.signal),
+        };
+    }
+
+    // The last direct radio packet's reading, as the runtime measured it; null when there is none.
+    function _normalizeSignal(signal) {
+        if (!signal || typeof signal !== 'object' || typeof signal.rssi !== 'number' || !isFinite(signal.rssi)) return null;
+        return {
+            rssi: signal.rssi,
+            snr: typeof signal.snr === 'number' && isFinite(signal.snr) ? signal.snr : null,
+            at: typeof signal.at === 'number' ? signal.at : null,
+            interface: typeof signal.interface === 'string' ? signal.interface : '',
         };
     }
 
@@ -213,6 +226,7 @@ var PeersCache = (function() {
                 }
                 _cache = fresh;
                 _initialized = true;
+                _loadFailed = false;
                 if (!_retierTimer) {
                     _retierTimer = setInterval(_notify, RETIER_INTERVAL_MS);
                 }
@@ -221,6 +235,8 @@ var PeersCache = (function() {
             .catch(function(e) {
                 window.RS.diag('error', '[PeersCache] init failed:', e);
                 _initPromise = null; // allow retry
+                _loadFailed = !_initialized;
+                _notify();
                 throw e;
             });
         return _initPromise;
@@ -249,6 +265,7 @@ var PeersCache = (function() {
                 existing.services = n.services;
                 existing.supports_ratspeak = n.supports_ratspeak;
             }
+            if (payload.signal !== undefined) existing.signal = n.signal;
         } else {
             _cache[n.hash] = n;
         }
@@ -289,6 +306,7 @@ var PeersCache = (function() {
         _cache = fresh;
         _initialized = true;
         _initPromise = null;
+        _loadFailed = false;
         if (!_retierTimer) {
             _retierTimer = setInterval(_notify, RETIER_INTERVAL_MS);
         }
@@ -352,12 +370,13 @@ var PeersCache = (function() {
         return 'offline';
     }
 
+    // One ladder for captions, presence, and headers: Active, Seen recently, then the heard sentence.
     function computeActivity(entry, nowSecs) {
-        if (entry.last_seen == null) return { tier: 'never', label: 'Never seen' };
+        if (entry.last_seen == null) return { tier: 'never', label: 'Not heard yet' };
         var age = Math.max(0, nowSecs - entry.last_seen);
-        if (age < STALE_AFTER_SECS) return { tier: 'recent', label: 'Last heard recently' };
-        if (age < OFFLINE_AFTER_SECS) return { tier: 'today', label: 'Last heard today' };
-        return { tier: 'older', label: 'Last heard ' + prettyTime(age) + ' ago' };
+        if (age < STALE_AFTER_SECS) return { tier: 'recent', label: 'Active' };
+        if (age < OFFLINE_AFTER_SECS) return { tier: 'today', label: 'Seen recently' };
+        return { tier: 'older', label: RS.kit.time.lastHeard(entry.last_seen) };
     }
 
     function computeRoute(pi) {
@@ -393,6 +412,9 @@ var PeersCache = (function() {
     }
 
     function isInitialized() { return _initialized; }
+
+    // The snapshot never arrived, so an empty list means "didn't load", not "no peers".
+    function loadFailed() { return _loadFailed; }
 
     // Conversation history is durable relationship evidence but is owned by
     // the messaging cache. Invalidate visibility when that cache changes.
@@ -467,6 +489,7 @@ var PeersCache = (function() {
                 last_seen: entry.last_seen,
                 first_seen: entry.first_seen,
                 last_interface: entry.last_interface || '',
+                signal: entry.signal || null,
                 hops: hops,
                 via: pi ? (pi.via || null) : null,
                 iface: iface,
@@ -525,5 +548,6 @@ var PeersCache = (function() {
         enriched: enriched,
         compareByLastSeen: compareByLastSeen,
         isInitialized: isInitialized,
+        loadFailed: loadFailed,
     };
 })();

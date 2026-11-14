@@ -788,64 +788,35 @@
         </div>
 
         <div class="view" id="view-peers">
-            <div class="peers-layout">
-                <div class="peers-content">
-                    <div class="peers-list-panel">
-                        <div class="peers-toolbar">
-                            <input type="text" id="peers-search" class="nr-input-sm list-search-input" placeholder="Search..." aria-label="Search peers" autocorrect="off" autocapitalize="none" spellcheck="false">
-                            <div class="toolbar-dropdown peers-sort-dropdown">
-                                <button class="toolbar-dropdown-btn" id="peers-sort-btn" type="button" aria-label="Sort peers" title="Sort peers">
-                                    <span class="peers-sort-label">Sort by</span>
-                                    <svg class="peers-sort-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="6 9 12 15 18 9"/></svg>
-                                </button>
-                                <div class="toolbar-dropdown-menu" id="peers-sort-menu">
-                                    <button class="toolbar-dropdown-item" data-sort="name">Alphabetical</button>
-                                    <button class="toolbar-dropdown-item" data-sort="hops">Hops</button>
-                                    <button class="toolbar-dropdown-item active" data-sort="last_seen">Last Seen</button>
-                                </div>
-                            </div>
-                        </div>
-                        <div class="peers-list-scroll" id="peers-list-scroll">
-                            <div class="peers-list-body" id="peers-list-body"></div>
-                        </div>
+            <div class="ui-split people-split">
+                <section class="ui-pane" aria-labelledby="peers-title">
+                    <header class="ui-pane-head"><h2 class="ui-pane-title" id="peers-title">Peers</h2><span class="ui-pane-count" id="peers-count"></span></header>
+                    <div class="ui-pane-search" id="peers-search-wrap" hidden>
+                        <div class="ui-search" role="search"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input type="search" id="peers-search" placeholder="Search peers" aria-label="Search peers" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"><button type="button" class="ui-icon-btn ui-icon-btn--sm" id="peers-search-clear" aria-label="Clear search" title="Clear search" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button><span class="ui-search-sep" aria-hidden="true"></span><button type="button" class="ui-icon-btn ui-icon-btn--sm" id="peers-sort-btn" aria-label="Sort, sorted by last heard" title="Sort" aria-haspopup="menu" aria-expanded="false" aria-pressed="false"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="4" y1="7" x2="13" y2="7"/><line x1="19" y1="7" x2="20" y2="7"/><circle cx="16" cy="7" r="2.5"/><line x1="4" y1="17" x2="5" y2="17"/><line x1="11" y1="17" x2="20" y2="17"/><circle cx="8" cy="17" r="2.5"/></svg></button></div>
                     </div>
-                    <div class="peers-detail-panel" id="peers-detail-panel">
-                        <div class="peers-detail-empty" id="peers-detail-empty">
-                            <svg class="empty-state-svg" width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                            <span class="text-sm text-muted-color">Select a peer to view details</span>
-                        </div>
-                        <div class="peers-detail-content" id="peers-detail-content" style="display:none;"></div>
+                    <div class="ui-pane-scroll" id="peers-list-scroll">
+                        <div class="ui-list peers-vlist" id="peers-list-body"></div>
                     </div>
-                </div>
+                </section>
+                <section class="ui-detail" id="peers-detail-panel" aria-label="Peer details">
+                    <div class="person-fill" id="peers-detail-empty"></div>
+                    <div class="person-fill" id="peers-detail-content" hidden></div>
+                </section>
             </div>
         </div>
 
         <div class="view" id="view-contacts">
-            <div class="contacts-standalone">
-                <div class="contacts-standalone-header">
-                    <div class="contacts-standalone-title">
-                        <h2>Contacts</h2>
-                        <span id="contacts-count">0 contacts</span>
+            <div class="ui-split people-split">
+                <section class="ui-pane" aria-labelledby="contacts-title">
+                    <header class="ui-pane-head"><h2 class="ui-pane-title" id="contacts-title">Contacts</h2><span class="ui-pane-count" id="contacts-count"></span>
+                        <div class="ui-pane-actions"><button type="button" class="ui-icon-btn" id="contacts-add-btn" aria-label="Add contact" title="Add contact" aria-haspopup="menu" aria-expanded="false"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg></button></div></header>
+                    <div class="ui-pane-search" id="contacts-search-wrap" hidden>
+                        <div class="ui-search" role="search"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input type="search" id="contacts-search" placeholder="Search contacts" aria-label="Search contacts" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"><button type="button" class="ui-icon-btn ui-icon-btn--sm" id="contacts-search-clear" aria-label="Clear search" title="Clear search" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
                     </div>
-                    <button class="nr-btn nr-btn-sm contacts-add-btn" id="contacts-add-btn" title="Add contact" aria-label="Add contact">
-                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-                        <span>Add Contact</span>
-                    </button>
-                </div>
-                <div class="contacts-standalone-toolbar">
-                    <input type="text" id="contacts-search" class="nr-input-sm list-search-input" placeholder="Search..." aria-label="Search contacts" autocorrect="off" autocapitalize="none" spellcheck="false">
-                </div>
-                <div class="contacts-list-scroll" id="contacts-standalone-list">
-                    <div class="empty-state">
-                        <svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                        <span class="empty-state-primary">No contacts yet</span>
-                        <span class="empty-state-hint">Add a contact from Peers, or tap +</span>
-                    </div>
-                </div>
+                    <div class="ui-pane-scroll" id="contacts-standalone-list"></div>
+                </section>
+                <section class="ui-detail" id="contacts-detail" aria-label="Contact details"></section>
             </div>
-            <button class="view-fab" id="contacts-add-fab" title="Add contact" aria-label="Add contact">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-            </button>
         </div>
 
         <div class="view" id="view-network">
@@ -1017,191 +988,107 @@
             </div>
         </div>
 
-        <div class="bottom-sheet-overlay" id="identity-modal-overlay"></div>
-        <div class="bottom-sheet" id="identity-modal" role="dialog" aria-modal="true" aria-labelledby="identity-modal-title">
-            <div class="bottom-sheet-handle"></div>
-            <div class="bottom-sheet-header">
-                <div class="bottom-sheet-title" id="identity-modal-title">Identity</div>
-                <button class="bottom-sheet-close" id="identity-modal-close" aria-label="Close">&times;</button>
-            </div>
-            <div class="bottom-sheet-body">
-                <div id="identity-modal-body"></div>
-            </div>
-            <div class="bottom-sheet-footer">
-                <button class="rs-dialog-cancel" id="identity-modal-cancel">Cancel</button>
-                <button class="rs-dialog-confirm" id="identity-modal-confirm">Create</button>
-            </div>
-        </div>
         <input type="file" id="identity-file-input" accept=".rsi,.rniid,.key,.identity,.bin,application/json,application/octet-stream,text/plain" style="display:none;">
 
-        <div class="bottom-sheet-overlay" id="hw-modal-overlay"></div>
-        <div class="bottom-sheet" id="hw-modal" role="dialog" aria-modal="true" aria-labelledby="hw-modal-title">
-            <div class="bottom-sheet-handle"></div>
-            <div class="bottom-sheet-header">
-                <div class="bottom-sheet-title" id="hw-modal-title">Hardware Key</div>
-                <button class="bottom-sheet-close" id="hw-modal-close" aria-label="Close">&times;</button>
-            </div>
-            <div class="bottom-sheet-body">
-                <!-- Step: detect -->
-                <div class="hw-step" id="hw-step-detect" style="display:none;">
-                    <div class="hw-detect-panel" id="hw-detect-panel">
-                        <div class="hw-detect-spinner"><span class="loading-spinner"></span></div>
-                        <div class="hw-detect-text" id="hw-detect-text">Looking for a security key…</div>
-                    </div>
-                    <button class="nr-btn nr-btn-ghost w-full mt-3" id="hw-detect-back-btn">Back</button>
-                    <button class="nr-btn w-full mt-4" id="hw-detect-retry-btn" style="display:none;">Retry</button>
+        <div class="ui-modal" id="hw-modal-overlay" role="presentation" hidden>
+            <div class="ui-dialog ui-dialog--md rs-sheet-shell" id="hw-modal" role="dialog" aria-modal="true" aria-labelledby="hw-modal-title" tabindex="-1">
+                <div class="ui-dialog-handle" aria-hidden="true"></div>
+                <div class="ui-dialog-head">
+                    <h2 class="ui-dialog-title" id="hw-modal-title">Add a hardware key</h2>
+                    <button type="button" class="ui-icon-btn" id="hw-modal-close" aria-label="Close" title="Close"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
                 </div>
+                <div class="ui-dialog-body">
+                    <!-- Step: detect -->
+                    <div class="hw-step" id="hw-step-detect" style="display:none;">
+                        <p class="ui-status hw-detect" id="hw-detect-panel" role="status"><span class="ui-spin" aria-hidden="true"></span><span id="hw-detect-text">Looking for a security key…</span></p>
+                        <div class="hw-actions">
+                            <button type="button" class="ui-btn ui-btn--quiet" id="hw-detect-back-btn">Back</button>
+                            <button type="button" class="ui-btn ui-btn--primary" id="hw-detect-retry-btn" style="display:none;">Try again</button>
+                        </div>
+                    </div>
 
-                <!-- Step: choose mode -->
-                <div class="hw-step" id="hw-step-mode" style="display:none;">
-                    <div class="hw-device-summary" id="hw-mode-device"></div>
-                    <p class="hw-step-lead">How should this identity be backed up?</p>
-                    <button type="button" class="hw-mode-card" id="hw-mode-recoverable">
-                        <span class="hw-mode-card-title">Recoverable <span class="hw-recommended-note">(Recommended)</span></span>
-                        <span class="hw-mode-card-sub">12-word backup phrase</span>
-                        <span class="hw-mode-card-desc">A 12-word phrase lets you restore this identity if the key is lost. The phrase is a second secret — it is <strong>not</strong> protected by your PIN, and the keys briefly exist in this device's memory during setup.</span>
-                    </button>
-                    <button type="button" class="hw-mode-card" id="hw-mode-hardware-only">
-                        <span class="hw-mode-card-title">Hardware-only</span>
-                        <span class="hw-mode-card-sub">No backup</span>
-                        <span class="hw-mode-card-desc">Keys are generated on the device and never leave it. There is no phrase to lose — but if the key is lost or reset, this identity is gone forever.</span>
-                    </button>
-                    <button class="nr-btn nr-btn-ghost w-full mt-3" id="hw-mode-back-btn">Back</button>
-                </div>
+                    <!-- Step: choose mode -->
+                    <div class="hw-step" id="hw-step-mode" style="display:none;">
+                        <div id="hw-mode-device"></div>
+                        <p>How should this identity be backed up?</p>
+                        <div class="ui-choices" role="menu">
+                            <button type="button" class="ui-menu-item" role="menuitem" id="hw-mode-recoverable"><span class="lbl"><span>Recoverable<span class="ui-tag ui-tag--accent">Recommended</span></span><small>Ratspeak makes a 12-word phrase, then writes the key to the YubiKey. Lose the key and the phrase restores it.</small></span><svg class="ui-ico trail" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="9 18 15 12 9 6"/></svg></button>
+                            <button type="button" class="ui-menu-item" role="menuitem" id="hw-mode-hardware-only"><span class="lbl"><span>Key only</span><small>The key is made on the YubiKey and never leaves it. Lose or reset the key and this identity is gone.</small></span><svg class="ui-ico trail" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="9 18 15 12 9 6"/></svg></button>
+                        </div>
+                        <div class="hw-actions"><button type="button" class="ui-btn ui-btn--quiet" id="hw-mode-back-btn">Back</button></div>
+                    </div>
 
-                <!-- Step: PIN -->
-                <div class="hw-step" id="hw-step-pin" style="display:none;">
-                    <p class="hw-step-lead">Set a PIN to protect this key. Use a factory-fresh or freshly reset security key.</p>
-                    <div class="modal-field">
-                        <label>Display name</label>
-                        <input type="text" id="hw-pin-nickname" class="modal-input" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="e.g. Rat King">
+                    <!-- Step: PIN -->
+                    <div class="hw-step" id="hw-step-pin" style="display:none;">
+                        <p>Set a PIN to protect this key. Use a factory-fresh or freshly reset security key.</p>
+                        <div class="ui-field"><label class="ui-label" for="hw-pin-nickname">Name</label><input class="ui-input" id="hw-pin-nickname" type="text" maxlength="32" placeholder="Optional" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"></div>
+                        <div class="ui-field"><label class="ui-label" for="hw-pin">PIN</label><input class="ui-input" id="hw-pin" type="password" inputmode="numeric" maxlength="8" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-describedby="hw-pin-help"><p class="ui-help" id="hw-pin-help">6 to 8 characters.</p></div>
+                        <div class="ui-field"><label class="ui-label" for="hw-pin-confirm">Confirm PIN</label><input class="ui-input" id="hw-pin-confirm" type="password" inputmode="numeric" maxlength="8" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"></div>
+                        <p class="ui-error" id="hw-pin-error" style="display:none;"></p>
+                        <div class="hw-actions">
+                            <button type="button" class="ui-btn ui-btn--quiet" id="hw-pin-back-btn">Back</button>
+                            <button type="button" class="ui-btn ui-btn--primary" id="hw-pin-continue-btn" disabled>Continue</button>
+                        </div>
                     </div>
-                    <div class="modal-field" style="margin-top:10px;">
-                        <label>PIN <span class="hw-inline-hint">6–8 characters</span></label>
-                        <input type="password" id="hw-pin" class="modal-input" inputmode="numeric" maxlength="8" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Choose a PIN">
-                    </div>
-                    <div class="modal-field" style="margin-top:10px;">
-                        <label>Confirm PIN</label>
-                        <input type="password" id="hw-pin-confirm" class="modal-input" inputmode="numeric" maxlength="8" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Re-enter PIN">
-                    </div>
-                    <div class="hw-error" id="hw-pin-error" style="display:none;"></div>
-                    <button class="nr-btn w-full mt-4" id="hw-pin-continue-btn" disabled>Continue</button>
-                    <button class="nr-btn nr-btn-ghost w-full mt-3" id="hw-pin-back-btn">Back</button>
-                </div>
 
-                <!-- Step: provisioning spinner -->
-                <div class="hw-step" id="hw-step-working" style="display:none;">
-                    <div class="hw-detect-panel">
-                        <div class="hw-detect-spinner"><span class="loading-spinner"></span></div>
-                        <div class="hw-detect-text" id="hw-working-text">Provisioning your security key…</div>
-                        <div class="hw-detect-sub">Touch the key if it blinks.</div>
+                    <!-- Step: provisioning spinner -->
+                    <div class="hw-step" id="hw-step-working" style="display:none;">
+                        <p class="ui-status" role="status"><span class="ui-spin" aria-hidden="true"></span><span id="hw-working-text">Provisioning your security key…</span></p>
+                        <p class="ui-help">Touch the key if it blinks.</p>
                     </div>
-                </div>
 
-                <!-- Step: reveal mnemonic -->
-                <div class="hw-step" id="hw-step-mnemonic" style="display:none;">
-                    <p class="hw-step-lead">Write down these 12 words in order and store them somewhere safe. This is the only time they will be shown — Ratspeak does not store them.</p>
-                    <div class="hw-mnemonic-shell">
-                        <div class="hw-mnemonic-grid" id="hw-mnemonic-grid"></div>
-                        <button type="button" class="hw-mnemonic-cover" id="hw-mnemonic-cover">
-                            <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
-                            <span>Tap to reveal phrase</span>
-                        </button>
+                    <!-- Step: reveal mnemonic -->
+                    <div class="hw-step" id="hw-step-mnemonic" style="display:none;">
+                        <p>Write down these 12 words in order and keep them offline. This is the only time they are shown; Ratspeak doesn’t store them.</p>
+                        <div class="ui-phrase is-covered" id="hw-mnemonic-shell">
+                            <ol id="hw-mnemonic-grid" aria-hidden="true"></ol>
+                            <button type="button" class="ui-phrase-cover" id="hw-mnemonic-cover"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>Show the 12 words</button>
+                        </div>
+                        <button type="button" class="ui-btn ui-btn--quiet ui-btn--sm identity-phrase-copy" id="hw-mnemonic-copy-btn"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>Copy phrase</button>
+                        <label class="ui-check-row"><input type="checkbox" id="hw-mnemonic-confirm"><span class="ui-check"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="20 6 9 17 4 12"/></svg></span><span>I’ve written down the 12 words and stored them safely.</span></label>
+                        <div class="hw-actions"><button type="button" class="ui-btn ui-btn--primary" id="hw-mnemonic-continue-btn" disabled>Continue</button></div>
                     </div>
-                    <button class="nr-btn nr-btn-ghost w-full mt-3" id="hw-mnemonic-copy-btn">
-                        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px;margin-right:6px;"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-                        Copy phrase
-                    </button>
-                    <label class="hw-confirm-check">
-                        <input type="checkbox" id="hw-mnemonic-confirm">
-                        <span>I have written down my 12-word phrase and stored it safely.</span>
-                    </label>
-                    <button class="nr-btn w-full mt-4" id="hw-mnemonic-continue-btn" disabled>Continue</button>
-                </div>
 
-                <!-- Step: restore from phrase -->
-                <div class="hw-step" id="hw-step-restore" style="display:none;">
-                    <p class="hw-step-lead">Enter your 12-word recovery phrase, then set the PIN to write it onto a factory-fresh or reset security key.</p>
-                    <div class="modal-field">
-                        <label>Recovery phrase</label>
-                        <textarea id="hw-restore-phrase" class="modal-input hw-restore-textarea" rows="3" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="word1 word2 word3 …"></textarea>
-                        <span class="hw-inline-hint" id="hw-restore-word-count">0 / 12 words</span>
+                    <!-- Step: restore from phrase -->
+                    <div class="hw-step" id="hw-step-restore" style="display:none;">
+                        <p>Enter your 12-word recovery phrase, then set the PIN to write it onto a factory-fresh or reset security key.</p>
+                        <div class="ui-field"><label class="ui-label" for="hw-restore-phrase">Recovery phrase</label>
+                            <textarea id="hw-restore-phrase" class="ui-input ui-input--mono" rows="3" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="word1 word2 word3 …" aria-describedby="hw-restore-word-count"></textarea>
+                            <p class="ui-help" id="hw-restore-word-count">0 / 12 words</p></div>
+                        <div class="ui-field"><label class="ui-label" for="hw-restore-nickname">Name</label><input class="ui-input" id="hw-restore-nickname" type="text" maxlength="32" placeholder="Optional" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"></div>
+                        <div class="ui-field"><label class="ui-label" for="hw-restore-pin">PIN</label><input class="ui-input" id="hw-restore-pin" type="password" inputmode="numeric" maxlength="8" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-describedby="hw-restore-pin-help"><p class="ui-help" id="hw-restore-pin-help">6 to 8 characters.</p></div>
+                        <div class="ui-field"><label class="ui-label" for="hw-restore-pin-confirm">Confirm PIN</label><input class="ui-input" id="hw-restore-pin-confirm" type="password" inputmode="numeric" maxlength="8" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"></div>
+                        <p class="ui-error" id="hw-restore-error" style="display:none;"></p>
+                        <div class="hw-actions">
+                            <button type="button" class="ui-btn ui-btn--quiet" id="hw-restore-back-btn">Back</button>
+                            <button type="button" class="ui-btn ui-btn--primary" id="hw-restore-btn" disabled>Restore identity</button>
+                        </div>
                     </div>
-                    <div class="modal-field" style="margin-top:10px;">
-                        <label>Display name</label>
-                        <input type="text" id="hw-restore-nickname" class="modal-input" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="e.g. Rat King">
-                    </div>
-                    <div class="modal-field" style="margin-top:10px;">
-                        <label>PIN <span class="hw-inline-hint">6–8 characters</span></label>
-                        <input type="password" id="hw-restore-pin" class="modal-input" inputmode="numeric" maxlength="8" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Choose a PIN">
-                    </div>
-                    <div class="modal-field" style="margin-top:10px;">
-                        <label>Confirm PIN</label>
-                        <input type="password" id="hw-restore-pin-confirm" class="modal-input" inputmode="numeric" maxlength="8" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Re-enter PIN">
-                    </div>
-                    <div class="hw-error" id="hw-restore-error" style="display:none;"></div>
-                    <button class="nr-btn w-full mt-4" id="hw-restore-btn" disabled>Restore Identity</button>
-                    <button class="nr-btn nr-btn-ghost w-full mt-3" id="hw-restore-back-btn">Back</button>
-                </div>
 
-                <!-- Step: import existing -->
-                <div class="hw-step" id="hw-step-import" style="display:none;">
-                    <div class="hw-device-summary" id="hw-import-device"></div>
-                    <p class="hw-step-lead" id="hw-import-lead">This security key is already provisioned. Register it on this device.</p>
-                    <div class="modal-field">
-                        <label>Display name</label>
-                        <input type="text" id="hw-import-nickname" class="modal-input" maxlength="32" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="e.g. Rat King">
+                    <!-- Step: import existing -->
+                    <div class="hw-step" id="hw-step-import" style="display:none;">
+                        <div id="hw-import-device"></div>
+                        <p id="hw-import-lead">This security key is already provisioned. Register it on this device.</p>
+                        <div class="ui-field"><label class="ui-label" for="hw-import-nickname">Name</label><input class="ui-input" id="hw-import-nickname" type="text" maxlength="32" placeholder="Optional" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false"></div>
+                        <div class="ui-field" id="hw-import-pin-field" hidden><label class="ui-label" for="hw-import-pin">Current YubiKey PIN</label><input class="ui-input" id="hw-import-pin" type="password" inputmode="numeric" maxlength="8" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-describedby="hw-import-pin-help"><p class="ui-help" id="hw-import-pin-help">6 to 8 characters.</p></div>
+                        <p class="ui-error" id="hw-import-error" style="display:none;"></p>
+                        <div class="hw-actions">
+                            <button type="button" class="ui-btn ui-btn--quiet" id="hw-import-back-btn">Back</button>
+                            <button type="button" class="ui-btn ui-btn--primary" id="hw-import-btn">Add hardware key</button>
+                        </div>
                     </div>
-                    <div class="modal-field" id="hw-import-pin-field" style="margin-top:10px;display:none;">
-                        <label>Current YubiKey PIN <span class="hw-inline-hint">6–8 characters</span></label>
-                        <input type="password" id="hw-import-pin" class="modal-input" inputmode="numeric" maxlength="8" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" placeholder="Current PIN">
-                    </div>
-                    <div class="hw-error" id="hw-import-error" style="display:none;"></div>
-                    <button class="nr-btn w-full mt-4" id="hw-import-btn">Add Hardware Identity</button>
-                    <button class="nr-btn nr-btn-ghost w-full mt-3" id="hw-import-back-btn">Back</button>
                 </div>
             </div>
         </div>
 
         <div class="view" id="view-identity">
-            <div class="identity-page">
-                <div class="identity-page-header">
-                    <div class="identity-title-block">
-                        <div class="identity-page-title" id="identity-page-title">Identity Management</div>
-                    </div>
-                    <div class="identity-toolbar">
-                        <button class="identity-toolbar-btn" id="identity-import-btn" title="Import or restore identity" aria-label="Import or restore identity">
-                            <svg viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
-                            <span>Import</span>
-                        </button>
-                        <button class="identity-toolbar-btn" id="identity-hardware-btn" title="Hardware key" aria-label="Hardware key">
-                            <svg viewBox="0 0 24 24"><path d="M2.6 17.4A2 2 0 0 0 2 18.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8A6.5 6.5 0 1 0 9.4 10.6z"/><circle cx="16.5" cy="7.5" r="1.5"/></svg>
-                            <span>Hardware</span>
-                        </button>
-                        <button class="identity-toolbar-btn identity-toolbar-btn--primary" id="identity-add-btn" title="Create identity" aria-label="Create identity">
-                            <svg viewBox="0 0 24 24"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
-                            <span>Create</span>
-                        </button>
-                    </div>
-                </div>
-                <div class="identity-management-grid">
-                    <div class="panel identity-panel-list" id="panel-identity-list">
-                        <div class="panel-header">Identities</div>
-                        <div class="panel-body identity-list-body">
-                            <div id="identity-list">
-                                <div class="loading-state p-6"><span class="loading-spinner"></span>Loading...</div>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="panel identity-panel-active" id="panel-identity-active">
-                        <div class="panel-header">Identity Detail</div>
-                        <div class="panel-body">
-                            <div id="identity-active-card">
-                                <div class="loading-state"><span class="loading-spinner"></span>Loading...</div>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+            <div class="ui-split people-split">
+                <section class="ui-pane" id="identity-pane" aria-labelledby="identity-title">
+                    <header class="ui-pane-head"><h2 class="ui-pane-title" id="identity-title">Identities</h2><span class="ui-pane-count" id="identity-count"></span>
+                        <div class="ui-pane-actions"><button type="button" class="ui-icon-btn" id="identity-add-btn" aria-label="Add identity" title="Add identity" aria-haspopup="menu" aria-expanded="false"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button></div></header>
+                    <div class="ui-pane-scroll" id="identity-list"></div>
+                </section>
+                <section class="ui-detail" id="identity-detail" aria-label="Identity details"></section>
             </div>
         </div>
 
@@ -2290,6 +2177,7 @@
 <script src="/static/js/contact_card.js?v=ui-20260924-4"></script>
 <script src="/static/js/markdown.js?v=ui-20260924-4"></script>
 <script src="/static/js/lxmf.js?v=ui-20260924-4"></script>
+<script src="/static/js/contacts.js?v=ui-20260924-4"></script>
 <script src="/static/js/conversation_threads.js?v=ui-20260924-4"></script>
 <script src="/static/js/rsnode_device.js?v=ui-20260924-4"></script>
 <script src="/static/js/message_search.js?v=ui-20260924-4"></script>

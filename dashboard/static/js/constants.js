@@ -167,7 +167,7 @@ RS.buildPeerGroupItems = function(peers, collapsedGroups, hasName, opts) {
     [
         { items: contactItems, key: 'contacts', label: 'Contacts' },
         { items: onlineItems, key: 'online', label: 'Active' },
-        { items: onlineStarItems, key: 'online_star', label: 'Active*' },
+        { items: onlineStarItems, key: 'online_star', label: 'Active, unnamed' },
         { items: staleItems, key: 'stale', label: 'Seen recently' },
         { items: offlineItems, key: 'offline', label: 'Older / unknown', cap: olderCap }
     ].forEach(function(g) {
@@ -180,7 +180,10 @@ RS.buildPeerGroupItems = function(peers, collapsedGroups, hasName, opts) {
                     flatItems.push({
                         type: 'cap',
                         group: g.key,
-                        label: 'Showing the ' + shown.length + ' most recent. Search to find others.'
+                        shown: shown.length,
+                        total: g.items.length,
+                        label: 'Showing the ' + shown.length.toLocaleString('en-US') + ' most recent of ' +
+                            g.items.length.toLocaleString('en-US') + '.'
                     });
                 }
             }
