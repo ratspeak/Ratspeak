@@ -1660,7 +1660,13 @@ mod tests {
 
         let guard = try_reserve_admission().unwrap();
         let (_, deleted) = store
-            .delete_selected_messages_guarded(&guard, &identity, "local", &[sent.clone()], 1000)
+            .delete_selected_messages_guarded(
+                &guard,
+                &identity,
+                "local",
+                std::slice::from_ref(&sent),
+                1000,
+            )
             .unwrap();
         assert!(deleted.is_empty(), "a message to a peer is not in it");
         drop(guard);
