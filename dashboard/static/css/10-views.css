@@ -2378,7 +2378,9 @@ body.checking-setup .main-content {
 body.checking-setup .shell-sidebar,
 body.checking-setup .shell-tabbar,
 body.setup-active .shell-sidebar,
-body.setup-active .shell-tabbar {
+body.setup-active .shell-tabbar,
+body.migrating-active .shell-sidebar,
+body.migrating-active .shell-tabbar {
     display: none;
 }
 
@@ -2431,6 +2433,16 @@ body.setup-active .main-content {
     to   { opacity: 1; transform: translateY(0); }
 }
 
+/* Progress bar: monotonic, glides between updates. */
+.progress-meter { display: flex; align-items: center; gap: 12px; }
+.progress-meter-bar { position: relative; flex: 1; height: 8px; border-radius: 4px; background: var(--fill-control); overflow: hidden; }
+.progress-meter-fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: inherit; background: var(--accent); overflow: hidden; transition: width 250ms linear, background-color .2s ease; }
+.progress-meter-fill::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.32), transparent); transform: translateX(-100%); animation: progressSheen 1.8s ease-in-out infinite; }
+@keyframes progressSheen { to { transform: translateX(100%); } }
+.progress-meter:not(.is-running) .progress-meter-fill::after { animation: none; opacity: 0; }
+.progress-meter.is-failed .progress-meter-fill { background: var(--status-error-fg); }
+.progress-meter-pct { min-width: 4ch; text-align: right; font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+
 /* Progress steps: pending rows stay full-opacity muted text. */
 .progress-steps { display: flex; flex-direction: column; gap: 12px; margin: 24px 0 0; padding: 0; list-style: none; text-align: left; container-type: inline-size; }
 .progress-step { display: flex; align-items: center; gap: 12px; min-width: 0; }
@@ -2454,6 +2466,8 @@ body.setup-active .main-content {
     .progress-step-meta { grid-column: 2; }
 }
 @media (prefers-reduced-motion: reduce) {
+    .progress-meter-fill { transition: none; }
+    .progress-meter-fill::after { display: none; }
     .progress-step-dot { animation: none !important; }
 }
 
@@ -2472,6 +2486,14 @@ body.setup-active .main-content {
 .setup-field-label { display: flex; align-items: center; gap: 4px; }
 .setup-field-label .ui-icon-btn--sm { margin: -6px 0; }
 .setup-hash { padding: 12px 12px 12px 16px; border-radius: var(--radius-card); background: var(--surface-sunken); }
+
+/* Network data move: over everything while it runs, like first run. */
+.migration-screen { position: fixed; inset: 0; z-index: calc(var(--z-modal) - 1); }
+.migration-screen [hidden] { display: none !important; }
+.migration-screen .progress-meter { margin: 24px 0 20px; }
+.migration-screen .progress-steps { margin-top: 0; }
+.migration-note { margin-top: 20px; text-align: left; }
+.migration-skip { margin: -4px 0 0; font-size: var(--text-xs); line-height: 1.5; color: var(--text-muted); text-wrap: pretty; }
 
 .clone-warning {
     background: var(--status-warning-bg);
