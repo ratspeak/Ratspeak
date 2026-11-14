@@ -29,6 +29,7 @@ changes that materially affect how an artifact is reproduced.
 - Peer and contact panels show the address first and the rest under Details, with a dot for whether they've been heard recently. The sidebar groups chats, people, and this device.
 - Peers you haven't heard from in a day are cleared, so the list and Ratspeak's storage stay small on busy networks. Contacts and anyone you've messaged or played a game with always stay.
 - Messages to someone you've written to before keep using their newest encryption key, even when they haven't announced for a while.
+- On Android, tapping into a message no longer makes the screen jump around for a second or more before you can type, and closing the keyboard no longer freezes the app.
 - In Channels, the first screen follows your network and says what to do next, and Reconnect rejoins the hub you were on.
 
 ### Build and compatibility
