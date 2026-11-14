@@ -2167,7 +2167,7 @@
                         '<div class="ng-picks">' + manifests.map(pick).join('') + '</div>' +
                         '<section class="ng-games" aria-labelledby="ng-gl"><h3 class="ui-section-title" id="ng-gl">Game</h3>' +
                             '<div class="ng-gallery" role="radiogroup" aria-labelledby="ng-gl">' + manifests.map(tile).join('') + '</div></section>' +
-                        '<section class="ng-opp' + (empty ? ' is-empty' : '') + '" aria-labelledby="ng-ol"><div class="ng-people"><div class="ng-opp-head ui-scroll-head"><h3 class="ui-section-title" id="ng-ol">Opponent</h3>' +
+                        '<section class="ng-opp' + (empty ? ' is-empty' : '') + '" aria-labelledby="ng-ol"><div class="ng-people ui-scroll"><div class="ng-opp-head ui-scroll-head"><h3 class="ui-section-title" id="ng-ol">Opponent</h3>' +
                             (empty ? '' : '<div class="ui-search" role="search">' + _icon('search') +
                                 '<input type="search" class="ng-search" placeholder="Search contacts" aria-label="Search contacts" autocorrect="off" autocapitalize="none" spellcheck="false">' +
                                 '<button type="button" class="ui-icon-btn ui-icon-btn--sm ng-clear" aria-label="Clear search" title="Clear search" hidden>' + _icon('x') + '</button></div>') +

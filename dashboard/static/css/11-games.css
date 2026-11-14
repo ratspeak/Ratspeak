@@ -198,7 +198,6 @@
 .ng-opp-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 12px 8px; }
 .ng-opp-head .ui-section-title { margin: 0; }
 .ng-opp-head .ui-search { width: 260px; }
-.ng-opp-head .ui-search .ui-icon-btn[hidden] { display: none; }
 .ng-people-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; gap: 2px 8px; }
 .ng-people-list > .ui-caption { grid-column: 1 / -1; padding-left: 12px; }
 .ng-people-list > .ui-empty { grid-column: 1 / -1; }

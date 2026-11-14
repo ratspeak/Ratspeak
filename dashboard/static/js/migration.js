@@ -88,7 +88,7 @@ function _migrationMarkup(model) {
             '<span class="progress-step-meta">' + escapeHtml(step.meta) + '</span></li>';
     }).join('');
     var icon = RS.kit && RS.kit.icon ? RS.kit.icon('clock') : '';
-    return '<div class="solo"><section class="ui-card solo-card" aria-labelledby="migration-title" data-state="' + escapeHtml(model.state) + '">' + _migrationMark() +
+    return '<div class="solo ui-scroll"><section class="ui-card solo-card" aria-labelledby="migration-title" data-state="' + escapeHtml(model.state) + '">' + _migrationMark() +
         '<h1 class="solo-title" id="migration-title" tabindex="-1">' + escapeHtml(model.title) + '</h1>' +
         '<p class="solo-lead" id="migration-lead">' + escapeHtml(model.lead) + '</p>' +
         '<div class="progress-meter' + (model.running ? ' is-running' : '') + (model.failed ? ' is-failed' : '') + '" id="migration-meter">' +

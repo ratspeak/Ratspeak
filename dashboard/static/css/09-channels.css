@@ -182,9 +182,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .channel-room-header[hidden],
 .channel-compose[hidden],
-.ch-room-notice[hidden],
-.channel-room-header .ui-icon-btn[hidden],
-.ch-members-head .ui-icon-btn[hidden] {
+.ch-room-notice[hidden] {
     display: none;
 }
 

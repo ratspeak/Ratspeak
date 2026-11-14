@@ -31,7 +31,7 @@ assert(source.includes("'<div class=\"ui-dialog ui-dialog--lg ng-dialog\" role=\
 assert(source.includes('<div class="ng-gallery" role="radiogroup" aria-labelledby="ng-gl">'),
     'the games form one radio group');
 assert(source.includes('<input class="game-choice-input" type="radio" name="ng-game"'));
-assert(source.includes('<div class="ng-people"><div class="ng-opp-head ui-scroll-head">') &&
+assert(source.includes('<div class="ng-people ui-scroll"><div class="ng-opp-head ui-scroll-head">') &&
     source.includes('<div class="ng-people-list" role="radiogroup" aria-labelledby="ng-ol">'),
     'the opponent header scrolls inside the list as a sticky head');
 assert(source.includes('placeholder="Search contacts" aria-label="Search contacts"'));
