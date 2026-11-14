@@ -22,16 +22,12 @@
         views[appId] = Object.freeze({
             appId: appId,
             displayName: typeof adapter.displayName === 'string' ? adapter.displayName : '',
-            icon: typeof adapter.icon === 'string' ? adapter.icon : '?',
-            themeClass: typeof adapter.themeClass === 'string' ? adapter.themeClass : 'games-theme-unknown',
             boardSelector: typeof adapter.boardSelector === 'string' ? adapter.boardSelector : '',
             actions: Object.freeze(Array.isArray(adapter.actions) ? adapter.actions.slice() : []),
             renderBoard: adapter.renderBoard,
             bindBoard: adapter.bindBoard,
-            activeStatusText: typeof adapter.activeStatusText === 'function'
-                ? adapter.activeStatusText
-                : null,
-            detailChips: typeof adapter.detailChips === 'function' ? adapter.detailChips : null,
+            // { mine, theirs }: each side in words for the player rows ("Plays white · up 2").
+            playerMeta: typeof adapter.playerMeta === 'function' ? adapter.playerMeta : null,
             renderActiveControls: typeof adapter.renderActiveControls === 'function'
                 ? adapter.renderActiveControls
                 : null,

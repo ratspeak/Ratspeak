@@ -92,14 +92,6 @@
             (extraClass ? ' ' + extraClass : '') + '" aria-hidden="true"></span>';
     }
 
-    function _playerKey(label, marker, active) {
-        return '<div class="four-player-key' + (active ? ' active-turn' : '') + '">' +
-            _token(marker, 'four-token-key') +
-            '<span class="four-player-label">' + _escape(label) + '</span>' +
-            '<span class="four-player-marker">' + _markerName(marker) + '</span>' +
-        '</div>';
-    }
-
     function _winTrace(win, animate) {
         if (!win) return '';
         var x1 = win.start.column * 100 + 50;
@@ -115,14 +107,8 @@
     function _renderBoard(session, context) {
         var board = _board(session);
         var myMarker = _myMarker(session, context);
-        var theirMarker = myMarker === 'A' ? 'B' : 'A';
         var isMyTurn = session.status === 'active' && context && context.isMe &&
             context.isMe(_meta(session, 'turn', ''));
-        var myTurnActive = session.status === 'active' && isMyTurn;
-        var theirTurnActive = session.status === 'active' && !isMyTurn && !!_meta(session, 'turn', '');
-        var opponentName = context && context.contactName
-            ? context.contactName(session.contact_hash)
-            : 'Opponent';
         var win = _winningCells(board);
         var winning = win ? win.cells : [];
         var settling = _settlingCells[session.game_id];
@@ -135,10 +121,7 @@
         var landingRows = [];
         for (var column = 0; column < COLUMNS; column++) landingRows[column] = _landingRow(board, column);
 
-        var html = '<div class="four-board-wrap' + (isMyTurn ? ' your-turn' : '') +
-            (session.status === 'completed' ? ' has-result' : '') + '">';
-        html += _playerKey(opponentName, theirMarker, theirTurnActive);
-        html += '<div class="four-board-stage">';
+        var html = '<div class="four-board-stage' + (isMyTurn ? ' your-turn' : '') + '">';
         html += '<div class="four-board my-marker-' + myMarker.toLowerCase() +
             '" role="grid" aria-label="Four in a Row board" aria-rowcount="6" aria-colcount="7">';
         for (var row = 0; row < ROWS; row++) {
@@ -186,28 +169,6 @@
                 '"' + (canDrop ? '' : ' disabled') + '></button>';
         }
         html += '</div>';
-        html += '</div>';
-        html += _playerKey('You', myMarker, myTurnActive);
-
-        if (session.status === 'pending') {
-            var initiator = session.challenger || session.initiator || _meta(session, 'initiator', '');
-            var incoming = !(context && context.isMe && context.isMe(initiator));
-            html += '<div class="four-board-overlay">' +
-                (incoming ? 'Challenge received!' : 'Waiting for response…') +
-            '</div>';
-        }
-        if (session.status === 'completed') {
-            var terminal = _meta(session, 'terminal', '');
-            var won = context && context.isMe && context.isMe(_meta(session, 'winner', ''));
-            var result = terminal === 'draw'
-                ? 'Draw'
-                : (terminal === 'resign'
-                    ? (won ? 'Opponent resigned' : 'You resigned')
-                    : (won ? 'You won!' : 'You lost'));
-            var resultClass = terminal === 'draw' ? 'draw' : (won ? 'won' : 'lost');
-            html += '<div class="four-result ' + resultClass + '" role="status">' +
-                _escape(result) + '</div>';
-        }
         html += '</div>';
         return html;
     }
@@ -279,26 +240,12 @@
         }
     }
 
-    function _activeStatusText(session, context) {
+    function _playerMeta(session, context) {
         var myMarker = _myMarker(session, context);
-        var theirMarker = myMarker === 'A' ? 'B' : 'A';
-        if (context && context.isMe && context.isMe(_meta(session, 'turn', ''))) {
-            return 'Your turn · ' + _markerName(myMarker);
-        }
-        if (_meta(session, 'turn', '')) {
-            var name = context && context.contactName
-                ? context.contactName(session.contact_hash)
-                : 'Opponent';
-            return name + '\u2019s turn · ' + _markerName(theirMarker);
-        }
-        return '';
-    }
-
-    function _detailChips(session, context) {
-        var chips = ['You: ' + _markerName(_myMarker(session, context))];
-        var lastColumn = parseInt(_meta(session, 'last_column', -1), 10);
-        if (lastColumn >= 0 && lastColumn < COLUMNS) chips.push('Last: column ' + (lastColumn + 1));
-        return chips;
+        return {
+            mine: 'Plays ' + _markerName(myMarker),
+            theirs: 'Plays ' + _markerName(myMarker === 'A' ? 'B' : 'A'),
+        };
     }
 
     function _onSessionDelta(record, previous) {
@@ -333,15 +280,12 @@
     if (!RS.games.views.has(APP_ID)) {
         RS.games.views.register(APP_ID, {
             displayName: 'Four in a Row',
-            icon: '\u25CF\u25CF\u25CF\u25CF',
-            themeClass: 'games-theme-four-in-a-row',
             boardSelector: '.four-board',
             actions: ['challenge', 'accept', 'decline', 'move', 'resign',
                 'draw_offer', 'draw_accept', 'draw_decline'],
             renderBoard: _renderBoard,
             bindBoard: _bindBoard,
-            activeStatusText: _activeStatusText,
-            detailChips: _detailChips,
+            playerMeta: _playerMeta,
             onSessionDelta: _onSessionDelta,
             celebrationOptions: _celebrationOptions,
         });

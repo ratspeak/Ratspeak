@@ -38,7 +38,6 @@ vm.runInContext(viewSource, context, { filename: 'four_in_a_row_view.js' });
 var views = windowStub.RS.games.views;
 var adapter = views.get('four_in_a_row');
 assert(adapter, 'Four in a Row adapter must register under its canonical app_id');
-assert.strictEqual(adapter.icon, '\u25cf\u25cf\u25cf\u25cf');
 assert.strictEqual(adapter.boardSelector, '.four-board');
 assert.deepStrictEqual(Array.from(adapter.actions), [
     'challenge', 'accept', 'decline', 'move', 'resign',
@@ -106,8 +105,7 @@ assert.strictEqual((emptyHtml.match(/class="four-lane-action"/g) || []).length, 
 assert.strictEqual((emptyHtml.match(/class="four-lane-action"[^>]* disabled/g) || []).length, 0,
     'all seven columns start playable');
 assert(emptyHtml.includes('aria-label="Drop Node in column 1; lands in row 6"'));
-assert(emptyHtml.includes('&lt;Rival&gt;'), 'opponent names must be escaped');
-assert(!emptyHtml.includes('<Rival>'), 'raw opponent markup must never render');
+assert(!emptyHtml.includes('Rival'), 'player rows belong to the Games screen, not the board');
 
 var metadataHtml = adapter.renderBoard(metadataSession({
     board: '_________________________________________A',
@@ -119,14 +117,10 @@ assert(metadataHtml.includes('four-token four-token-a'),
     'the canonical metadata board must drive rendering');
 assert(metadataHtml.includes('Column 1; wait for your turn'),
     'disabled lanes must explain turn ownership rather than claim they are full');
-assert.strictEqual(adapter.activeStatusText(metadataSession({
-    turn: 'them', my_marker: 'B', first_turn: 'them'
-}), viewContext()), '<Rival>\u2019s turn · Node');
 assert.deepStrictEqual(
-    Array.from(adapter.detailChips(metadataSession({
-        my_marker: 'B', last_column: 6
-    }), viewContext())),
-    ['You: Ring', 'Last: column 7']
+    JSON.parse(JSON.stringify(adapter.playerMeta(metadataSession({ my_marker: 'B' }), viewContext()))),
+    { mine: 'Plays Ring', theirs: 'Plays Node' },
+    'player rows name each side in words'
 );
 
 var mixed = '___________________________________AB_____';
@@ -151,7 +145,7 @@ assert.strictEqual((winHtml.match(/ winning/g) || []).length, 4,
     'exactly the winning connection must be emphasized');
 assert(winHtml.includes('class="four-win-trace animate"'),
     'the confirmed winning trace animates once');
-assert(winHtml.includes('You won!'));
+assert(!winHtml.includes('four-result'), 'the result shows in the Games result card, not on the board');
 var repeatedWinHtml = adapter.renderBoard(session({
     board: winningBoard,
     status: 'completed',
@@ -162,43 +156,13 @@ assert(repeatedWinHtml.includes('class="four-win-trace"'));
 assert(!repeatedWinHtml.includes('class="four-win-trace animate"'),
     'ordinary rerenders must leave the winning trace static');
 
-var metadataWinner = metadataSession({
-    board: winningBoard,
-    terminal: 'win',
-    winner: 'me',
-});
-metadataWinner.status = 'completed';
-var metadataWinHtml = adapter.renderBoard(metadataWinner, viewContext());
-assert(metadataWinHtml.includes('You won!'),
-    'canonical metadata must also drive terminal presentation');
-
-var outgoingPending = metadataSession();
-outgoingPending.status = 'pending';
-outgoingPending.initiator = 'me';
-delete outgoingPending.challenger;
-assert(adapter.renderBoard(outgoingPending, viewContext()).includes('Waiting for response…'),
-    'pending ownership must accept the normalized initiator projection');
-var incomingPending = metadataSession();
-incomingPending.status = 'pending';
-incomingPending.initiator = 'them';
-delete incomingPending.challenger;
-assert(adapter.renderBoard(incomingPending, viewContext()).includes('Challenge received!'));
-
-var resignedWinner = metadataSession({ terminal: 'resign', winner: 'me' });
-resignedWinner.status = 'completed';
-assert(adapter.renderBoard(resignedWinner, viewContext()).includes('Opponent resigned'));
-var resignedLocal = metadataSession({ terminal: 'resign', winner: 'them' });
-resignedLocal.status = 'completed';
-assert(adapter.renderBoard(resignedLocal, viewContext()).includes('You resigned'));
-
-assert.strictEqual(adapter.activeStatusText(session(), viewContext()), 'Your turn · Node');
-assert.strictEqual(adapter.activeStatusText(session({
-    turn: 'them', my_marker: 'B', first_turn: 'them'
-}), viewContext()), '<Rival>\u2019s turn · Node');
 assert.deepStrictEqual(
-    Array.from(adapter.detailChips(session({ my_marker: 'B', last_column: 6 }), viewContext())),
-    ['You: Ring', 'Last: column 7']
+    JSON.parse(JSON.stringify(adapter.playerMeta(session(), viewContext()))),
+    { mine: 'Plays Node', theirs: 'Plays Ring' }
 );
+var pending = session({ status: 'pending' });
+assert(!/overlay|Challenge received|Waiting for response/.test(adapter.renderBoard(pending, viewContext())),
+    'pending games show the invite, not a board overlay');
 
 function fakeElement(attributes) {
     return {
