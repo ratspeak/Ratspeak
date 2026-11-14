@@ -2589,9 +2589,7 @@ fn frontend_shared_helpers_are_adopted() {
         dialogs_js.contains("var shell = RS.kit.dialog({"),
         "runtime dialogs must use the kit dialog shell"
     );
-    for file in [
-        "dashboard/static/js/contact_card.js",
-    ] {
+    for file in ["dashboard/static/js/contact_card.js"] {
         let source = read_source(root.join(file)).expect(file);
         assert!(
             source.contains("RS.sheetShell."),
@@ -3288,8 +3286,9 @@ fn games_new_game_uses_the_kit_large_dialog() {
     let root = repo_root();
     let games_js = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");
     assert!(games_js.contains("ui-dialog ui-dialog--lg ng-dialog"));
-    assert!(games_js.contains("modal.className = 'ui-modal rs-sheet-shell open games-modal'"));
-    assert!(games_js.contains("modal._ratspeakDismiss = function()"));
+    assert!(games_js.contains("modal.className = 'ui-modal games-modal'"));
+    assert!(games_js.contains("dialog.classList.add('rs-sheet-shell', 'open');"));
+    assert!(games_js.contains("dialog._ratspeakDismiss = function()"));
     assert!(!games_js.contains("RS.sheetShell."));
 
     let games_css = read_source(root.join("dashboard/static/css/11-games.css")).expect("games css");

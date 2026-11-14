@@ -1014,10 +1014,9 @@
     function _presentEnding(session) {
         if (session.status !== 'completed' || !_freshEndings[session.game_id]) return;
         if (!_isViewingSession(session.game_id)) return;
-        var first = !_resultShown[session.game_id];
         _resultShown[session.game_id] = true;
         if (_isPhoneWidth() && (!_resultSheet || _resultSheet.sessionId !== session.game_id)) {
-            _openResultSheet(session, first);
+            _openResultSheet(session);
         }
         _maybeCelebrateWin(session);
     }
@@ -1027,12 +1026,12 @@
     }
 
     // The kit sheet on a phone: grab handle, full-width Rematch and Remove game, no small close.
-    function _openResultSheet(session, isNew) {
+    function _openResultSheet(session) {
         _closeResultSheet();
         var r = _resultParts(session);
         var sheet = _presentModal({
             className: 'game-result-modal',
-            html: '<div class="ui-dialog' + (isNew ? ' is-new' : '') + '" role="dialog" aria-modal="true" aria-labelledby="game-sheet-title" aria-describedby="game-sheet-body">' +
+            html: '<div class="ui-dialog" role="dialog" aria-modal="true" aria-labelledby="game-sheet-title" aria-describedby="game-sheet-body">' +
                 '<div class="ui-dialog-handle"></div>' +
                 '<div class="ui-dialog-body"><div class="game-result-sheet">' +
                     '<span class="ui-tile ui-tile--lg ' + r.tile + '">' + r.glyph + '</span>' +
@@ -1059,9 +1058,10 @@
     // and a downward drag on touch all close it.
     function _presentModal(opts) {
         var modal = document.createElement('div');
-        modal.className = 'ui-modal rs-sheet-shell open games-modal' + (opts.className ? ' ' + opts.className : '');
+        modal.className = 'ui-modal games-modal' + (opts.className ? ' ' + opts.className : '');
         modal.innerHTML = opts.html;
         var dialog = modal.querySelector('.ui-dialog');
+        dialog.classList.add('rs-sheet-shell', 'open');
         var previousFocus = document.activeElement;
         var closed = false;
 
@@ -1097,7 +1097,7 @@
             if (closed) return;
             closed = true;
             document.removeEventListener('keydown', onKey, true);
-            modal.classList.remove('open');
+            dialog.classList.remove('open');
             modal.classList.add('is-closing');
             setTimeout(function() {
                 if (modal.parentNode) modal.remove();
@@ -1107,11 +1107,11 @@
                         (!(RS.ui && typeof RS.ui.prefersKeyboardFocus === 'function') || RS.ui.prefersKeyboardFocus())) {
                     previousFocus.focus();
                 }
-            }, 160);
+            }, 200);
             if (typeof opts.onClose === 'function') opts.onClose();
         }
 
-        modal._ratspeakDismiss = function() {
+        dialog._ratspeakDismiss = function() {
             if (opts.canClose && !opts.canClose()) return true;
             close();
             return true;

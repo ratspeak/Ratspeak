@@ -178,16 +178,11 @@
 /* Phone: the same result in the kit's bottom sheet. */
 .game-result-sheet { display: flex; flex-direction: column; align-items: center; gap: 4px; padding-top: 12px; text-align: center; }
 .game-result-sheet > .ui-tile { margin-bottom: 8px; }
-.game-result-modal .ui-dialog.is-new { animation: gameSheetUp .32s cubic-bezier(.16, 1, .3, 1) both; }
-@keyframes gameSheetUp { from { transform: translateY(40px); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (max-width: 768px) {
     .game-result { width: calc(100% - 24px); }
     .game-after .ui-status { flex: 1 0 100%; justify-content: center; }
 }
 
-/* Games' kit dialogs leave as quietly as they arrive. */
-.games-modal { transition: opacity .16s ease; }
-.games-modal.is-closing { opacity: 0; pointer-events: none; }
 .games-modal .ui-dialog:focus { outline: none; }
 
 /* ---------------------------------------------------------------- New game */
@@ -673,8 +668,6 @@
     .game-choice,
     .game-result,
     .game-result > .ui-tile,
-    .game-result-modal .ui-dialog,
-    .games-modal,
     .ttt-cell,
     .four-cell,
     .four-token,

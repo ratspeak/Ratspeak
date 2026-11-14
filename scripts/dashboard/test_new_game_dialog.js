@@ -53,8 +53,12 @@ assert(source.includes("'<span class=\"ui-spin\"></span>Sending challenge\u2026'
 assert(source.includes("send.disabled = state.sending || !(state.game && state.opponent);"),
     'the kit faded Primary until a game and an opponent are chosen');
 assert(source.includes("if (e.key === 'Escape')"), 'the dialog closes on Escape');
-assert(source.includes("modal.className = 'ui-modal rs-sheet-shell open games-modal'"),
-    'native Back finds the dialog through the shared sheet marker');
+assert(source.includes("modal.className = 'ui-modal games-modal'") &&
+    source.includes("dialog.classList.add('rs-sheet-shell', 'open');") &&
+    source.includes("modal.classList.add('is-closing');"),
+    'native Back finds the kit dialog, and the kit animates it in and out');
+assert(!/games-modal[^{]*\{[^}]*(?:transition|animation)/.test(gamesCss) && !gamesCss.includes('gameSheetUp'),
+    'one dialog animation: the kit\'s');
 assert(source.includes('showNewGameDialog({') && source.includes("this.getAttribute('data-new-game') || null") &&
     source.includes("this.getAttribute('data-opponent') || null"), 'landing tiles and Play again pre-choose');
 assert(!source.includes('games-sheet-') && !source.includes('bottom-sheet games-new-dialog'),
