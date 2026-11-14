@@ -11927,3 +11927,124 @@ fn ui_state_is_an_app_setting() {
         );
     }
 }
+
+/// Pause all and Resume all are interface commands of the active identity's
+/// network; Resume all goes through `resume_interface`, and the hub payload
+/// carries what they hold.
+#[test]
+fn pause_all_and_resume_all_are_interface_commands() {
+    let root = repo_root();
+    let read = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+    let interfaces = read("crates/ratspeak-tauri/src/commands/interfaces.rs");
+    let ble = read("crates/ratspeak-tauri/src/commands/ble.rs");
+    let shared = read("crates/ratspeak-tauri/src/commands/shared.rs");
+    let shell = read("src-tauri/src/lib.rs");
+    let gate = read("crates/ratspeak-tauri/src/invoke_gate.rs");
+
+    for (module, command, source) in [
+        ("interfaces", "pause_all_interfaces", &interfaces),
+        ("interfaces", "resume_all_interfaces", &interfaces),
+        ("interfaces", "api_interface_lifecycle", &interfaces),
+        ("ble", "set_ble_peer_duration", &ble),
+    ] {
+        assert!(
+            source.contains(&format!("pub async fn {command}(")),
+            "{command}"
+        );
+        assert!(
+            shell.contains(&format!("ratspeak_tauri::commands::{module}::{command},")),
+            "{command} is not registered"
+        );
+        for list in ["IDENTITY_FREE", "LOCK_FREE"] {
+            assert!(
+                !gate_list(&gate, list).contains(&command),
+                "{list}: {command}"
+            );
+        }
+    }
+    for (source, command) in [
+        (&interfaces, "pause_all_interfaces"),
+        (&interfaces, "resume_all_interfaces"),
+        (&ble, "set_ble_peer_duration"),
+    ] {
+        assert!(
+            rust_function_block(source, command)
+                .contains("network_ownership::require_local_interfaces(&state)"),
+            "{command} must enforce ownership in the backend"
+        );
+    }
+
+    // Pause all pauses each interface as a pause does, under the same lock.
+    let pause = rust_function_block(&interfaces, "pause_interface");
+    let pause_all = rust_function_block(&interfaces, "pause_all_interfaces");
+    for block in [pause, pause_all] {
+        assert!(block.contains("state.auto_interface_lock.clone().lock_owned().await"));
+        assert!(block.contains("begin_interface_pause("));
+        assert!(block.contains("finish_interface_pause("));
+    }
+    assert!(pause_all.contains("lifecycle.record_pause_all("));
+    assert!(pause_all.contains("crate::commands::ble::pause_ble_peer(&st, activity_fence)"));
+    // Resume all restores through resume_interface: its limits and preflights hold.
+    let resume_all = rust_function_block(&interfaces, "resume_all_interfaces");
+    assert!(resume_all.contains("lifecycle.take_resume_all("));
+    assert!(resume_all.contains("resume_interface(state.clone(), args).await"));
+    assert!(resume_all.contains("crate::commands::ble::resume_ble_peer("));
+    // Started alone, an interface leaves the set; removed, it is forgotten.
+    let resume = rust_function_block(&interfaces, "resume_interface");
+    assert!(resume.contains("lifecycle.retain_paused(identity, &ifaces);"));
+    for command in [
+        "remove_lora_interface",
+        "disable_auto_interface",
+        "remove_tcp_connection",
+        "remove_tcp_server",
+        "remove_backbone_connection",
+        "remove_backbone_server",
+    ] {
+        assert!(
+            rust_function_block(&interfaces, command).contains("forget_interface_lifecycle("),
+            "{command}"
+        );
+    }
+    // The payload reads the in-memory mirror.
+    let payload = rust_function_block(&shared, "hub_interfaces_payload");
+    assert!(payload.contains("obj.insert(\"lifecycle\".to_string(), lifecycle);"));
+    let lifecycle = rust_function_block(&shared, "interface_lifecycle_payload");
+    assert!(lifecycle.contains("state\n        .interface_lifecycle\n        .read("));
+    assert!(!lifecycle.contains("db::"));
+}
+
+/// A paused Bluetooth Peer keeps its request and timer; startup leaves it
+/// paused, and its timer follows the wall clock.
+#[test]
+fn a_paused_bluetooth_peer_keeps_its_timer() {
+    let root = repo_root();
+    let read = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+    let ble = read("crates/ratspeak-tauri/src/commands/ble.rs");
+
+    let pause = rust_function_block(&ble, "pause_ble_peer");
+    assert!(pause.contains("teardown_ble_peer_runtime(state).await"));
+    assert!(!pause.contains("set_setting"));
+    let restore = rust_function_block(&ble, "restore_ble_peer_if_requested");
+    let paused = restore
+        .find("lifecycle.ble_peer_paused(now_unix_secs())")
+        .expect("restore checks the pause");
+    let spawn = restore
+        .find("spawn_enable_ble_peer_task(state, activity_fence, duration_secs, expires_at);")
+        .expect("restore spawns");
+    assert!(paused < spawn);
+    let expiry = rust_function_block(&ble, "schedule_ble_peer_expiry");
+    assert!(
+        expiry.contains(
+            "while let Some(left) = ble_peer_remaining_secs(expires_at, now_unix_secs())"
+        )
+    );
+    assert!(!expiry.contains("from_secs(duration_secs)"));
+    // Switched on alone while paused, it leaves Pause all's set.
+    let enable = rust_function_block(&ble, "enable_ble_peer_interface");
+    assert!(enable.contains("forget_paused_ble_peer(&state_arc);"));
+    assert!(enable.contains("BLE_PEER_DURATION_SETTING"));
+    let duration = rust_function_block(&ble, "set_ble_peer_duration");
+    assert!(duration.contains("return Err(AppError::bad_request(\"Bluetooth Peer is off\"));"));
+    assert!(duration.contains("schedule_ble_peer_expiry("));
+    assert!(!duration.contains("spawn_enable_ble_peer_task"));
+}

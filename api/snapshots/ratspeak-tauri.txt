@@ -75,6 +75,8 @@ pub enum ratspeak_tauri::commands::ble::BleRnodeNativeFailureCode
 pub ratspeak_tauri::commands::ble::BleRnodeNativeFailureCode::BondTimeout
 pub ratspeak_tauri::commands::ble::BleRnodeNativeFailureCode::ConnectFailed
 pub ratspeak_tauri::commands::ble::BleRnodeNativeFailureCode::SetupTimeout
+pub struct ratspeak_tauri::commands::ble::BlePeerDurationArgs
+pub ratspeak_tauri::commands::ble::BlePeerDurationArgs::duration: u64
 pub struct ratspeak_tauri::commands::ble::BleRnodeBridgeArgs
 pub ratspeak_tauri::commands::ble::BleRnodeBridgeArgs::activity_operation: alloc::string::String
 pub ratspeak_tauri::commands::ble::BleRnodeBridgeArgs::airtime_limit_long: core::option::Option<f64>
@@ -109,6 +111,7 @@ pub async fn ratspeak_tauri::commands::ble::disconnect_ble_rnode(tauri::state::S
 pub async fn ratspeak_tauri::commands::ble::enable_ble_peer_interface(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::ble::EnableBlePeerArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::ble::scan_ble_devices(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::ble::scan_ble_mesh_peers(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::ble::set_ble_peer_duration(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::ble::BlePeerDurationArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub fn ratspeak_tauri::commands::ble::spawn_ble_event_broadcaster(&alloc::sync::Arc<ratspeak_runtime::state::AppState>)
 pub async fn ratspeak_tauri::commands::ble::submit_ble_rnode_passkey(u32) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub mod ratspeak_tauri::commands::channel_hub
@@ -392,6 +395,7 @@ pub ratspeak_tauri::commands::interfaces::IfacUnitMigrationArgs::source_units: a
 pub struct ratspeak_tauri::commands::interfaces::InterfaceLifecycleArgs
 pub ratspeak_tauri::commands::interfaces::InterfaceLifecycleArgs::iface_type: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::interfaces::InterfaceLifecycleArgs::name: alloc::string::String
+pub ratspeak_tauri::commands::interfaces::InterfaceLifecycleArgs::off: bool
 pub struct ratspeak_tauri::commands::interfaces::NetworkTypeArgs
 pub ratspeak_tauri::commands::interfaces::NetworkTypeArgs::network_type: alloc::string::String
 pub struct ratspeak_tauri::commands::interfaces::TcpConnectionArgs
@@ -464,6 +468,7 @@ pub async fn ratspeak_tauri::commands::interfaces::api_ble_peer_status(tauri::st
 pub async fn ratspeak_tauri::commands::interfaces::api_ble_scan() -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::api_connection_history(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::api_delete_connection_history(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, i64) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::interfaces::api_interface_lifecycle(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::api_list_network_interfaces() -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::api_notification_settings(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::api_rnode_presets() -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
@@ -476,6 +481,7 @@ pub async fn ratspeak_tauri::commands::interfaces::disable_auto_interface(tauri:
 pub async fn ratspeak_tauri::commands::interfaces::enable_auto_interface(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, core::option::Option<alloc::string::String>, core::option::Option<ratspeak_runtime::rns_config::AutoInterfaceOptions>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::migrate_interface_ifac_units(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::interfaces::IfacUnitMigrationArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::network_type_changed(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::interfaces::NetworkTypeArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::interfaces::pause_all_interfaces(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::pause_interface(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::interfaces::InterfaceLifecycleArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub fn ratspeak_tauri::commands::interfaces::remember_close_button_action(&ratspeak_runtime::state::AppState, ratspeak_tauri::window_prefs::CloseButtonAction) -> core::result::Result<(), alloc::string::String>
 pub async fn ratspeak_tauri::commands::interfaces::remove_backbone_connection(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
@@ -484,6 +490,7 @@ pub async fn ratspeak_tauri::commands::interfaces::remove_lora_interface(tauri::
 pub async fn ratspeak_tauri::commands::interfaces::remove_tcp_connection(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::remove_tcp_server(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::request_android_usb_permission(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::interfaces::resume_all_interfaces(tauri::app::AppHandle, tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::resume_interface(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::interfaces::InterfaceLifecycleArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_activity_identity_protection(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, bool) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_android_ble_rnode_auto_resume(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, bool) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>

@@ -820,6 +820,8 @@ pub struct AppState {
     pub propagation_node_stamp_cost: AtomicU8,
     /// Interface discovery; written into the Reticulum config before each start.
     pub network_settings: RwLock<ratspeak_core::types::NetworkSettings>,
+    /// What Pause all paused and which interfaces are Off, mirrored from SQLite.
+    pub interface_lifecycle: crate::interface_lifecycle::InterfaceLifecycleStore,
     /// Unix milliseconds when this identity last queued its LXMF delivery
     /// announce. Used to decide if a newly seen peer might not know our name.
     pub last_lxmf_delivery_announce_at_ms: AtomicU64,
@@ -1076,6 +1078,8 @@ impl AppState {
             crate::db::get_setting(&db, "lxmf_limit_1mb").is_none_or(|value| value != "false");
         let initial_lxmf_keep_trying =
             crate::db::get_setting(&db, "lxmf_keep_trying").is_none_or(|value| value != "false");
+        let initial_interface_lifecycle =
+            crate::interface_lifecycle::InterfaceLifecycleStore::load(&db);
         let activity = ActivityRecorder::with_batch_sink(Arc::new(EmitterBatchSink::new(
             Arc::clone(&emitter),
         )));
@@ -1181,6 +1185,7 @@ impl AppState {
             propagation_node_hosting_enabled: AtomicBool::new(initial_prop_node_hosting),
             propagation_node_stamp_cost: AtomicU8::new(initial_prop_node_stamp_cost),
             network_settings: RwLock::new(initial_network_settings),
+            interface_lifecycle: initial_interface_lifecycle,
             last_lxmf_delivery_announce_at_ms: AtomicU64::new(0),
             last_opportunistic_announce_at: Mutex::new(None),
             opportunistic_announce_inflight: Mutex::new(HashSet::new()),

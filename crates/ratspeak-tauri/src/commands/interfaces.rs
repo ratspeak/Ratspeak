@@ -44,8 +44,9 @@ use crate::commands::rnode_readiness::{
     RnodeReadinessFailure, await_spawned_rnode_ready, teardown_spawned_rnode_exact,
 };
 use crate::commands::shared::{
-    active_rns_config_dir, emit_hub_interfaces, emit_op_status_broadcast, normalize_transport_mode,
-    persisted_transport_mode, with_rns_config_lock,
+    active_rns_config_dir, emit_hub_interfaces, emit_op_status_broadcast,
+    forget_interface_lifecycle, normalize_transport_mode, persisted_transport_mode,
+    update_interface_lifecycle, with_rns_config_lock,
 };
 use crate::db;
 use crate::error::{AppError, AppResult};
@@ -457,24 +458,9 @@ pub async fn api_ble_peer_available() -> AppResult<Value> {
 
 #[tauri::command]
 pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
-    let now_secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let enabled = db::spawn_db(state.db.clone(), move |p| {
-        let enabled = db::get_setting(&p, "ble_peer_enabled")
-            .map(|v| v == "1")
-            .unwrap_or(false);
-        let expires_at = db::get_setting(&p, "ble_peer_expires_at")
-            .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(0);
-        enabled && (expires_at == 0 || expires_at > now_secs)
-    })
-    .await
-    .unwrap_or_else(|_| {
-        tracing::error!(reason = "task_panicked", "ble_peer_status db task panicked");
-        Default::default()
-    });
+    let request = crate::commands::shared::ble_peer_request(&state).await;
+    let paused = crate::commands::shared::ble_peer_paused(&state, &request);
+    let enabled = request.unexpired(crate::commands::shared::unix_now()) && !paused;
 
     let probe = ble_platform_probe().await;
 
@@ -513,6 +499,11 @@ pub async fn api_ble_peer_status(state: State<'_, Arc<AppState>>) -> AppResult<V
         "peer_count": peer_count,
         "peers": peers,
     });
+    if let (Some(body), Value::Object(timer)) =
+        (body.as_object_mut(), request.status(enabled, paused))
+    {
+        body.extend(timer);
+    }
     if let Some(a) = probe.auth_state {
         body["auth_state"] = json!(a);
     }
@@ -4943,6 +4934,127 @@ pub struct InterfaceLifecycleArgs {
     pub name: String,
     #[serde(default)]
     pub iface_type: Option<String>,
+    /// Pause as switched Off: shown as Off, and Pause all's Resume all leaves it.
+    #[serde(default)]
+    pub off: bool,
+}
+
+/// An interface paused in the config whose runtime is still to stop.
+struct PendingPause {
+    name: String,
+    rnode_port: Option<String>,
+    activity_class: InterfaceClass,
+    operation_lease: Option<InterfaceLifecycleOperationLease>,
+}
+
+impl PendingPause {
+    fn is_current(&self, state: &AppState) -> bool {
+        self.operation_lease
+            .as_ref()
+            .is_none_or(|lease| state.is_current_interface_lifecycle_operation(lease))
+    }
+
+    /// A paused radio whose add is still connecting keeps its row.
+    fn keep_ble_rnode_add(&self, state: &Arc<AppState>) {
+        #[cfg(all(feature = "ble", target_os = "android"))]
+        if self
+            .rnode_port
+            .as_deref()
+            .is_some_and(|port| port.starts_with("ble://"))
+        {
+            keep_paused_ble_rnode_add(state, &self.name);
+        }
+        #[cfg(not(all(feature = "ble", target_os = "android")))]
+        let _ = state;
+    }
+}
+
+/// Pause `name` in the config under a lease of its own. Runs under the
+/// config lock.
+fn begin_interface_pause(
+    state: &AppState,
+    config_dir: PathBuf,
+    iface_type: Option<&str>,
+    name: String,
+) -> AppResult<PendingPause> {
+    let (group, entry) = find_config_interface_with_group(&config_dir, iface_type, &name)
+        .ok_or_else(|| AppError::bad_request("Interface not found"))?;
+    let activity_class = resumable_config_from_entry(&group, &entry)
+        .as_ref()
+        .map(resumable_interface_class)
+        .unwrap_or(InterfaceClass::Unknown);
+    let operation_lease = Some(
+        state
+            .begin_interface_lifecycle_operation([&name])
+            .ok_or_else(|| AppError::internal("Failed to begin interface pause"))?,
+    );
+    let rnode_port = (group == "rnode")
+        .then(|| cfg_str(&entry, "port"))
+        .flatten();
+    if let Err(error) = set_exact_interface_enabled(&config_dir, &name, false) {
+        if let Some(lease) = operation_lease.as_ref() {
+            let _ = state.finish_interface_lifecycle_operation(lease);
+        }
+        return Err(error);
+    }
+    Ok(PendingPause {
+        name,
+        rnode_port,
+        activity_class,
+        operation_lease,
+    })
+}
+
+/// Stop a paused interface's runtime; false once a newer operation owns it.
+async fn finish_interface_pause(
+    state: &Arc<AppState>,
+    activity_fence: ActivityRequestFence,
+    pause: &PendingPause,
+) -> bool {
+    if !pause.is_current(state) {
+        return false;
+    }
+    teardown_live_interface_by_name(
+        state,
+        &pause.name,
+        pause.rnode_port.as_deref(),
+        pause.operation_lease.as_ref(),
+    )
+    .await;
+    if !pause.is_current(state) {
+        return false;
+    }
+    record_interface_activity(
+        state,
+        activity_fence,
+        pause.activity_class,
+        InterfaceTransition::Paused,
+        None,
+    );
+    if let Some(lease) = pause.operation_lease.as_ref() {
+        let _ = state.finish_interface_lifecycle_operation(lease);
+    }
+    true
+}
+
+/// Configured interfaces Pause all stops: every enabled one that can be
+/// resumed again.
+fn pausable_interface_names(ifaces: &Value) -> Vec<String> {
+    ratspeak_runtime::interface_lifecycle::CONFIG_GROUPS
+        .iter()
+        .flat_map(|group| {
+            ifaces
+                .get(group)
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|entry| {
+                    crate::rns_config::interface_entry_enabled(entry)
+                        && resumable_config_from_entry(group, entry).is_some()
+                })
+                .filter_map(|entry| cfg_str(entry, "name"))
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -4970,37 +5082,18 @@ pub async fn pause_interface(
     }
 
     let config_dir = active_rns_config_dir(&state_arc);
-    let (rnode_port, activity_class, operation_lease) = with_rns_config_lock(&state_arc, || {
-        let (group, entry) =
-            find_config_interface_with_group(&config_dir, iface_type.as_deref(), &name)
-                .ok_or_else(|| AppError::bad_request("Interface not found"))?;
-        let activity_class = resumable_config_from_entry(&group, &entry)
-            .as_ref()
-            .map(resumable_interface_class)
-            .unwrap_or(InterfaceClass::Unknown);
-        let operation_lease = Some(
-            state_arc
-                .begin_interface_lifecycle_operation([&name])
-                .ok_or_else(|| AppError::internal("Failed to begin interface pause"))?,
-        );
-        let rnode_port = (group == "rnode")
-            .then(|| cfg_str(&entry, "port"))
-            .flatten();
-        if let Err(error) = set_exact_interface_enabled(&config_dir, &name, false) {
-            if let Some(lease) = operation_lease.as_ref() {
-                let _ = state_arc.finish_interface_lifecycle_operation(lease);
-            }
-            return Err(error);
-        }
-        Ok::<_, AppError>((rnode_port, activity_class, operation_lease))
+    let pause = with_rns_config_lock(&state_arc, || {
+        begin_interface_pause(
+            &state_arc,
+            config_dir.clone(),
+            iface_type.as_deref(),
+            name.clone(),
+        )
     })?;
-    #[cfg(all(feature = "ble", target_os = "android"))]
-    if rnode_port
-        .as_deref()
-        .is_some_and(|port| port.starts_with("ble://"))
-    {
-        keep_paused_ble_rnode_add(&state_arc, &name);
-    }
+    pause.keep_ble_rnode_add(&state_arc);
+    update_interface_lifecycle(&state_arc, |lifecycle, identity| {
+        lifecycle.set_off(identity, &name, args.off)
+    });
 
     emit_hub_interfaces(
         &state_arc,
@@ -5011,11 +5104,7 @@ pub async fn pause_interface(
     let config_dir = config_dir.clone();
     tokio::spawn(async move {
         let _auto_guard = auto_guard;
-        let iface_name = name;
-        if operation_lease
-            .as_ref()
-            .is_some_and(|lease| !st.is_current_interface_lifecycle_operation(lease))
-        {
+        if !pause.is_current(&st) {
             return;
         }
         emit_op_status_broadcast(
@@ -5026,17 +5115,7 @@ pub async fn pause_interface(
             false,
             None,
         );
-        teardown_live_interface_by_name(
-            &st,
-            &iface_name,
-            rnode_port.as_deref(),
-            operation_lease.as_ref(),
-        )
-        .await;
-        if operation_lease
-            .as_ref()
-            .is_some_and(|lease| !st.is_current_interface_lifecycle_operation(lease))
-        {
+        if !finish_interface_pause(&st, activity_fence, &pause).await {
             return;
         }
         emit_op_status_broadcast(
@@ -5047,21 +5126,260 @@ pub async fn pause_interface(
             true,
             None,
         );
-        record_interface_activity(
-            &st,
-            activity_fence,
-            activity_class,
-            InterfaceTransition::Paused,
-            None,
-        );
-        if let Some(lease) = operation_lease.as_ref() {
-            let _ = st.finish_interface_lifecycle_operation(lease);
-        }
         let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
         emit_hub_interfaces(&st, ifaces);
     });
 
     Ok(json!({ "queued": true }))
+}
+
+/// Pause every running interface, Bluetooth Peer included, and remember
+/// exactly which, so Resume all restarts those and leaves the rest as it is.
+#[tauri::command]
+pub async fn pause_all_interfaces(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    let generation = state.current_identity_session_generation();
+    let auto_guard = state.auto_interface_lock.clone().lock_owned().await;
+    if state.current_identity_session_generation() != generation {
+        return Err(AppError::bad_request("The identity changed; try again."));
+    }
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
+    let state_arc: Arc<AppState> = Arc::clone(&state);
+    let activity_fence = state_arc.activity_request_fence();
+    let config_dir = active_rns_config_dir(&state_arc);
+    let ble_peer = crate::commands::ble::standing_ble_peer_request(&state_arc).await;
+
+    let pauses = with_rns_config_lock(&state_arc, || {
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+        let pauses: Vec<PendingPause> = pausable_interface_names(&ifaces)
+            .into_iter()
+            .filter_map(|name| {
+                begin_interface_pause(&state_arc, config_dir.clone(), None, name)
+                    .inspect_err(|error| {
+                        tracing::warn!(code = %error.code, "Pause all skipped an interface");
+                    })
+                    .ok()
+            })
+            .collect();
+        update_interface_lifecycle(&state_arc, |lifecycle, identity| {
+            lifecycle.record_pause_all(
+                identity,
+                pauses.iter().map(|pause| pause.name.clone()),
+                ble_peer,
+            )
+        });
+        pauses
+    });
+    for pause in &pauses {
+        pause.keep_ble_rnode_add(&state_arc);
+    }
+    let paused = pauses.len() + usize::from(ble_peer.is_some());
+
+    emit_hub_interfaces(
+        &state_arc,
+        crate::rns_config::get_all_interfaces(&config_dir),
+    );
+
+    let st = Arc::clone(&state_arc);
+    tokio::spawn(async move {
+        let _auto_guard = auto_guard;
+        emit_op_status_broadcast(
+            &st,
+            "pause_all_interfaces",
+            "hub",
+            "Pausing interfaces...",
+            false,
+            None,
+        );
+        for pause in &pauses {
+            finish_interface_pause(&st, activity_fence, pause).await;
+        }
+        if ble_peer.is_some() {
+            crate::commands::ble::pause_ble_peer(&st, activity_fence).await;
+        }
+        emit_op_status_broadcast(
+            &st,
+            "pause_all_interfaces",
+            "hub",
+            "Interfaces paused",
+            true,
+            None,
+        );
+        emit_hub_interfaces(&st, crate::rns_config::get_all_interfaces(&config_dir));
+    });
+
+    Ok(json!({ "paused": paused }))
+}
+
+/// Resume what Pause all paused and is still paused, one at a time through
+/// `resume_interface`; Bluetooth Peer only while its timer runs.
+#[tauri::command]
+pub async fn resume_all_interfaces(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Value> {
+    ratspeak_runtime::network_ownership::require_local_interfaces(&state)
+        .map_err(AppError::bad_request)?;
+    let state_arc: Arc<AppState> = Arc::clone(&state);
+    let (generation, config_dir, resume) = {
+        let _auto_guard = state_arc.auto_interface_lock.lock().await;
+        let config_dir = active_rns_config_dir(&state_arc);
+        let resume = with_rns_config_lock(&state_arc, || {
+            let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+            let now = crate::commands::shared::unix_now();
+            update_interface_lifecycle(&state_arc, |lifecycle, identity| {
+                lifecycle.take_resume_all(identity, &ifaces, now)
+            })
+        });
+        (
+            state_arc.current_identity_session_generation(),
+            config_dir,
+            resume,
+        )
+    };
+    let resumed = resume.names.len() + usize::from(resume.ble_peer_expires_at.is_some());
+    emit_hub_interfaces(
+        &state_arc,
+        crate::rns_config::get_all_interfaces(&config_dir),
+    );
+
+    tokio::spawn(async move {
+        use tauri::Manager;
+        let state = app.state::<Arc<AppState>>();
+        for name in resume.names {
+            if state.current_identity_session_generation() != generation {
+                return;
+            }
+            let args = InterfaceLifecycleArgs {
+                name,
+                iface_type: None,
+                off: false,
+            };
+            if let Err(error) = resume_interface(state.clone(), args).await {
+                emit_op_status_broadcast(
+                    &state,
+                    "resume_interface",
+                    "hub",
+                    "Resume failed",
+                    true,
+                    Some(&error.message),
+                );
+            }
+        }
+        if let Some(expires_at) = resume.ble_peer_expires_at {
+            crate::commands::ble::resume_ble_peer(state.inner(), expires_at);
+        }
+    });
+
+    Ok(json!({ "resumed": resumed }))
+}
+
+/// The `lifecycle` object of `hub_interfaces_update`, for first paint.
+#[tauri::command]
+pub async fn api_interface_lifecycle(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    let ifaces = crate::rns_config::get_all_interfaces(&active_rns_config_dir(&state));
+    Ok(crate::commands::shared::interface_lifecycle_payload(
+        &state, &ifaces,
+    ))
+}
+
+#[cfg(test)]
+mod pause_all_tests {
+    use super::*;
+
+    const CONFIG: &str = "[interfaces]\n  [[Home]]\n    type = BackboneInterface\n    target_host = home.example.org\n    target_port = 4242\n  [[Radio]]\n    type = RNodeInterface\n    port = /dev/ttyUSB0\n    enabled = no\n  [[Local Network]]\n    type = AutoInterface\n  [[Host]]\n    type = TCPServerInterface\n    listen_ip = 0.0.0.0\n    listen_port = 4242\n    enabled = yes\n  [[Broken]]\n    type = TCPClientInterface\n    target_host = x.example.org\n";
+
+    fn state() -> (tempfile::TempDir, AppState, std::path::PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let pool = r2d2::Pool::builder()
+            .max_size(2)
+            .build(r2d2_sqlite::SqliteConnectionManager::memory())
+            .unwrap();
+        db::init_schema(&pool).unwrap();
+        let state = AppState::new(
+            crate::config::DashboardConfig::from_env_and_defaults(temp.path().to_path_buf()),
+            pool,
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        );
+        let identity = "ab".repeat(16);
+        db::save_identity(&state.db, &identity, &"cd".repeat(16), "A", "A");
+        db::set_active_identity(&state.db, &identity).unwrap();
+        let config_dir = active_rns_config_dir(&state);
+        crate::rns_config::write_config(&config_dir, CONFIG);
+        (temp, state, config_dir)
+    }
+
+    #[test]
+    fn pause_all_takes_every_running_interface_it_can_resume() {
+        let (_temp, _state, config_dir) = state();
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+        // Radio is already off; Broken has no port and could not start again.
+        assert_eq!(
+            pausable_interface_names(&ifaces),
+            ["Local Network", "Host", "Home"]
+        );
+    }
+
+    #[test]
+    fn a_pause_writes_the_config_under_its_own_lease() {
+        let (_temp, state, config_dir) = state();
+        let pause = with_rns_config_lock(&state, || {
+            begin_interface_pause(&state, config_dir.clone(), None, "Home".into())
+        })
+        .unwrap();
+        assert!(pause.is_current(&state));
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+        assert_eq!(
+            ratspeak_runtime::interface_lifecycle::config_enabled(&ifaces, "Home"),
+            Some(false)
+        );
+        assert!(!pausable_interface_names(&ifaces).contains(&"Home".to_string()));
+        // A second pause of another interface does not take this one's lease.
+        let host = with_rns_config_lock(&state, || {
+            begin_interface_pause(&state, config_dir.clone(), None, "Host".into())
+        })
+        .unwrap();
+        assert!(pause.is_current(&state) && host.is_current(&state));
+        assert!(begin_interface_pause(&state, config_dir.clone(), None, "Missing".into()).is_err());
+    }
+
+    #[test]
+    fn the_lifecycle_reaches_the_hub_payload_and_persists() {
+        let (_temp, state, config_dir) = state();
+        let pause = with_rns_config_lock(&state, || {
+            begin_interface_pause(&state, config_dir.clone(), None, "Home".into())
+        })
+        .unwrap();
+        update_interface_lifecycle(&state, |lifecycle, identity| {
+            lifecycle.record_pause_all(identity, [pause.name.clone(), "Gone".to_string()], None);
+            lifecycle.set_off(identity, "Radio", true);
+        });
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+        let payload = crate::commands::shared::hub_interfaces_payload(&state, ifaces);
+        assert_eq!(
+            payload["lifecycle"],
+            json!({
+                "paused_all": true,
+                "paused_names": ["Home"],
+                "ble_peer_paused": false,
+                "paused_count": 1,
+                "off": ["Radio"],
+            })
+        );
+        let reloaded =
+            ratspeak_runtime::interface_lifecycle::InterfaceLifecycleStore::load(&state.db);
+        assert_eq!(
+            reloaded.read(Clone::clone),
+            state.interface_lifecycle.read(Clone::clone)
+        );
+        forget_interface_lifecycle(&state, &["Home".to_string(), "Gone".to_string()]);
+        let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+        assert_eq!(
+            crate::commands::shared::interface_lifecycle_payload(&state, &ifaces)["paused_all"],
+            false
+        );
+    }
 }
 
 #[tauri::command]
@@ -5263,6 +5581,15 @@ pub async fn resume_interface(
             }
         }
         let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
+        // Started alone, it is no longer Pause all's, nor Off.
+        update_interface_lifecycle(&st, |lifecycle, identity| {
+            lifecycle.retain_paused(identity, &ifaces);
+            if ratspeak_runtime::interface_lifecycle::config_enabled(&ifaces, &iface_name)
+                == Some(true)
+            {
+                lifecycle.set_off(identity, &iface_name, false);
+            }
+        });
         emit_hub_interfaces(&st, ifaces);
     });
 
@@ -7022,6 +7349,7 @@ pub async fn remove_lora_interface(
         }
         Ok::<_, AppError>((operation_lease, port, remove_outcome))
     })?;
+    forget_interface_lifecycle(&state_arc, [&name]);
 
     emit_hub_interfaces(
         &state_arc,
@@ -7396,6 +7724,7 @@ pub async fn disable_auto_interface(
         );
         return Err(AppError::internal("Config write error"));
     }
+    forget_interface_lifecycle(&state_arc, &names);
 
     let ifaces_now = crate::rns_config::get_all_interfaces(&config_dir);
     emit_hub_interfaces(&state_arc, ifaces_now);
@@ -7838,6 +8167,7 @@ pub async fn remove_tcp_connection(
         );
         return Err(AppError::internal("Config write error"));
     }
+    forget_interface_lifecycle(&state_arc, [&name]);
 
     let ifaces_now = crate::rns_config::get_all_interfaces(&config_dir);
     emit_hub_interfaces(&state_arc, ifaces_now);
@@ -8137,6 +8467,7 @@ pub async fn remove_tcp_server(state: State<'_, Arc<AppState>>, name: String) ->
         );
         return Err(AppError::internal("Config write error"));
     }
+    forget_interface_lifecycle(&state_arc, [&name]);
 
     let ifaces_now = crate::rns_config::get_all_interfaces(&config_dir);
     emit_hub_interfaces(&state_arc, ifaces_now);
@@ -8517,6 +8848,7 @@ pub async fn remove_backbone_connection(
         );
         return Err(AppError::internal("Config write error"));
     }
+    forget_interface_lifecycle(&state_arc, [&name]);
 
     let ifaces_now = crate::rns_config::get_all_interfaces(&config_dir);
     emit_hub_interfaces(&state_arc, ifaces_now);
@@ -8850,6 +9182,7 @@ pub async fn remove_backbone_server(
         );
         return Err(AppError::internal("Config write error"));
     }
+    forget_interface_lifecycle(&state_arc, [&name]);
 
     let ifaces_now = crate::rns_config::get_all_interfaces(&config_dir);
     emit_hub_interfaces(&state_arc, ifaces_now);

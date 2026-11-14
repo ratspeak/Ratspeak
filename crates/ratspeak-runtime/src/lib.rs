@@ -20,6 +20,7 @@ mod hosted_propagation;
 pub mod identity_prune;
 pub mod image_attachment;
 mod inbound_admission;
+pub mod interface_lifecycle;
 mod link_accounting;
 pub mod lxmf;
 pub mod lxmf_persistence;

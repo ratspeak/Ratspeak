@@ -330,7 +330,57 @@ pub(crate) fn persisted_transport_mode(state: &AppState) -> String {
         })
 }
 
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+/// What Pause all holds and what is switched Off, from the in-memory mirror.
+pub(crate) fn interface_lifecycle_payload(state: &AppState, ifaces: &Value) -> Value {
+    let identity = active_identity_id(state);
+    let now = unix_now();
+    state
+        .interface_lifecycle
+        .read(|lifecycle| lifecycle.payload(&identity, ifaces, now))
+}
+
+/// Change the pause state of the active identity's interfaces.
+pub(crate) fn update_interface_lifecycle<R>(
+    state: &AppState,
+    change: impl FnOnce(&mut ratspeak_runtime::interface_lifecycle::InterfaceLifecycle, &str) -> R,
+) -> R {
+    let identity = active_identity_id(state);
+    state
+        .interface_lifecycle
+        .update(&state.db, |lifecycle| change(lifecycle, &identity))
+}
+
+/// A removed interface leaves Pause all's set and the Off set.
+pub(crate) fn forget_interface_lifecycle<'a>(
+    state: &AppState,
+    names: impl IntoIterator<Item = &'a String>,
+) {
+    update_interface_lifecycle(state, |lifecycle, identity| {
+        for name in names {
+            lifecycle.forget(identity, name);
+        }
+    });
+}
+
+/// Bluetooth Peer started or switched off on its own leaves Pause all's set.
+pub(crate) fn forget_paused_ble_peer(state: &AppState) {
+    if state
+        .interface_lifecycle
+        .update(&state.db, |lifecycle| lifecycle.clear_ble_peer())
+    {
+        emit_current_hub_interfaces(state);
+    }
+}
+
 pub(crate) fn hub_interfaces_payload(state: &AppState, mut ifaces: Value) -> Value {
+    let lifecycle = interface_lifecycle_payload(state, &ifaces);
     let mode = persisted_transport_mode(state);
     let configured_enabled = config_transport_enabled(state);
     let suppressed = configured_enabled
@@ -369,6 +419,7 @@ pub(crate) fn hub_interfaces_payload(state: &AppState, mut ifaces: Value) -> Val
             "mobile_hardware".to_string(),
             state.mobile_hardware_state_snapshot(),
         );
+        obj.insert("lifecycle".to_string(), lifecycle);
     }
     ifaces
 }
@@ -385,6 +436,13 @@ pub(crate) fn emit_hub_interfaces(state: &AppState, ifaces: serde_json::Value) {
     let ifaces = hub_interfaces_payload(state, ifaces);
     state.set_last_hub_interfaces(ifaces.clone());
     state.emit_to_all("hub_interfaces_update", ifaces);
+}
+
+pub(crate) fn emit_current_hub_interfaces(state: &AppState) {
+    emit_hub_interfaces(
+        state,
+        crate::rns_config::get_all_interfaces(&active_rns_config_dir(state)),
+    );
 }
 
 pub(crate) async fn hydrate_contact_identity_for_send(state: &AppState, dest_hash: &str) -> bool {
@@ -685,7 +743,83 @@ async fn disable_ble_peer_inner_locked(state: &Arc<AppState>) -> bool {
         db::set_setting(&p, "ble_peer_expires_at", "0");
     })
     .await;
-    state.emit_to_all("ble_peer_status_update", json!({ "enabled": false }));
+    forget_paused_ble_peer(state);
+    emit_ble_peer_status_update(state, false).await;
+    let had_live_interface = teardown_ble_peer_runtime(state).await;
+    tracing::info!("disable_ble_peer_inner: done");
+    was_requested || had_live_interface
+}
+
+/// Bluetooth Peer's saved request: whether it stands, its expiry (Unix
+/// seconds, 0 never), and the duration last chosen (0 always).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BlePeerRequest {
+    pub(crate) requested: bool,
+    pub(crate) expires_at: u64,
+    pub(crate) duration: u64,
+}
+
+impl BlePeerRequest {
+    pub(crate) fn read(pool: &db::DbPool) -> Self {
+        let requested = db::get_setting(pool, "ble_peer_enabled").is_some_and(|v| v == "1");
+        let expires_at = db::get_setting(pool, "ble_peer_expires_at")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        let duration = db::get_setting(pool, "ble_peer_duration")
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(if requested && expires_at == 0 {
+                0
+            } else {
+                BLE_PEER_DEFAULT_DURATION_SECS
+            });
+        Self {
+            requested,
+            expires_at,
+            duration,
+        }
+    }
+
+    pub(crate) fn unexpired(&self, now: u64) -> bool {
+        self.requested && (self.expires_at == 0 || self.expires_at > now)
+    }
+
+    /// The status fields: `enabled` runs, `paused` waits for Resume all.
+    pub(crate) fn status(&self, enabled: bool, paused: bool) -> Value {
+        json!({
+            "enabled": enabled,
+            "paused": paused,
+            "expires_at": if self.requested && (enabled || paused) { self.expires_at } else { 0 },
+            "duration": self.duration,
+        })
+    }
+}
+
+/// The switch-on duration the UI offers first.
+pub(crate) const BLE_PEER_DEFAULT_DURATION_SECS: u64 = 1800;
+
+pub(crate) async fn ble_peer_request(state: &AppState) -> BlePeerRequest {
+    db::spawn_db(state.db.clone(), |p| BlePeerRequest::read(&p))
+        .await
+        .unwrap_or_default()
+}
+
+pub(crate) fn ble_peer_paused(state: &AppState, request: &BlePeerRequest) -> bool {
+    let now = unix_now();
+    request.unexpired(now)
+        && state
+            .interface_lifecycle
+            .read(|lifecycle| lifecycle.ble_peer_paused(now))
+}
+
+pub(crate) async fn emit_ble_peer_status_update(state: &AppState, enabled: bool) {
+    let request = ble_peer_request(state).await;
+    let paused = !enabled && ble_peer_paused(state, &request);
+    state.emit_to_all("ble_peer_status_update", request.status(enabled, paused));
+}
+
+/// Stop Bluetooth Peer's runtime and forget its peers; the request is the
+/// caller's. Whether a live interface was torn down.
+pub(crate) async fn teardown_ble_peer_runtime(state: &Arc<AppState>) -> bool {
     state
         .ble_peer_count
         .store(0, std::sync::atomic::Ordering::Relaxed);
@@ -731,14 +865,14 @@ async fn disable_ble_peer_inner_locked(state: &Arc<AppState>) -> bool {
             let iface_count = stats.len();
             tracing::info!(
                 iface_count,
-                "disable_ble_peer_inner: searching for Bluetooth Peer interface"
+                "teardown_ble_peer_runtime: searching for Bluetooth Peer interface"
             );
             for iface in stats {
                 if iface.name == "Bluetooth Peer" || iface.name == "BLE Mesh" {
                     had_live_interface = true;
                     tracing::info!(
                         id = iface.id,
-                        "disable_ble_peer_inner: tearing down Bluetooth Peer interface"
+                        "teardown_ble_peer_runtime: tearing down Bluetooth Peer interface"
                     );
                     #[cfg(feature = "ble")]
                     {
@@ -757,24 +891,23 @@ async fn disable_ble_peer_inner_locked(state: &Arc<AppState>) -> bool {
             #[cfg(feature = "ble")]
             if !torn_down {
                 tracing::info!(
-                    "disable_ble_peer_inner: no live interface, forcing stop_ble_peer_interface"
+                    "teardown_ble_peer_runtime: no live interface, forcing stop_ble_peer_interface"
                 );
                 rns_interface::ble_peer::stop_ble_peer_interface().await;
             }
         } else {
             tracing::warn!(
-                "disable_ble_peer_inner: failed to query interface stats, forcing stop_ble_peer_interface"
+                "teardown_ble_peer_runtime: failed to query interface stats, forcing stop_ble_peer_interface"
             );
             #[cfg(feature = "ble")]
             rns_interface::ble_peer::stop_ble_peer_interface().await;
         }
     } else {
-        tracing::info!("disable_ble_peer_inner: no RNS runtime, clearing BLE state");
+        tracing::info!("teardown_ble_peer_runtime: no RNS runtime, clearing BLE state");
         #[cfg(feature = "ble")]
         rns_interface::ble_peer::stop_ble_peer_interface().await;
     }
-    tracing::info!("disable_ble_peer_inner: done");
-    was_requested || had_live_interface
+    had_live_interface
 }
 
 #[cfg(test)]
@@ -1022,6 +1155,63 @@ mod tests {
             db::get_setting(&state.db, "ble_peer_enabled").as_deref(),
             Some("0")
         );
+    }
+
+    #[tokio::test]
+    async fn ble_peer_expiry_while_paused_ends_the_pause_with_the_request() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = DashboardConfig::from_env_and_defaults(temp.path().to_path_buf());
+        let state = Arc::new(state_for_config(config));
+        db::set_setting(&state.db, "ble_peer_enabled", "1");
+        db::set_setting(&state.db, "ble_peer_expires_at", "200");
+        update_interface_lifecycle(&state, |lifecycle, identity| {
+            lifecycle.record_pause_all(identity, Vec::new(), Some(200))
+        });
+        let request = ble_peer_request(&state).await;
+        assert!(request.requested && request.expires_at == 200);
+        assert!(state.interface_lifecycle.read(|l| l.ble_peer_paused(100)));
+
+        // The interface is already down; the expiry still ends the request.
+        assert!(disable_ble_peer_inner_if_expiry(&state, 200).await);
+        assert!(!state.interface_lifecycle.read(|l| l.ble_peer_paused(100)));
+        assert!(!ble_peer_request(&state).await.requested);
+        assert!(
+            ratspeak_runtime::interface_lifecycle::InterfaceLifecycleStore::load(&state.db)
+                .read(|l| !l.ble_peer_paused(100))
+        );
+    }
+
+    #[test]
+    fn ble_peer_status_carries_the_standing_timer() {
+        let pool = memory_pool();
+        let off = BlePeerRequest::read(&pool);
+        assert_eq!(
+            off,
+            BlePeerRequest {
+                requested: false,
+                expires_at: 0,
+                duration: BLE_PEER_DEFAULT_DURATION_SECS,
+            }
+        );
+        assert_eq!(
+            off.status(false, false),
+            json!({ "enabled": false, "paused": false, "expires_at": 0, "duration": 1800 })
+        );
+        // Switched on before durations were stored: always on reads as 0.
+        db::set_setting(&pool, "ble_peer_enabled", "1");
+        assert_eq!(BlePeerRequest::read(&pool).duration, 0);
+        assert!(BlePeerRequest::read(&pool).unexpired(u64::MAX));
+
+        db::set_setting(&pool, "ble_peer_expires_at", "900");
+        db::set_setting(&pool, "ble_peer_duration", "600");
+        let on = BlePeerRequest::read(&pool);
+        assert!(on.unexpired(899) && !on.unexpired(900));
+        assert_eq!(on.status(true, false)["expires_at"], 900);
+        assert_eq!(on.status(false, true)["expires_at"], 900);
+        assert_eq!(on.status(false, true)["paused"], true);
+        // Not running and not paused: no timer to show.
+        assert_eq!(on.status(false, false)["expires_at"], 0);
+        assert_eq!(on.status(false, false)["duration"], 600);
     }
 
     #[test]

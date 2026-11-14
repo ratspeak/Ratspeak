@@ -1471,6 +1471,34 @@ pub fn ratspeak_runtime::image_attachment::inspect_image_attachment(&std::path::
 pub fn ratspeak_runtime::image_attachment::prepare_image_attachment(&std::path::Path, &std::path::Path, &str, ratspeak_runtime::image_attachment::ImageSizeProfile, usize) -> core::result::Result<ratspeak_runtime::image_attachment::PreparedImageAttachment, ratspeak_runtime::image_attachment::ImageAttachmentError>
 pub fn ratspeak_runtime::image_attachment::unavailable_image_inspection(usize, ratspeak_runtime::image_attachment::ImageAttachmentDisposition) -> ratspeak_runtime::image_attachment::ImageAttachmentInspection
 pub fn ratspeak_runtime::image_attachment::unsupported_image_inspection(usize) -> ratspeak_runtime::image_attachment::ImageAttachmentInspection
+pub mod ratspeak_runtime::interface_lifecycle
+pub struct ratspeak_runtime::interface_lifecycle::InterfaceLifecycle
+impl ratspeak_runtime::interface_lifecycle::InterfaceLifecycle
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycle::ble_peer_paused(&self, u64) -> bool
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycle::clear_ble_peer(&mut self) -> bool
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycle::forget(&mut self, &str, &str)
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycle::from_settings(core::option::Option<&str>, core::option::Option<&str>, u64) -> Self
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycle::off_names(&self, &str, &serde_json::value::Value) -> alloc::vec::Vec<alloc::string::String>
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycle::paused_names(&self, &str, &serde_json::value::Value) -> alloc::vec::Vec<alloc::string::String>
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycle::payload(&self, &str, &serde_json::value::Value, u64) -> serde_json::value::Value
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycle::record_pause_all(&mut self, &str, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>, core::option::Option<u64>)
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycle::retain_paused(&mut self, &str, &serde_json::value::Value)
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycle::set_ble_peer_expires_at(&mut self, u64)
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycle::set_off(&mut self, &str, &str, bool)
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycle::take_resume_all(&mut self, &str, &serde_json::value::Value, u64) -> ratspeak_runtime::interface_lifecycle::ResumeAll
+pub struct ratspeak_runtime::interface_lifecycle::InterfaceLifecycleStore
+impl ratspeak_runtime::interface_lifecycle::InterfaceLifecycleStore
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycleStore::load(&ratspeak_db::db::DbPool) -> Self
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycleStore::new(ratspeak_runtime::interface_lifecycle::InterfaceLifecycle) -> Self
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycleStore::read<R>(&self, impl core::ops::function::FnOnce(&ratspeak_runtime::interface_lifecycle::InterfaceLifecycle) -> R) -> R
+pub fn ratspeak_runtime::interface_lifecycle::InterfaceLifecycleStore::update<R>(&self, &ratspeak_db::db::DbPool, impl core::ops::function::FnOnce(&mut ratspeak_runtime::interface_lifecycle::InterfaceLifecycle) -> R) -> R
+pub struct ratspeak_runtime::interface_lifecycle::ResumeAll
+pub ratspeak_runtime::interface_lifecycle::ResumeAll::ble_peer_expires_at: core::option::Option<u64>
+pub ratspeak_runtime::interface_lifecycle::ResumeAll::names: alloc::vec::Vec<alloc::string::String>
+pub const ratspeak_runtime::interface_lifecycle::CONFIG_GROUPS: [&str; 6]
+pub const ratspeak_runtime::interface_lifecycle::INTERFACES_OFF_SETTING: &str
+pub const ratspeak_runtime::interface_lifecycle::PAUSED_ALL_SETTING: &str
+pub fn ratspeak_runtime::interface_lifecycle::config_enabled(&serde_json::value::Value, &str) -> core::option::Option<bool>
 pub mod ratspeak_runtime::lxmf
 pub enum ratspeak_runtime::lxmf::AnnounceBuildError
 pub ratspeak_runtime::lxmf::AnnounceBuildError::Coalesced
@@ -2382,6 +2410,7 @@ pub ratspeak_runtime::state::AppState::hw_pending_pin: std::sync::poison::mutex:
 pub ratspeak_runtime::state::AppState::identity_session_generation: core::sync::atomic::AtomicU64
 pub ratspeak_runtime::state::AppState::identity_switch_lock: ratspeak_runtime::state::IdentitySwitchLock
 pub ratspeak_runtime::state::AppState::image_preparation_lock: tokio::sync::mutex::Mutex<()>
+pub ratspeak_runtime::state::AppState::interface_lifecycle: ratspeak_runtime::interface_lifecycle::InterfaceLifecycleStore
 pub ratspeak_runtime::state::AppState::interface_reannounce_suppression: std::sync::poison::mutex::Mutex<std::collections::hash::map::HashMap<alloc::string::String, std::time::Instant>>
 pub ratspeak_runtime::state::AppState::is_foreground: alloc::sync::Arc<core::sync::atomic::AtomicBool>
 pub ratspeak_runtime::state::AppState::known_path_hashes: std::sync::poison::mutex::Mutex<std::collections::hash::set::HashSet<alloc::string::String>>
