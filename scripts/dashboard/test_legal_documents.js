@@ -56,6 +56,7 @@ const context = {
             options,
             overlay: new FakeElement('overlay'),
             sheet: new FakeElement('sheet'),
+            title: new FakeElement('h2'),
             body: new FakeElement('body'),
             footer: new FakeElement('footer'),
             present() { this.wasPresented = true; },
@@ -120,18 +121,17 @@ const tauriConfig = JSON.parse(fs.readFileSync(path.join(dashboard, '..', 'src-t
         .includes('SIL OPEN FONT LICENSE Version 1.1'), family + ' must ship the OFL text');
 });
 assert.strictEqual(index.includes('/static/js/legal_documents.js'), true);
-assert(css.includes('.rs-legal-sheet .bottom-sheet-body'));
-assert(css.includes('.bottom-sheet.open.rs-legal-sheet'));
-assert(css.includes('.rs-legal-sheet .bottom-sheet-handle'));
-assert(css.includes('.rs-legal-sheet .bottom-sheet-handle::after'));
+assert(css.includes('[data-legal-document-id="licenses"] .rs-legal-content section'), 'Licenses set each component in a well');
+assert(!css.includes('.rs-legal-eyebrow'), 'the dialog title names the document; no uppercase eyebrow');
 
 assert.strictEqual(legal.open('privacy'), true);
 assert.strictEqual(builtSheet.wasPresented, true);
-assert.strictEqual(builtSheet.options.showTitle, false);
-assert.strictEqual(builtSheet.sheet.attributes['aria-label'], 'Privacy Policy');
+assert.strictEqual(builtSheet.options.size, 'lg');
+assert.strictEqual(builtSheet.options.sheetClass, 'rs-legal-sheet');
+assert.strictEqual(builtSheet.title.textContent, 'Privacy Policy');
 assert.strictEqual(builtSheet.body.children.length, 1);
 assert.strictEqual(dragDismiss.element, builtSheet.sheet);
-assert.strictEqual(dragDismiss.options.handleSelector, '.bottom-sheet-handle');
+assert.strictEqual(dragDismiss.options.handleSelector, '.ui-dialog-head');
 assert.strictEqual(dragDismiss.options.blockIfScrolled, false);
 assert(builtSheet.body.children[0].innerHTML.includes('Available offline'));
 assert(builtSheet.body.children[0].innerHTML.includes('Ratspeak does not currently operate a public channel hub.'));
@@ -152,7 +152,8 @@ article.listeners.click({
         }
     }
 });
-assert.strictEqual(builtSheet.sheet.attributes['aria-label'], 'Community Guidelines');
+assert.strictEqual(builtSheet.title.textContent, 'Community Guidelines');
+assert.strictEqual(article.attributes['data-legal-document-id'], 'guidelines');
 assert(article.innerHTML.includes('Open networks still need human boundaries.'));
 assert(article.innerHTML.includes('Violence and targeted harm'));
 assert(article.innerHTML.includes('Abuse and exploitation'));

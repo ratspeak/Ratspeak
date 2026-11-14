@@ -228,7 +228,7 @@ assert(channelsSource.includes('RS.legal.open(documentId)') &&
     'public-channel policies must open the versioned offline reader');
 assert(legalDocumentsSource.includes('View current version online') &&
     legalDocumentsSource.includes('Promise.resolve(RS.openExternalUrl(current.url))') &&
-    legalDocumentsSource.includes("handleSelector: '.bottom-sheet-handle'") &&
+    legalDocumentsSource.includes("handleSelector: '.ui-dialog-head'") &&
     legalDocumentsSource.includes('blockIfScrolled: false'),
     'the offline reader must retain an explicit, failure-aware path to the current online copy');
 assert(channelsSource.includes('RS.ui.focusAfterUpdate(initialFocus)'),

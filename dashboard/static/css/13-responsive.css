@@ -30,12 +30,6 @@
         padding-bottom: max(var(--space-5), var(--sab));
     }
 
-    /* Loading/success progress sheets have no actions footer to reserve the
-       home-indicator inset. Keep breathing room above that inset as well. */
-    .bottom-sheet.rs-dialog-sheet--footerless .bottom-sheet-body {
-        padding-bottom: calc(var(--space-12) + var(--sab));
-    }
-
     .bottom-sheet.open.channel-consent-sheet {
         max-height: min(760px, calc(100vh - var(--space-8)));
         max-height: min(760px, calc(var(--app-height, 100dvh) - max(var(--sat), var(--space-8))));
@@ -1505,18 +1499,6 @@
         min-height: 64px;
         font-size: var(--text-lg);
     }
-    .rs-dialog-choices {
-        gap: var(--space-3);
-    }
-    .rs-dialog-choice {
-        min-height: 64px;
-        padding: var(--space-6) var(--space-6);
-        font-size: var(--text-base);
-    }
-    .rs-dialog-choice-icon {
-        width: 40px;
-        height: 40px;
-    }
     .rs-dialog-cancel,
     .rs-dialog-confirm {
         min-height: 48px;
@@ -2641,7 +2623,6 @@
     .bottom-sheet .inline-hint-sm,
     .bottom-sheet .rs-dialog-field-help,
     .bottom-sheet .rs-dialog-advanced-summary,
-    .bottom-sheet .rs-dialog-choice-hint,
     .bottom-sheet .rs-dialog-checkbox-label,
     .bottom-sheet .rs-dialog-checkbox-help,
     .bottom-sheet .rs-dialog-field-error,

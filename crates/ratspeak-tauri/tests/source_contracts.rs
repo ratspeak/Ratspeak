@@ -2584,8 +2584,12 @@ fn frontend_shared_helpers_are_adopted() {
     assert!(constants_js.contains("RS.invokeOrToast = function"));
     assert!(constants_js.contains("RS.buildPeerGroupItems = function"));
 
+    let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
+    assert!(
+        dialogs_js.contains("overlay.className = 'ui-modal';"),
+        "runtime dialogs must use the kit dialog shell"
+    );
     for file in [
-        "dashboard/static/js/dialogs.js",
         "dashboard/static/js/contact_card.js",
         "dashboard/static/js/games_tab.js",
     ] {
@@ -5914,7 +5918,6 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(responsive_css.contains(".bottom-sheet .modal-field label"));
     assert!(responsive_css.contains(".bottom-sheet .rs-dialog-field-label"));
     assert!(responsive_css.contains(".bottom-sheet .sheet-segmented-tabs button"));
-    assert!(responsive_css.contains(".bottom-sheet .rs-dialog-choice-hint"));
     assert!(responsive_css.contains(".bottom-sheet .rs-dialog-checkbox-label"));
     assert!(responsive_css.contains(".bottom-sheet .hub-iface-detail"));
     assert!(responsive_css.contains("#connect-modal .connect-tab-toggle button"));
@@ -6193,8 +6196,8 @@ fn image_size_choices_are_bounded_shared_and_outcome_level() {
     }
     assert!(dialogs.contains("function rsChoice(opts)"));
     assert!(dialogs.contains("opts.sheetClass"));
-    assert!(dialogs.contains("rs-dialog-choice-meta"));
-    assert!(lxmf.contains("sheetClass: 'image-size-sheet'"));
+    assert!(dialogs.contains("_rsText('span', 'trail', choice.meta)"));
+    assert!(lxmf.contains("size: 'md',"));
     assert!(lxmf.contains("title: 'Photo size'"));
     assert!(lxmf.contains("meta: '~' + prettySize(estimate)"));
     assert!(lxmf.contains("if (pendingAttachment.preparing)"));
@@ -8891,9 +8894,9 @@ fn identity_management_is_first_class_tab() {
     let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
     assert!(dialogs_js.contains("built.sheet.addEventListener('keydown'"));
     assert!(!dialogs_js.contains("built.overlay.addEventListener('keydown'"));
-    assert!(dialogs_js.contains("title.classList.add('bottom-sheet-title-with-icon');"));
-    assert!(dialogs_js.contains("icon.className = 'rs-dialog-choice-icon';"));
-    assert!(dialogs_js.contains("text.appendChild(hint);"));
+    assert!(dialogs_js.contains("tile.className = 'ui-tile';"));
+    assert!(dialogs_js.contains("glyph.classList.add('ui-ico');"));
+    assert!(dialogs_js.contains("text.appendChild(_rsText('small', '', choice.hint));"));
 
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     assert!(index.contains(r#"<h2 class="ui-pane-title" id="identity-title">Identities</h2>"#));
@@ -8942,11 +8945,9 @@ fn identity_management_is_first_class_tab() {
         read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
     assert!(modals_css.contains(".bottom-sheet-title-with-icon"));
     assert!(modals_css.contains(".bottom-sheet-title-icon"));
-    assert!(modals_css.contains(".rs-dialog-choice"));
-    assert!(modals_css.contains(".rs-dialog-choice-icon"));
+    assert!(modals_css.contains(".rs-dialog-choices"));
+    assert!(modals_css.contains(".rs-dialog-choice-line"));
     assert!(modals_css.contains("flex-direction: column;"));
-    assert!(modals_css.contains("gap: var(--space-3);"));
-    assert!(modals_css.contains(".rs-dialog-choice-hint"));
 
     let android_activity = read_source(
         root.join("src-tauri/gen/android/app/src/main/java/org/ratspeak/android/MainActivity.kt"),

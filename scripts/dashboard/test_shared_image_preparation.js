@@ -39,9 +39,8 @@ function fixture(disposition='still',prompt=true,choice='medium') {
     vm.createContext(navigation);vm.runInContext(extract('openConversationWith'),navigation);
     navigation.openConversationWith('one'); assert.equal(focusCount,1,'ordinary navigation keeps composer focus');
     navigation.openConversationWith('two',{focusComposer:false}); assert.equal(focusCount,1,'shared photo navigation does not open the keyboard');
-    const css=fs.readFileSync(path.join(__dirname,'../../dashboard/static/css/08-modals.css'),'utf8');
-    const recommendation=css.match(/\.rs-dialog-recommended\s*\{([^}]+)\}/)[1];
-    assert(!/background|border-radius|padding|text-transform/.test(recommendation),'Recommended is emphasis text, never a pill');
+    const dialogs=fs.readFileSync(path.join(__dirname,'../../dashboard/static/js/dialogs.js'),'utf8');
+    assert(dialogs.includes("_rsText('span', 'ui-tag ui-tag--accent', 'Recommended')"),'Recommended is the kit accent tag (4 px, sentence case), never a pill');
     for(const [disposition,prompt,choice,expected] of [['still',true,'medium','prepare_image_attachment_stage'],['still',false,'actual','prepare_image_attachment_stage'],['animated',false,'file','mark_image_attachment_stage_as_file']]){
         const f=fixture(disposition,prompt,choice);
         const pending=f.ctx.attachSharedImage({name:'original.jpg',mime:'image/jpeg',size:2_000_000},Promise.resolve('native-token'));

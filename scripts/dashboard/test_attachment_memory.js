@@ -143,7 +143,7 @@ assert.strictEqual(conversationContext.cacheGet('aabbcc')[0].content, 'canonical
         }
     );
     assert.strictEqual(selected, 'medium');
-    assert.strictEqual(choicePayload.sheetClass, 'image-size-sheet');
+    assert.strictEqual(choicePayload.size, 'md');
     assert.strictEqual(choicePayload.choices.length, 4);
     assert.deepStrictEqual(choicePayload.choices.map(function(choice) { return choice.meta; }), [
         '~240000 B', '~720000 B', '~1900000 B', '~6400000 B'

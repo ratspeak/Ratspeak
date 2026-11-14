@@ -760,6 +760,7 @@ function _settingsShowUpdateAvailable(release, currentVersion) {
         var built = _rsBuildSheet({
             title: 'Update available',
             ariaLabel: 'Update available',
+            size: 'md',
             sheetClass: 'rs-update-sheet',
             nativeBackValue: null,
         }, function() {

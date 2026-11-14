@@ -17,7 +17,6 @@
     var DOCUMENTS = Object.freeze({
         privacy: {
             title: 'Privacy Policy',
-            eyebrow: 'Privacy',
             headline: 'Your device is the center of Ratspeak.',
             lede: 'Ratspeak does not require an account, phone number, analytics profile, or advertising identifier. This policy explains the narrower cases where information leaves your device.',
             meta: 'Effective August 15, 2026 · Ratspeak LLC',
@@ -47,7 +46,6 @@
         },
         terms: {
             title: 'Terms of Use',
-            eyebrow: 'Terms of use',
             headline: 'Use the network responsibly.',
             lede: 'These terms cover the Ratspeak app and services expressly operated by Ratspeak LLC. The wider Reticulum network is decentralized and includes infrastructure we do not control.',
             meta: 'Effective August 15, 2026 · Ratspeak LLC',
@@ -69,7 +67,6 @@
         },
         guidelines: {
             title: 'Community Guidelines',
-            eyebrow: 'Community guidelines',
             headline: 'Open networks still need human boundaries.',
             lede: 'These rules define acceptable conduct in Ratspeak and on official Ratspeak services, while explaining what Ratspeak can—and cannot—do on independently operated infrastructure.',
             meta: 'Effective August 15, 2026 · 18+',
@@ -87,7 +84,6 @@
         },
         support: {
             title: 'Support and Safety',
-            eyebrow: 'Support and safety',
             headline: 'Start with the right kind of help.',
             lede: 'Technical support, beta feedback, privacy requests, and safety reports all reach the same small team—use a clear subject so the urgent things surface first.',
             meta: 'Official contact: mail@ratspeak.org',
@@ -104,7 +100,6 @@
         },
         licenses: {
             title: 'Licenses',
-            eyebrow: 'Licenses',
             headline: 'What Ratspeak is built from, and on which terms.',
             lede: 'Ratspeak is published under the Reticulum License and is built on Rust ports of Mark Qvist\'s Reticulum, LXMF, and LXST.',
             meta: 'Effective November 8, 2026 · Ratspeak LLC',
@@ -132,11 +127,10 @@
         var currentId = documentId;
         var built = _rsBuildSheet({
             title: initial.title,
-            showTitle: false,
-            ariaLabel: initial.title,
+            size: 'lg',
+            sheetClass: 'rs-legal-sheet',
             nativeBackValue: true
         });
-        built.sheet.classList.add('rs-legal-sheet');
 
         var article = document.createElement('article');
         article.className = 'rs-legal-document';
@@ -144,7 +138,7 @@
 
         var online = document.createElement('button');
         online.type = 'button';
-        online.className = 'nr-btn nr-btn-secondary rs-legal-online';
+        online.className = 'ui-btn rs-legal-online';
         online.textContent = 'View current version online';
         online.addEventListener('click', function() {
             var current = DOCUMENTS[currentId];
@@ -157,7 +151,7 @@
 
         var done = document.createElement('button');
         done.type = 'button';
-        done.className = 'nr-btn nr-btn-primary';
+        done.className = 'ui-btn ui-btn--primary';
         done.textContent = 'Done';
         done.addEventListener('click', function() { built.dismiss(true); });
         built.footer.appendChild(online);
@@ -167,10 +161,11 @@
             var legalDocument = DOCUMENTS[nextId];
             if (!legalDocument) return;
             currentId = nextId;
-            built.sheet.setAttribute('aria-label', legalDocument.title);
+            // The dialog title names the document.
+            if (built.title) built.title.textContent = legalDocument.title;
+            article.setAttribute('data-legal-document-id', nextId);
             article.innerHTML =
                 '<header class="rs-legal-hero">' +
-                    '<span class="rs-legal-eyebrow">' + legalDocument.eyebrow + '</span>' +
                     '<h1>' + legalDocument.headline + '</h1>' +
                     '<p>' + legalDocument.lede + '</p>' +
                     '<small>' + legalDocument.meta + ' · Available offline</small>' +
@@ -204,7 +199,7 @@
         if (RS.gestures && typeof RS.gestures.attachDragDismiss === 'function') {
             RS.gestures.attachDragDismiss(built.sheet, {
                 axis: 'y',
-                handleSelector: '.bottom-sheet-handle',
+                handleSelector: '.ui-dialog-head',
                 blockIfScrolled: false,
                 parallaxOverlay: built.overlay,
                 onCommit: function() { built.dismiss(true); }

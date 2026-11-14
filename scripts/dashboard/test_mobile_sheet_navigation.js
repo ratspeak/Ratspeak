@@ -192,8 +192,9 @@ assert(contactCardSource.includes('onClose: function() { stop(); }'),
 assert(navSource.includes('.ui-modal:not([hidden])'), 'swipes must not navigate beneath an open kit dialog');
 assert(dialogsSource.includes('return _rsHandleNativeBack(opts, dismiss);'),
     'rich sheets must preserve their state-aware dismissal callback');
-assert(dialogsSource.includes("sheet.classList.add('rs-dialog-sheet');"),
-    'rich sheets must expose their single-scroll layout contract without changing simple menu sheets');
+assert(dialogsSource.includes("sheet.className = 'ui-dialog rs-sheet-shell'") &&
+    dialogsSource.includes("body.setAttribute('data-sheet-scroll', '');"),
+    'runtime dialogs are the kit dialog, found by native Back, with the body as the one scroll owner');
 assert(channelsSource.includes("handleSelector: '.bottom-sheet-handle'"),
     'channel sheet content must remain native-scrollable while drag dismissal stays on the handle');
 

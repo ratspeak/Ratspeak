@@ -4549,7 +4549,7 @@ function _chooseImageSize(file, inspection) {
     return rsChoice({
         title: 'Photo size',
         ariaLabel: 'Choose image attachment size',
-        sheetClass: 'image-size-sheet',
+        size: 'md',
         summary: {
             primary: _pendingAttachmentName(file),
             secondary: dimensions + ' · ' + prettySize(Number(inspection.source_bytes) || file.size),
@@ -4569,7 +4569,7 @@ function _chooseImageFileFallback(file, disposition) {
     return rsChoice({
         title: 'Send image as a file?',
         ariaLabel: 'Send image as an unchanged file',
-        sheetClass: 'image-size-sheet',
+        size: 'md',
         summary: {
             primary: _pendingAttachmentName(file),
             secondary: prettySize(file.size),
