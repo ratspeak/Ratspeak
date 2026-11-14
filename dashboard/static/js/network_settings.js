@@ -1,5 +1,5 @@
-// Settings › Network › Discovery, the Network view's Discovered group, and
-// the restart every start-time setting needs.
+// Settings › Network › Discovery, Network Stamps, and Links, the Network view's
+// Discovered group, and the restart every start-time setting needs.
 
 (function() {
     'use strict';
@@ -7,12 +7,16 @@
     var DEFAULTS = {
         discover: false,
         autojoin: 0,
+        autoconnect_unknown_implementations: false,
         trusted_only: false,
         trusted_publishers: [],
+        stamp_outgoing: false,
+        require_stamps: false,
+        link_mtu_discovery_off: false,
     };
     var HEX32 = /^[0-9a-f]{32}$/;
     var REFRESH_MS = 10000;
-    var GROUP = 'discovery-settings-body';
+    var GROUPS = ['discovery-settings-body', 'stamp-settings-body', 'link-settings-body'];
 
     var NS = {
         settings: null,
@@ -66,9 +70,11 @@
 
     function setBusy(opts, busy) {
         NS.busy = busy;
-        var group = $(GROUP);
         var row = opts.row ? $(opts.row) : null;
-        if (group) group.classList.toggle('is-restarting', busy);
+        GROUPS.forEach(function(id) {
+            var group = $(id);
+            if (group) group.classList.toggle('is-restarting', busy);
+        });
         if (row) row.classList.toggle('is-committing', busy);
         var value = opts.value ? $(opts.value) : null;
         if (value && busy) {
@@ -94,20 +100,28 @@
         var el = $(id);
         if (el) el.hidden = !visible;
     }
+    function setToggle(id, on) {
+        var el = $(id);
+        if (el) el.checked = !!on;
+    }
 
     function render() {
         if (NS.busy) return;
         var s = current();
-        var discover = $('ns-discover-toggle');
-        if (discover) discover.checked = !!s.discover;
+        setToggle('ns-discover-toggle', s.discover);
         show('ns-autojoin-row', s.discover);
+        setToggle('ns-unknown-impl-toggle', s.autoconnect_unknown_implementations);
+        show('ns-unknown-impl-row', s.discover && s.autojoin > 0);
         show('ns-accept-row', s.discover);
         show('ns-trusted-row', s.discover && s.trusted_only);
         setBadge('ns-autojoin-select', s.autojoin ? plural(s.autojoin, 'server', 'servers') : 'OFF', !s.autojoin);
         setBadge('ns-accept-select', s.trusted_only ? 'Trusted publishers' : 'Anyone', false);
         var trusted = s.trusted_publishers.length;
         setBadge('ns-trusted-btn', (trusted ? plural(trusted, 'publisher', 'publishers') : 'None') + ' ›', false);
-        markLastRow(GROUP);
+        setToggle('ns-stamp-toggle', s.stamp_outgoing);
+        setToggle('ns-require-stamps-toggle', s.require_stamps);
+        setToggle('ns-mtu-toggle', !s.link_mtu_discovery_off);
+        GROUPS.forEach(markLastRow);
         renderDiscovered();
     }
 
@@ -154,11 +168,23 @@
         el.addEventListener('click', open);
     }
 
-    function wireSettings() {
-        var discover = $('ns-discover-toggle');
-        if (discover) discover.addEventListener('change', function() {
-            save({ discover: !!discover.checked }, { row: 'ns-discover-row' });
+    // An on/off row: its switch's state becomes one field.
+    function bindToggle(id, row, patch) {
+        var el = $(id);
+        if (!el) return;
+        el.addEventListener('change', function() {
+            save(patch(!!el.checked), { row: row });
         });
+    }
+
+    function wireSettings() {
+        bindToggle('ns-discover-toggle', 'ns-discover-row', function(on) { return { discover: on }; });
+        bindToggle('ns-unknown-impl-toggle', 'ns-unknown-impl-row', function(on) {
+            return { autoconnect_unknown_implementations: on };
+        });
+        bindToggle('ns-stamp-toggle', 'ns-stamp-row', function(on) { return { stamp_outgoing: on }; });
+        bindToggle('ns-require-stamps-toggle', 'ns-require-stamps-row', function(on) { return { require_stamps: on }; });
+        bindToggle('ns-mtu-toggle', 'ns-mtu-row', function(on) { return { link_mtu_discovery_off: !on }; });
         bindBadge('ns-autojoin-select', function() {
             if (typeof rsChoice !== 'function') return;
             var s = current();

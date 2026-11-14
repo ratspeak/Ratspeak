@@ -7572,6 +7572,79 @@ fn settings_information_architecture_groups_one_off_settings() {
     // Another app's Reticulum service owns discovery; the group is hidden with the connection sections.
     assert!(views_css.contains(".network-external .discovery-settings { display: none; }"));
     assert!(discovery.contains(r#"id="ns-autojoin-row" hidden"#));
+    // On/off rows: a labelled switch with its help text.
+    let toggle_row = |id: &str, label: &str, desc: &str, checked: bool| {
+        let row = network_panel
+            .split(&format!(r#"<div class="settings-row" id="ns-{id}-row""#))
+            .nth(1)
+            .and_then(|tail| tail.split(r#"<div class="settings-row""#).next())
+            .unwrap_or_else(|| panic!("{id}"));
+        assert!(
+            row.contains(&format!(
+                r#"<span class="settings-row-label" id="ns-{id}-label">{label}</span>"#
+            )),
+            "{id}"
+        );
+        assert!(
+            row.contains(&format!(
+                r#"<span class="settings-row-desc" id="ns-{id}-desc">{desc}</span>"#
+            )),
+            "{id}"
+        );
+        let state = if checked { " checked" } else { "" };
+        assert!(
+            row.contains(&format!(
+                r#"<input type="checkbox" id="ns-{id}-toggle"{state} aria-labelledby="ns-{id}-label" aria-describedby="ns-{id}-desc">"#
+            )),
+            "{id}"
+        );
+    };
+    // Unknown implementations sit directly under Join Automatically.
+    assert!(
+        discovery
+            .split(r#"id="ns-autojoin-row""#)
+            .nth(1)
+            .and_then(|tail| tail.split(r#"<div class="settings-row" "#).nth(1))
+            .is_some_and(|next| next.starts_with(r#"id="ns-unknown-impl-row" hidden>"#))
+    );
+    toggle_row(
+        "unknown-impl",
+        "Auto-connect to unknown implementations",
+        "Off joins only servers running Python Reticulum 1.5.7 or later, or rsReticulum 1.5.0 or later.",
+        false,
+    );
+    // Network Stamps and Links follow Discovery as groups of their own, hidden with it.
+    let mut at = network_panel.find(r#"id="discovery-settings-body""#).unwrap();
+    for (group, heading) in [
+        ("stamp-settings-body", "Network Stamps"),
+        ("link-settings-body", "Links"),
+    ] {
+        let open = format!(r#"<section class="discovery-settings" id="{group}""#);
+        let found = network_panel.find(&open).expect(group);
+        assert!(at < found, "{group}");
+        at = found;
+        let section = network_panel[found..].split("</section>").next().unwrap();
+        assert!(section.contains(&format!(">{heading}</h3>")), "{group}");
+        assert!(section.contains("Changes here restart the network for a moment."));
+    }
+    toggle_row(
+        "stamp",
+        "Stamp my announces and path requests",
+        "Adds proof-of-work, so nodes that require stamps pass them on. Takes some CPU and battery: once for each address, and a little for every path request.",
+        false,
+    );
+    toggle_row(
+        "require-stamps",
+        "Require stamps from others",
+        "Ignore announces, path requests, and link requests without enough proof-of-work. Nodes on older software don't stamp, so they won't be heard.",
+        false,
+    );
+    toggle_row(
+        "mtu",
+        "Link MTU discovery",
+        "Uses larger packets on fast links, so transfers finish sooner. Turn off only to troubleshoot.",
+        true,
+    );
     assert!(discovery.contains(r#"id="ns-accept-row" hidden"#));
     assert!(discovery.contains(r#"id="ns-trusted-row" hidden"#));
     assert!(!index.contains(r#"id="panel-settings-discovery""#));
@@ -11305,6 +11378,25 @@ fn discovery_settings_use_the_network_settings_commands() {
     // Restart consequences and the current choice.
     assert!(ns.contains("connected devices will disconnect for a moment."));
     assert!(ns.contains("c.selected = parseInt(c.value, 10) === s.autojoin"));
+    // Unknown implementations show only while joining; each switch saves one field.
+    assert!(ns.contains("show('ns-unknown-impl-row', s.discover && s.autojoin > 0);"));
+    for (toggle, state) in [
+        ("ns-discover-toggle", "s.discover"),
+        ("ns-unknown-impl-toggle", "s.autoconnect_unknown_implementations"),
+        ("ns-stamp-toggle", "s.stamp_outgoing"),
+        ("ns-require-stamps-toggle", "s.require_stamps"),
+        ("ns-mtu-toggle", "!s.link_mtu_discovery_off"),
+    ] {
+        assert!(
+            ns.contains(&format!("setToggle('{toggle}', {state});")),
+            "{toggle}"
+        );
+        assert!(ns.contains(&format!("bindToggle('{toggle}', ")), "{toggle}");
+    }
+    assert!(ns.contains("return { link_mtu_discovery_off: !on };"));
+    assert!(ns.contains(
+        "var GROUPS = ['discovery-settings-body', 'stamp-settings-body', 'link-settings-body'];"
+    ));
     assert_eq!(ns.matches("placeholder: 'Paste an address'").count(), 1);
     assert!(health.contains("RS.discovery.keep(ifaceName)"));
 
@@ -11334,10 +11426,22 @@ fn discovery_settings_use_the_network_settings_commands() {
     for key in [
         "discover_interfaces",
         "autoconnect_discovered_interfaces",
+        "autoconnect_unverified_implementations",
         "interface_discovery_sources",
+        "link_mtu_discovery",
+        "stamps",
+        "stamp_destinations",
+        "stamp_prs",
+        "enforce_stamps",
     ] {
         assert!(keys.contains(&format!("\"{key}\"")), "{key}");
     }
+    assert!(keys.contains("yes(autojoin && s.autoconnect_unknown_implementations)"));
+    // Link requests are stamped whenever a destination announces a cost; always is for testing.
+    assert!(!keys.contains("always_stamp_lrs"));
+    // Ratspeak starts Reticulum without stamp overrides, so the config decides.
+    let rns = read("crates/ratspeak-runtime/src/rns.rs");
+    assert!(!rns.contains("enable_stamping") && !rns.contains("options.enforce_stamps"));
     for other in ["blackhole_sources", "respond_to_probes", "discoverable"] {
         assert!(!keys.contains(other), "{other} is not a discovery key");
     }

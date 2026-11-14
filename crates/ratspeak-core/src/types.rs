@@ -41,6 +41,18 @@ pub struct NetworkSettings {
     /// Discovered Backbone servers to keep joined; 0 is off.
     #[serde(default)]
     pub autojoin: u8,
+    /// Auto-join servers from any announced software (`autoconnect_unverified_implementations`).
+    #[serde(default)]
+    pub autoconnect_unknown_implementations: bool,
+    /// Stamp this device's announces and path requests (`[stamps]` `stamp_destinations`, `stamp_prs`).
+    #[serde(default)]
+    pub stamp_outgoing: bool,
+    /// Drop announces, path requests, and link requests without valid stamps (`[stamps]` `enforce_stamps`).
+    #[serde(default)]
+    pub require_stamps: bool,
+    /// Turn off Reticulum's default link MTU discovery (`link_mtu_discovery = no`).
+    #[serde(default)]
+    pub link_mtu_discovery_off: bool,
     /// Accept discoveries only from `trusted_publishers`; none listed accepts none.
     #[serde(default)]
     pub trusted_only: bool,
@@ -147,6 +159,8 @@ mod tests {
             r#"{"discover":true,"autojoin":5,"block_list_sources":["cc"],"answer_probes":true}"#;
         let settings: NetworkSettings = serde_json::from_str(stored).unwrap();
         assert!(settings.discover && settings.autojoin == 5 && !settings.trusted_only);
+        assert!(!settings.autoconnect_unknown_implementations && !settings.link_mtu_discovery_off);
+        assert!(!settings.stamp_outgoing && !settings.require_stamps);
         let saved = serde_json::to_value(&settings).unwrap();
         assert_eq!(saved["block_list_sources"], serde_json::json!(["cc"]));
         assert_eq!(saved["answer_probes"], serde_json::json!(true));

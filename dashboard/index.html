@@ -1666,6 +1666,16 @@
                                     </div>
                                     <button class="selector-badge settings-state-value" id="ns-autojoin-select" type="button">OFF</button>
                                 </div>
+                                <div class="settings-row" id="ns-unknown-impl-row" hidden>
+                                    <div class="settings-row-info">
+                                        <span class="settings-row-label" id="ns-unknown-impl-label">Auto-connect to unknown implementations</span>
+                                        <span class="settings-row-desc" id="ns-unknown-impl-desc">Off joins only servers running Python Reticulum 1.5.7 or later, or rsReticulum 1.5.0 or later.</span>
+                                    </div>
+                                    <label class="prop-toggle">
+                                        <input type="checkbox" id="ns-unknown-impl-toggle" aria-labelledby="ns-unknown-impl-label" aria-describedby="ns-unknown-impl-desc">
+                                        <span class="prop-slider"></span>
+                                    </label>
+                                </div>
                                 <div class="settings-row" id="ns-accept-row" hidden>
                                     <div class="settings-row-info">
                                         <span class="settings-row-label">Accept From</span>
@@ -1679,6 +1689,44 @@
                                         <span class="settings-row-desc" id="ns-trusted-desc">Only their connections are listed and joined.</span>
                                     </div>
                                     <button class="selector-badge selector-badge-no-caret" id="ns-trusted-btn" type="button">None</button>
+                                </div>
+                            </section>
+                            <section class="discovery-settings" id="stamp-settings-body" aria-labelledby="stamp-settings-heading">
+                                <h3 class="settings-panel-section-title" id="stamp-settings-heading">Network Stamps</h3>
+                                <p class="settings-panel-caption">Changes here restart the network for a moment.</p>
+                                <div class="settings-row" id="ns-stamp-row">
+                                    <div class="settings-row-info">
+                                        <span class="settings-row-label" id="ns-stamp-label">Stamp my announces and path requests</span>
+                                        <span class="settings-row-desc" id="ns-stamp-desc">Adds proof-of-work, so nodes that require stamps pass them on. Takes some CPU and battery: once for each address, and a little for every path request.</span>
+                                    </div>
+                                    <label class="prop-toggle">
+                                        <input type="checkbox" id="ns-stamp-toggle" aria-labelledby="ns-stamp-label" aria-describedby="ns-stamp-desc">
+                                        <span class="prop-slider"></span>
+                                    </label>
+                                </div>
+                                <div class="settings-row" id="ns-require-stamps-row">
+                                    <div class="settings-row-info">
+                                        <span class="settings-row-label" id="ns-require-stamps-label">Require stamps from others</span>
+                                        <span class="settings-row-desc" id="ns-require-stamps-desc">Ignore announces, path requests, and link requests without enough proof-of-work. Nodes on older software don't stamp, so they won't be heard.</span>
+                                    </div>
+                                    <label class="prop-toggle">
+                                        <input type="checkbox" id="ns-require-stamps-toggle" aria-labelledby="ns-require-stamps-label" aria-describedby="ns-require-stamps-desc">
+                                        <span class="prop-slider"></span>
+                                    </label>
+                                </div>
+                            </section>
+                            <section class="discovery-settings" id="link-settings-body" aria-labelledby="link-settings-heading">
+                                <h3 class="settings-panel-section-title" id="link-settings-heading">Links</h3>
+                                <p class="settings-panel-caption">Changes here restart the network for a moment.</p>
+                                <div class="settings-row" id="ns-mtu-row">
+                                    <div class="settings-row-info">
+                                        <span class="settings-row-label" id="ns-mtu-label">Link MTU discovery</span>
+                                        <span class="settings-row-desc" id="ns-mtu-desc">Uses larger packets on fast links, so transfers finish sooner. Turn off only to troubleshoot.</span>
+                                    </div>
+                                    <label class="prop-toggle">
+                                        <input type="checkbox" id="ns-mtu-toggle" checked aria-labelledby="ns-mtu-label" aria-describedby="ns-mtu-desc">
+                                        <span class="prop-slider"></span>
+                                    </label>
                                 </div>
                             </section>
                         </div>

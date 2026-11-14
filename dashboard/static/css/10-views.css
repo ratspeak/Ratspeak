@@ -5491,7 +5491,7 @@ body.setup-active .main-content {
 }
 .recovery-warn strong { color: var(--status-error-fg); }
 
-/* Discovery: the settings group and the Network view's Discovered group. */
+/* Network settings groups that restart the network (Discovery, Network Stamps, Links), and the Network view's Discovered group. */
 .settings-row[hidden] { display: none; }
 .discovery-settings { padding-top: var(--space-6); }
 .network-external .discovery-settings { display: none; }

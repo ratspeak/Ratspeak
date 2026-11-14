@@ -615,9 +615,13 @@ fn ratspeak_shared_instance_port_update(content: &str) -> Option<Zeroizing<Strin
 }
 
 fn reticulum_section_bounds(lines: &[Zeroizing<String>]) -> Option<(usize, usize)> {
+    section_bounds(lines, "reticulum")
+}
+
+fn section_bounds(lines: &[Zeroizing<String>], name: &str) -> Option<(usize, usize)> {
     let start = lines
         .iter()
-        .position(|line| named_top_level_section(line, "reticulum"))?;
+        .position(|line| named_top_level_section(line, name))?;
     let end = lines
         .iter()
         .enumerate()
@@ -2481,16 +2485,18 @@ fn transport_mode_update(content: &str, enable: bool) -> Zeroizing<String> {
     join_config_lines(lines)
 }
 
-/// Writes the `[reticulum]` discovery keys; true when the file changed.
+/// Writes the Network settings' `[reticulum]` and `[stamps]` keys; true when the file changed.
 pub fn apply_network_settings(
     config_dir: &Path,
     settings: &ratspeak_core::types::NetworkSettings,
 ) -> std::io::Result<bool> {
     let previous = read_config(config_dir);
-    let content = previous
+    let mut updated = previous
         .clone()
         .unwrap_or_else(|| ratspeak_default_config(config_dir));
-    let updated = reticulum_keys_update(&content, &network_settings_keys(settings));
+    for (section, keys) in network_settings_keys(settings) {
+        updated = section_keys_update(&updated, section, &keys);
+    }
     if previous.as_deref() == Some(&*updated) {
         return Ok(false);
     }
@@ -2502,48 +2508,96 @@ pub fn apply_network_settings(
     .map(|_| true)
 }
 
+type SectionKeys = Vec<(&'static str, Option<String>)>;
+
 fn network_settings_keys(
     s: &ratspeak_core::types::NetworkSettings,
-) -> Vec<(&'static str, Option<String>)> {
+) -> Vec<(&'static str, SectionKeys)> {
     // Defaults are left out, so an untouched config stays as upstream writes it.
+    let yes = |on: bool| on.then(|| "yes".to_string());
     let list = |v: &[String]| (!v.is_empty()).then(|| v.join(", "));
     // Trusting no one accepts no one; upstream reads an empty list as everyone.
     let discover = s.discover && !(s.trusted_only && s.trusted_publishers.is_empty());
+    let autojoin = discover && s.autojoin > 0;
     vec![
-        ("discover_interfaces", discover.then(|| "yes".to_string())),
         (
-            "autoconnect_discovered_interfaces",
-            (discover && s.autojoin > 0).then(|| s.autojoin.to_string()),
+            "reticulum",
+            vec![
+                ("discover_interfaces", yes(discover)),
+                (
+                    "autoconnect_discovered_interfaces",
+                    autojoin.then(|| s.autojoin.to_string()),
+                ),
+                (
+                    "autoconnect_unverified_implementations",
+                    yes(autojoin && s.autoconnect_unknown_implementations),
+                ),
+                (
+                    "interface_discovery_sources",
+                    if s.trusted_only {
+                        list(&s.trusted_publishers)
+                    } else {
+                        None
+                    },
+                ),
+                (
+                    "link_mtu_discovery",
+                    s.link_mtu_discovery_off.then(|| "no".to_string()),
+                ),
+            ],
         ),
         (
-            "interface_discovery_sources",
-            if s.trusted_only {
-                list(&s.trusted_publishers)
-            } else {
-                None
-            },
+            "stamps",
+            vec![
+                ("stamp_destinations", yes(s.stamp_outgoing)),
+                ("stamp_prs", yes(s.stamp_outgoing)),
+                ("enforce_stamps", yes(s.require_stamps)),
+            ],
         ),
     ]
 }
 
-/// Sets or removes (`None`) keys in `[reticulum]`, keeping every other line.
-fn reticulum_keys_update(content: &str, keys: &[(&str, Option<String>)]) -> Zeroizing<String> {
+/// Sets or removes (`None`) keys in `[section]`, keeping every other line. A
+/// missing section is added, after `[reticulum]`, only to hold a key; one left
+/// holding nothing is removed.
+fn section_keys_update(
+    content: &str,
+    section: &str,
+    keys: &[(&str, Option<String>)],
+) -> Zeroizing<String> {
     let mut lines = content
         .lines()
         .map(|line| Zeroizing::new(line.to_string()))
         .collect::<Vec<_>>();
-    if reticulum_section_bounds(&lines).is_none() {
-        lines.insert(0, Zeroizing::new(String::new()));
-        lines.insert(0, Zeroizing::new("[reticulum]".to_string()));
+    if section_bounds(&lines, section).is_none() {
+        if keys.iter().all(|(_, value)| value.is_none()) {
+            return join_config_lines(lines);
+        }
+        let at = if section == "reticulum" {
+            0
+        } else {
+            reticulum_section_bounds(&lines).map_or(0, |(_, end)| end)
+        };
+        let mut header = Vec::new();
+        if at > 0 && !lines[at - 1].trim().is_empty() {
+            header.push(String::new());
+        }
+        header.push(format!("[{section}]"));
+        if at < lines.len() {
+            header.push(String::new());
+        }
+        lines.splice(at..at, header.into_iter().map(Zeroizing::new));
     }
+    let mut removed = false;
     for (key, value) in keys {
-        let (start, end) = reticulum_section_bounds(&lines).expect("section exists");
+        let (start, end) = section_bounds(&lines, section).expect("section exists");
         let at = ((start + 1)..end)
             .find(|idx| parse_ini_key_value(&lines[*idx]).is_some_and(|(k, _)| k == *key));
         match (at, value) {
             (Some(idx), Some(v)) => lines[idx] = replace_key_line(&lines[idx], key, v),
             (Some(idx), None) => {
                 lines.remove(idx);
+                removed = true;
             }
             (None, Some(v)) => {
                 // Before the section's trailing blank lines.
@@ -2554,6 +2608,12 @@ fn reticulum_keys_update(content: &str, keys: &[(&str, Option<String>)]) -> Zero
                 lines.insert(insert, Zeroizing::new(format!("{key} = {v}")));
             }
             (None, None) => {}
+        }
+    }
+    if removed {
+        let (start, end) = section_bounds(&lines, section).expect("section exists");
+        if lines[start + 1..end].iter().all(|line| line.trim().is_empty()) {
+            lines.drain(start..end);
         }
     }
     join_config_lines(lines)
@@ -2766,6 +2826,201 @@ mod tests {
             read_config(&dir).unwrap().as_str(),
             "[reticulum]\ndiscover_interfaces = yes\nautoconnect_discovered_interfaces = 1\n\n[interfaces]\n"
         );
+    }
+
+    fn runtime_config(dir: &Path) -> rns_runtime::reticulum::ReticulumConfig {
+        let text = read_config(dir).unwrap();
+        let cfg = rns_runtime::config::Config::parse(&text).unwrap();
+        rns_runtime::reticulum::ReticulumConfig::try_from_config(&cfg).unwrap()
+    }
+
+    #[test]
+    fn unknown_implementations_are_joined_only_while_joining() {
+        use ratspeak_core::types::NetworkSettings;
+        const KEY: &str = "autoconnect_unverified_implementations";
+        let dir = temp_config_dir();
+        let base = "[reticulum]\nshare_instance = No\n\n[interfaces]\n";
+        std::fs::write(dir.join("config"), base).unwrap();
+        let on = NetworkSettings {
+            discover: true,
+            autojoin: 2,
+            autoconnect_unknown_implementations: true,
+            ..NetworkSettings::default()
+        };
+        assert!(apply_network_settings(&dir, &on).unwrap());
+        let text = read_config(&dir).unwrap();
+        assert!(
+            text.contains(
+                "autoconnect_discovered_interfaces = 2\nautoconnect_unverified_implementations = yes\n"
+            ),
+            "{}",
+            text.as_str()
+        );
+        assert!(runtime_config(&dir).autoconnect_unverified_implementations);
+
+        // Off, joining off, discovery off, or trusting no one: the key goes and the runtime default holds.
+        let offs = [
+            NetworkSettings {
+                autoconnect_unknown_implementations: false,
+                ..on.clone()
+            },
+            NetworkSettings {
+                autojoin: 0,
+                ..on.clone()
+            },
+            NetworkSettings {
+                discover: false,
+                ..on.clone()
+            },
+            NetworkSettings {
+                trusted_only: true,
+                ..on.clone()
+            },
+        ];
+        for off in &offs {
+            apply_network_settings(&dir, &on).unwrap();
+            assert!(apply_network_settings(&dir, off).unwrap(), "{off:?}");
+            let text = read_config(&dir).unwrap();
+            assert!(!text.contains(KEY), "{off:?}\n{}", text.as_str());
+            assert!(!runtime_config(&dir).autoconnect_unverified_implementations);
+        }
+
+        // A line the user wrote goes too once the setting is off.
+        std::fs::write(
+            dir.join("config"),
+            format!("[reticulum]\nshare_instance = No\n{KEY} = True\n\n[interfaces]\n"),
+        )
+        .unwrap();
+        apply_network_settings(&dir, &offs[0]).unwrap();
+        assert_eq!(
+            read_config(&dir).unwrap().as_str(),
+            "[reticulum]\nshare_instance = No\ndiscover_interfaces = yes\nautoconnect_discovered_interfaces = 2\n\n[interfaces]\n"
+        );
+        assert!(!runtime_config(&dir).autoconnect_unverified_implementations);
+    }
+
+    #[test]
+    fn network_stamps_get_a_section_only_while_on() {
+        use ratspeak_core::types::NetworkSettings;
+        let dir = temp_config_dir();
+        let base = "# Ratspeak\n\n[reticulum]\nshare_instance = No\n\n[logging]\nloglevel = 4\n\n[interfaces]\n  [[Home]]\n    type = TCPClientInterface\n";
+        std::fs::write(dir.join("config"), base).unwrap();
+        let stamping = NetworkSettings {
+            stamp_outgoing: true,
+            ..NetworkSettings::default()
+        };
+        assert!(apply_network_settings(&dir, &stamping).unwrap());
+        assert_eq!(
+            read_config(&dir).unwrap().as_str(),
+            "# Ratspeak\n\n[reticulum]\nshare_instance = No\n\n[stamps]\nstamp_destinations = yes\nstamp_prs = yes\n\n[logging]\nloglevel = 4\n\n[interfaces]\n  [[Home]]\n    type = TCPClientInterface\n"
+        );
+        let stamps = runtime_config(&dir).stamps;
+        assert!(stamps.stamp_destinations && stamps.stamp_prs);
+        assert!(!stamps.stamps_enforced && !stamps.lr_stamps_enforced);
+
+        let both = NetworkSettings {
+            require_stamps: true,
+            ..stamping.clone()
+        };
+        assert!(apply_network_settings(&dir, &both).unwrap());
+        assert!(
+            read_config(&dir)
+                .unwrap()
+                .contains("[stamps]\nstamp_destinations = yes\nstamp_prs = yes\nenforce_stamps = yes\n\n[logging]")
+        );
+        let stamps = runtime_config(&dir).stamps;
+        assert!(stamps.stamp_destinations && stamps.stamps_enforced && stamps.lr_stamps_enforced);
+
+        let requiring = NetworkSettings {
+            stamp_outgoing: false,
+            ..both.clone()
+        };
+        assert!(apply_network_settings(&dir, &requiring).unwrap());
+        let stamps = runtime_config(&dir).stamps;
+        assert!(!stamps.stamp_destinations && !stamps.stamp_prs && stamps.stamps_enforced);
+
+        // Back to the defaults, the section it added goes and the file is as it was.
+        assert!(apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
+        assert_eq!(read_config(&dir).unwrap().as_str(), base);
+        assert_eq!(
+            runtime_config(&dir).stamps,
+            rns_transport::stamps::StampPolicy::default()
+        );
+        assert!(!apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
+    }
+
+    #[test]
+    fn network_stamps_keep_the_users_stamps_section() {
+        use ratspeak_core::types::NetworkSettings;
+        let dir = temp_config_dir();
+        let base = "[reticulum]\nshare_instance = No\n\n[stamps]\n  # Tuned for this hub.\n  destination_cost = 24.8\n  stamp_prs = yes\n\n[interfaces]\n";
+        std::fs::write(dir.join("config"), base).unwrap();
+        let both = NetworkSettings {
+            stamp_outgoing: true,
+            require_stamps: true,
+            ..NetworkSettings::default()
+        };
+        assert!(apply_network_settings(&dir, &both).unwrap());
+        assert_eq!(
+            read_config(&dir).unwrap().as_str(),
+            "[reticulum]\nshare_instance = No\n\n[stamps]\n  # Tuned for this hub.\n  destination_cost = 24.8\n  stamp_prs = yes\nstamp_destinations = yes\nenforce_stamps = yes\n\n[interfaces]\n"
+        );
+        assert_eq!(runtime_config(&dir).stamps.destination_cost, 24.8);
+
+        // Off, its keys go, the user's own stamp_prs line with them; the rest of the section stays.
+        assert!(apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
+        assert_eq!(
+            read_config(&dir).unwrap().as_str(),
+            "[reticulum]\nshare_instance = No\n\n[stamps]\n  # Tuned for this hub.\n  destination_cost = 24.8\n\n[interfaces]\n"
+        );
+        let stamps = runtime_config(&dir).stamps;
+        assert!(!stamps.stamp_prs && !stamps.stamps_enforced);
+        assert_eq!(stamps.destination_cost, 24.8);
+    }
+
+    #[test]
+    fn link_mtu_discovery_is_written_only_when_off() {
+        use ratspeak_core::types::NetworkSettings;
+        let dir = temp_config_dir();
+        let base = "[reticulum]\nshare_instance = No\n\n[logging]\nloglevel = 4\n\n[interfaces]\n";
+        std::fs::write(dir.join("config"), base).unwrap();
+        assert!(!apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
+        assert!(runtime_config(&dir).link_mtu_discovery);
+
+        let off = NetworkSettings {
+            link_mtu_discovery_off: true,
+            ..NetworkSettings::default()
+        };
+        assert!(apply_network_settings(&dir, &off).unwrap());
+        assert_eq!(
+            read_config(&dir).unwrap().as_str(),
+            "[reticulum]\nshare_instance = No\nlink_mtu_discovery = no\n\n[logging]\nloglevel = 4\n\n[interfaces]\n"
+        );
+        assert!(!runtime_config(&dir).link_mtu_discovery);
+
+        assert!(apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
+        assert_eq!(read_config(&dir).unwrap().as_str(), base);
+        assert!(runtime_config(&dir).link_mtu_discovery);
+    }
+
+    #[test]
+    fn a_reticulum_section_added_for_a_key_goes_with_it() {
+        use ratspeak_core::types::NetworkSettings;
+        let dir = temp_config_dir();
+        std::fs::write(dir.join("config"), "[interfaces]\n").unwrap();
+        assert!(!apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
+        let off = NetworkSettings {
+            link_mtu_discovery_off: true,
+            stamp_outgoing: true,
+            ..NetworkSettings::default()
+        };
+        assert!(apply_network_settings(&dir, &off).unwrap());
+        assert_eq!(
+            read_config(&dir).unwrap().as_str(),
+            "[reticulum]\nlink_mtu_discovery = no\n\n[stamps]\nstamp_destinations = yes\nstamp_prs = yes\n\n[interfaces]\n"
+        );
+        assert!(apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
+        assert_eq!(read_config(&dir).unwrap().as_str(), "[interfaces]\n");
     }
 
     #[test]
