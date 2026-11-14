@@ -11961,8 +11961,10 @@ fn private_networks_use_the_network_identity_commands() {
         .find("rns_config::apply_network_identity(&config_dir)")
         .expect("start writes the network identity");
     assert!(settings < identity);
+    let listing: String = rust_function_block(&discovery, "api_discovered_interfaces")
+        .split_whitespace()
+        .collect();
     assert!(
-        rust_function_block(&discovery, "api_discovered_interfaces")
-            .contains("network: handle.network_identity.as_ref().map(|identity| identity.hash)")
+        listing.contains("network:handle.network_identity.as_ref().map(|identity|identity.hash)")
     );
 }
