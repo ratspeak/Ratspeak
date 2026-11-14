@@ -197,16 +197,17 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     );
     assert!(channels_js.contains("Only one hub can be connected at a time"));
     assert!(channels_js.contains("History stays on this device"));
-    assert!(channels_js.contains("item('plus', 'Add a hub by address\\u2026'"));
-    assert!(channels_js.contains("item('qr', 'Share this hub'"));
-    assert!(channels_js.contains("item('info', 'Hub details'"));
+    assert!(channels_js.contains("label: 'Add a hub by address\\u2026', icon: 'plus'"));
+    assert!(channels_js.contains("label: 'Share this hub', icon: 'qr'"));
+    assert!(channels_js.contains("label: 'Hub details', icon: 'info'"));
+    assert!(channels_js.contains("var handle = RS.kit.menu(trigger, {"));
     assert!(channels_js.contains("switching: connectMode.kind === 'switch'"));
     assert!(channels_js.contains("'Could not switch channel hubs.'"));
     assert!(channels_js.contains("openedEpoch === _channelsHistoryEpoch"));
     assert!(
         channels_js.contains("openedGeneration === (Number(channelsSnapshot.generation) || 0)")
     );
-    assert!(channels_js.contains("if (_channelsHubMenuClose) _channelsHubMenuClose(false);"));
+    assert!(channels_js.contains("if (_channelsHubMenu) RS.kit.closeMenu();"));
     assert!(channels_js.contains("channelHubOwnDestinationHash"));
     assert!(!channels_js.contains("hub.nearby ? 'Nearby' : 'Recent'"));
     assert!(channels_js.contains("TextEncoder"));
@@ -218,7 +219,7 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert_eq!(channels_js.matches("return 'Live'").count(), 1);
     assert!(channels_js.contains("function _channelsIdentityTone"));
     assert!(!channels_js.contains("function _channelsInitials"));
-    assert!(channels_css.contains(".ch-hub-menu"));
+    assert!(!channels_css.contains(".ch-hub-menu"));
     assert!(!channels_css.contains("@keyframes channelHubSignalLap"));
     assert!(channels_css.contains(".channel-hub-switch-impact"));
     assert!(!channels_css.contains(".channel-connection-trust"));

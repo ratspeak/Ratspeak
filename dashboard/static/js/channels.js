@@ -1994,7 +1994,7 @@ function channelsNetworkChanged() {
     if (online !== true) _channelsOnlineSince = 0;
     else if (cameOnline) _channelsOnlineSince = Date.now();
     renderChannels();
-    if (typeof _channelsHubMenuRender === 'function') _channelsHubMenuRender();
+    _channelsRefreshHubMenu();
     if (cameOnline && !_channelsIsConnected() && _channelsViewVisible()) {
         channelsRefreshAvailableHubs();
     }
@@ -2334,7 +2334,7 @@ function _channelsRenderHubStrip() {
     var tag = model.menu ? 'BUTTON' : 'DIV';
     var row = _channelsEl('channel-hub-summary');
     if (!row || row.tagName !== tag) {
-        if (_channelsHubMenuClose) _channelsHubMenuClose(false);
+        if (_channelsHubMenu) RS.kit.closeMenu();
         strip.textContent = '';
         row = document.createElement(tag.toLowerCase());
         row.id = 'channel-hub-summary';
@@ -2390,8 +2390,7 @@ function _channelsRenderHubStrip() {
 
 // ---------------------------------------------------------------- hub menu
 
-var _channelsHubMenuClose = null;
-var _channelsHubMenuRender = null;
+var _channelsHubMenu = null;
 
 function _channelsHubMenuCurrentMeta(current) {
     var phase = channelsSnapshot.phase;
@@ -2407,91 +2406,44 @@ function _channelsHubMenuCurrentMeta(current) {
     return 'Session ended';
 }
 
-// Fills one menu: the hubs (current checked), then add, share, details, and leaving.
-function _channelsFillHubMenu(menu, inSheet, choose) {
-    menu.textContent = '';
+// The hub menu's items: the hubs (current checked), then add, share, details, and leaving.
+function _channelsHubMenuItems(choose) {
     var model = _channelsHubSwitcherModel();
     var offline = _channelsNetworkOnline() === false;
     var blocked = _channelsConnectCommandBlocked();
-    var phase = channelsSnapshot.phase;
-
-    function item(icon, label, small, options) {
-        options = options || {};
-        var button = document.createElement('button');
-        button.type = 'button';
-        button.className = 'ui-menu-item' + (options.danger ? ' ui-menu-item--danger' : '');
-        button.setAttribute('role', options.checked != null ? 'menuitemradio' : 'menuitem');
-        if (options.checked != null) button.setAttribute('aria-checked', String(!!options.checked));
-        button.disabled = !!options.disabled;
-        if (options.destination) button.dataset.destinationHash = options.destination;
-        _channelsAppendIcon(button, icon);
-        var text = document.createElement('span');
-        text.className = 'lbl';
-        var name = document.createElement('span');
-        name.textContent = label;
-        text.appendChild(name);
-        if (small) {
-            var detail = document.createElement('small');
-            detail.textContent = small;
-            text.appendChild(detail);
-        }
-        button.appendChild(text);
-        if (options.checked) _channelsAppendIcon(button, 'check', 'check');
-        button.addEventListener('click', function() { choose(options.action, options.hub); });
-        menu.appendChild(button);
-        return button;
-    }
-    function separator() {
-        var line = document.createElement('div');
-        line.className = 'ui-menu-sep';
-        line.setAttribute('role', 'separator');
-        menu.appendChild(line);
-    }
-
-    if (!inSheet) {
-        var caption = document.createElement('p');
-        caption.className = 'ui-menu-caption';
-        caption.textContent = 'Hubs';
-        menu.appendChild(caption);
-    }
-    if (model.current) {
-        item('channels', _channelsHubName(model.current), _channelsHubMenuCurrentMeta(model.current), {
-            checked: true,
-            action: 'current',
-            hub: model.current,
-            destination: model.current.destination_hash
+    var items = [];
+    function hub(entry, hint, current) {
+        items.push({
+            label: _channelsHubName(entry),
+            hint: hint,
+            icon: 'channels',
+            checked: current,
+            disabled: !current && (offline || blocked),
+            destination: entry.destination_hash,
+            onSelect: function() { choose(current ? 'current' : 'switch', entry); }
         });
     }
-    model.nearby.forEach(function(hub) {
-        item('channels', _channelsHubName(hub), _channelsHubDistance(hub) || 'Nearby', {
-            checked: false,
-            action: 'switch',
-            hub: hub,
-            disabled: offline || blocked,
-            destination: hub.destination_hash
-        });
-    });
-    model.saved.forEach(function(hub) {
-        item('channels', _channelsHubName(hub), 'Saved', {
-            checked: false,
-            action: 'switch',
-            hub: hub,
-            disabled: offline || blocked,
-            destination: hub.destination_hash
-        });
-    });
-    separator();
-    item('plus', 'Add a hub by address\u2026', '', { action: 'add', disabled: offline });
+    if (model.current) hub(model.current, _channelsHubMenuCurrentMeta(model.current), true);
+    model.nearby.forEach(function(entry) { hub(entry, _channelsHubDistance(entry) || 'Nearby', false); });
+    model.saved.forEach(function(entry) { hub(entry, 'Saved', false); });
+    items.push({ separator: true });
+    items.push({ label: 'Add a hub by address\u2026', icon: 'plus', disabled: offline,
+        onSelect: function() { choose('add'); } });
     if (channelsSnapshot.hub) {
-        item('qr', 'Share this hub', '', { action: 'share' });
-        item('info', 'Hub details', '', { action: 'details' });
+        items.push({ label: 'Share this hub', icon: 'qr', onSelect: function() { choose('share'); } });
+        items.push({ label: 'Hub details', icon: 'info', onSelect: function() { choose('details'); } });
     }
-    separator();
-    if (phase === 'error') item('refresh', 'Reconnect', '', { action: 'reconnect' });
-    item('x-circle', _channelsIsConnecting() ? 'Cancel connection' : 'Disconnect', '', {
-        action: 'disconnect',
-        danger: true
-    });
+    items.push({ separator: true });
+    if (channelsSnapshot.phase === 'error') {
+        items.push({ label: 'Reconnect', icon: 'refresh', onSelect: function() { choose('reconnect'); } });
+    }
+    items.push({ label: _channelsIsConnecting() ? 'Cancel connection' : 'Disconnect', icon: 'x-circle',
+        danger: true, onSelect: function() { choose('disconnect'); } });
+    return items;
+}
+
+function _channelsHubMenuKey(items) {
+    return items.map(function(item) { return item.separator ? '-' : item.label; }).join('|');
 }
 
 function _channelsConfirmDisconnect() {
@@ -2515,41 +2467,15 @@ function _channelsConfirmDisconnect() {
     });
 }
 
-// The hub strip's menu: an anchored kit menu on desktop, the same items in a sheet on a phone.
+// The hub strip's menu: the kit menu, anchored under the strip on desktop and a sheet on a phone.
 function channelsOpenHubMenu(trigger) {
-    if (_channelsHubMenuClose) {
-        _channelsHubMenuClose(true);
-        return;
-    }
     var openedEpoch = _channelsHistoryEpoch;
     var openedGeneration = Number(channelsSnapshot.generation) || 0;
-    var compact = _channelsCompact();
-    var menu = document.createElement('div');
-    menu.className = compact ? 'ui-menu ui-menu--sheet' : 'ui-menu ch-hub-menu';
-    menu.setAttribute('role', 'menu');
-    menu.setAttribute('aria-label', 'Hubs');
-    var closeMenu = null;
-    // A rebuild keeps keyboard focus on the same item when it is still there.
-    var render = function() {
-        var active = document.activeElement;
-        var hadFocus = !!active && menu.contains(active);
-        var key = hadFocus ? (active.dataset.destinationHash || active.textContent) : '';
-        _channelsFillHubMenu(menu, compact, choose);
-        if (!hadFocus) return;
-        var target = Array.prototype.filter.call(menu.querySelectorAll('.ui-menu-item'), function(entry) {
-            return !entry.disabled && (entry.dataset.destinationHash || entry.textContent) === key;
-        })[0] || menu.querySelector('.ui-menu-item:not(:disabled)');
-        if (target && RS.ui && typeof RS.ui.focusAfterUpdate === 'function') RS.ui.focusAfterUpdate(target);
-    };
-
     function contextIsCurrent() {
         return openedEpoch === _channelsHistoryEpoch &&
             openedGeneration === (Number(channelsSnapshot.generation) || 0);
     }
-
     function choose(action, hub) {
-        closeMenu(action === 'current');
-        var delay = compact ? 220 : 0;
         if (action === 'switch') {
             if (!contextIsCurrent()) {
                 if (typeof showToast === 'function') {
@@ -2557,87 +2483,58 @@ function channelsOpenHubMenu(trigger) {
                 }
                 return;
             }
-            setTimeout(function() { channelsOpenConnectSheet(hub); }, delay);
+            channelsOpenConnectSheet(hub);
         } else if (action === 'add') {
-            setTimeout(function() { channelsOpenAddressSheet(); }, delay);
+            channelsOpenAddressSheet();
         } else if (action === 'share' && channelsSnapshot.hub) {
-            var destination = channelsSnapshot.hub.destination_hash;
-            setTimeout(function() { channelsOpenChannelShare(destination, null); }, delay);
+            channelsOpenChannelShare(channelsSnapshot.hub.destination_hash, null);
         } else if (action === 'details') {
-            setTimeout(channelsOpenHubDetails, delay);
+            channelsOpenHubDetails();
         } else if (action === 'reconnect') {
             channelsReconnect();
         } else if (action === 'disconnect') {
-            setTimeout(_channelsConfirmDisconnect, delay);
+            _channelsConfirmDisconnect();
         }
     }
-
-    function forget() {
-        if (_channelsHubMenuRender === render) _channelsHubMenuRender = null;
-        if (_channelsHubMenuClose === closeMenu) _channelsHubMenuClose = null;
-    }
-
-    if (compact && typeof _rsBuildSheet === 'function') {
-        var built = _rsBuildSheet({ title: 'Hubs' }, forget);
-        built.sheet.classList.add('ch-hub-sheet');
-        built.body.appendChild(menu);
-        built.footer.hidden = true;
-        closeMenu = function() { built.dismiss(); };
-        render();
-        _channelsPresentSheet(built, menu.querySelector('.ui-menu-item[aria-checked="true"]') ||
-            menu.querySelector('.ui-menu-item:not(:disabled)'));
-    } else {
-        var strip = _channelsEl('channel-hub-strip');
-        if (!strip) return;
-        render();
-        strip.appendChild(menu);
-        if (trigger) trigger.setAttribute('aria-expanded', 'true');
-        var onPointer = function(event) {
-            if (!strip.contains(event.target)) closeMenu(false);
-        };
-        var onKey = function(event) {
-            if (event.key === 'Escape') {
-                event.preventDefault();
-                event.stopPropagation();
-                closeMenu(true);
-                return;
-            }
-            if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-            var items = Array.prototype.filter.call(
-                menu.querySelectorAll('.ui-menu-item'),
-                function(entry) { return !entry.disabled; }
-            );
-            if (!items.length) return;
-            event.preventDefault();
-            var index = items.indexOf(document.activeElement);
-            var next = event.key === 'ArrowDown'
-                ? (index + 1) % items.length
-                : (index <= 0 ? items.length - 1 : index - 1);
-            items[next].focus();
-        };
-        document.addEventListener('pointerdown', onPointer, true);
-        document.addEventListener('keydown', onKey, true);
-        closeMenu = function(returnFocus) {
-            document.removeEventListener('pointerdown', onPointer, true);
-            document.removeEventListener('keydown', onKey, true);
-            if (menu.parentNode) menu.parentNode.removeChild(menu);
-            var row = _channelsEl('channel-hub-summary');
-            if (row && row.tagName === 'BUTTON') row.setAttribute('aria-expanded', 'false');
-            forget();
-            if (returnFocus && row && row.focus) row.focus();
-        };
-        var first = menu.querySelector('.ui-menu-item[aria-checked="true"]') ||
-            menu.querySelector('.ui-menu-item:not(:disabled)');
-        if (first && (!RS.ui || typeof RS.ui.prefersKeyboardFocus !== 'function' ||
-                RS.ui.prefersKeyboardFocus())) {
-            first.focus();
+    var items = _channelsHubMenuItems(choose);
+    var compact = RS.kit.compact();
+    var handle = RS.kit.menu(trigger, {
+        title: 'Hubs',
+        caption: compact ? '' : 'Hubs',
+        items: items,
+        align: 'start',
+        hints: true,
+        onClose: function() {
+            if (_channelsHubMenu && _channelsHubMenu.handle === handle) _channelsHubMenu = null;
         }
-    }
-    _channelsHubMenuClose = closeMenu;
-    _channelsHubMenuRender = render;
+    });
+    if (!handle) return null;
+    var open = { handle: handle, items: items, trigger: trigger, choose: choose };
+    _channelsHubMenu = open;
     // The menu lists the announce cache; read it now so it never stays stale.
     channelsRefreshAvailableHubs().then(function() {
-        if (_channelsHubMenuRender === render) render();
+        if (_channelsHubMenu === open) _channelsRefreshHubMenu();
+    });
+    return handle;
+}
+
+// An open hub menu follows the network: a new set of hubs reopens it; otherwise only what can be chosen changes.
+function _channelsRefreshHubMenu() {
+    var open = _channelsHubMenu;
+    if (!open) return;
+    var next = _channelsHubMenuItems(open.choose);
+    if (_channelsHubMenuKey(next) !== _channelsHubMenuKey(open.items)) {
+        RS.kit.closeMenu();
+        if (open.trigger && open.trigger.isConnected !== false) channelsOpenHubMenu(open.trigger);
+        return;
+    }
+    next.forEach(function(item, index) {
+        if (item.separator) return;
+        open.items[index].disabled = item.disabled;
+        open.items[index].hint = item.hint;
+        var button = open.handle.el && open.handle.el.querySelector &&
+            open.handle.el.querySelector('[data-ui-menu-index="' + index + '"]');
+        if (button) button.disabled = !!item.disabled;
     });
 }
 
@@ -3526,23 +3423,16 @@ function _channelsBindTouchReplyAction(event, item, authorText) {
         hapticStages: [{ at: 0.55, level: 'light' }],
         preventDefaultOnStart: true,
         onFire: function() {
-            if (typeof actionPopover !== 'function') {
-                _channelsInsertQuote(item, authorText);
-                return;
+            var actions = [];
+            if (_channelsCanCompose()) {
+                actions.push({ label: 'Reply', icon: 'reply',
+                    onSelect: function() { _channelsInsertQuote(item, authorText); } });
             }
-            var actions = [{
-                label: 'Reply',
-                icon: RS.kit.icon('reply'),
-                onSelect: function() { _channelsInsertQuote(item, authorText); }
-            }];
             if (!item.ours) {
-                actions.push({
-                    label: 'Report',
-                    icon: RS.kit.icon('flag'),
-                    onSelect: function() { _channelsReportMessage(item, authorText); }
-                });
+                actions.push({ label: 'Report', icon: 'flag', danger: true,
+                    onSelect: function() { _channelsReportMessage(item, authorText); } });
             }
-            actionPopover(event, actions);
+            if (actions.length) RS.kit.menu(event, { title: 'Message from ' + authorText, items: actions, align: 'start' });
         }
     });
 }
@@ -5718,19 +5608,9 @@ function _channelsHubCapability(labelText, description, enabled) {
 }
 
 function _channelsActionIcon(kind) {
-    if (kind === 'share') {
-        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="m8.6 10.5 6.8-4M8.6 13.5l6.8 4"/></svg>';
-    }
-    if (kind === 'copy') {
-        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-    }
-    if (kind === 'scan') {
-        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7V4h3M17 4h3v3M20 17v3h-3M7 20H4v-3"/><rect x="8" y="8" width="3" height="3"/><rect x="14" y="8" width="2" height="2"/><rect x="8" y="14" width="2" height="2"/><path d="M14 14h2v2h2v2h-4z"/></svg>';
-    }
-    if (kind === 'leave') {
-        return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 17l5-5-5-5"/><path d="M15 12H3"/><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5"/></svg>';
-    }
-    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>';
+    if (kind === 'copy') return RS.kit.icon('copy');
+    if (kind === 'scan') return RS.kit.icon('qr');
+    return RS.kit.icon('info');
 }
 
 function _channelsDisconnectFromHub(control) {
@@ -6026,20 +5906,20 @@ function channelsOpenRoomOptions(eventOrTrigger) {
     if (!room || !context) return;
     var trigger = eventOrTrigger && eventOrTrigger.currentTarget
         ? eventOrTrigger.currentTarget
-        : null;
-    if (!trigger || !RS.ui || typeof RS.ui.openActionMenu !== 'function') {
+        : (eventOrTrigger && eventOrTrigger.nodeType === 1 ? eventOrTrigger : null);
+    if (!trigger) {
         channelsOpenRoomDetails();
         return;
     }
     var items = [
         {
             label: 'Channel settings',
-            icon: _channelsActionIcon('info'),
+            icon: 'settings',
             onSelect: channelsOpenRoomDetails
         },
         {
             label: 'Share channel',
-            icon: _channelsActionIcon('share'),
+            icon: 'qr',
             onSelect: function() {
                 channelsOpenChannelShare(
                     context.hub_destination_hash,
@@ -6056,7 +5936,7 @@ function channelsOpenRoomOptions(eventOrTrigger) {
         items.push({ separator: true });
         items.push({
             label: sameHub ? 'Rejoin channel' : 'Connect to hub',
-            icon: _channelsActionIcon('leave'),
+            icon: 'channels',
             onSelect: function() {
                 if (sameHub) channelsOpenJoinSheet(context.room_name);
                 else channelsOpenConnectSheet(_channelsHubByDestination(context.hub_destination_hash));
@@ -6066,7 +5946,7 @@ function channelsOpenRoomOptions(eventOrTrigger) {
         items.push({ separator: true });
         items.push({
             label: room.phase === 'joining' ? 'Cancel join' : 'Leave channel',
-            icon: _channelsActionIcon('leave'),
+            icon: 'x-circle',
             danger: room.phase === 'joined',
             disabled: room.phase === 'parting',
             onSelect: function() {
@@ -6089,9 +5969,10 @@ function channelsOpenRoomOptions(eventOrTrigger) {
             }
         });
     }
-    RS.ui.openActionMenu(trigger, items, {
+    RS.kit.menu(trigger, {
         title: _channelsRoomDisplayName(room.name),
-        showTitle: false
+        items: items,
+        align: 'start'
     });
 }
 
@@ -6545,7 +6426,7 @@ RS.listen('announce_received', function() {
 });
 
 RS.listen('lxmf_identity', function() {
-    if (_channelsHubMenuClose) _channelsHubMenuClose(false);
+    if (_channelsHubMenu) RS.kit.closeMenu();
     channelsSavedHubs = [];
     channelsSavedRooms = [];
     channelsRoomIndex = [];

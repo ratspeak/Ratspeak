@@ -402,6 +402,20 @@ function createHarness(options) {
     vm.runInContext('Date.now = function() { return __clock.now; };',
         Object.assign(context, { __clock: clock }));
     vm.runInContext(kitSource, context, { filename: 'ui_kit.js' });
+    // The kit menu draws real DOM; here it records what it was asked to show.
+    var menus = [];
+    context.RS.kit.menu = function(trigger, opts) {
+        var handle = { trigger: trigger, opts: opts, closed: false };
+        handle.close = function() {
+            if (handle.closed) return;
+            handle.closed = true;
+            if (opts.onClose) opts.onClose(null);
+        };
+        menus.forEach(function(open) { open.close(); });
+        menus.push(handle);
+        return handle;
+    };
+    context.RS.kit.closeMenu = function() { menus.forEach(function(open) { open.close(); }); };
     vm.runInContext(chatScrollSource, context, { filename: 'chat_scroll.js' });
     vm.runInContext(channelsSource, context, { filename: 'channels.js' });
     vm.runInContext(channelHubSource, context, { filename: 'channel_hub.js' });
@@ -491,7 +505,8 @@ function createHarness(options) {
             var body = elements['channel-transcript'].querySelector('.ui-empty-body');
             return body ? body.textContent : null;
         },
-        sheet: function() { return sheets[sheets.length - 1] || null; }
+        sheet: function() { return sheets[sheets.length - 1] || null; },
+        menu: function() { return menus[menus.length - 1] || null; }
     };
     return harness;
 }
@@ -995,23 +1010,22 @@ async function testPasteUnavailable() {
 
 // ---------------------------------------------------------------- switching
 
-// The hub strip's menu; the harness is a phone, so it is a sheet.
+// The hub strip's menu: the kit menu with its items.
 async function openMenu(h) {
     h.stripRow().click();
     await h.settle();
-    var built = h.sheet();
-    assert.strictEqual(built.title.textContent, 'Hubs');
-    return built;
+    var open = h.menu();
+    assert(open && !open.closed, 'the hub strip opens its menu');
+    assert.strictEqual(open.opts.title, 'Hubs');
+    return open;
 }
 
-function menuItems(built) {
-    return built.body.querySelectorAll('.ui-menu-item');
+function menuItems(open) {
+    return Array.from(open.opts.items).filter(function(item) { return !item.separator; });
 }
 
-function menuItem(built, label) {
-    return menuItems(built).filter(function(item) {
-        return item.querySelector('.lbl').children[0].textContent === label;
-    })[0] || null;
+function menuItem(open, label) {
+    return menuItems(open).filter(function(item) { return item.label === label; })[0] || null;
 }
 
 async function testSwitchConfirmation() {
@@ -1038,22 +1052,21 @@ async function testSwitchConfirmation() {
 
     // The hub menu itself carries no warning: the hubs, then add, share, details, and disconnect.
     var menu = await openMenu(h);
-    assert.strictEqual(menu.sheet.textContent.indexOf('Only one hub'), -1);
-    assert.deepStrictEqual(menuItems(menu).map(function(item) {
-        return item.querySelector('.lbl').children[0].textContent;
-    }), ['Ratspeak Commons', 'Ridge Radio Club', 'Add a hub by address…', 'Share this hub',
-        'Hub details', 'Disconnect']);
-    assert.strictEqual(menuItem(menu, 'Ratspeak Commons').getAttribute('aria-checked'), 'true');
+    assert(!menuItems(menu).some(function(item) { return /one hub/.test(item.label + (item.hint || '')); }));
+    assert.deepStrictEqual(menuItems(menu).map(function(item) { return item.label; }),
+        ['Ratspeak Commons', 'Ridge Radio Club', 'Add a hub by address…', 'Share this hub',
+            'Hub details', 'Disconnect']);
+    assert.strictEqual(menuItem(menu, 'Ratspeak Commons').checked, true);
 
     // Choosing another hub hands over to the confirmation.
-    menuItem(menu, 'Ridge Radio Club').click();
+    menuItem(menu, 'Ridge Radio Club').onSelect();
     await h.settle();
     assert.strictEqual(h.sheet().title.textContent, 'Switch to Ridge Radio Club?');
     h.sheet().dismiss();
 
     // From a live hub the address sheet hands over to the confirmation too.
     menu = await openMenu(h);
-    menuItem(menu, 'Add a hub by address…').click();
+    menuItem(menu, 'Add a hub by address…').onSelect();
     await h.settle();
     var address = h.sheet();
     assert.strictEqual(address.title.textContent, 'Add a hub by address');
@@ -1253,7 +1266,7 @@ async function testNoNetworkTaps() {
     assert.strictEqual(menuItem(menu, 'Ridge Radio Club').disabled, true,
         'a hub that cannot be reached is not offered');
     assert.strictEqual(menuItem(menu, 'Add a hub by address…').disabled, true);
-    assert.strictEqual(menuItem(menu, 'Disconnect').disabled, false);
+    assert(!menuItem(menu, 'Disconnect').disabled);
     assert.strictEqual(live.toasts.length, 0);
 
     // The open menu follows the network.
@@ -1265,7 +1278,7 @@ async function testNoNetworkTaps() {
 
     // With a network the same item leads to the review.
     live.stats(true);
-    menuItem(menu, 'Ridge Radio Club').click();
+    menuItem(menu, 'Ridge Radio Club').onSelect();
     await live.settle();
     assert.strictEqual(live.sheet().title.textContent, 'Switch to Ridge Radio Club?');
     assert.strictEqual(live.toasts.length, 0);

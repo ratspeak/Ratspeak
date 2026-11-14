@@ -66,21 +66,6 @@
     background: transparent;
 }
 
-.ch-hub-menu {
-    position: absolute;
-    top: calc(100% - 2px);
-    right: 8px;
-    left: 8px;
-    z-index: 20;
-    max-width: none;
-}
-
-/* On a phone the same items fill a sheet edge to edge. */
-.ch-hub-sheet > .ui-dialog-body {
-    padding-right: 0;
-    padding-left: 0;
-}
-
 .ch-hub-status {
     display: inline-flex;
     min-width: 0;

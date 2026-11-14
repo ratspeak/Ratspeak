@@ -220,45 +220,14 @@ stripContext._anyInterfaceOnline = true;
 
 // ---------------------------------------------------------------- hub menu
 
-function FakeElement(tagName) {
-    this.tagName = String(tagName).toUpperCase();
-    this.children = [];
-    this.dataset = {};
-    this.attributes = {};
-    this.listeners = {};
-    this.className = '';
-    this.disabled = false;
-    this._text = '';
-}
-Object.defineProperty(FakeElement.prototype, 'textContent', {
-    get: function() {
-        return this._text + this.children.map(function(child) { return child.textContent; }).join('');
-    },
-    set: function(value) { this.children = []; this._text = String(value); }
-});
-Object.defineProperty(FakeElement.prototype, 'innerHTML', {
-    get: function() { return ''; },
-    set: function() {}
-});
-Object.defineProperty(FakeElement.prototype, 'firstChild', {
-    get: function() { return this.children[0] || null; }
-});
-FakeElement.prototype.appendChild = function(child) { this.children.push(child); return child; };
-FakeElement.prototype.setAttribute = function(name, value) { this.attributes[name] = String(value); };
-FakeElement.prototype.addEventListener = function(name, handler) { this.listeners[name] = handler; };
-
-var menuContext = Object.assign({}, stripContext, {
-    document: { createElement: function(tag) { return new FakeElement(tag); } },
-    RS: { kit: { icon: function() { return ''; } } }
-});
+var menuContext = Object.assign({}, stripContext);
 menuContext._channelsNetworkOnline = stripContext._channelsNetworkOnline;
 vm.runInNewContext(
     sourceRange('_channelsMergedHubs', '_channelsHubSwitcherModel') +
         sourceRange('_channelsSelectedHubDestination', '_channelsCurrentHubObserved') +
         sourceRange('_channelsConnectCommandBlocked', '_channelsHubConnectMode') +
-        sourceRange('_channelsAppendIcon', '_channelsTile') +
         sourceRange('_channelsHubDistance', '_channelsTimeLabel') +
-        sourceRange('_channelsHubMenuCurrentMeta', 'channelsOpenHubMenu'),
+        sourceRange('_channelsHubMenuCurrentMeta', '_channelsHubMenuKey'),
     menuContext,
     { filename: 'channels-hub-menu.js' }
 );
@@ -278,29 +247,26 @@ function menuItems(phase, online) {
         hub: { destination_hash: HUB_A, name: 'Home', hops: 0 }
     };
     stripContext.channelsSnapshot = menuContext.channelsSnapshot;
-    var menu = new FakeElement('div');
     var chosen = [];
-    menuContext._channelsFillHubMenu(menu, false, function(action, hub) {
+    var items = menuContext._channelsHubMenuItems(function(action, hub) {
         chosen.push(action + (hub ? ':' + hub.destination_hash : ''));
     });
     return {
-        menu: menu,
+        items: items,
         chosen: chosen,
-        labels: menu.children.map(function(child) {
-            if (child.className === 'ui-menu-sep') return '--';
-            if (child.className === 'ui-menu-caption') return '[' + child.textContent + ']';
-            return child.textContent + (child.attributes['aria-checked'] === 'true' ? ' (checked)' : '') +
-                (child.disabled ? ' (disabled)' : '');
+        labels: Array.prototype.map.call(items, function(item) {
+            if (item.separator) return '--';
+            return item.label + (item.hint ? ' / ' + item.hint : '') + (item.checked ? ' (checked)' : '') +
+                (item.disabled ? ' (disabled)' : '');
         })
     };
 }
 
 var active = menuItems('active');
-assert.deepStrictEqual(active.labels, [
-    '[Hubs]',
-    'HomeConnected · Direct (checked)',
-    'Field2 hops',
-    'Archive relaySaved',
+assert.deepStrictEqual(Array.from(active.labels), [
+    'Home / Connected · Direct (checked)',
+    'Field / 2 hops',
+    'Archive relay / Saved',
     '--',
     'Add a hub by address…',
     'Share this hub',
@@ -308,21 +274,22 @@ assert.deepStrictEqual(active.labels, [
     '--',
     'Disconnect'
 ], 'one hub menu: switch hubs, add by address, share, details, disconnect');
-active.menu.children[2].listeners.click();
-assert.deepStrictEqual(active.chosen, ['switch:' + HUB_B],
+active.items[1].onSelect();
+assert.deepStrictEqual(Array.from(active.chosen), ['switch:' + HUB_B],
     'choosing another hub asks to switch to it');
-var disconnect = active.menu.children[active.menu.children.length - 1];
-assert(disconnect.className.indexOf('ui-menu-item--danger') !== -1,
+assert.strictEqual(active.items[active.items.length - 1].danger, true,
     'Disconnect is the menu’s danger item');
+assert.strictEqual(active.items[0].checked, true);
+assert.strictEqual(active.items[1].checked, false, 'hub items are radio items: one is checked');
 
 var pending = menuItems('connecting');
-assert(pending.labels.indexOf('Field2 hops (disabled)') !== -1,
+assert(pending.labels.indexOf('Field / 2 hops (disabled)') !== -1,
     'other hubs wait while a connection is in progress');
 assert.strictEqual(pending.labels[pending.labels.length - 1], 'Cancel connection');
-assert.strictEqual(pending.labels[1], 'HomeConnecting… (checked)');
+assert.strictEqual(pending.labels[0], 'Home / Connecting… (checked)');
 
 var ended = menuItems('error');
-assert.deepStrictEqual(ended.labels.slice(-2), ['Reconnect', 'Disconnect'],
+assert.deepStrictEqual(Array.from(ended.labels).slice(-2), ['Reconnect', 'Disconnect'],
     'an ended session offers Reconnect before Disconnect');
 
 var offline = menuItems('active', false);
@@ -354,13 +321,14 @@ assert(channelsSource.indexOf("switching: connectMode.kind === 'switch'") !== -1
 assert(channelsSource.indexOf("'Could not switch channel hubs.'") !== -1);
 assert(channelsSource.indexOf('openedEpoch === _channelsHistoryEpoch') !== -1);
 assert(channelsSource.indexOf('openedGeneration === (Number(channelsSnapshot.generation) || 0)') !== -1);
-assert(channelsSource.indexOf('if (_channelsHubMenuClose) _channelsHubMenuClose(false);') !== -1,
+assert(channelsSource.indexOf('if (_channelsHubMenu) RS.kit.closeMenu();') !== -1 &&
+    channelsSource.indexOf('RS.kit.menu(trigger, {') !== -1,
     'an identity change must close the old identity’s hub menu');
 assert(channelsSource.indexOf("RS.invoke('connect_channel_hub'") !== -1);
 assert(channelsSource.indexOf('CHANNELS_CONNECTION_BUDGET') === -1,
     'the frontend must not invent or raise the runtime connection budget');
 
-var menuSource = sourceRange('channelsOpenHubMenu', '_channelsUnreadBadge');
+var menuSource = sourceRange('channelsOpenHubMenu', '_channelsRefreshHubMenu');
 var connectSource = sourceRange('channelsOpenConnectSheet', '_channelsSheetField');
 assert(menuSource.indexOf('localStorage') === -1);
 assert(menuSource.indexOf("RS.invoke('connect_channel_hub'") === -1,
@@ -378,7 +346,7 @@ assert(channelHubSource.indexOf(
 ) !== -1,
     'Settings ON must reveal the first-run hosting card before a hub exists');
 
-assert(cssSource.indexOf('.ch-hub-menu') !== -1);
+assert(cssSource.indexOf('.ch-hub-menu') === -1, 'no channels-local menu styling remains');
 assert(cssSource.indexOf('@keyframes channelHubSignalLap') === -1 &&
     channelsSource.indexOf('link-arrived') === -1,
     'the status dot carries link state; the perimeter lap is gone');
