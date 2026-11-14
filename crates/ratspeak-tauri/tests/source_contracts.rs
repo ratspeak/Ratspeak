@@ -2649,7 +2649,6 @@ fn contact_list_renders_are_gated() {
     assert!(lxmf_js.contains("function _gateHidden"));
     assert!(lxmf_js.contains("function _gateClean"));
     assert!(!lxmf_js.contains("function renderContactList("));
-    assert!(lxmf_js.contains("_gateHidden('view-dashboard'"));
     let contacts_js =
         read_source(root.join("dashboard/static/js/contacts.js")).expect("contacts js");
     assert!(contacts_js.contains("_gateHidden('view-contacts'"));
@@ -2718,7 +2717,6 @@ fn profile_status_frontend_contract_is_wired() {
     assert!(peers_js.contains("_peerListMetrics"));
 
     let health_js = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
-    assert!(health_js.contains("class=\"dashboard-peers-status\""));
     assert!(health_js.contains("ratspeakProfileStatusText(p)"));
 
     let identity_js =
@@ -2731,8 +2729,6 @@ fn profile_status_frontend_contract_is_wired() {
     assert!(modals_css.contains(".profile-status-counter.at-limit"));
 
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(views_css.contains(".dashboard-peers-status"));
-    assert!(views_css.contains(".dashboard-peers-row.has-profile-status"));
     assert!(!views_css.contains("calc(var(--type-row-meta-size)"));
     assert!(!views_css.contains("calc(var(--text-xs)"));
 }
@@ -7886,8 +7882,6 @@ fn mobile_primary_lists_share_readable_row_scale() {
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     assert!(index.contains("class=\"lxmf-messages ui-scroll\" id=\"lxmf-messages\""));
     assert!(index.contains("<div class=\"ui-pane-scroll\" id=\"msg-pane-scroll\">"));
-    assert!(responsive_css.contains(".dashboard-peers-scroll,"));
-    assert!(responsive_css.contains(".dashboard-peers-scroll::-webkit-scrollbar,"));
     assert!(responsive_css.contains(".conn-group-header {\n        font-size: var(--text-sm);"));
     assert!(responsive_css.contains(".system-action-label,"));
     assert!(responsive_css.contains(".system-subsection-title,"));
@@ -8112,7 +8106,7 @@ fn lxmf_conversation_rows_use_peer_display_names_when_available() {
         .expect("conversation renderer");
     let render_tail = &lxmf[render_start..];
     let render_end = render_tail
-        .find("\nfunction renderNetworkContactList")
+        .find("\n// Home: the header actions")
         .expect("conversation renderer end");
     let render_fn = &render_tail[..render_end];
     assert!(
@@ -8276,7 +8270,6 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
         "if (typeof openActiveIdentityContactCard === 'function') openActiveIdentityContactCard();"
     ));
     assert!(!index.contains("header-mobile-identity") && !index.contains("header-identity-pill"));
-    assert!(lxmf.contains("openContactAddOptions(addBtn)"));
     let contacts = read_source(root.join("dashboard/static/js/contacts.js")).expect("contacts js");
     assert!(contacts.contains("RS.kit.menu(trigger, { title: 'Add contact', items: items });"));
 

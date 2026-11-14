@@ -2585,14 +2585,21 @@ function renderCockpitConversations() {
     renderDashboardRecentMessages();
 }
 
+// Home's Recent messages: the five latest conversations, as the Messages list draws them.
 function renderDashboardRecentMessages() {
     var container = document.getElementById('dashboard-recent-messages');
     if (!container) return;
 
     var convos = lxmfConversations;
+    var viewAll = document.getElementById('dash-view-all-messages');
+    if (viewAll) viewAll.hidden = !convos || convos.length === 0;
     if (!convos || convos.length === 0) {
-        container.innerHTML = '<div class="ui-empty"><h3 class="ui-empty-title">No messages yet</h3>' +
-            '<p class="ui-empty-body">Send your first encrypted message.</p></div>';
+        container.innerHTML = '<div class="ui-empty">' +
+            '<span class="ui-tile ui-tile--lg">' + RS.kit.icon('message') + '</span>' +
+            '<h3 class="ui-empty-title">No messages yet</h3>' +
+            '<p class="ui-empty-body">Write to someone nearby, or to anyone by their LXMF address. Every message is end-to-end encrypted.</p>' +
+            '<div class="ui-empty-actions"><button type="button" class="ui-btn" data-home-new-message>' + RS.kit.icon('compose') + 'New message</button></div>' +
+        '</div>';
         return;
     }
 
@@ -2838,83 +2845,27 @@ function _gateClean(container, html) {
     return false;
 }
 
-function renderNetworkContactList() {
-    var container = document.getElementById('dashboard-contacts-list');
-    if (!container) return;
-    if (_gateHidden('view-dashboard', container)) return;
-
-    if (lxmfContacts.length === 0) {
-        var emptyHtml = '<div class="empty-state p-10"><span class="empty-state-primary">No contacts yet</span></div>';
-        if (_gateClean(container, emptyHtml)) return;
-        container.innerHTML = emptyHtml;
-        return;
-    }
-
-    var sorted = lxmfContacts.slice().sort(function(a, b) {
-        var na = (a.display_name || '').toLowerCase();
-        var nb = (b.display_name || '').toLowerCase();
-        return na < nb ? -1 : na > nb ? 1 : 0;
-    });
-
-    var html = '';
-    sorted.forEach(function(c) {
-        var name = c.display_name || 'Anonymous';
-        var truncHash = typeof shortHash === 'function' ? shortHash(c.hash, 8, 4) : (c.hash.length > 12 ? c.hash.substring(0, 6) + '\u2026' + c.hash.substring(c.hash.length - 4) : c.hash);
-        var avatarHtml = '<span class="contacts-avatar">' + identityAvatar(c.hash, 32) + '</span>';
-        html += '<div role="button" tabindex="0" class="contacts-row" data-hash="' + escapeHtml(c.hash) + '" style="padding:8px 12px;min-height:40px;">' +
-            avatarHtml +
-            '<div class="contacts-row-content">' +
-                '<span class="contacts-row-name">' + ratspeakDisplayNameHtml(name, c) + '</span>' +
-                '<span class="contacts-row-hash">' + escapeHtml(truncHash) + '</span>' +
-            '</div>' +
-        '</div>';
-    });
-    if (_gateClean(container, html)) return;
-    container.innerHTML = html;
-
-    container.querySelectorAll('.contacts-row').forEach(function(el) {
-        if (RS.ui) RS.ui.bindKeyboardActivation(el);
-        el.addEventListener('click', function() { showContactDetailSheet(this.dataset.hash); });
-    });
-}
-
+// Home: the header actions, each card's View all, the empty-state actions, and the rows.
 document.addEventListener('DOMContentLoaded', function() {
-    var addBtn = document.getElementById('dashboard-contacts-add-btn');
-    if (addBtn) {
-        addBtn.addEventListener('click', function() {
-            openContactAddOptions(addBtn);
-        });
-    }
-    var dashAnnounce = document.getElementById('dash-announce');
-    if (dashAnnounce) {
-        dashAnnounce.addEventListener('click', function() {
+    var home = document.getElementById('view-dashboard');
+    if (!home) return;
+    home.addEventListener('click', function(e) {
+        var target = e.target.closest('button');
+        if (!target || !home.contains(target)) return;
+        if (target.id === 'dash-announce' || target.hasAttribute('data-home-announce')) {
             tryTriggerAnnounce();
-        });
-    }
-    var dashNewMessage = document.getElementById('dash-new-message');
-    if (dashNewMessage) {
-        dashNewMessage.addEventListener('click', function() {
+        } else if (target.id === 'dash-new-message' || target.hasAttribute('data-home-new-message') ||
+                target.id === 'dash-view-all-messages') {
             switchView('message');
-        });
-    }
-    var dashAddConnection = document.getElementById('dash-add-connection');
-    if (dashAddConnection) {
-        dashAddConnection.addEventListener('click', function() {
+        } else if (target.id === 'dash-add-connection' || target.hasAttribute('data-home-add-connection') ||
+                target.hasAttribute('data-home-open-network')) {
             switchView('network');
-        });
-    }
-    var dashViewAllMessages = document.getElementById('dash-view-all-messages');
-    if (dashViewAllMessages) {
-        dashViewAllMessages.addEventListener('click', function() {
-            switchView('message');
-        });
-    }
-    var dashViewNetwork = document.getElementById('dash-view-network');
-    if (dashViewNetwork) {
-        dashViewNetwork.addEventListener('click', function() {
+        } else if (target.id === 'dash-view-network') {
             switchView('peers');
-        });
-    }
+        } else if (target.closest('#dashboard-peers-list') && target.dataset.hash) {
+            if (typeof openConversationWith === 'function') openConversationWith(target.dataset.hash);
+        }
+    });
 });
 
 window.renderConversation = renderConversation;

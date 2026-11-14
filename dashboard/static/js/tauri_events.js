@@ -294,7 +294,6 @@ RS.listen('stats_update', function(data) {
 
     // path_age/hops/via change with path_table; renderer dirty-keys dedupe.
     if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
-    if (typeof renderNetworkContactList === 'function') renderNetworkContactList();
     if (typeof updatePeersFromStats === 'function') updatePeersFromStats();
 
     var dashView = document.getElementById('view-dashboard');
@@ -390,7 +389,6 @@ function _renderPathCacheCleared() {
     }
     if (typeof updatePeersFromStats === 'function') updatePeersFromStats();
     if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
-    if (typeof renderNetworkContactList === 'function') renderNetworkContactList();
 }
 
 // keepOnFailure: the peers still exist (a bulk delete changed only their

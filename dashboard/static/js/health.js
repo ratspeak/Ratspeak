@@ -48,108 +48,101 @@ function renderCockpitStats(stats) {
     }
 }
 
-var _lastPeersJson = '';
+var _lastHomePeersKey = '';
+var HOME_PEERS_SHOWN = 6;
 
+function _homeEmpty(tile, tone, title, body, action) {
+    return '<div class="ui-empty">' +
+        '<span class="ui-tile ui-tile--lg' + (tone ? ' ui-tile--' + tone : '') + '">' + RS.kit.icon(tile) + '</span>' +
+        '<h3 class="ui-empty-title">' + title + '</h3>' +
+        '<p class="ui-empty-body">' + body + '</p>' +
+        '<div class="ui-empty-actions">' + action + '</div></div>';
+}
+
+// Home's Recent peers: the most recently heard first, as Peers orders them.
 function renderDashboardPeersList() {
     var listEl = document.getElementById('dashboard-peers-list');
     if (!listEl) return;
     if (typeof PeersCache === 'undefined' || !PeersCache) return;
 
     var peers = PeersCache.enriched();
-    var peersJson = JSON.stringify(peers);
-    if (peersJson === _lastPeersJson) return;
-    _lastPeersJson = peersJson;
+    peers.sort(PeersCache.compareByLastSeen);
+    peers = peers.slice(0, HOME_PEERS_SHOWN);
+    // Times move with the clock, so the key includes the minute.
+    var key = Math.floor(Date.now() / 60000) + '|' + JSON.stringify(peers);
+    if (key === _lastHomePeersKey) return;
+    _lastHomePeersKey = key;
 
+    var viewAll = document.getElementById('dash-view-network');
+    if (viewAll) viewAll.hidden = peers.length === 0;
     if (peers.length === 0) {
-        listEl.innerHTML = '<div class="dashboard-peers-empty">No peers discovered yet</div>';
+        listEl.innerHTML = _homeEmpty('globe', 'online', 'Listening for peers',
+            'People and devices show up here as they announce. Most announce within a few minutes.',
+            '<button type="button" class="ui-btn" data-home-announce>' + RS.kit.icon('announce') + 'Announce now</button>');
         return;
     }
 
-    // Same order as Peers' default: most recently heard first.
-    peers.sort(PeersCache.compareByLastSeen);
-
-    var MAX_DISPLAY = 50;
-    var html = '';
-    var msgIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
-    var addIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>';
-
-    peers.slice(0, MAX_DISPLAY).forEach(function(p) {
+    listEl.innerHTML = '<ul class="ui-list">' + peers.map(function(p) {
         var hash = p.hash || '';
-        var statusClass = 'status-' + p.status;
-        var av = (typeof identityAvatar === 'function') ? identityAvatar(hash, 24) : '';
         var hasName = p.display_name && p.display_name !== '' && p.display_name !== hash;
-        var displayName = hasName ? p.display_name : hash.substring(0, 8);
-        var nameClass = 'dashboard-peers-name' + (hasName ? '' : ' dashboard-peers-name-hash');
-        var profileStatus = typeof ratspeakProfileStatusText === 'function' ? ratspeakProfileStatusText(p) : '';
-        var statusHtml = profileStatus
-            ? '<span class="dashboard-peers-status" title="' + escapeHtml(profileStatus) + '">' + escapeHtml(profileStatus) + '</span>'
-            : '';
-        var hopText = (p.hops !== null && p.hops !== undefined)
-            ? p.hops + (p.hops === 1 ? ' hop' : ' hops') : '';
+        var name = hasName ? p.display_name : RS.kit.hash.short(hash);
+        var presence = RS.kit.presenceFor(p.last_seen) === 'active' ? 'active' : null;
+        var meta = [
+            typeof ratspeakProfileStatusText === 'function' ? ratspeakProfileStatusText(p) : '',
+            p.in_path ? p.route_label : '',
+            p.iface && typeof ifaceShortLabel === 'function' ? ifaceShortLabel(p.iface) : ''
+        ].filter(Boolean).join(' · ');
+        var heard = p.last_seen ? '<span class="ui-time" title="' + escapeHtml(RS.kit.time.lastHeard(p.last_seen)) + '">' +
+            RS.kit.time.row(p.last_seen) + '</span>' : '';
+        return '<li><button type="button" class="ui-row" data-hash="' + escapeHtml(hash) + '">' +
+            RS.kit.avatar(hash, 'row', presence, p.last_seen) +
+            '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' +
+                ratspeakDisplayNameHtml(name, p) + '</span>' + heard + '</span>' +
+            (meta ? '<span class="ui-row-sub"><span class="t">' + escapeHtml(meta) + '</span></span>' : '') +
+            '</span></button></li>';
+    }).join('') + '</ul>';
+}
 
-        var actions = '<div class="dashboard-peers-actions">';
-        actions += '<button class="dashboard-peers-action-btn" data-action="message" data-hash="' + escapeHtml(hash) + '" title="Message">' + msgIcon + '</button>';
-        if (!p.is_contact) {
-            actions += '<button class="dashboard-peers-action-btn" data-action="add-contact" data-hash="' + escapeHtml(hash) + '" title="Add Contact">' + addIcon + '</button>';
-        }
-        actions += '</div>';
-
-        html += '<div class="dashboard-peers-row' + (profileStatus ? ' has-profile-status' : '') + '" data-hash="' + escapeHtml(hash) + '">' +
-            '<span class="dashboard-peers-dot ' + statusClass + '"></span>' +
-            '<div class="dashboard-peers-avatar">' + av + '</div>' +
-            '<span class="dashboard-peers-main">' +
-                '<span class="' + nameClass + '">' + ratspeakDisplayNameHtml(displayName, p) + '</span>' +
-                statusHtml +
-            '</span>' +
-            (hopText ? '<span class="dashboard-peers-hops">' + hopText + '</span>' : '') +
-            actions +
+// Home's status card: connected or offline, when this identity last announced, and each connection.
+function renderHomeStatus(data) {
+    var card = document.getElementById('home-status');
+    if (!card) return;
+    var ifaces = data && data.interface_stats
+        ? interfaceStatsWithoutAutoPeerDoubleCount(data.interface_stats.interfaces) : null;
+    var html;
+    if (!data) {
+        html = '<div class="home-status"><span class="ui-tile ui-tile--neutral"><span class="ui-spin"></span></span>' +
+            '<div class="home-status-main"><h2 class="ui-card-title" id="home-status-title">Starting the network</h2>' +
+            '<p class="home-status-sub">Connections show here once they start.</p></div></div>';
+    } else {
+        var online = !!data.connected;
+        var announced = data.last_announce_at
+            ? 'Announced ' + RS.kit.time.sentence(data.last_announce_at) + '.'
+            : 'Not announced yet.';
+        html = '<div class="home-status"><span class="ui-tile ui-tile--' + (online ? 'online' : 'warning') + '">' +
+                RS.kit.icon(online ? 'network' : 'alert') + '</span>' +
+            '<div class="home-status-main"><h2 class="ui-card-title" id="home-status-title">' + (online ? 'Connected' : 'Offline') + '</h2>' +
+            '<p class="home-status-sub"' + (online && data.last_announce_at ? ' title="' + escapeHtml(RS.kit.time.full(data.last_announce_at)) + '"' : '') + '>' +
+                (online ? announced : 'No connection is up. Messages wait on this device and send when one is.') + '</p></div>' +
+            (online ? '' : '<button type="button" class="ui-btn ui-btn--primary" data-home-add-connection>Add connection</button>') +
             '</div>';
-    });
-
-    if (peers.length > MAX_DISPLAY) {
-        html += '<div class="dashboard-peers-empty text-xs" style="padding:var(--space-4) var(--space-7);">Showing ' + MAX_DISPLAY + ' of ' + peers.length + ' peers &mdash; <a id="dash-peers-view-all" class="text-accent" style="cursor:pointer;">View all</a></div>';
+        var ways = (ifaces || []).map(function(iface) {
+            var label = friendlyInterfaceName(iface.name || '', iface.type || '', iface.role || '');
+            var kind = typeof ifaceShortLabel === 'function' ? ifaceShortLabel(iface.name || '') : '';
+            var words = escapeHtml(label) + (kind && kind !== label ? ' · ' + escapeHtml(kind) : '') + (iface.online ? '' : ', offline');
+            return '<span class="ui-status"><span class="ui-dot' + (iface.online ? ' ui-dot--online' : '') + '"></span>' + words + '</span>';
+        });
+        html += '<div class="home-ways">' + ways.join('') +
+            '<button type="button" class="ui-link home-open" data-home-open-network>Open Network</button></div>';
     }
-
-    listEl.innerHTML = html;
-
-    var viewAllLink = document.getElementById('dash-peers-view-all');
-    if (viewAllLink) {
-        viewAllLink.addEventListener('click', function() {
-            if (typeof switchView === 'function') switchView('peers');
-        });
-    }
-
-    listEl.querySelectorAll('.dashboard-peers-row').forEach(function(row) {
-        row.addEventListener('click', function(e) {
-            if (e.target.closest('.dashboard-peers-action-btn')) return;
-            var h = this.dataset.hash;
-            if (typeof openConversationWith === 'function') openConversationWith(h);
-        });
-    });
-    listEl.querySelectorAll('[data-action="message"]').forEach(function(btn) {
-        btn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            if (typeof openConversationWith === 'function') openConversationWith(this.dataset.hash);
-        });
-    });
-    listEl.querySelectorAll('[data-action="add-contact"]').forEach(function(btn) {
-        btn.addEventListener('click', function(e) {
-            e.stopPropagation();
-            var h = this.dataset.hash;
-            var cd = null;
-            (PeersCache && PeersCache.enriched() || []).forEach(function(c) { if (c.hash === h) cd = c; });
-            var prefill = cd ? (cd.display_name || '') : '';
-            rsPrompt({ message: 'Contact name (optional):', placeholder: 'Display name', defaultValue: prefill }).then(function(name) {
-                if (name === null) return;
-                RS.invokeOrToast('add_contact', { args: { hash: h, display_name: name.trim() || null } }, 'Could not add contact');
-            });
-        });
-    });
+    card.innerHTML = html;
+    var announce = document.getElementById('dash-announce');
+    if (announce) announce.disabled = !!data && !data.connected;
 }
 
 function renderDashboardSummaries(data) {
+    renderHomeStatus(data);
     renderDashboardPeersList();
-    if (typeof renderNetworkContactList === 'function') renderNetworkContactList();
 }
 
 function toggleSubPanel(id) {

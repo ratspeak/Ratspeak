@@ -459,7 +459,6 @@ var VIEW_LIFECYCLE = {
         });
         if (typeof loadIdentities === 'function') loadIdentities();
         if (typeof renderMergedConnections === 'function') renderMergedConnections();
-        if (typeof renderNetworkContactList === 'function') renderNetworkContactList();
         if (typeof renderPropagationStatus === 'function') renderPropagationStatus('net-propagation-status');
     },
 

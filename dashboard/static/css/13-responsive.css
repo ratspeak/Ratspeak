@@ -224,10 +224,6 @@
 }
 
 @media (max-width: 768px) {
-    .dashboard-action-row {
-        display: none;
-    }
-
     .tooltip-trigger { position: static; }
     .cockpit-grid {
         grid-template-columns: 1fr;
@@ -249,15 +245,6 @@
     .view-grid-dashboard {
         padding: 0 var(--space-4) var(--space-4);
         gap: var(--space-3);
-    }
-
-    #panel-dashboard-messages,
-    #panel-dashboard-contacts {
-        display: none;
-    }
-
-    .dashboard-page {
-        padding: var(--space-4);
     }
 
     /* Pad toolbar/list directly: nested flex with height:100% ignores parent padding. */
@@ -521,7 +508,7 @@
     .contacts-list-scroll,
     .activity-feed,
     .settings-page,
-    .dashboard-page,
+    .home-page,
     .games-session-list {
         padding-bottom: var(--space-4);
     }
@@ -906,7 +893,7 @@
     .keyboard-open .view-grid-identity,
     .keyboard-open .activity-feed,
     .keyboard-open .settings-page,
-    .keyboard-open .dashboard-page,
+    .keyboard-open .home-page,
     .keyboard-open .games-session-list {
         padding-bottom: 0;
     }
@@ -2332,7 +2319,6 @@
     }
 
     .contacts-list-scroll,
-    .dashboard-peers-scroll,
     .conn-table-scroll,
     .eventlog-full,
     .games-session-list,
@@ -2344,7 +2330,6 @@
         -ms-overflow-style: none;
     }
     .contacts-list-scroll::-webkit-scrollbar,
-    .dashboard-peers-scroll::-webkit-scrollbar,
     .conn-table-scroll::-webkit-scrollbar,
     .eventlog-full::-webkit-scrollbar,
     .games-session-list::-webkit-scrollbar,
@@ -2754,8 +2739,7 @@
 
 /* Channels responsive layout. Keep breakpoint behavior in this module. */
 html[data-text-scale-tier="large"] .connections-header,
-html[data-text-scale-tier="large"] .activity-toolbar,
-html[data-text-scale-tier="large"] .dashboard-action-row {
+html[data-text-scale-tier="large"] .activity-toolbar {
     flex-wrap: wrap;
 }
 
@@ -3506,7 +3490,7 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
     .games-detail,
     .people-split > .ui-detail,
     .setup-container,
-    .dashboard-page,
+    .home-page,
     .network-layout,
     .settings-page {
         border-right: var(--sar) solid transparent;
@@ -3523,7 +3507,7 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
     .people-split > .ui-pane,
     .people-split > .ui-detail,
     .setup-container,
-    .dashboard-page,
+    .home-page,
     .network-layout,
     .settings-page {
         border-bottom: var(--sab) solid transparent;
