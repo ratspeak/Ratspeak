@@ -51,6 +51,8 @@ a.ui-sidebar-me:focus-visible { outline: 2px solid var(--focus-ring); outline-of
     :is(.ui-pane-scroll, .ui-detail, .ui-dialog-body, .ui-scroll)::-webkit-scrollbar { display: none; }
 }
 .ui-detail { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow-y: auto; background: var(--surface-panel); --row-surface: var(--surface-panel); --peer-presence-ring: var(--surface-panel); }
+/* A header that scrolls with its content: sticky inside the scroller, so it shares the content's edges. */
+.ui-scroll-head { position: sticky; top: 0; z-index: 2; background: var(--row-surface, var(--surface-workspace)); }
 @media (max-width: 768px) {
     .ui-app { flex-direction: column; padding-top: var(--sat); }
     .ui-sidebar { display: none; }
