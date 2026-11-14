@@ -2098,7 +2098,9 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                 "failed to write enable settings into Ratspeak interfaces"
             ),
         }
-        if rns_config::apply_network_settings(&config_dir, &state.network_settings()).is_err() {
+        if state.seed_network_settings(&config_dir)
+            && rns_config::apply_network_settings(&config_dir, &state.network_settings()).is_err()
+        {
             tracing::warn!(
                 reason = "network_settings",
                 "failed to write network settings into the Reticulum config"

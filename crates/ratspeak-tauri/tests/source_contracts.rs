@@ -11419,10 +11419,15 @@ fn discovery_settings_use_the_network_settings_commands() {
         rust_function_block(&commands, "restart").contains("ratspeak_runtime::restart_rns_lxmf(")
     );
     let runtime = read("crates/ratspeak-runtime/src/lib.rs");
+    let start = rust_function_block(&runtime, "init_rns_lxmf_inner");
     assert!(
-        rust_function_block(&runtime, "init_rns_lxmf_inner")
+        start
             .contains("rns_config::apply_network_settings(&config_dir, &state.network_settings())")
     );
+    // A profile with none stored takes them from the config first, keeping its hand-written keys.
+    assert!(start.contains(
+        "state.seed_network_settings(&config_dir)\n            && rns_config::apply_network_settings("
+    ));
     let rns_config = read("crates/ratspeak-runtime/src/rns_config.rs");
     let keys = rust_function_block(&rns_config, "network_settings_keys");
     for key in [

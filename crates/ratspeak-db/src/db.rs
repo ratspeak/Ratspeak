@@ -5396,6 +5396,17 @@ pub fn try_set_setting(pool: &DbPool, key: &str, value: &str) -> Result<(), Stri
     Ok(())
 }
 
+/// Stores `value` unless `key` already holds one; true when it was stored.
+pub fn try_insert_setting(pool: &DbPool, key: &str, value: &str) -> Result<bool, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES (?1, ?2)",
+        params![key, value],
+    )
+    .map(|inserted| inserted > 0)
+    .map_err(|e| e.to_string())
+}
+
 /// Persist a coherent group of settings in one transaction. This is the
 /// boundary for controls whose fields are edited and applied as one unit.
 pub fn try_set_settings(pool: &DbPool, values: &[(String, String)]) -> Result<(), String> {
@@ -5444,6 +5455,14 @@ mod settings_tests {
         );
         assert_eq!(values.get("hub_enabled").map(String::as_str), Some("1"));
         assert!(!values.contains_key("missing"));
+    }
+
+    #[test]
+    fn an_inserted_setting_never_replaces_a_stored_one() {
+        let pool = test_pool();
+        assert_eq!(try_insert_setting(&pool, "seeded", "first"), Ok(true));
+        assert_eq!(try_insert_setting(&pool, "seeded", "second"), Ok(false));
+        assert_eq!(get_setting(&pool, "seeded").as_deref(), Some("first"));
     }
 
     #[test]

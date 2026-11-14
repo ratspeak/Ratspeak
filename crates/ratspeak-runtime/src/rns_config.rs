@@ -2508,6 +2508,70 @@ pub fn apply_network_settings(
     .map(|_| true)
 }
 
+/// The Network settings a config's own keys describe, for a profile that has
+/// stored none; `None` while Reticulum would refuse the config or one of them.
+pub fn network_settings_from_config(
+    config_dir: &Path,
+) -> Option<ratspeak_core::types::NetworkSettings> {
+    match read_config(config_dir) {
+        Some(content) => network_settings_from_content(&content),
+        None => Some(Default::default()),
+    }
+}
+
+fn network_settings_from_content(content: &str) -> Option<ratspeak_core::types::NetworkSettings> {
+    use rns_runtime::config::{Config, ConfigSection};
+    let config = Config::parse(content).ok()?;
+    let none = ConfigSection::default();
+    let reticulum = config.section("reticulum").unwrap_or(&none);
+    let stamps = config.section("stamps").unwrap_or(&none);
+    // Unset reads as `Some(None)`; a value Reticulum refuses as `None`.
+    let flag = |section: &ConfigSection, key: &str| {
+        if section.has(key) {
+            section.get_bool(key).map(Some)
+        } else {
+            Some(None)
+        }
+    };
+    let autojoin = if reticulum.has("autoconnect_discovered_interfaces") {
+        let limit = reticulum.get_uint("autoconnect_discovered_interfaces")?;
+        u8::try_from(limit).unwrap_or(u8::MAX)
+    } else {
+        0
+    };
+    let mut trusted_publishers: Vec<String> = Vec::new();
+    for source in reticulum
+        .get_list("interface_discovery_sources")
+        .unwrap_or_default()
+    {
+        let source = source.trim().to_ascii_lowercase();
+        if hex::decode(&source).ok()?.len() != 16 {
+            return None;
+        }
+        if !trusted_publishers.contains(&source) {
+            trusted_publishers.push(source);
+        }
+    }
+    let stamp_destinations = flag(stamps, "stamp_destinations")?;
+    let stamp_prs = flag(stamps, "stamp_prs")?;
+    Some(ratspeak_core::types::NetworkSettings {
+        discover: flag(reticulum, "discover_interfaces")? == Some(true),
+        autojoin,
+        autoconnect_unknown_implementations: flag(
+            reticulum,
+            "autoconnect_unverified_implementations",
+        )? == Some(true),
+        // One switch stamps both: either line turns it on, so a hand-written
+        // one is kept, and its pair added, instead of both being removed.
+        stamp_outgoing: stamp_destinations == Some(true) || stamp_prs == Some(true),
+        require_stamps: flag(stamps, "enforce_stamps")? == Some(true),
+        link_mtu_discovery_off: flag(reticulum, "link_mtu_discovery")? == Some(false),
+        trusted_only: !trusted_publishers.is_empty(),
+        trusted_publishers,
+        other: Default::default(),
+    })
+}
+
 type SectionKeys = Vec<(&'static str, Option<String>)>;
 
 fn network_settings_keys(
@@ -3001,6 +3065,95 @@ mod tests {
         assert!(apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
         assert_eq!(read_config(&dir).unwrap().as_str(), base);
         assert!(runtime_config(&dir).link_mtu_discovery);
+    }
+
+    /// Every managed key, set by hand.
+    const HAND_WRITTEN_NETWORK_KEYS: &str = "[reticulum]\nshare_instance = No\ndiscover_interfaces = yes\nautoconnect_discovered_interfaces = 3\nautoconnect_unverified_implementations = yes\ninterface_discovery_sources = aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nlink_mtu_discovery = no\n\n[stamps]\n  destination_cost = 12\nstamp_destinations = yes\nstamp_prs = yes\nenforce_stamps = yes\n\n[interfaces]\n";
+
+    fn hand_written_network_settings() -> ratspeak_core::types::NetworkSettings {
+        ratspeak_core::types::NetworkSettings {
+            discover: true,
+            autojoin: 3,
+            autoconnect_unknown_implementations: true,
+            stamp_outgoing: true,
+            require_stamps: true,
+            link_mtu_discovery_off: true,
+            trusted_only: true,
+            trusted_publishers: vec!["a".repeat(32), "b".repeat(32)],
+            other: Default::default(),
+        }
+    }
+
+    #[test]
+    fn network_settings_taken_from_a_config_write_back_its_own_keys() {
+        let dir = temp_config_dir();
+        std::fs::write(dir.join("config"), HAND_WRITTEN_NETWORK_KEYS).unwrap();
+        let seeded = network_settings_from_config(&dir).unwrap();
+        assert_eq!(seeded, hand_written_network_settings());
+        assert!(!apply_network_settings(&dir, &seeded).unwrap());
+        assert_eq!(
+            read_config(&dir).unwrap().as_str(),
+            HAND_WRITTEN_NETWORK_KEYS
+        );
+
+        // Spelled otherwise, a value reads as Reticulum reads it.
+        std::fs::write(
+            dir.join("config"),
+            "[reticulum]\ndiscover_interfaces = True\ninterface_discovery_sources = AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n\n[interfaces]\n",
+        )
+        .unwrap();
+        let seeded = network_settings_from_config(&dir).unwrap();
+        assert!(seeded.discover && seeded.trusted_only);
+        assert_eq!(seeded.trusted_publishers, vec!["a".repeat(32)]);
+
+        let missing = temp_config_dir();
+        assert_eq!(
+            network_settings_from_config(&missing),
+            Some(ratspeak_core::types::NetworkSettings::default())
+        );
+    }
+
+    #[test]
+    fn a_half_set_stamp_switch_keeps_the_hand_written_line() {
+        let dir = temp_config_dir();
+        for (written, wanted) in [
+            (
+                "stamp_destinations = yes\n",
+                "stamp_destinations = yes\nstamp_prs = yes\n",
+            ),
+            (
+                "stamp_prs = yes\n",
+                "stamp_prs = yes\nstamp_destinations = yes\n",
+            ),
+        ] {
+            std::fs::write(
+                dir.join("config"),
+                format!("[reticulum]\nshare_instance = No\n\n[stamps]\n{written}\n[interfaces]\n"),
+            )
+            .unwrap();
+            let seeded = network_settings_from_config(&dir).unwrap();
+            assert!(seeded.stamp_outgoing && !seeded.require_stamps);
+            assert!(apply_network_settings(&dir, &seeded).unwrap());
+            assert_eq!(
+                read_config(&dir).unwrap().as_str(),
+                format!("[reticulum]\nshare_instance = No\n\n[stamps]\n{wanted}\n[interfaces]\n")
+            );
+            assert!(!apply_network_settings(&dir, &seeded).unwrap());
+        }
+    }
+
+    #[test]
+    fn a_network_key_reticulum_refuses_seeds_nothing() {
+        let dir = temp_config_dir();
+        for refused in [
+            "[reticulum]\ndiscover_interfaces = maybe\n",
+            "[reticulum]\nautoconnect_discovered_interfaces = -1\n",
+            "[reticulum]\ninterface_discovery_sources = not-a-hash\n",
+            "[stamps]\nstamp_prs = sometimes\n",
+        ] {
+            std::fs::write(dir.join("config"), refused).unwrap();
+            assert_eq!(network_settings_from_config(&dir), None, "{refused}");
+        }
     }
 
     #[test]

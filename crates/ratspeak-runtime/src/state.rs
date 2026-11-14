@@ -1509,6 +1509,37 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    /// A profile that never stored Network settings, as one from before they
+    /// existed, takes them once from `config_dir`'s own keys, so applying them
+    /// keeps what was written by hand; stored, they are authoritative. False
+    /// while there are none to apply: Reticulum would refuse the config.
+    pub fn seed_network_settings(&self, config_dir: &Path) -> bool {
+        if crate::db::get_setting(&self.db, NETWORK_SETTINGS_KEY).is_some() {
+            return true;
+        }
+        let Some(seeded) = crate::rns_config::network_settings_from_config(config_dir) else {
+            tracing::warn!(
+                reason = "invalid_network_settings",
+                "Reticulum would refuse the config's Network settings; leaving them as written"
+            );
+            return false;
+        };
+        let stored = serde_json::to_string(&seeded)
+            .map_err(|error| error.to_string())
+            .and_then(|json| crate::db::try_insert_setting(&self.db, NETWORK_SETTINGS_KEY, &json));
+        match stored {
+            // Saved meanwhile: that one stands.
+            Ok(false) => return true,
+            Ok(true) => tracing::info!("took the Network settings from the Reticulum config"),
+            // The next start takes them again, from the same lines.
+            Err(error) => tracing::warn!(%error, "could not store the Network settings"),
+        }
+        if let Ok(mut slot) = self.network_settings.write() {
+            *slot = seeded;
+        }
+        true
+    }
+
     pub fn current_identity_session_generation(&self) -> u64 {
         self.identity_session_generation.load(Ordering::SeqCst)
     }
@@ -4082,6 +4113,110 @@ mod tests {
             }),
         });
         assert_eq!(verdict, AfterFailure::FailExpired);
+    }
+
+    // A start seeds, then applies, as `init_rns_lxmf` does.
+    fn start_network(state: &AppState, config_dir: &Path) -> bool {
+        state.seed_network_settings(config_dir)
+            && crate::rns_config::apply_network_settings(config_dir, &state.network_settings())
+                .unwrap()
+    }
+
+    #[test]
+    fn a_profile_without_network_settings_takes_them_from_its_config_once() {
+        use ratspeak_core::types::NetworkSettings;
+        const HAND_WRITTEN: &str = "[reticulum]\nshare_instance = No\ndiscover_interfaces = yes\nautoconnect_discovered_interfaces = 2\nautoconnect_unverified_implementations = yes\ninterface_discovery_sources = cccccccccccccccccccccccccccccccc\nlink_mtu_discovery = no\n\n[stamps]\nstamp_destinations = yes\nstamp_prs = yes\nenforce_stamps = yes\n\n[interfaces]\n";
+        let hand_written = NetworkSettings {
+            discover: true,
+            autojoin: 2,
+            autoconnect_unknown_implementations: true,
+            stamp_outgoing: true,
+            require_stamps: true,
+            link_mtu_discovery_off: true,
+            trusted_only: true,
+            trusted_publishers: vec!["c".repeat(32)],
+            ..NetworkSettings::default()
+        };
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(SqliteConnectionManager::memory())
+            .unwrap();
+        crate::db::init_schema(&pool).unwrap();
+        let open = |pool: &DbPool| {
+            AppState::new(
+                DashboardConfig::from_env_and_defaults(std::env::temp_dir()),
+                pool.clone(),
+                Arc::new(ratspeak_core::NoopEmitter),
+                Arc::new(ratspeak_core::NoopNotifier),
+            )
+        };
+        let config = tempfile::tempdir().unwrap();
+        std::fs::write(config.path().join("config"), HAND_WRITTEN).unwrap();
+
+        // As 1.0.44 left it: nothing stored.
+        let state = open(&pool);
+        assert_eq!(state.network_settings(), NetworkSettings::default());
+        assert!(
+            !start_network(&state, config.path()),
+            "a start rewrote the config"
+        );
+        assert_eq!(
+            crate::rns_config::read_config(config.path())
+                .unwrap()
+                .as_str(),
+            HAND_WRITTEN
+        );
+        assert_eq!(state.network_settings(), hand_written);
+
+        // The next start reads them stored and changes nothing.
+        let state = open(&pool);
+        assert_eq!(state.network_settings(), hand_written);
+        assert!(!start_network(&state, config.path()));
+        assert_eq!(
+            crate::rns_config::read_config(config.path())
+                .unwrap()
+                .as_str(),
+            HAND_WRITTEN
+        );
+
+        // Stored settings stay authoritative: the config follows them.
+        let off = NetworkSettings {
+            require_stamps: false,
+            ..hand_written.clone()
+        };
+        crate::db::try_set_setting(
+            &pool,
+            NETWORK_SETTINGS_KEY,
+            &serde_json::to_string(&off).unwrap(),
+        )
+        .unwrap();
+        let state = open(&pool);
+        assert!(start_network(&state, config.path()));
+        assert_eq!(state.network_settings(), off);
+        assert_eq!(
+            crate::rns_config::read_config(config.path())
+                .unwrap()
+                .as_str(),
+            HAND_WRITTEN.replace("enforce_stamps = yes\n", "")
+        );
+
+        // A value Reticulum refuses is left as written, and nothing is stored.
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(SqliteConnectionManager::memory())
+            .unwrap();
+        crate::db::init_schema(&pool).unwrap();
+        let refused = "[reticulum]\ndiscover_interfaces = maybe\nlink_mtu_discovery = no\n";
+        std::fs::write(config.path().join("config"), refused).unwrap();
+        let state = open(&pool);
+        assert!(!start_network(&state, config.path()));
+        assert_eq!(
+            crate::rns_config::read_config(config.path())
+                .unwrap()
+                .as_str(),
+            refused
+        );
+        assert_eq!(crate::db::get_setting(&pool, NETWORK_SETTINGS_KEY), None);
     }
 
     #[test]
