@@ -26,6 +26,7 @@ pub mod lxmf_persistence;
 mod markdown_plain;
 pub mod messaging;
 pub mod mobile_platform;
+pub mod network_migration;
 pub mod network_ownership;
 mod network_secrets;
 mod outbox;
@@ -2177,14 +2178,24 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
     std::fs::create_dir_all(&socket_dir).ok();
     let socket_dir = Some(socket_dir);
 
-    match rns::RnsManager::init_with_policy(
+    // Reticulum imports the earlier releases' files as it starts; the migrating screen watches.
+    let migration = network_migration::begin(&state, &config_dir);
+    let started = rns::RnsManager::init_with_policy(
         &config_str,
         socket_dir,
         state.is_foreground.clone(),
         policy,
     )
-    .await
-    {
+    .await;
+    if let Some(migration) = migration {
+        migration.finish(
+            started
+                .as_ref()
+                .map(|_| ())
+                .map_err(|error| error.to_string()),
+        );
+    }
+    match started {
         Ok(rns_mgr) => {
             let registration_info = if let Ok(mut lxmf) = state.lxmf.lock() {
                 if let Some(mgr) = lxmf.as_mut() {

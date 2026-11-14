@@ -623,6 +623,10 @@ pub struct AppState {
     pub config: DashboardConfig,
     pub db: DbPool,
     pub startup_stage: RwLock<String>,
+    /// The last `network-migration` snapshot this session, `None` without a move.
+    pub network_migration: Mutex<Option<serde_json::Value>>,
+    /// The Reticulum storage folder the move reads, for "Continue without old data".
+    pub network_migration_storage: Mutex<Option<PathBuf>>,
     /// IPC fan-out — concrete impl is `TauriEmitter` in production builds and
     /// a no-op stub in headless tests. Set at construction; never re-assigned.
     pub emitter: Arc<dyn Emitter>,
@@ -1082,6 +1086,8 @@ impl AppState {
             config,
             db,
             startup_stage: RwLock::new("starting".into()),
+            network_migration: Mutex::new(None),
+            network_migration_storage: Mutex::new(None),
             emitter,
             activity,
             activity_control_lock: tokio::sync::Mutex::new(()),
