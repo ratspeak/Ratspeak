@@ -11938,3 +11938,44 @@ fn database_write_transactions_take_the_write_lock_up_front() {
         "only read-only transactions may be deferred"
     );
 }
+
+#[test]
+fn release_mobile_webviews_are_inspectable_only_through_the_devtools_policy() {
+    // Release APKs keep Android's default (off on user builds); only wry's policy call may change it.
+    let root = repo_root();
+    let gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
+        .expect("Android app Gradle source");
+    let release = gradle
+        .split("getByName(\"release\")")
+        .nth(1)
+        .and_then(|tail| tail.split("\n        }\n").next())
+        .expect("release build type");
+    assert!(!release.contains("isDebuggable"));
+    assert!(!release.contains("isJniDebuggable"));
+    let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
+        .expect("Android manifest");
+    assert!(!manifest.contains("android:debuggable"));
+
+    let mut native = Vec::new();
+    collect_files(
+        &root.join("src-tauri/gen/android/app/src/main"),
+        &mut native,
+    );
+    for path in native.iter().filter(|path| {
+        path.extension()
+            .is_some_and(|ext| ext == "kt" || ext == "java")
+    }) {
+        let source = read_source(path).expect("Android source");
+        assert!(
+            !source.contains("setWebContentsDebuggingEnabled"),
+            "{} must leave WebView inspection to the devtools policy",
+            path.display()
+        );
+    }
+
+    let wry = read_source(root.join("vendor/wry-0.57.1/src/android/main_pipe.rs"))
+        .expect("vendored wry Android pipe");
+    assert!(wry.contains("\"setWebContentsDebuggingEnabled\",\n            \"(Z)V\",\n            &[devtools.into()],"));
+    let lib = read_source(root.join("src-tauri/src/lib.rs")).expect("Tauri shell");
+    assert!(lib.contains("let window = window.devtools(mobile_webview_devtools_enabled(\n        cfg!(debug_assertions),\n        diagnostics_enabled(),\n    ));"));
+}
