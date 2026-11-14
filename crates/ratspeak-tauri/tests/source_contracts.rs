@@ -6070,9 +6070,16 @@ fn conversation_view_scrolls_to_recent_messages_without_yanking_history() {
     let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
 
     // One scroll controller, loaded before both transcripts that use it.
-    let shared_pos = index.find("/static/js/chat_scroll.js?v=").expect("chat scroll script");
+    let shared_pos = index
+        .find("/static/js/chat_scroll.js?v=")
+        .expect("chat scroll script");
     assert!(shared_pos < index.find("/static/js/lxmf.js").expect("lxmf script"));
-    assert!(shared_pos < index.find("/static/js/channels.js").expect("channels script"));
+    assert!(
+        shared_pos
+            < index
+                .find("/static/js/channels.js")
+                .expect("channels script")
+    );
     assert!(chat_scroll.contains("function wire(container)"));
     assert!(chat_scroll.contains("function capture(container)"));
     assert!(chat_scroll.contains("function pinToBottom(container)"));
@@ -7631,7 +7638,9 @@ fn settings_information_architecture_groups_one_off_settings() {
         false,
     );
     // Network Stamps and Links follow Discovery as groups of their own, hidden with it.
-    let mut at = network_panel.find(r#"id="discovery-settings-body""#).unwrap();
+    let mut at = network_panel
+        .find(r#"id="discovery-settings-body""#)
+        .unwrap();
     for (group, heading) in [
         ("stamp-settings-body", "Network Stamps"),
         ("link-settings-body", "Links"),
@@ -11402,7 +11411,10 @@ fn discovery_settings_use_the_network_settings_commands() {
     assert!(ns.contains("show('ns-unknown-impl-row', s.discover && s.autojoin > 0);"));
     for (toggle, state) in [
         ("ns-discover-toggle", "s.discover"),
-        ("ns-unknown-impl-toggle", "s.autoconnect_unknown_implementations"),
+        (
+            "ns-unknown-impl-toggle",
+            "s.autoconnect_unknown_implementations",
+        ),
         ("ns-stamp-toggle", "s.stamp_outgoing"),
         ("ns-require-stamps-toggle", "s.require_stamps"),
         ("ns-mtu-toggle", "!s.link_mtu_discovery_off"),
@@ -11905,10 +11917,20 @@ fn database_write_transactions_take_the_write_lock_up_front() {
     let deferred: Vec<&str> = db
         .match_indices(".transaction()")
         .map(|(at, _)| {
-            let start = db[..at].rfind("\nfn ").max(db[..at].rfind("\npub fn ")).unwrap_or(0);
-            let name = db[start..].trim_start().trim_start_matches("pub ").trim_start_matches("fn ");
+            let start = db[..at]
+                .rfind("\nfn ")
+                .max(db[..at].rfind("\npub fn "))
+                .unwrap_or(0);
+            let name = db[start..]
+                .trim_start()
+                .trim_start_matches("pub ")
+                .trim_start_matches("fn ");
             &name[..name.find('(').unwrap_or(name.len())]
         })
         .collect();
-    assert_eq!(deferred, vec!["get_settings"], "only read-only transactions may be deferred");
+    assert_eq!(
+        deferred,
+        vec!["get_settings"],
+        "only read-only transactions may be deferred"
+    );
 }
