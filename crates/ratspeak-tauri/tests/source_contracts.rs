@@ -11877,3 +11877,20 @@ fn failed_storage_writes_surface_a_copyable_error_once_per_operation() {
     );
     assert!(toasts.contains("actionBtn.setAttribute('aria-label', actionLabel)"));
 }
+
+#[test]
+fn database_write_transactions_take_the_write_lock_up_front() {
+    // A deferred transaction that reads and then writes fails at once with
+    // "database is locked" when another connection commits in between;
+    // BEGIN IMMEDIATE waits for the busy timeout instead.
+    let db = read_source(repo_root().join("crates/ratspeak-db/src/db.rs")).expect("db.rs");
+    let deferred: Vec<&str> = db
+        .match_indices(".transaction()")
+        .map(|(at, _)| {
+            let start = db[..at].rfind("\nfn ").max(db[..at].rfind("\npub fn ")).unwrap_or(0);
+            let name = db[start..].trim_start().trim_start_matches("pub ").trim_start_matches("fn ");
+            &name[..name.find('(').unwrap_or(name.len())]
+        })
+        .collect();
+    assert_eq!(deferred, vec!["get_settings"], "only read-only transactions may be deferred");
+}

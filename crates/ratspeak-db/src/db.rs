@@ -2362,7 +2362,9 @@ pub fn mark_identity_used(pool: &DbPool, hash_hex: &str) -> Result<(), String> {
 fn activate(pool: &DbPool, hash_hex: &str, used: bool) -> Result<(), String> {
     let _write = IdentityTablesWrite;
     let mut conn = pool.get().map_err(|e| format!("pool: {e}"))?;
-    let tx = conn.transaction().map_err(|e| format!("begin: {e}"))?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| format!("begin: {e}"))?;
     tx.execute("UPDATE identities SET is_active = 0", [])
         .map_err(|e| format!("deactivate: {e}"))?;
     let updated = if used {
@@ -2594,7 +2596,9 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
 pub fn delete_identity(pool: &DbPool, hash_hex: &str, cascade: bool) -> Result<(), String> {
     let _write = IdentityTablesWrite;
     let mut conn = pool.get().map_err(|e| format!("pool: {e}"))?;
-    let tx = conn.transaction().map_err(|e| format!("begin: {e}"))?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| format!("begin: {e}"))?;
     if cascade {
         for (label, sql) in IDENTITY_CASCADE {
             tx.execute(sql, params![hash_hex])
@@ -2773,7 +2777,10 @@ pub fn fill_unnamed_contact_names(
     if unnamed.is_empty() {
         return false;
     }
-    let Some(tx) = conn.transaction().or_report("fill_unnamed_contact_names") else {
+    let Some(tx) = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .or_report("fill_unnamed_contact_names")
+    else {
         return false;
     };
     let now = std::time::SystemTime::now()
@@ -3337,7 +3344,10 @@ fn update_pending_network_lifts(
     let Some(mut conn) = pool.get().or_report("update_pending_network_lifts") else {
         return false;
     };
-    let Some(tx) = conn.transaction().or_report("update_pending_network_lifts") else {
+    let Some(tx) = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .or_report("update_pending_network_lifts")
+    else {
         return false;
     };
     let mut lifts: Vec<String> = tx
@@ -5411,7 +5421,9 @@ pub fn try_insert_setting(pool: &DbPool, key: &str, value: &str) -> Result<bool,
 /// boundary for controls whose fields are edited and applied as one unit.
 pub fn try_set_settings(pool: &DbPool, values: &[(String, String)]) -> Result<(), String> {
     let mut conn = pool.get().map_err(|error| error.to_string())?;
-    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
     for (key, value) in values {
         transaction
             .execute(
@@ -6188,7 +6200,9 @@ fn append_channel_history_events_at(
     }
 
     let mut conn = pool.get().map_err(|error| error.to_string())?;
-    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
     let mut inserted = 0usize;
     let mut inserted_events = Vec::new();
     let mut touched_rooms = std::collections::BTreeSet::new();
@@ -6337,7 +6351,9 @@ fn remember_channel_participants_at(
     let participant_cutoff_ms = channel_participant_cutoff_ms(pool, observed_at_ms);
 
     let mut conn = pool.get().map_err(|error| error.to_string())?;
-    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
     let mut touched_rooms = std::collections::BTreeSet::new();
     let mut remembered = 0usize;
     for observation in observations {
@@ -7045,7 +7061,9 @@ pub fn clear_channel_room_history(
 ) -> Result<usize, String> {
     validate_channel_history_scope(identity_id, hub_destination_hash, room_name)?;
     let mut conn = pool.get().map_err(|error| error.to_string())?;
-    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
     transaction
         .execute(
             "DELETE FROM channel_participant_observations
@@ -7076,7 +7094,9 @@ pub fn clear_channel_history_for_identity(
         return Err("invalid Channels history identity".into());
     }
     let mut conn = pool.get().map_err(|error| error.to_string())?;
-    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
     transaction
         .execute(
             "DELETE FROM channel_participant_observations WHERE identity_id = ?1",
@@ -7230,7 +7250,9 @@ pub fn set_channel_hub_desired(
     desired: bool,
 ) -> Result<(), String> {
     let mut conn = pool.get().map_err(|error| error.to_string())?;
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
     if desired {
         tx.execute(
             "UPDATE channel_hubs SET desired_connected = 0
@@ -7278,7 +7300,9 @@ pub fn rename_identity_and_retire_alias(
     new_name: &str,
 ) -> Result<IdentityRenameOutcome, String> {
     let mut conn = pool.get().map_err(|error| error.to_string())?;
-    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
     let previous_name: String = transaction
         .query_row(
             "SELECT COALESCE(display_name, '') FROM identities WHERE hash = ?1",
@@ -7426,7 +7450,9 @@ pub fn list_hub_klines(pool: &DbPool, identity_id: &str) -> Result<Vec<String>, 
 /// hands the whole batch over rather than spawning a task per op.
 pub fn apply_hub_ops(pool: &DbPool, identity_id: &str, ops: &[HubRoomOp]) -> Result<(), String> {
     let mut conn = pool.get().map_err(|error| error.to_string())?;
-    let tx = conn.transaction().map_err(|error| error.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
     let now = now_ts();
     for op in ops {
         match op {
@@ -7825,7 +7851,9 @@ pub fn save_channel_room_secret(
         return Err("invalid sealed channel room secret".into());
     }
     let mut conn = pool.get().map_err(|error| error.to_string())?;
-    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
     let now = now_ts();
     let changed = transaction
         .execute(
@@ -7896,7 +7924,9 @@ pub fn remove_channel_room_secret(
     required: bool,
 ) -> Result<bool, String> {
     let mut conn = pool.get().map_err(|error| error.to_string())?;
-    let transaction = conn.transaction().map_err(|error| error.to_string())?;
+    let transaction = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
     let removed = transaction
         .execute(
             "DELETE FROM channel_room_secrets
@@ -9425,7 +9455,7 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
         return 0;
     };
     let Some(tx) = conn
-        .transaction()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .or_report("touch_identity_activity_updates")
     else {
         return 0;
@@ -9910,7 +9940,10 @@ pub fn delete_identity_activity(pool: &DbPool, hashes: &[String]) -> usize {
     let Some(mut conn) = pool.get().or_report("delete_identity_activity") else {
         return 0;
     };
-    let Some(tx) = conn.transaction().or_report("delete_identity_activity") else {
+    let Some(tx) = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .or_report("delete_identity_activity")
+    else {
         return 0;
     };
     let mut deleted = 0usize;
@@ -10038,7 +10071,7 @@ pub fn clear_discovered_identity_activity(pool: &DbPool) -> usize {
         return 0;
     };
     let Some(tx) = conn
-        .transaction()
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .or_report("clear_discovered_identity_activity")
     else {
         return 0;
@@ -10085,7 +10118,10 @@ pub fn seed_identity_activity_now(pool: &DbPool, hashes: &[String]) {
     let Some(mut conn) = pool.get().or_report("seed_identity_activity_now") else {
         return;
     };
-    let Some(tx) = conn.transaction().or_report("seed_identity_activity_now") else {
+    let Some(tx) = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .or_report("seed_identity_activity_now")
+    else {
         return;
     };
     {
