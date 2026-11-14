@@ -143,11 +143,9 @@ assert(/\.bottom-sheet\.rs-dialog-sheet\s*\{[^}]*overflow:\s*hidden;[^}]*padding
 assert(/\.bottom-sheet-body > \*\s*\{[^}]*flex-shrink:\s*0;/s
     .test(sourceByName['08-modals.css']),
     'scrolling sheet content must overflow instead of collapsing bounded controls');
-assert(/\.channel-consent-sheet\s*\{[^}]*max-height:\s*min\(760px,\s*calc\(var\(--app-height, 100dvh\) - max\(var\(--sat\), var\(--space-8\)\)\)\)/s
-    .test(sourceByName['13-responsive.css']) &&
-    /\.channel-consent-sheet \.bottom-sheet-footer \.ui-btn\s*\{[^}]*min-width:\s*0;[^}]*flex:\s*1 1 0;/s
-        .test(sourceByName['13-responsive.css']),
-    'public-channel consent must preserve reachable actions on short and narrow phones');
+assert(fs.readFileSync(path.join(__dirname, '..', '..', 'dashboard', 'static', 'js', 'channels.js'), 'utf8')
+    .includes("_rsBuildSheet({ title: 'Public channels', size: 'md' }"),
+    'public-channel consent is a Medium kit dialog, a bottom sheet on a phone');
 
 var gamesCss = sourceByName['11-games.css'];
 assert(/\.four-board\s*\{[\s\S]*?grid-template-columns:\s*repeat\(7,/.test(gamesCss) &&

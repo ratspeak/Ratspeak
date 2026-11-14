@@ -176,7 +176,7 @@ function _channelsShowPublicConsent() {
     if (typeof _rsBuildSheet !== 'function') return Promise.resolve(false);
 
     _channelsPublicConsentPromptPromise = new Promise(function(resolve) {
-        var built = _rsBuildSheet({ title: 'Public channels' }, function(value) {
+        var built = _rsBuildSheet({ title: 'Public channels', size: 'md' }, function(value) {
             _channelsPublicConsentPromptPromise = null;
             resolve(value === true);
         });
@@ -274,7 +274,7 @@ function _channelsShowPublicConsent() {
 
         var cancel = document.createElement('button');
         cancel.type = 'button';
-        cancel.className = 'ui-btn ui-btn--quiet';
+        cancel.className = 'ui-btn ui-btn--quiet ui-desk-only';
         cancel.textContent = 'Not now';
         cancel.addEventListener('click', function() { built.dismiss(false); });
         var continueButton = document.createElement('button');
@@ -4008,7 +4008,7 @@ function _channelsOpenReportSheet(context) {
     var messageId = String(context.messageId || '').trim();
     var timestampMs = Number(context.timestampMs) || 0;
 
-    var built = _rsBuildSheet({ title: 'Report channel content' }, function() {});
+    var built = _rsBuildSheet({ title: 'Report channel content', size: 'md' }, function() {});
     built.sheet.classList.add('channel-report-sheet');
     var explanation = document.createElement('p');
     explanation.className = 'channel-report-explanation';
@@ -4052,7 +4052,7 @@ function _channelsOpenReportSheet(context) {
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.className = 'ui-btn ui-btn--quiet';
+    cancel.className = 'ui-btn ui-btn--quiet ui-desk-only';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', function() { built.dismiss(); });
     var prepare = document.createElement('button');
@@ -4729,7 +4729,7 @@ function _channelsPresentSharedTarget(target) {
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.className = 'ui-btn ui-btn--quiet';
+    cancel.className = 'ui-btn ui-btn--quiet ui-desk-only';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', built.dismiss);
     built.footer.appendChild(cancel);
@@ -4927,7 +4927,7 @@ function channelsOpenSharedChannel(payload) {
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.className = 'ui-btn ui-btn--quiet';
+    cancel.className = 'ui-btn ui-btn--quiet ui-desk-only';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', built.dismiss);
     var open = document.createElement('button');
@@ -4984,7 +4984,7 @@ function channelsOpenConnectSheet(prefill) {
         channelsSnapshot.nickname || _channelsDefaultNickname();
     var built = _rsBuildSheet({ title: 'Review hub' }, function() {});
     built.sheet.classList.add('channel-connect-sheet');
-    var titleElement = built.sheet.querySelector('.bottom-sheet-title');
+    var titleElement = built.title;
 
     if (sharedRoom) {
         var shareContext = document.createElement('div');
@@ -5031,7 +5031,7 @@ function channelsOpenConnectSheet(prefill) {
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.className = 'ui-btn ui-btn--quiet';
+    cancel.className = 'ui-btn ui-btn--quiet ui-desk-only';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', function() { built.dismiss(); });
     var connect = document.createElement('button');
@@ -5229,7 +5229,7 @@ function _channelsPresentSheet(built, initialFocus) {
     if (RS.gestures && typeof RS.gestures.attachDragDismiss === 'function') {
         RS.gestures.attachDragDismiss(built.sheet, {
             axis: 'y',
-            handleSelector: '.bottom-sheet-handle',
+            handleSelector: '.ui-dialog-handle',
             blockIfScrolled: true,
             skipIf: function(event) {
                 return !!event.target.closest('button, input, textarea, select');
@@ -5330,7 +5330,7 @@ function channelsOpenAddressSheet(options) {
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.className = 'ui-btn ui-btn--quiet';
+    cancel.className = 'ui-btn ui-btn--quiet ui-desk-only';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', function() { built.dismiss(); });
     // Replacing a live hub is confirmed on the review sheet, never from here.
@@ -5568,7 +5568,7 @@ function channelsOpenJoinSheet(prefillRoom, options) {
 
     var cancel = document.createElement('button');
     cancel.type = 'button';
-    cancel.className = 'ui-btn ui-btn--quiet';
+    cancel.className = 'ui-btn ui-btn--quiet ui-desk-only';
     cancel.textContent = 'Cancel';
     cancel.addEventListener('click', function() { built.dismiss(); });
     var join = document.createElement('button');
@@ -5700,7 +5700,7 @@ function channelsOpenHubDetails() {
     if (!channelsSnapshot.hub || typeof _rsBuildSheet !== 'function') return;
     var profile = _channelsHubProfileModel();
     var hub = profile.hub;
-    var built = _rsBuildSheet({ title: profile.display_name }, function() {});
+    var built = _rsBuildSheet({ title: profile.display_name, size: 'md' }, function() {});
     built.sheet.classList.add('channel-hub-profile-sheet');
     built.body.classList.add('channel-hub-profile');
 
@@ -5935,7 +5935,7 @@ function channelsOpenHubDetails() {
 
     var close = document.createElement('button');
     close.type = 'button';
-    close.className = 'ui-btn ui-btn--quiet';
+    close.className = 'ui-btn ui-btn--quiet ui-desk-only';
     close.textContent = 'Close';
     close.addEventListener('click', built.dismiss);
     var disconnect = document.createElement('button');
@@ -6145,7 +6145,7 @@ function channelsOpenRoomDetails() {
     if (room.history_only) {
         var close = document.createElement('button');
         close.type = 'button';
-        close.className = 'ui-btn ui-btn--quiet';
+        close.className = 'ui-btn ui-btn--quiet ui-desk-only';
         close.textContent = 'Close';
         close.addEventListener('click', built.dismiss);
         var activeHub = channelsSnapshot.hub && channelsSnapshot.hub.destination_hash;

@@ -76,7 +76,7 @@
 }
 
 /* On a phone the same items fill a sheet edge to edge. */
-.ch-hub-sheet > :is(.bottom-sheet-body, .ui-dialog-body) {
+.ch-hub-sheet > .ui-dialog-body {
     padding-right: 0;
     padding-left: 0;
 }
@@ -784,7 +784,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 /* Share sheet: the QR in a white frame beside the facts, then its two actions. */
-.channel-share-sheet > :is(.bottom-sheet-body, .ui-dialog-body) {
+.channel-share-sheet > .ui-dialog-body {
     gap: 16px;
 }
 
@@ -937,34 +937,6 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 .channel-consent-sheet,
 .channel-report-sheet {
     font-family: var(--font-sans);
-}
-
-.channel-connect-sheet .bottom-sheet-title,
-.channel-open-link-sheet .bottom-sheet-title,
-.channel-share-sheet .bottom-sheet-title,
-.channel-share-preview-sheet .bottom-sheet-title,
-.channel-join-sheet .bottom-sheet-title,
-.channel-hub-profile-sheet .bottom-sheet-title,
-.channel-room-options-sheet .bottom-sheet-title,
-.channel-host-admin-sheet .bottom-sheet-title,
-.channel-host-admin-edit-sheet .bottom-sheet-title {
-    color: var(--text-primary);
-    font-family: var(--font-sans);
-    font-size: var(--text-lg);
-    font-weight: var(--type-weight-semibold);
-}
-
-.channel-consent-sheet .bottom-sheet-title,
-.channel-report-sheet .bottom-sheet-title {
-    color: var(--text-primary);
-    font-family: var(--font-sans);
-    font-size: var(--text-lg);
-    font-weight: var(--type-weight-semibold);
-}
-
-.channel-consent-sheet .bottom-sheet-body,
-.channel-report-sheet .bottom-sheet-body {
-    gap: var(--space-5);
 }
 
 .channel-consent-intro,
@@ -1724,51 +1696,8 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     font-size: var(--text-xs);
 }
 
-@media (min-width: 769px) {
-
-    .bottom-sheet.open.channel-connect-sheet,
-    .bottom-sheet.open.channel-open-link-sheet,
-    .bottom-sheet.open.channel-share-preview-sheet,
-    .bottom-sheet.open.channel-join-sheet,
-    .bottom-sheet.open.channel-room-options-sheet {
-        width: 440px;
-    }
-
-    .bottom-sheet.open.channel-consent-sheet,
-    .bottom-sheet.open.channel-report-sheet {
-        width: 540px;
-        max-height: min(780px, 92vh);
-    }
-
-    .bottom-sheet.open.channel-share-sheet {
-        width: 560px;
-    }
-
-    .bottom-sheet.open.channel-hub-profile-sheet {
-        width: 620px;
-        max-height: min(820px, 92vh);
-    }
-
-    .bottom-sheet.open.channel-host-admin-sheet {
-        width: 820px;
-        max-height: min(820px, 92vh);
-    }
-
-    .bottom-sheet.open.channel-host-admin-edit-sheet {
-        width: 560px;
-        max-height: min(780px, 92vh);
-    }
-}
-
-.channel-host-admin-sheet .bottom-sheet-header,
-.channel-host-admin-sheet .bottom-sheet-footer {
-    padding-left: var(--space-10);
-    padding-right: var(--space-10);
-}
-
 .channel-host-admin-body {
     gap: 0;
-    padding: 0 var(--space-10) var(--space-7);
 }
 
 .channel-host-admin-tabs {
@@ -2674,11 +2603,6 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 @media (max-width: 560px) {
-
-    .channel-host-admin-body {
-        padding-right: var(--space-7);
-        padding-left: var(--space-7);
-    }
 
     .channel-host-hero {
         align-items: flex-start;

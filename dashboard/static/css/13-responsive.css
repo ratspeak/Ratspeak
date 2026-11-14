@@ -30,35 +30,6 @@
         padding-bottom: max(var(--space-5), var(--sab));
     }
 
-    .bottom-sheet.open.channel-consent-sheet {
-        max-height: min(760px, calc(100vh - var(--space-8)));
-        max-height: min(760px, calc(var(--app-height, 100dvh) - max(var(--sat), var(--space-8))));
-    }
-
-    .channel-consent-sheet .bottom-sheet-body {
-        gap: var(--space-4);
-        padding-top: var(--space-5);
-        padding-bottom: var(--space-5);
-    }
-
-    .channel-consent-sheet .bottom-sheet-footer {
-        padding-top: var(--space-4);
-        padding-bottom: max(var(--space-5), var(--sab));
-    }
-
-    .channel-consent-sheet .bottom-sheet-footer .ui-btn {
-        min-width: 0;
-        flex: 1 1 0;
-    }
-
-    @media (max-width: 360px), (max-height: 560px) {
-        .channel-consent-sheet .bottom-sheet-header,
-        .channel-consent-sheet .bottom-sheet-body,
-        .channel-consent-sheet .bottom-sheet-footer {
-            padding-left: var(--space-5);
-            padding-right: var(--space-5);
-        }
-    }
     .network-main {
         display: flex;
         flex-direction: column;
@@ -2649,29 +2620,13 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
         padding-bottom: var(--space-2);
     }
 
-    .bottom-sheet.channel-host-admin-sheet {
-        max-height: min(92vh, 920px);
-        max-height: min(92dvh, 920px);
-    }
-
-    .bottom-sheet.channel-host-admin-edit-sheet {
-        max-height: min(92vh, 840px);
-        max-height: min(92dvh, 840px);
-    }
-
-    .channel-host-admin-sheet .bottom-sheet-header,
-    .channel-host-admin-sheet .bottom-sheet-footer {
-        padding-right: var(--space-7);
-        padding-left: var(--space-7);
-    }
-
     .channel-host-admin-tabs {
         gap: var(--space-1);
-        margin-right: calc(-1 * var(--space-7));
-        margin-left: calc(-1 * var(--space-7));
-        padding-right: var(--space-7);
-        padding-left: var(--space-7);
-        scroll-padding-inline: var(--space-7);
+        margin-right: -20px;
+        margin-left: -20px;
+        padding-right: 20px;
+        padding-left: 20px;
+        scroll-padding-inline: 20px;
     }
 
     .channel-host-admin-tab {

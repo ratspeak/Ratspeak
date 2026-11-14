@@ -592,7 +592,8 @@ assert(channelsCss.indexOf('.channel-host-admin-edit-sheet') !== -1);
 assert(channelsCss.indexOf('.channel-host-admin-editor-section') !== -1);
 assert(channelsCss.indexOf('unicode-bidi: plaintext') !== -1);
 assert(responsiveCss.indexOf('.channel-host-admin-metrics') !== -1);
-assert(responsiveCss.indexOf('.channel-host-admin-edit-sheet') !== -1);
+assert(source.indexOf("size: 'md'") !== -1 && source.indexOf("size: 'lg'") !== -1,
+    'hub administration is a Large dialog; its editors are Medium');
 assert(responsiveCss.indexOf('grid-template-columns: repeat(2, minmax(0, 1fr))') !== -1);
 
 async function testIdentityGenerationFence() {

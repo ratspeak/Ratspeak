@@ -369,12 +369,18 @@ function _channelHubAdminBadge(text, tone) {
     return badge;
 }
 
+// In rows a Small button; in a dialog foot (options.footer) the full-size kit emphasis.
 function _channelHubAdminButton(labelText, handler, options) {
     options = options || {};
     var classes = options.primary
         ? 'ui-btn ui-btn--sm ui-btn--primary channel-host-admin-action'
         : 'ui-btn ui-btn--sm channel-host-admin-action';
     if (options.danger) classes = 'ui-btn ui-btn--sm ui-btn--danger channel-host-admin-action';
+    if (options.footer) {
+        classes = 'ui-btn' + (options.primary ? ' ui-btn--primary' : '') +
+            (options.danger ? ' ui-btn--danger' : '') +
+            (options.quiet ? ' ui-btn--quiet ui-desk-only' : '') + ' channel-host-admin-action';
+    }
     var button = _channelHubAdminNode('button', classes, labelText);
     button.type = 'button';
     button.disabled = !!options.disabled;
@@ -1195,15 +1201,15 @@ function _channelHubAdminConfirm(options) {
         built.body.appendChild(message);
         var cancel = _channelHubAdminButton('Cancel', function() {
             built.dismiss(false);
-        });
+        }, { footer: true, quiet: true });
         var confirm = _channelHubAdminButton(
             options.confirmText || 'Confirm',
             function() { built.dismiss(true); },
-            { primary: !options.danger, danger: !!options.danger }
+            { footer: true, primary: true, danger: !!options.danger }
         );
         built.footer.appendChild(cancel);
         built.footer.appendChild(confirm);
-        _channelsPresentSheet(built, confirm);
+        _channelsPresentSheet(built, options.danger ? cancel : confirm);
     });
 }
 
@@ -1218,7 +1224,8 @@ function _channelHubOpenChannelEditor(admin, existingRoom, mutationHandler) {
     var closed = false;
     var busy = false;
     var built = _channelHubAdminBuildChildSheet({
-        title: registered ? 'Manage channel' : (fixedLiveName ? 'Register channel' : 'Create channel')
+        title: registered ? 'Manage channel' : (fixedLiveName ? 'Register channel' : 'Create channel'),
+        size: 'md'
     }, function() {
         closed = true;
         if (keyInput) keyInput.value = '';
@@ -1399,17 +1406,17 @@ function _channelHubOpenChannelEditor(admin, existingRoom, mutationHandler) {
                     });
                 });
             },
-            { danger: true }
+            { footer: true, danger: true }
         );
         unregister.classList.add('channel-host-admin-footer-danger');
         built.footer.appendChild(unregister);
     }
 
-    var cancel = _channelHubAdminButton('Cancel', function() { built.dismiss(); });
+    var cancel = _channelHubAdminButton('Cancel', function() { built.dismiss(); }, { footer: true, quiet: true });
     var submit = _channelHubAdminButton(
         registered ? 'Save channel' : (fixedLiveName ? 'Register channel' : 'Create channel'),
         submitChannel,
-        { primary: true }
+        { footer: true, primary: true }
     );
     built.footer.appendChild(cancel);
     built.footer.appendChild(submit);
@@ -1583,7 +1590,7 @@ function _channelHubOpenAccessEditor(admin, options, mutationHandler) {
     var busy = false;
     var preferredChoice = options.choiceId || '';
     var built = _channelHubAdminBuildChildSheet(
-        { title: 'Change access' },
+        { title: 'Change access', size: 'md' },
         function() { closed = true; }
     );
     built.sheet.classList.add('channel-host-admin-edit-sheet');
@@ -1662,8 +1669,8 @@ function _channelHubOpenAccessEditor(admin, options, mutationHandler) {
     error.setAttribute('aria-live', 'polite');
     built.body.appendChild(error);
 
-    var cancel = _channelHubAdminButton('Cancel', function() { built.dismiss(); });
-    var submit = _channelHubAdminButton('Apply change', submitAccess, { primary: true });
+    var cancel = _channelHubAdminButton('Cancel', function() { built.dismiss(); }, { footer: true, quiet: true });
+    var submit = _channelHubAdminButton('Apply change', submitAccess, { footer: true, primary: true });
     built.footer.appendChild(cancel);
     built.footer.appendChild(submit);
 
@@ -1815,7 +1822,7 @@ function channelHubOpenManager(initialOverview) {
     }
 
     var identityGeneration = _channelHubIdentityGeneration;
-    var built = _rsBuildSheet({ title: 'Hub administration' }, function() {
+    var built = _rsBuildSheet({ title: 'Hub administration', size: 'lg' }, function() {
         if (_channelHubManagerSequence !== sequence) return;
         _channelHubAdminDismissChildren();
         _channelHubStatusRenderer = null;
@@ -2063,7 +2070,7 @@ function channelHubOpenManager(initialOverview) {
 
     var close = document.createElement('button');
     close.type = 'button';
-    close.className = 'ui-btn ui-btn--quiet';
+    close.className = 'ui-btn ui-btn--quiet ui-desk-only';
     close.textContent = 'Close';
     close.addEventListener('click', function() { built.dismiss(); });
     var save = document.createElement('button');

@@ -195,7 +195,7 @@ assert(dialogsSource.includes('var shell = RS.kit.dialog({') &&
     dialogsSource.includes("shell.body.setAttribute('data-sheet-scroll', '');") &&
     dialogsSource.includes('overlay._ratspeakDismiss = function() {'),
     'runtime dialogs are the kit dialog, found by native Back, with the body as the one scroll owner');
-assert(channelsSource.includes("handleSelector: '.bottom-sheet-handle'"),
+assert(channelsSource.includes("handleSelector: '.ui-dialog-handle'"),
     'channel sheet content must remain native-scrollable while drag dismissal stays on the handle');
 
 var dialogBackContext = {};

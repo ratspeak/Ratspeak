@@ -991,7 +991,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(channels_css.contains(".channel-host-admin-editor-section"));
     assert!(channels_css.contains("unicode-bidi: plaintext"));
     assert!(responsive_css.contains(".channel-host-admin-metrics"));
-    assert!(responsive_css.contains(".channel-host-admin-edit-sheet"));
+    assert!(hub_ui.contains("{ title: 'Change access', size: 'md' }"));
     assert!(channels_css.contains(".channel-host-registry-warning"));
     assert!(channels_css.contains(".channel-host-copy-btn[hidden]"));
     assert!(channels_css.contains(".ch-owned"));
