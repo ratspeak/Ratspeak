@@ -136,7 +136,7 @@ async function main() {
     assert.strictEqual(context.channelsApplySnapshot({ phase: 'error' }), false,
         'unversioned snapshots are not valid state-bearing API responses');
 
-    var joinSheet = sourceRange('channelsOpenJoinSheet', 'channelsOpenHubOptions');
+    var joinSheet = sourceRange('channelsOpenJoinSheet', '_channelsHubProfileDetail');
     assert(joinSheet.indexOf("result.snapshot") !== -1,
         'direct joins must apply the command response through the freshness guard');
     assert(joinSheet.indexOf('channelsLoad(true)') === -1,

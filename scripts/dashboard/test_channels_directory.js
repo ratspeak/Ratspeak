@@ -59,6 +59,13 @@ FakeElement.prototype.appendChild = function(child) {
     this.children.push(child);
     return child;
 };
+Object.defineProperty(FakeElement.prototype, 'firstChild', {
+    get: function() { return this.children[0] || null; }
+});
+Object.defineProperty(FakeElement.prototype, 'innerHTML', {
+    get: function() { return ''; },
+    set: function() {}
+});
 FakeElement.prototype.setAttribute = function(name, value) {
     this.attributes[name] = String(value);
 };
@@ -197,9 +204,7 @@ async function main() {
         'errors wait for an explicit retry instead of background hammering');
 
     var elements = {
-        'channels-list': new FakeElement('div'),
-        'channels-list-label': new FakeElement('span'),
-        'channels-join-btn': new FakeElement('button')
+        'channels-list': new FakeElement('div')
     };
     var refreshForces = [];
     var joinPrefill = null;
@@ -207,6 +212,10 @@ async function main() {
         document: {
             createElement: function(tag) { return new FakeElement(tag); }
         },
+        RS: { kit: {
+            icon: function() { return ''; },
+            time: { row: function() { return ''; }, full: function() { return ''; } }
+        } },
         channelsSnapshot: {
             phase: 'active',
             hub: { destination_hash: 'hub-a' },
@@ -237,7 +246,6 @@ async function main() {
             row.dataset.room = room.name;
             return row;
         },
-        _channelsRoomIcon: function() { return '<svg></svg>'; },
         channelsRefreshDirectory: function(force) { refreshForces.push(force); },
         channelsOpenJoinSheet: function(room) { joinPrefill = room; },
         Object: Object,
@@ -246,44 +254,40 @@ async function main() {
     };
     vm.runInNewContext(
         sourceFunction('_channelsRoomDisplayName', '_channelsTimelineHubName') + '\n' +
-            sourceFunction('_channelsRenderList', '_channelsListSection') + '\n' +
-            sourceFunction('_channelsListSection', '_channelsEmptyList') + '\n' +
-            sourceFunction('_channelsBuildDirectoryRoomRow', '_channelsBuildRoomRow'),
+            sourceFunction('_channelsAppendIcon', '_channelsOnly') + '\n' +
+            sourceFunction('_channelsBuildDirectoryRoomRow', '_channelsHubRowMeta') + '\n' +
+            sourceFunction('_channelsRenderDirectory', '_channelsCaptureNewMarker'),
         renderContext,
         { filename: 'channels-directory-render.js' }
     );
     renderContext._channelsRenderList();
-    assert.strictEqual(elements['channels-list-label'].textContent, 'Active');
-    assert.strictEqual(elements['channels-join-btn'].textContent, 'Join');
 
-    var listSections = elements['channels-list'].children.filter(function(element) {
-        return element.className.indexOf('channels-list-section') === 0;
-    }).map(function(element) {
-        return element.children[0].textContent;
-    });
-    assert.strictEqual(listSections.join('|'), 'History|Discover',
+    var captions = descendants(elements['channels-list']).filter(function(element) {
+        return element.className === 'ui-caption';
+    }).map(function(element) { return element.textContent; });
+    assert.strictEqual(captions.join('|'), 'Joined|History|Discover on this hub',
         'disconnected rooms must be separated from the Joined list');
 
     var all = descendants(elements['channels-list']);
     var directoryRows = all.filter(function(element) {
-        return element.className.indexOf('channel-directory-room') !== -1;
+        return element.className.indexOf('ch-discover-row') !== -1;
     });
     assert.strictEqual(directoryRows.length, 1,
         'joined and saved rooms must not be duplicated in the public directory');
     assert.strictEqual(directoryRows[0].dataset.room, 'public-room');
+    assert.strictEqual(directoryRows[0].tagName, 'DIV',
+        'a row holding a Join button is not itself a button');
     assert(textTree(directoryRows[0]).indexOf('Field coordination') !== -1);
-    directoryRows[0].click();
+    var join = descendants(directoryRows[0]).filter(function(element) {
+        return element.tagName === 'BUTTON';
+    })[0];
+    assert.strictEqual(join.className, 'ui-btn ui-btn--sm');
+    assert.strictEqual(join.textContent, 'Join', 'Discover joins with a labelled Small button, not "+"');
+    join.click();
     assert.strictEqual(joinPrefill, 'public-room',
         'directory selection must preview the existing join sheet');
-
-    var refreshButtons = all.filter(function(element) {
-        return element.className === 'channels-list-section-action';
-    });
-    assert.strictEqual(refreshButtons.length, 1);
-    refreshButtons[0].click();
-    assert.deepStrictEqual(refreshForces, [true]);
     assert(textTree(elements['channels-list']).indexOf(
-        'The hub kept its response within one constrained packet'
+        'The hub kept its answer within one packet.'
     ) !== -1, 'hub-declared truncation must stay visible');
 
     renderContext.channelsSnapshot.directory.rooms = [
@@ -294,17 +298,27 @@ async function main() {
     renderContext.channelsSnapshot.directory.omitted_count = 0;
     renderContext._channelsRenderList();
     assert(textTree(elements['channels-list']).indexOf(
-        'No discoverable channels found.'
+        'No other public channels on this hub.'
     ) !== -1, 'an empty discovery result must use concise neutral copy');
+    var refresh = descendants(elements['channels-list']).filter(function(element) {
+        return element.className === 'ui-link' && element.textContent === 'Refresh';
+    });
+    assert.strictEqual(refresh.length, 1, 'an empty directory offers one Refresh link');
+    refresh[0].click();
+    assert.deepStrictEqual(refreshForces, [true]);
+    var byName = descendants(elements['channels-list']).filter(function(element) {
+        return element.className === 'ui-link' && element.textContent === 'Join a channel by name';
+    });
+    assert.strictEqual(byName.length, 1, 'private and unlisted channels stay reachable by name');
+    joinPrefill = 'unset';
+    byName[0].click();
+    assert.strictEqual(joinPrefill, undefined);
 
     renderContext.channelsSnapshot.rooms = [];
     renderContext._channelsRenderList();
     assert(textTree(elements['channels-list']).indexOf(
         'No currently active channels'
-    ) !== -1, 'a connected hub with no joined rooms must show a quiet Active placeholder');
-    assert(elements['channels-list'].children.some(function(element) {
-        return element.className === 'channel-active-empty';
-    }), 'the Active placeholder must remain visually distinct from directory status cards');
+    ) !== -1, 'a connected hub with no joined rooms shows a quiet placeholder');
 
     assert(navSource.indexOf('channelsRefreshDirectory(false);') !== -1,
         'entering the Channels view must request an idle or stale directory');

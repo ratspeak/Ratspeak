@@ -168,23 +168,23 @@ assert.strictEqual(memberNameContext._channelsMemberListName({
 var transcriptStart = channelsSource.indexOf('function _channelsBuildTranscriptItem');
 var transcriptEnd = channelsSource.indexOf('\nfunction _channelsMemberName', transcriptStart);
 var transcriptSource = channelsSource.slice(transcriptStart, transcriptEnd);
-assert(transcriptSource.includes("avatar.className = 'channel-event-avatar'"));
+assert(transcriptSource.includes("avatar.className = 'ui-avatar ui-avatar--32 channel-event-avatar'"));
 assert(transcriptSource.includes('_channelsIdentityAvatarSeed(item.source_hash, item.source_lxmf_hash, !!item.ours'));
 assert(!transcriptSource.includes('channel-identity-marker'));
 assert(!transcriptSource.includes('event.dataset.tone'));
 
-var memberStart = channelsSource.indexOf('function _channelsBuildMemberRow');
-var memberEnd = channelsSource.indexOf('\nfunction _channelsUpdateComposer', memberStart);
+var memberStart = channelsSource.indexOf('function _channelsMemberGroups');
+var memberEnd = channelsSource.indexOf('\nfunction _channelsRefreshMemberNamesFromPeers', memberStart);
 var memberSource = channelsSource.slice(memberStart, memberEnd);
-assert(memberSource.includes("avatar.className = 'channel-member-avatar'"));
+assert(memberSource.includes("avatar.className = 'ui-avatar ui-avatar--' + size + ' channel-member-avatar'"));
 assert(memberSource.includes('var nameText = _channelsMemberListName(member);'));
 assert(memberSource.includes('_channelsIdentityAvatarSeed(member.identity_hash, member.lxmf_hash, !!member.is_self'));
 assert(!memberSource.includes('channel-identity-marker'));
 assert(!memberSource.includes('row.dataset.tone'));
-assert(memberSource.includes("_channelsAppendMemberGroup(list, 'Recently visible'"));
-assert(memberSource.includes("_channelsAppendMemberGroup(list, 'Seen here'"));
-assert(memberSource.includes("model.visible.length + ' visible'"),
-    'historical people must never inflate the live visible count');
+assert(memberSource.includes("'Here now \\u00b7 ' + groups.here.length"));
+assert(memberSource.includes("'Seen here \\u00b7 ' + groups.seen.length"));
+assert(memberSource.includes("groups.here.length + ' here now \\u00b7 '"),
+    'historical people must never inflate the live count');
 
 var rosterNow = 5_000;
 var returnerHash = 'cc'.repeat(16);
@@ -264,34 +264,30 @@ assert(channelsSource.includes('var CHANNEL_MEMBER_CONTINUITY_MS = 60 * 1000;'))
 var detailStart = channelsSource.indexOf('function _channelsAppendMemberDetail');
 var detailEnd = channelsSource.indexOf('\nfunction _channelsFocusMemberRow', detailStart);
 var detailSource = channelsSource.slice(detailStart, detailEnd);
-assert(detailSource.includes("details.lxmfAddress || ''"));
+assert(detailSource.includes("_channelsMemberAvatar(member, 64,"),
+    'the person view leads with the 64 px identity avatar');
+assert(detailSource.includes("RS.kit.hash.copy(details.lxmfAddress, { form: 'full', noun: 'LXMF address' })"),
+    'the LXMF address is the copyable kit hash, in full');
 assert(!detailSource.includes('details.lxmfAddress || details.identityHash'));
-assert(channelsSource.includes("built.sheet.classList.add('channel-member-profile-sheet')"));
-assert(channelsSource.includes("title: 'Member details'"));
-assert(channelsSource.includes('avatarSize: 64'));
-assert(channelsSource.includes('if (_channelsCompact()) {'));
+assert(!channelsSource.includes('channel-member-profile-sheet'),
+    'a phone shows the person inside the People here sheet, not a second sheet');
 assert(channelsSource.includes('PeersCache.subscribe(_channelsRefreshMemberNamesFromPeers);'),
     'peer-cache hydration must repaint a visible channel roster without requiring a member action');
 
-assert(channelsCss.includes('grid-template-areas:'));
-assert(channelsCss.includes('"avatar author meta"'));
-assert(channelsCss.includes('.channel-event-avatar'));
-assert(channelsCss.includes('.channel-member-avatar'));
-assert(channelsCss.includes('.channel-member-row.reconfirming'));
-assert(channelsCss.includes('.channel-member-row.seen'));
-assert(channelsCss.includes('.channel-member-group-label'));
+assert(channelsCss.includes('grid-template-columns: 32px minmax(0, 1fr);'),
+    'a message is the avatar column beside its run');
+assert(channelsCss.includes('.ch-msg--cont > .ui-avatar'));
 assert(channelsCss.includes('.channel-avatar-fallback'));
 assert(!channelsCss.includes('.channel-identity-marker'));
 assert(!channelsCss.includes('.channel-event[data-tone='));
 assert(!channelsCss.includes('.channel-member-row[data-tone='));
-assert(channelsCss.includes('.channel-members-pane.showing-detail .channel-members-heading'));
-assert(channelsCss.includes('.channel-member-profile-sheet .bottom-sheet-body'));
-assert(indexSource.includes('<span>People</span>'));
-assert(indexSource.includes('id="channel-message-input" class="nr-input message-composer-input" rows="1" placeholder="Message..."'));
+assert(channelsCss.includes('.channel-members-pane.showing-detail .ch-members-head'));
+assert(indexSource.includes('id="channel-members-back" type="button" aria-label="Back to people here"'));
+assert(indexSource.includes('id="channel-message-input" class="nr-input message-composer-input" rows="1"'));
 assert(indexSource.includes('class="channel-send-btn message-send-btn" id="channel-send-btn"'));
 assert(!indexSource.includes('nr-btn nr-btn-primary channel-send-btn'));
-assert(channelsSource.includes("'Message...'"));
-assert(!channelsSource.includes('Message channel'));
+assert(channelsSource.includes("'Message ' + roomName : 'Waiting for the hub'"),
+    'the composer names the room, and waits while the hub link recovers');
 assert(componentsCss.includes('.message-composer-input'));
 assert(componentsCss.includes('border-radius: var(--radius-pill);'));
 assert(componentsCss.includes('.message-send-btn::before'));

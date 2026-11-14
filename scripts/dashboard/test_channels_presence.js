@@ -144,16 +144,13 @@ assert(channelsSource.includes('function _channelsObserveRoomMembers') &&
         channelsSource.includes('_channelsMemberRosterModel(room)'),
     'authenticated PARTED and roster state must continue to drive the people pane');
 
-assert(indexSource.includes('<button class="channel-members-info" id="channel-members-info"'),
-    'partial-roster help belongs beside the People here label');
+assert(indexSource.includes('id="channel-members-info" type="button" aria-label="Who shows here"'),
+    'roster help is a Small info icon button beside the People here title');
 assert(indexSource.includes(
-    'Seen here remembers recent activity and peers already known to this device.'
-), 'the people-pane explanation must describe bounded and known-peer memory');
+    'data-tooltip="The hub reports who is here now. Seen here adds people active in this channel in the last day."'
+), 'the people-pane explanation describes both groups, through the shared help-popover contract');
 assert(!indexSource.includes('id="channel-members-note"'),
     'partial-roster help must not consume a separate member-pane row');
-assert(indexSource.includes('id="channel-members-info"') &&
-        indexSource.includes('data-tooltip="Visible people are reported by the hub'),
-    'the compact roster affordance must use the shared help-popover contract');
 assert(channelsSource.includes('RS.ui.bindHelpPopovers(_channelsEl(\'channel-members-pane\'))'),
     'the people pane must bind the shared pointer and touch help behavior');
 assert(uiSharedSource.includes("trigger.addEventListener('click'") &&
@@ -163,11 +160,10 @@ assert(componentsCss.includes('max-width: min(300px, calc(100vw - 24px))') &&
         uiSharedSource.includes('window.innerWidth - safe.right - popoverRect.width - margin'),
     'shared help popovers must clamp to the viewport instead of clipping');
 
-assert(channelsCss.includes('.channel-event.message-group-start') &&
-        channelsCss.includes('.channel-event.message-group-middle') &&
-        channelsCss.includes('.channel-event.message-group-end'),
-    'message-turn grouping must have intentional visual states');
-assert(channelsCss.includes('message-group-end:hover .channel-event-time'),
-    'continuation timestamps must remain available on intent');
+assert(channelsCss.includes('.ch-msg--cont') &&
+        channelsSource.includes("messageGroup === 'middle' || messageGroup === 'end'"),
+    'a run shows its avatar and name once; continued messages drop them');
+assert(channelsSource.includes('if (continued) event.title = RS.kit.time.full('),
+    'continued messages keep their time on intent');
 
 process.stdout.write('Channels conversation and presence tests passed.\n');

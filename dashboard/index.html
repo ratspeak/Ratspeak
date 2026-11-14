@@ -388,88 +388,52 @@
 
         <div class="view" id="view-channels">
             <div class="channels-layout" id="channels-layout">
-                <aside class="channels-sidebar" aria-label="Channel rooms">
-                    <div class="channels-sidebar-header">
-                        <h2>Channels</h2>
-                        <button class="nr-btn nr-btn-ghost channels-icon-btn" id="channels-connect-btn" type="button" title="Manage Hub" aria-label="Manage Hub">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                        </button>
+                <aside class="channels-sidebar ui-pane" aria-labelledby="channels-title">
+                    <header class="ui-pane-head">
+                        <h2 class="ui-pane-title" id="channels-title">Channels</h2>
+                    </header>
+
+                    <div class="ch-hub" id="channel-hub-strip" data-phase="offline"></div>
+
+                    <div class="ui-pane-scroll">
+                        <section class="channel-owned-hub ui-list" id="channel-owned-hub" aria-labelledby="channel-owned-hub-label" hidden>
+                            <p class="ui-caption" id="channel-owned-hub-label">Your hub</p>
+                            <div class="ch-owned" id="channel-owned-hub-card" data-tone="offline">
+                                <button class="ui-row" id="channel-owned-hub-open" type="button">
+                                    <span class="ui-tile ui-tile--online" aria-hidden="true"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2" y="3" width="20" height="7" rx="2"/><rect x="2" y="14" width="20" height="7" rx="2"/><line x1="6" y1="6.5" x2="6.01" y2="6.5"/><line x1="6" y1="17.5" x2="6.01" y2="17.5"/></svg></span>
+                                    <span class="ui-row-main">
+                                        <span class="ui-row-title" id="channel-owned-hub-name">Your hub</span>
+                                        <span class="ui-row-sub"><span class="t ch-hub-status"><span class="ui-dot" aria-hidden="true"></span><span id="channel-owned-hub-status">Not hosting</span></span></span>
+                                    </span>
+                                </button>
+                                <button class="ui-icon-btn" id="channel-owned-hub-manage" type="button" title="Manage your hub" aria-label="Manage your channel hub"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button>
+                            </div>
+                        </section>
+                        <div class="channels-list" id="channels-list" aria-live="polite"></div>
                     </div>
-
-                    <div class="channel-hub-strip" id="channel-hub-strip" data-phase="offline">
-                        <button class="channel-hub-summary" id="channel-hub-summary" type="button" title="Hub options" aria-label="Channel hub options" aria-haspopup="menu" data-channel-action="hub-actions">
-                            <span class="channel-hub-strip-copy">
-                                <strong id="channel-hub-strip-title">No hub connected</strong>
-                                <span id="channel-hub-strip-meta"></span>
-                            </span>
-                        </button>
-                        <button class="nr-btn nr-btn-ghost channels-icon-btn channel-hub-menu-btn" id="channel-hub-menu-btn" type="button" title="Manage Hub" aria-label="Manage Hub" aria-haspopup="dialog" hidden>
-                            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
-                        </button>
-                    </div>
-
-                    <section class="channel-owned-hub" id="channel-owned-hub" aria-labelledby="channel-owned-hub-label" hidden>
-                        <div class="channel-owned-hub-heading">
-                            <span class="channels-section-label" id="channel-owned-hub-label">Hosting</span>
-                        </div>
-                        <div class="channel-owned-hub-card" id="channel-owned-hub-card" data-tone="offline">
-                            <button class="channel-owned-hub-open" id="channel-owned-hub-open" type="button">
-                                <span class="channel-owned-hub-icon" aria-hidden="true">
-                                    <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 0 0 6.6M15.3 15.3a4.7 4.7 0 0 0 0-6.6"/><path d="M5.3 5.3a9.5 9.5 0 0 0 0 13.4M18.7 18.7a9.5 9.5 0 0 0 0-13.4"/></svg>
-                                </span>
-                                <span class="channel-owned-hub-copy">
-                                    <strong id="channel-owned-hub-name">Your hub</strong>
-                                    <span class="channel-owned-hub-meta"><i aria-hidden="true"></i><span id="channel-owned-hub-status">Not hosting</span></span>
-                                </span>
-                            </button>
-                            <button class="channel-owned-hub-manage" id="channel-owned-hub-manage" type="button" title="Manage your hub" aria-label="Manage your channel hub">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
-                            </button>
-                        </div>
-                    </section>
-
-                    <div class="channels-list-toolbar">
-                        <span class="channels-section-label" id="channels-list-label">Available hubs</span>
-                        <button class="nr-btn nr-btn-ghost nr-btn-sm channels-text-btn" id="channels-join-btn" type="button" aria-label="Join a channel" hidden>Join</button>
-                    </div>
-                    <div class="channels-list" id="channels-list" aria-live="polite"></div>
-
                 </aside>
 
                 <main class="channel-room-pane" id="channel-room-pane">
                     <header class="channel-room-header" id="channel-room-header" hidden>
-                        <button class="mobile-back-btn" id="channel-room-back-btn" type="button" aria-label="Back to channels">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+                        <button class="ui-icon-btn ui-phone-only" id="channel-room-back-btn" type="button" aria-label="Back to channels" title="Back"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="15 18 9 12 15 6"/></svg></button>
+                        <button class="ch-who" id="channel-room-who" type="button" aria-haspopup="menu" aria-label="Channel details">
+                            <span class="ui-tile" aria-hidden="true"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg></span>
+                            <span class="ch-who-text">
+                                <span class="ch-who-name" id="channel-room-title">Channel</span>
+                                <span class="ch-who-sub" id="channel-room-meta">Waiting for hub</span>
+                            </span>
                         </button>
-                        <div class="channel-room-heading">
-                            <div class="channel-room-title-line">
-                                <h3 id="channel-room-title">Channel</h3>
-                                <span class="channel-room-phase" id="channel-room-phase">Joining</span>
-                            </div>
-                            <span id="channel-room-meta">Waiting for hub</span>
-                        </div>
-                        <div class="channel-room-actions">
-                            <button class="nr-btn nr-btn-ghost channels-icon-btn" id="channel-members-toggle" type="button" title="People here" aria-label="People here" aria-controls="channel-members-pane" aria-expanded="false">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/></svg>
-                            </button>
-                            <button class="nr-btn nr-btn-ghost channels-icon-btn" id="channel-room-menu-btn" type="button" title="Channel options" aria-label="Channel options">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/></svg>
-                            </button>
+                        <div class="ui-pane-actions">
+                            <button class="ui-icon-btn" id="channel-members-toggle" type="button" title="People here" aria-label="People here" aria-controls="channel-members-pane" aria-expanded="false" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></button>
                         </div>
                     </header>
 
-                    <div class="channel-transcript" id="channel-transcript" aria-live="polite">
-                        <div class="channel-welcome-state">
-                            <div class="channel-welcome-mark" aria-hidden="true">
-                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 16.5a6 6 0 0 1 0-9"/><path d="M15.5 7.5a6 6 0 0 1 0 9"/><path d="M5.5 19.5a10 10 0 0 1 0-15"/><path d="M18.5 4.5a10 10 0 0 1 0 15"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/></svg>
-                            </div>
-                            <h3>Listening for hubs</h3>
-                            <p>Hubs appear here when they announce. Most announce every 15 minutes.</p>
-                        </div>
-                    </div>
+                    <div class="ch-room-notice" id="channel-room-notice" hidden></div>
+
+                    <div class="channel-transcript" id="channel-transcript" role="log" aria-live="polite" aria-label="Channel messages"></div>
 
                     <div class="channel-compose message-composer" id="channel-compose" hidden>
-                        <textarea id="channel-message-input" class="nr-input message-composer-input" rows="1" placeholder="Message..." aria-label="Channel message" title="Enter to send, Shift+Enter for a new line"></textarea>
+                        <textarea id="channel-message-input" class="nr-input message-composer-input" rows="1" placeholder="Message" aria-label="Channel message" title="Enter to send, Shift+Enter for a new line"></textarea>
                         <span class="channel-char-count" id="channel-char-count" aria-live="polite" hidden></span>
                         <button class="channel-send-btn message-send-btn" id="channel-send-btn" type="button" aria-label="Send channel message">
                             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
@@ -477,27 +441,18 @@
                     </div>
                 </main>
 
-                <button class="channel-members-scrim" id="channel-members-scrim" type="button" aria-label="Close channel members"></button>
-                <aside class="channel-members-pane" id="channel-members-pane" aria-label="Channel members">
-                    <div class="channel-members-header">
-                        <button class="channel-members-back" id="channel-members-back" type="button" aria-label="Back to people here" hidden>
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
-                            <span>People</span>
-                        </button>
-                        <div class="channel-members-heading">
-                            <span class="channel-members-label-row">
-                                <span class="channels-section-label" id="channel-members-label">People here</span>
-                                <button class="channel-members-info" id="channel-members-info" type="button" aria-label="About channel visibility" aria-expanded="false" data-tooltip="Visible people are reported by the hub and may be incomplete. Seen here remembers recent activity and peers already known to this device." hidden>
-                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><line x1="12" y1="11" x2="12" y2="16"></line><circle cx="12" cy="8" r="0.7" fill="currentColor" stroke="none"></circle></svg>
-                                </button>
-                            </span>
-                            <strong id="channel-members-count">0 visible</strong>
+                <button class="channel-members-scrim" id="channel-members-scrim" type="button" tabindex="-1" aria-label="Close people here"></button>
+                <aside class="channel-members-pane" id="channel-members-pane" aria-labelledby="channel-members-heading">
+                    <span class="ch-members-handle" aria-hidden="true"></span>
+                    <header class="ch-members-head">
+                        <button class="ui-icon-btn" id="channel-members-back" type="button" aria-label="Back to people here" title="Back" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="15 18 9 12 15 6"/></svg></button>
+                        <div class="ch-members-title">
+                            <h2><span id="channel-members-heading">People here</span><button class="ui-icon-btn ui-icon-btn--sm" id="channel-members-info" type="button" aria-label="Who shows here" data-tooltip="The hub reports who is here now. Seen here adds people active in this channel in the last day." hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg></button></h2>
+                            <span id="channel-members-count">0 here now</span>
                         </div>
-                        <button class="nr-btn nr-btn-ghost channels-icon-btn channel-members-close" id="channel-members-close" type="button" aria-label="Close member list">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                        </button>
-                    </div>
-                    <div class="channel-members-list" id="channel-members-list"></div>
+                        <button class="ui-icon-btn" id="channel-members-close" type="button" aria-label="Close people here" title="Close"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+                    </header>
+                    <div class="ui-pane-scroll channel-members-list" id="channel-members-list"></div>
                 </aside>
             </div>
         </div>

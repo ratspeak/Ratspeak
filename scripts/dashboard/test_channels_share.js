@@ -119,7 +119,8 @@ function applyContext(initial) {
 function main() {
     var shareFlow = sourceRange('_channelsSafeShareFileName', 'channelsOpenConnectSheet');
     var connectSheet = sourceRange('channelsOpenConnectSheet', '_channelsSheetField');
-    var hubOptions = sourceRange('channelsOpenHubOptions', 'channelsOpenRoomOptions');
+    var hubOptions = sourceRange('channelsOpenHubDetails', 'channelsOpenRoomOptions');
+    var shareSheet = sourceRange('channelsOpenChannelShare', '_channelsPresentSharedTarget');
     var roomOptions = sourceRange('channelsOpenRoomOptions', '_channelsRoomDetail');
 
     assert(shareFlow.indexOf("RS.invoke('api_channel_share'") !== -1,
@@ -146,6 +147,13 @@ function main() {
         'the native typed boundary must explicitly reject any injected key field'
     );
 
+    // Owner decision: the share sheet no longer explains the absent channel key.
+    assert(channelsSource.indexOf('The link contains no channel key') === -1);
+    assert(shareSheet.indexOf("RS.kit.hash.copy(target.hub_destination_hash, { form: 'full', noun: 'Hub address' })") !== -1,
+        'the share sheet shows the full hub address, and it copies');
+    assert(shareSheet.indexOf("'Share QR code'") !== -1 && shareSheet.indexOf("'Copy link'") !== -1);
+    assert(shareSheet.indexOf("done.className = 'ui-btn ui-btn--primary'") !== -1);
+    assert(shareSheet.indexOf("size: 'md'") !== -1, 'the share sheet is a Medium dialog');
     assert(connectSheet.indexOf("sharedRoom ? 'Connect and review' : 'Connect'") !== -1);
     assert(connectSheet.indexOf('preserve_pending_share: true') !== -1);
     assert(connectSheet.indexOf('channelsPendingShareJoin = pendingShare') !== -1);

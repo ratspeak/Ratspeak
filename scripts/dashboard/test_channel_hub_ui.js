@@ -80,9 +80,8 @@ assert.strictEqual(statusContext.homeVisible({ supported: true, created: true })
 assert(source.indexOf(
     'var visible = _channelHubHomeVisible(overview);'
 ) !== -1);
-assert(source.indexOf(
-    'if (overview.supported && _channelHubHostingEnabled(overview))'
-) !== -1);
+// Hosting is reached from the Your hub row; the Manage Hub sheet behind the old "+" is gone.
+assert(source.indexOf('function channelsOpenAddSheet') === -1);
 
 var configContext = {};
 vm.runInNewContext(

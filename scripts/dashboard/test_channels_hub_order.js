@@ -85,14 +85,15 @@ assert.strictEqual(hashesOf(direct), 'zero,one',
     'a zero-hop hub is the closest, not an unknown distance');
 
 var presentationContext = {
-    _channelsHubName: function(hub) { return hub.announced_name || 'Channel hub'; },
-    _channelsShortHash: function(value) { return 'short:' + value; }
+    _channelsHubName: function(hub) { return hub.announced_name || 'Channel hub'; }
 };
 vm.runInNewContext(
-    sourceFunction('_channelsHubMonogram', '_channelsBuildHubRow') +
+    sourceFunction('_channelsHubMonogram', '_channelsBuildHubMark') +
+        sourceFunction('_channelsHubDistance', '_channelsTimeLabel') +
+        sourceFunction('_channelsHubRowMeta', '_channelsBuildHubRow') +
         '\nthis.monogram = _channelsHubMonogram;' +
         '\nthis.distance = _channelsHubDistance;' +
-        '\nthis.meta = _channelsHubMeta;',
+        '\nthis.meta = _channelsHubRowMeta;',
     presentationContext
 );
 assert.strictEqual(presentationContext.monogram({ announced_name: 'fishy hub' }), 'F');
@@ -101,18 +102,16 @@ assert.strictEqual(presentationContext.distance({ nearby: true, hops: 0 }), 'Dir
 assert.strictEqual(presentationContext.distance({ nearby: true, hops: 1 }), '1 hop');
 assert.strictEqual(presentationContext.distance({ nearby: true, hops: 4 }), '4 hops');
 assert.strictEqual(presentationContext.distance({ saved: true, nearby: false }), '');
-assert.strictEqual(
-    presentationContext.meta({ destination_hash: 'abcd', saved: true, nearby: false }),
-    'Saved · short:abcd'
-);
-assert.strictEqual(
-    presentationContext.meta({ destination_hash: 'abcd', saved: true, nearby: true }),
-    'Saved · short:abcd',
-    'saved identity must remain visible even while a hub is also nearby'
-);
+// Hub rows say how far a hub is in words; the full address lives in the hub's own sheet.
+assert.strictEqual(presentationContext.meta({ nearby: true, hops: 0 }), 'Direct, nearby');
+assert.strictEqual(presentationContext.meta({ nearby: true, hops: 1 }), '1 hop away');
+assert.strictEqual(presentationContext.meta({ nearby: true, hops: 2, saved: true }), '2 hops away');
+assert.strictEqual(presentationContext.meta({ nearby: true }), 'Nearby');
+assert.strictEqual(presentationContext.meta({ saved: true, nearby: false }), 'Saved hub');
 
-assert(indexSource.indexOf('Available hubs') !== -1,
-    'the directory heading should describe the choices, not their cache provenance');
+assert(channelsSource.indexOf("_channelsListGroup(list, 'Hubs nearby')") !== -1 &&
+    channelsSource.indexOf("_channelsListGroup(list, 'Saved')") !== -1,
+    'the directory captions describe the choices, not their cache provenance');
 assert(indexSource.indexOf('channels-refresh-btn') === -1,
     'the announce cache must not be presented as an active network scan');
 assert(channelsSource.indexOf("RS.listen('announce_received'") !== -1,

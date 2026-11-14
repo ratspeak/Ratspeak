@@ -116,9 +116,12 @@ function channelHubRenderHome(overview) {
     var hubName = settings.hub_name || status.hub_name || 'Ratspeak Hub';
     if (name) name.textContent = hubName;
     if (meta) meta.textContent = statusText;
+    var tone = status.registry_degraded ? 'warning' : model.tone;
     if (card) {
-        card.dataset.tone = status.registry_degraded ? 'warning' : model.tone;
+        card.dataset.tone = tone;
         card.dataset.current = current ? 'true' : 'false';
+        var dot = card.querySelector('.ui-dot');
+        if (dot) dot.className = 'ui-dot' + (tone === 'online' || tone === 'warning' ? ' ui-dot--' + tone : '');
     }
     if (open) {
         open.disabled = _channelHubHomeBusy;
@@ -171,110 +174,6 @@ function _channelHubIcon(kind) {
         return '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 13.5a4.5 4.5 0 0 0 6.4.1l2.1-2.1a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2"/><path d="M13.5 10.5a4.5 4.5 0 0 0-6.4-.1L5 12.5a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/></svg>';
     }
     return '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/><path d="M8.7 8.7a4.7 4.7 0 0 0 0 6.6M15.3 15.3a4.7 4.7 0 0 0 0-6.6"/><path d="M5.3 5.3a9.5 9.5 0 0 0 0 13.4M18.7 18.7a9.5 9.5 0 0 0 0-13.4"/></svg>';
-}
-
-function _channelHubChoice(kind, titleText, detailText, statusText) {
-    var choice = document.createElement('button');
-    choice.type = 'button';
-    choice.className = 'channel-hub-choice';
-    choice.dataset.choice = kind;
-
-    var icon = document.createElement('span');
-    icon.className = 'channel-hub-choice-icon';
-    icon.innerHTML = _channelHubIcon(kind);
-    var copy = document.createElement('span');
-    copy.className = 'channel-hub-choice-copy';
-    var title = document.createElement('strong');
-    title.textContent = titleText;
-    var detail = document.createElement('span');
-    detail.textContent = detailText;
-    copy.appendChild(title);
-    copy.appendChild(detail);
-    choice.appendChild(icon);
-    choice.appendChild(copy);
-    if (statusText) {
-        var status = document.createElement('span');
-        status.className = 'channel-hub-choice-status';
-        status.textContent = statusText;
-        choice.appendChild(status);
-    }
-    var arrow = document.createElement('span');
-    arrow.className = 'channel-hub-choice-arrow';
-    arrow.setAttribute('aria-hidden', 'true');
-    arrow.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>';
-    choice.appendChild(arrow);
-    return choice;
-}
-
-function channelsOpenAddSheet() {
-    if (typeof _rsBuildSheet !== 'function') return;
-    function present(overview) {
-        overview = overview || { supported: false };
-        var built = _rsBuildSheet({ title: 'Manage Hub' }, function() {});
-        built.sheet.classList.add('channel-hub-launch-sheet');
-
-        var intro = document.createElement('p');
-        intro.className = 'channel-sheet-copy';
-        intro.textContent = 'Choose how you want to connect.';
-        built.body.appendChild(intro);
-
-        var join = _channelHubChoice(
-            'join',
-            'Join a hub',
-            'Choose a hub or enter an address'
-        );
-        join.addEventListener('click', function() {
-            built.dismiss();
-            setTimeout(function() {
-                if (typeof channelsOpenHubSwitcher === 'function') {
-                    channelsOpenHubSwitcher();
-                } else {
-                    channelsOpenConnectSheet();
-                }
-            }, 220);
-        });
-        built.body.appendChild(join);
-
-        var shared = _channelHubChoice(
-            'link',
-            'Use a link or QR',
-            'Preview a shared hub or channel before connecting'
-        );
-        shared.addEventListener('click', function() {
-            built.dismiss();
-            setTimeout(function() { channelsOpenSharedChannel(); }, 220);
-        });
-        built.body.appendChild(shared);
-
-        if (overview.supported && _channelHubHostingEnabled(overview)) {
-            var model = _channelHubStatusModel(overview);
-            var host = _channelHubChoice(
-                'host',
-                overview.created || (overview.settings && overview.settings.enabled) ? 'Manage your hub' : 'Host a hub',
-                model.detail,
-                model.label
-            );
-            host.addEventListener('click', function() {
-                built.dismiss();
-                setTimeout(function() { channelHubOpenManager(overview); }, 220);
-            });
-            built.body.appendChild(host);
-        }
-
-        var cancel = document.createElement('button');
-        cancel.type = 'button';
-        cancel.className = 'nr-btn nr-btn-secondary';
-        cancel.textContent = 'Cancel';
-        cancel.addEventListener('click', function() { built.dismiss(); });
-        built.footer.appendChild(cancel);
-        _channelsPresentSheet(built, join);
-    }
-
-    channelHubLoad(true).then(function(overview) {
-        present(overview);
-    }).catch(function() {
-        present({ supported: false });
-    });
 }
 
 function _channelHubField(labelText, control, hintText) {

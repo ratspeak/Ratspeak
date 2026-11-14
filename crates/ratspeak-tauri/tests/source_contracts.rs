@@ -152,10 +152,11 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(index.contains("id=\"channel-message-input\""));
     assert!(!index.contains("Group conversations"));
     assert!(!index.contains("channels-sidebar-subtitle"));
-    assert!(index.contains("Available hubs"));
-    assert!(index.contains("id=\"channel-hub-summary\""));
-    assert!(index.contains("data-channel-action=\"hub-actions\""));
-    assert!(index.contains("id=\"channel-hub-menu-btn\" type=\"button\" title=\"Manage Hub\""));
+    assert!(index.contains("<h2 class=\"ui-pane-title\" id=\"channels-title\">Channels</h2>"));
+    assert!(index.contains("<div class=\"ch-hub\" id=\"channel-hub-strip\""));
+    assert!(!index.contains("channel-hub-menu-btn"));
+    assert!(!index.contains("channels-connect-btn"));
+    assert!(!index.contains("channel-room-menu-btn"));
     assert!(!index.contains("channel-hub-add-btn"));
     assert!(!index.contains("channel-hub-switcher-chevron"));
     assert!(!index.contains("channel-live-beacon"));
@@ -187,26 +188,25 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("function channelsConnectToHub"));
     assert!(channels_js.contains("function _channelsHubSwitcherModel"));
     assert!(channels_js.contains("function _channelsHubConnectMode"));
-    assert!(channels_js.contains("function channelsOpenHubSwitcher"));
-    assert!(channels_js.contains("action === 'add' || action === 'manage-hub'"));
-    assert!(channels_js.contains("action === 'hub-actions'"));
-    assert!(channels_js.contains("channelsOpenHubOptions(actionEl)"));
+    assert!(channels_js.contains("function channelsOpenHubMenu(trigger)"));
+    assert!(!channels_js.contains("function channelsOpenHubSwitcher"));
+    assert!(!channels_js.contains("action === 'hub-actions'"));
+    assert!(channels_js.contains("channelsOpenHubMenu(row);"));
     assert!(
         !channels_js.contains("hubSwitcher.addEventListener('click', channelsOpenHubSwitcher)")
     );
     assert!(channels_js.contains("Only one hub can be connected at a time"));
     assert!(channels_js.contains("History stays on this device"));
-    assert!(channels_js.contains("list.setAttribute('aria-live', 'polite')"));
-    assert!(channels_js.contains("list.setAttribute('aria-busy', 'true')"));
-    assert!(channels_js.contains("? 'Switch hub'"));
-    assert!(channels_js.contains(": 'Choose a hub'"));
+    assert!(channels_js.contains("item('plus', 'Add a hub by address\\u2026'"));
+    assert!(channels_js.contains("item('qr', 'Share this hub'"));
+    assert!(channels_js.contains("item('info', 'Hub details'"));
     assert!(channels_js.contains("switching: connectMode.kind === 'switch'"));
     assert!(channels_js.contains("'Could not switch channel hubs.'"));
     assert!(channels_js.contains("openedEpoch === _channelsHistoryEpoch"));
     assert!(
         channels_js.contains("openedGeneration === (Number(channelsSnapshot.generation) || 0)")
     );
-    assert!(channels_js.contains("dismissHubSwitcher()"));
+    assert!(channels_js.contains("if (_channelsHubMenuClose) _channelsHubMenuClose(false);"));
     assert!(channels_js.contains("channelHubOwnDestinationHash"));
     assert!(!channels_js.contains("hub.nearby ? 'Nearby' : 'Recent'"));
     assert!(channels_js.contains("TextEncoder"));
@@ -218,13 +218,8 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert_eq!(channels_js.matches("return 'Live'").count(), 1);
     assert!(channels_js.contains("function _channelsIdentityTone"));
     assert!(!channels_js.contains("function _channelsInitials"));
-    assert!(channels_css.contains(".channel-hub-row-mark"));
-    assert!(channels_css.contains(".channel-hub-row-distance"));
-    assert!(channels_css.contains(".channel-hub-summary"));
-    assert!(channels_css.contains(".channel-directory-section .channels-list-section-action"));
-    assert!(channels_css.contains("@keyframes channelHubSignalLap"));
-    assert!(channels_css.contains(".channel-hub-strip.link-arrived::before"));
-    assert!(channels_css.contains(".channel-hub-switcher-list .channel-hub-row.current"));
+    assert!(channels_css.contains(".ch-hub-menu"));
+    assert!(!channels_css.contains("@keyframes channelHubSignalLap"));
     assert!(channels_css.contains(".channel-hub-switch-impact"));
     assert!(!channels_css.contains(".channel-connection-trust"));
     assert!(channels_js.contains("function _channelsBuildHubNotice"));
@@ -236,8 +231,9 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("RS.invoke('api_channel_history'"));
     assert!(channels_js.contains("RS.invoke('api_channel_participants'"));
     assert!(channels_js.contains("function _channelsMemberRosterModel"));
-    assert!(channels_js.contains("'Recently visible'"));
-    assert!(channels_js.contains("'Seen here'"));
+    assert!(channels_js.contains("'Here now \\u00b7 '"));
+    assert!(channels_js.contains("'Seen here \\u00b7 '"));
+    assert!(channels_js.contains("var CHANNEL_SEEN_WINDOW_MS = 24 * 60 * 60 * 1000;"));
     assert!(!channels_js.contains("'Offline'"));
     assert!(channels_js.contains("before: older ? entry.next_before : null"));
     assert!(channels_js.contains("function _channelsSyncHistory"));
@@ -246,9 +242,9 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("function _channelsRememberedRoomTopic"));
     assert!(!channels_js.contains("Saved locally \\u00b7 open"));
     assert!(!channels_js.contains("\\u00b7 stored on this device"));
-    assert!(channels_js.contains("_channelsListSection('History'"));
-    assert!(channels_js.contains("_channelsActiveEmpty('No currently active channels')"));
-    assert!(channels_css.contains(".channel-active-empty"));
+    assert!(channels_js.contains("_channelsListGroup(list, 'History')"));
+    assert!(channels_js.contains("_channelsListNote('No currently active channels')"));
+    assert!(channels_css.contains(".ch-list-note"));
     assert!(channels_js.contains("function channelsSelectHistoryRoom"));
     assert!(channels_js.contains("function channelsApplyUnread"));
     assert!(channels_js.contains("RS.invoke('api_channel_unread')"));
@@ -263,7 +259,7 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(!channels_js.contains("Local timeline"));
     assert!(channels_js.contains("Load earlier"));
     assert!(!channels_js.contains("localStorage.setItem"));
-    assert!(channels_js.contains("function _channelsRenderMemberDetail"));
+    assert!(channels_js.contains("function _channelsAppendMemberDetail"));
     assert!(ui_shared.contains("RS.composer.applyTypingPolicy = function(input)"));
     assert!(ui_shared.contains("RS.composer.bindTypingPolicy = function(input)"));
     assert!(ui_shared.contains("event.inputType !== 'insertReplacementText'"));
@@ -276,40 +272,28 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("result.local_command"));
     assert!(responsive_css.contains(".channels-layout.view-channel-detail"));
     assert!(responsive_css.contains("body.view-channel-detail .shell-tabbar"));
-    assert!(responsive_css.contains("calc(64px + var(--sat))"));
+    assert!(responsive_css.contains("calc(56px + var(--sat))"));
     assert!(responsive_css.contains("body.view-channel-detail .main-content"));
     assert!(responsive_css.contains(".channels-layout.room-live.members-open"));
     assert!(responsive_css.contains("max(var(--space-4), var(--sab))"));
-    assert!(responsive_css.contains("calc(var(--space-4) + var(--sar))"));
-    assert!(responsive_css.contains("calc(var(--space-4) + var(--sal))"));
     assert!(responsive_css.contains("calc(var(--space-5) + var(--sar))"));
     assert!(responsive_css.contains("calc(var(--space-5) + var(--sal))"));
-    assert!(responsive_css.contains("width: var(--touch-target);"));
-    assert!(responsive_css.contains(
-        ".channel-room-row-title,\n    .channel-hub-row-title {\n        font-size: var(--mobile-list-title-size);"
-    ));
-    assert!(responsive_css.contains(
-        ".channel-event-text {\n        color: var(--text-primary);\n        font-size: var(--text-base);"
-    ));
-    assert!(responsive_css.contains(".channel-system-event {\n        margin: var(--space-6) 0;"));
     assert!(channels_css.contains(".channel-members-scrim"));
-    assert!(channels_css.contains(".channels-layout:not(.room-live)"));
+    assert!(channels_css.contains(".channels-layout.room-live.members-open {"));
     assert!(channels_css.contains(".channel-transition-rail"));
     assert!(channels_css.contains(".channel-hub-greeting"));
     assert!(channels_css.contains(".channel-hub-home"));
     assert!(channels_css.contains(".channel-hub-profile-capabilities"));
     assert!(!channels_css.contains(".channel-hub-greeting-delivery"));
-    assert!(channels_css.contains(".channel-event.message-group-start"));
-    assert!(channels_css.contains(".channel-event.message-group-middle"));
-    assert!(channels_css.contains(".channel-event.message-group-end"));
+    assert!(channels_css.contains(".ch-msg--cont"));
     assert!(!channels_css.contains(".channel-presence-event"));
     assert!(!channels_css.contains(".channel-presence-summary"));
     assert!(channels_css.contains(".channel-history-rail"));
-    assert!(channels_css.contains(".channel-day-separator"));
-    assert!(channels_css.contains(".channel-member-detail-fields"));
-    assert!(channels_css.contains(".channel-unread-badge"));
-    assert!(channels_css.contains(".channel-event.mentioned"));
-    assert!(channels_css.contains(".channel-quote-button"));
+    assert!(channels_css.contains(".ch-day"));
+    assert!(channels_css.contains(".ch-new"));
+    assert!(channels_css.contains(".ch-member-facts"));
+    assert!(channels_css.contains(".ch-msg.is-mention"));
+    assert!(channels_css.contains(".ch-msg-actions"));
     assert!(channels_js.contains("layout.classList.remove('members-open')"));
     assert!(build_css.contains("09-channels.css"));
     assert!(tauri_build.contains(r#""09-channels.css""#));
@@ -544,7 +528,9 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("RS.invoke('api_preview_channel_share'"));
     assert!(channels_js.contains("previewCommand: 'api_preview_channel_share'"));
     assert!(channels_js.contains("preserve_pending_share: true"));
-    assert!(channels_css.contains(".channel-share-qr-shell"));
+    assert!(channels_css.contains(".ch-qr"));
+    assert!(channels_js.contains("noun: 'Hub address'"));
+    assert!(!channels_js.contains("The link contains no channel key"));
     assert!(channels_css.contains(".channel-share-input"));
     assert!(share_test.contains("channel share tests passed"));
     assert!(hub_switcher_test.contains("channel hub switcher tests passed"));
@@ -566,27 +552,32 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
     let first_view_test = read_source(root.join("scripts/dashboard/test_channels_first_view.js"))
         .expect("channels first view test");
 
-    // The status card and the list say what is true for the network and hub state.
+    // The hub strip and the first screen say what is true for the network and hub state.
     for copy in [
-        "'No network connection'",
-        "'Channels need a network'",
-        "'No hub connected'",
+        "'Not connected'",
+        "'No network'",
+        "'No hub yet'",
         "'Network connected'",
-        "'Choose a hub below'",
-        "'Choose a saved hub below'",
-        "'Channels are group chats hosted on hubs'",
-        "'Connect to a network to see hubs.'",
+        "'Connected as '",
+        "'Reconnecting\\u2026'",
+        "'Connecting\\u2026'",
+        "'Session ended'",
+        "'Channels need a network'",
+        "'Channels are group chats hosted on hubs. Connect to a network to find hubs nearby and on the internet.'",
         "'Connect to a network'",
         "'Open Network'",
         "'Listening for hubs'",
-        "'Hubs appear here when they announce. Most announce every 15 minutes.'",
+        "'Hubs show up as they announce. Most announce every 15 minutes, so this can take a little while.'",
         "'No hubs heard yet.'",
         "'Add a hub by address'",
-        "'Use its link, QR code, or address'",
-        "'Saved hubs'",
-        "'Connect to a network first'",
-        "'Channels are group chats hosted on hubs. Connect to a network to see hubs.'",
-        "'Choose a hub to see its channels.'",
+        "'From its link, QR code, or address'",
+        "'Hubs nearby'",
+        "'Saved'",
+        "'Hubs you can join show here once you\\u2019re online.'",
+        "'Choose a hub'",
+        "'A hub hosts channels. Pick one from the list, or add one by its address.'",
+        "'Securing the link. Your channels rejoin on their own once the hub answers.'",
+        "'Rejoins when the hub answers'",
         "'Your hub is running'",
         "'Other hubs need a network connection.'",
     ] {
@@ -601,7 +592,6 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
         "'Paste'",
         "'Enter a ratspeak:// link or a 32-character hub address.'",
         "'Could not read the clipboard. Type or paste into the field.'",
-        "'Add by address'",
     ] {
         assert!(channels_js.contains(copy), "missing address copy {copy}");
     }
@@ -617,7 +607,6 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
         "Saved hubs remain available below",
         "Enter a trusted hub address to begin",
         "Connect to a trusted hub, then choose a channel.",
-        "'Nearby'",
         "list themselves",
         "Allow up to 15 minutes",
         "No hub has announced",
@@ -638,21 +627,16 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
         "the one-hub sentence belongs to the switch confirmation alone"
     );
     assert!(channels_js.contains("'. History stays on this device.'"));
-    assert!(channels_js.contains("appendHubSection('Available', model.nearby"));
-    assert!(channel_hub_js.contains("'Choose a hub or enter an address'"));
-    assert!(
-        !channel_hub_js.to_lowercase().contains("nearby"),
-        "a hub can be anywhere"
-    );
+    assert!(!channel_hub_js.contains("function channelsOpenAddSheet"));
 
     // Reconnect reconnects, and no tap opens a review that cannot succeed.
     assert!(channels_js.contains("function channelsReconnect"));
-    assert!(channels_js.contains("button.dataset.channelAction = 'reconnect';"));
+    assert!(channels_js.contains("{ text: 'Reconnect', action: 'reconnect', kind: 'primary' }"));
     assert!(channels_js.contains("action === 'reconnect') channelsReconnect(actionEl);"));
     assert!(!channels_js.contains("action === 'connect')"));
     assert!(channels_js.contains("function _channelsHubNeedsNetwork"));
     assert!(channels_js.contains("'Connect to a network first.'"));
-    assert!(channels_js.contains("'Connect to a network to join a hub'"));
+    assert!(channels_js.contains("disabled: offline || blocked"));
 
     // The view re-renders from the existing stats and interface events; nothing polls.
     assert!(channels_js.contains("function channelsNetworkChanged"));
@@ -667,15 +651,10 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
     assert!(
         channels_js.contains("if (typeof openConnectModal === 'function') openConnectModal();")
     );
-    assert!(channels_css.contains(".channels-first-empty"));
-    assert!(
-        channels_css.contains(".channels-layout.pane-offers-list-action .channels-first-action")
-    );
-    assert!(channels_css.contains(".channel-hub-add-row"));
-    assert!(channels_css.contains(".channels-first-secondary"));
-    assert!(
-        channels_css.contains(".channel-hub-switcher-sheet .bottom-sheet-footer .nr-btn[hidden]")
-    );
+    // Desktop explains in the room pane and keeps the list a list; a phone explains in the list.
+    assert!(channels_js.contains("_channelsOnly('phone', _channelsEmptyState(_channelsFirstView()))"));
+    assert!(channels_css.contains(".channels-list > .ui-phone-only"));
+    assert!(!channels_js.contains("pane-offers-list-action"));
     assert!(channels_css.contains(".channel-sheet-field-label-row"));
     assert!(!channels_css.contains(".channel-hub-switcher-note"));
     assert!(first_view_test.contains("channels first view tests passed"));
@@ -986,9 +965,9 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     );
     assert!(runtime.contains("channel_hub_hosting_supported()"));
 
-    // Desktop hosting becomes discoverable from the Channels add action after
-    // explicit Settings opt-in, stays separate from client session state, and
-    // obeys backend support.
+    // Desktop hosting becomes discoverable as the Your hub row after explicit
+    // Settings opt-in, stays separate from client session state, and obeys
+    // backend support.
     assert!(index.contains("/static/js/channel_hub.js"));
     assert!(hub_ui.contains("RS.invoke('api_channel_hub')"));
     assert!(hub_ui.contains("RS.invoke('api_channel_hub_admin')"));
@@ -1002,7 +981,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
         "return !!(overview && overview.supported && _channelHubHostingEnabled(overview));"
     ));
     assert!(hub_ui.contains("function channelHubOpenOwnHub"));
-    assert!(hub_ui.contains("overview.created"));
+    assert!(hub_ui.contains("channelHubOverview.created = true;"));
     assert!(hub_ui.contains("Some channel changes are still waiting to be saved."));
     assert!(hub_ui.contains("copyAddress.hidden = !destination"));
     assert!(channels_css.contains(".channel-host-admin-sheet"));
@@ -1015,7 +994,7 @@ fn channel_hub_persists_policy_only_and_gates_room_creation() {
     assert!(responsive_css.contains(".channel-host-admin-edit-sheet"));
     assert!(channels_css.contains(".channel-host-registry-warning"));
     assert!(channels_css.contains(".channel-host-copy-btn[hidden]"));
-    assert!(channels_css.contains(".channel-owned-hub-card"));
+    assert!(channels_css.contains(".ch-owned"));
 
     // Owner projections are pull-only, identity-fenced, and rendered as text.
     // No hub-provided nickname, topic, or excerpt may become HTML or browser

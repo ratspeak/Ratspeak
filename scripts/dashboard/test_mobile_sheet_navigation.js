@@ -26,11 +26,10 @@ assert(!navSource.includes("if (viewId === 'channels') return 'message';"),
     'Channels must own its selected state instead of aliasing Direct Messages');
 assert(!indexSource.includes('channel-hub-add-btn'),
     'mobile should use the hub card itself instead of a redundant add control');
-assert(indexSource.includes('id="channel-hub-summary" type="button"'));
-assert(indexSource.includes('data-channel-action="hub-actions"'));
-assert(indexSource.includes('id="channel-hub-menu-btn" type="button" title="Manage Hub"'));
-assert(responsiveCss.includes('.channels-sidebar-header {\n        display: none;'),
-    'mobile Channels should begin with the hub card instead of a redundant title');
+assert(indexSource.includes('<div class="ch-hub" id="channel-hub-strip"'),
+    'the hub strip row is the one hub control, on a phone as on desktop');
+assert(!indexSource.includes('channel-hub-menu-btn') && !indexSource.includes('channels-connect-btn'),
+    'no bare "+" or "\u2026" buttons remain in Channels');
 
 function functionSource(source, name) {
     var start = source.indexOf('function ' + name + '(');

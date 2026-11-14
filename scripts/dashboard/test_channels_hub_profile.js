@@ -186,7 +186,7 @@ assert(channelsSource.indexOf('Authenticated channel hub') !== -1);
 assert(channelsSource.indexOf('Name differs from the recent announce') !== -1);
 assert(channelsSource.indexOf('Private or secret channels may be intentionally hidden') !== -1);
 assert(channelsSource.indexOf('Advertised by this hub in the authenticated WELCOME.') !== -1);
-assert(channelsSource.indexOf("secondary.dataset.channelAction = 'hub-info'") !== -1);
+assert(channelsSource.indexOf("{ text: 'Hub details', action: 'hub-info' }") !== -1);
 assert(channelsSource.indexOf("action === 'hub-info'") !== -1);
 assert(hubSource.indexOf("'Welcome & guidance'") !== -1);
 assert(hubSource.indexOf('Use for rules and where to begin') !== -1);
