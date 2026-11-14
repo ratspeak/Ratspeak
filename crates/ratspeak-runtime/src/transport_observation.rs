@@ -63,6 +63,39 @@ pub async fn path_hops(
         .filter(|hops| *hops < rns_transport::constants::PATHFINDER_M)
 }
 
+/// The RSSI and SNR the receiving interface reported for one packet, while
+/// transport still remembers it (`Transport.packet_rssi` / `packet_snr`).
+/// Only a radio reports them, so `None` means no reading, not a weak one.
+pub async fn packet_signal(
+    transport_tx: &mpsc::Sender<TransportMessage>,
+    packet_hash: [u8; 32],
+) -> Option<(f64, Option<f64>)> {
+    let rssi = packet_metric(transport_tx, TransportQuery::GetPacketRssi { packet_hash }).await?;
+    let snr = packet_metric(transport_tx, TransportQuery::GetPacketSnr { packet_hash }).await;
+    Some((rssi, snr))
+}
+
+async fn packet_metric(
+    transport_tx: &mpsc::Sender<TransportMessage>,
+    query: TransportQuery,
+) -> Option<f64> {
+    let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+    let transaction = async {
+        transport_tx
+            .send(TransportMessage::Rpc { query, response_tx })
+            .await
+            .ok()?;
+        match response_rx.await.ok()? {
+            TransportQueryResponse::FloatResult(value) => value.filter(|v| v.is_finite()),
+            _ => None,
+        }
+    };
+    tokio::time::timeout(PATH_TABLE_OBSERVATION_TIMEOUT, transaction)
+        .await
+        .ok()
+        .flatten()
+}
+
 pub async fn local_path_table(
     transport_tx: &mpsc::Sender<TransportMessage>,
 ) -> Option<Vec<PathTableRpcEntry>> {

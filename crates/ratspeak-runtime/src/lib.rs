@@ -7961,6 +7961,7 @@ pub(crate) fn emit_peers_batch(state: &AppState, rows: &[db::PeerRow]) {
                 "is_contact": r.is_contact,
                 "last_interface": r.last_interface,
                 "services": r.services,
+                "signal": state.peer_signal_json(&r.hash),
             })
         })
         .collect();

@@ -607,6 +607,18 @@ pub const NETWORK_SETTINGS_KEY: &str = "network_settings.v1";
 /// Uses `std::sync::{Mutex, RwLock}`, not tokio variants. Critical sections
 /// must finish before `.await` or run in `spawn_blocking`
 /// (`clippy::await_holding_lock` enforces this).
+/// The last packet a peer sent straight to a radio here, as that radio measured it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PeerSignal {
+    pub rssi: f64,
+    pub snr: Option<f64>,
+    pub at: f64,
+    pub interface: String,
+}
+
+/// Peers whose last radio reading is kept; the oldest go first past this.
+const PEER_SIGNAL_CAP: usize = 2048;
+
 pub struct AppState {
     pub config: DashboardConfig,
     pub db: DbPool,
@@ -767,6 +779,8 @@ pub struct AppState {
     mobile_hardware_state: RwLock<std::collections::BTreeMap<String, serde_json::Value>>,
     pub lxmf_notify: Arc<tokio::sync::Notify>,
     pub discovered_propagation_nodes: Mutex<HashMap<String, serde_json::Value>>,
+    /// Last direct radio reading per LXMF destination, for the Peers signal row.
+    peer_signals: Mutex<IndexMap<String, PeerSignal>>,
     pub network_log_enabled: AtomicBool,
     /// One of "essential" | "standard" | "detailed".
     pub network_log_level: RwLock<String>,
@@ -949,6 +963,38 @@ impl AutoLock {
 }
 
 impl AppState {
+    /// Keep a peer's latest direct radio reading, or forget it when its latest
+    /// announce came another way (a relayed packet measures the relay).
+    pub fn record_peer_signal(&self, dest_hash: &str, signal: Option<PeerSignal>) {
+        let Ok(mut signals) = self.peer_signals.lock() else {
+            return;
+        };
+        signals.shift_remove(dest_hash);
+        if let Some(signal) = signal {
+            signals.insert(dest_hash.to_string(), signal);
+            while signals.len() > PEER_SIGNAL_CAP {
+                signals.shift_remove_index(0);
+            }
+        }
+    }
+
+    pub fn peer_signal(&self, dest_hash: &str) -> Option<PeerSignal> {
+        self.peer_signals.lock().ok()?.get(dest_hash).cloned()
+    }
+
+    /// The `signal` field of a peer row: `{ rssi, snr, at, interface }` or null.
+    pub fn peer_signal_json(&self, dest_hash: &str) -> serde_json::Value {
+        match self.peer_signal(dest_hash) {
+            Some(signal) => serde_json::json!({
+                "rssi": signal.rssi,
+                "snr": signal.snr,
+                "at": signal.at,
+                "interface": signal.interface,
+            }),
+            None => serde_json::Value::Null,
+        }
+    }
+
     pub fn new(
         config: DashboardConfig,
         db: DbPool,
@@ -1111,6 +1157,7 @@ impl AppState {
             mobile_hardware_state: RwLock::new(std::collections::BTreeMap::new()),
             lxmf_notify: Arc::new(tokio::sync::Notify::new()),
             discovered_propagation_nodes: Mutex::new(HashMap::new()),
+            peer_signals: Mutex::new(IndexMap::new()),
             network_log_enabled: AtomicBool::new(false),
             network_log_level: RwLock::new("standard".into()),
             announce_interval_tx,
@@ -5728,5 +5775,34 @@ mod tests {
         let state = make_state();
         assert_eq!(state.reset_message_send_times_on_resume(), 0);
         assert!(state.message_send_times.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_peer_keeps_only_its_latest_direct_radio_reading() {
+        let state = make_state();
+        let reading = |rssi: f64| PeerSignal {
+            rssi,
+            snr: Some(7.5),
+            at: 1.0,
+            interface: "RNode LoRa".into(),
+        };
+        state.record_peer_signal("aa", Some(reading(-97.0)));
+        assert_eq!(state.peer_signal_json("aa")["rssi"], -97.0);
+        assert_eq!(state.peer_signal_json("aa")["snr"], 7.5);
+        // A relayed announce measures the relay, so the reading goes.
+        state.record_peer_signal("aa", None);
+        assert!(state.peer_signal_json("aa").is_null());
+        for i in 0..PEER_SIGNAL_CAP + 3 {
+            state.record_peer_signal(&format!("{i:032x}"), Some(reading(-90.0)));
+        }
+        assert!(
+            state.peer_signal(&format!("{:032x}", 0)).is_none(),
+            "the oldest reading leaves first"
+        );
+        assert!(
+            state
+                .peer_signal(&format!("{:032x}", PEER_SIGNAL_CAP + 2))
+                .is_some()
+        );
     }
 }

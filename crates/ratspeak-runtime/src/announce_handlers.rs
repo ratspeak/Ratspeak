@@ -216,6 +216,7 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
     }
 
     let iface = refresh_lxmf_route_cache_and_lookup_iface(state, event.destination_hash).await;
+    record_direct_signal(state, &event, &hash_hex, iface.as_deref()).await;
 
     // Heard is enough to try a waiting message again; a route may follow the attempt.
     state.wake_waiting(crate::lxmf::WakeEvent::Heard(event.destination_hash));
@@ -470,6 +471,40 @@ async fn refresh_lxmf_route_cache_and_lookup_iface(
             Some(e.interface.clone())
         }
     })
+}
+
+/// A peer heard straight from its own radio packet keeps that packet's RSSI
+/// and SNR; any other arrival (relayed, or a link without readings) clears it.
+async fn record_direct_signal(
+    state: &Arc<AppState>,
+    event: &AnnounceHandlerEvent,
+    hash_hex: &str,
+    iface: Option<&str>,
+) {
+    let reading = if event.hops <= 1 {
+        let tx = state
+            .rns
+            .read()
+            .ok()
+            .and_then(|rns| rns.as_ref().map(|mgr| mgr.handle.transport_tx.clone()));
+        match tx {
+            Some(tx) => {
+                crate::transport_observation::packet_signal(&tx, event.announce_packet_hash).await
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    state.record_peer_signal(
+        hash_hex,
+        reading.map(|(rssi, snr)| crate::state::PeerSignal {
+            rssi,
+            snr,
+            at: now_f64(),
+            interface: iface.unwrap_or_default().to_string(),
+        }),
+    );
 }
 
 fn refresh_lxmf_route_cache_from_path_table(state: &Arc<AppState>, entries: &[PathTableRpcEntry]) {
