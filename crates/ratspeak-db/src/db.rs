@@ -2330,11 +2330,23 @@ pub fn set_identity_propagation_node(
     propagation_node: &str,
 ) -> Result<(), String> {
     let conn = pool.get().map_err(|e| format!("pool: {e}"))?;
+    let previous = conn
+        .query_row(
+            "SELECT COALESCE(propagation_node, '') FROM identities WHERE hash = ?1",
+            params![hash_hex],
+            |row| row.get::<_, String>(0),
+        )
+        .unwrap_or_default();
     conn.execute(
         "UPDATE identities SET propagation_node = ?1 WHERE hash = ?2",
         params![propagation_node, hash_hex],
     )
     .map_err(|e| format!("propagation_node: {e}"))?;
+    drop(conn);
+    // The replaced node was used too; keep it out of the pruner's reach.
+    for node in [previous.as_str(), propagation_node] {
+        record_used_propagation_node(pool, node);
+    }
     Ok(())
 }
 
@@ -8370,7 +8382,7 @@ mod channel_history_tests {
         let pool = test_pool();
         let day_ms = MILLIS_PER_DAY;
         let observed_at_ms = 20 * day_ms;
-        let query_at_ms = observed_at_ms + 15 * day_ms;
+        let query_at_ms = observed_at_ms + 8 * day_ms;
         let mut historical = event(HUB_A, "retention", "historical-peer");
         historical.nickname = Some("Ada".into());
         append_channel_history_events_at(
@@ -8395,7 +8407,7 @@ mod channel_history_tests {
                 .unwrap()
                 .participants
                 .is_empty(),
-            "the default 14-day known-identity lifetime also bounds Seen here"
+            "the default 7-day known-identity lifetime also bounds Seen here"
         );
 
         assert_eq!(
@@ -9344,13 +9356,15 @@ mod channel_bookmark_tests {
 }
 
 /// Overridable via `known_identities_prune_days` (0 disables).
-pub const DEFAULT_PRUNE_DAYS: u32 = 14;
+pub const DEFAULT_PRUNE_DAYS: u32 = 7;
 
-/// Soft cap on `known_identities`; cap-based prune backstop. ~2MB at 25k.
-pub const SOFT_CAP_IDENTITIES: usize = 25_000;
-
-/// Cap eviction never touches entries fresher than this.
-pub const CAP_HARD_FLOOR_DAYS: u32 = 90;
+/// Peers the pruner never evicts: contacts, blocked, message counterparties,
+/// and any identity's Offline Inbox node.
+const PRUNE_PROTECTED_SQL: &str = "dest_hash NOT IN (SELECT dest_hash FROM contacts)
+           AND dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts)
+           AND dest_hash NOT IN (SELECT source FROM messages WHERE source != '')
+           AND dest_hash NOT IN (SELECT destination FROM messages WHERE destination != '')
+           AND dest_hash NOT IN (SELECT propagation_node FROM identities WHERE propagation_node != '')";
 
 /// `None` disables pruning; `Some(n)` evicts entries older than `n` days.
 pub fn get_prune_days(pool: &DbPool) -> Option<u32> {
@@ -9852,8 +9866,8 @@ pub fn get_peers_snapshot(pool: &DbPool, cutoff_unix: f64, identity_id: &str) ->
     .unwrap_or_default()
 }
 
-/// Protected: contacts, blocked, message counterparties, propagation_node,
-/// `protected_extra`.
+/// Unprotected peers last heard before `cutoff_unix`. Protected: contacts,
+/// blocked, message counterparties, propagation_node, `protected_extra`.
 pub fn find_prune_candidates(
     pool: &DbPool,
     cutoff_unix: f64,
@@ -9863,15 +9877,15 @@ pub fn find_prune_candidates(
         Ok(c) => c,
         Err(_) => return vec![],
     };
-    let mut stmt = match conn.prepare(
+    let sql = format!(
         "SELECT dest_hash FROM identity_activity
          WHERE last_seen < ?1
-           AND dest_hash NOT IN (SELECT dest_hash FROM contacts)
-           AND dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts)
-           AND dest_hash NOT IN (SELECT source      FROM messages WHERE source      != '')
-           AND dest_hash NOT IN (SELECT destination FROM messages WHERE destination != '')
-           AND dest_hash NOT IN (SELECT propagation_node FROM identities WHERE propagation_node != '')"
-    ) { Ok(s) => s, Err(_) => return vec![] };
+           AND {PRUNE_PROTECTED_SQL}"
+    );
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
     let rows: Vec<String> = stmt
         .query_map(params![cutoff_unix], |row| row.get::<_, String>(0))
         .map(|it| it.filter_map(|r| r.ok()).collect())
@@ -9885,51 +9899,147 @@ pub fn find_prune_candidates(
     }
 }
 
-/// Oldest non-protected (same rules as `find_prune_candidates`) older than
-/// `cutoff_unix`, up to `limit`.
-pub fn find_cap_eviction_candidates(
+/// An unprotected peer as the watermark pass ranks it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UnprotectedPeer {
+    pub dest_hash: String,
+    pub last_seen: f64,
+    /// Announced a Ratspeak capability (`ratspeak.*` service).
+    pub ratspeak: bool,
+}
+
+/// Every peer outside the protection set of `find_prune_candidates`.
+pub fn find_unprotected_peers(
     pool: &DbPool,
-    cutoff_unix: f64,
-    limit: usize,
     protected_extra: &std::collections::HashSet<String>,
-) -> Vec<String> {
-    if limit == 0 {
-        return vec![];
-    }
+) -> Vec<UnprotectedPeer> {
     let conn = match pool.get() {
         Ok(c) => c,
         Err(_) => return vec![],
     };
-    // 4x over-fetch absorbs protected_extra filtering in one round-trip.
-    let sql_limit = limit.saturating_mul(4).min(100_000) as i64;
-    let mut stmt = match conn.prepare(
-        "SELECT dest_hash FROM identity_activity
-         WHERE last_seen < ?1
-           AND dest_hash NOT IN (SELECT dest_hash FROM contacts)
-           AND dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts)
-           AND dest_hash NOT IN (SELECT source      FROM messages WHERE source      != '')
-           AND dest_hash NOT IN (SELECT destination FROM messages WHERE destination != '')
-           AND dest_hash NOT IN (SELECT propagation_node FROM identities WHERE propagation_node != '')
-         ORDER BY last_seen ASC
-         LIMIT ?2",
-    ) {
+    let has = |service: &str| format!("instr(',' || services || ',', ',{service},') > 0");
+    let sql = format!(
+        "SELECT dest_hash, last_seen, ({} OR {} OR {})
+         FROM identity_activity
+         WHERE {PRUNE_PROTECTED_SQL}",
+        has(PEER_SERVICE_RATSPEAK_CLIENT),
+        has(PEER_SERVICE_RATSPEAK_GAMES),
+        has(PEER_SERVICE_RATSPEAK_CHAT),
+    );
+    let mut stmt = match conn.prepare(&sql) {
         Ok(s) => s,
         Err(_) => return vec![],
     };
-    let rows: Vec<String> = stmt
-        .query_map(params![cutoff_unix, sql_limit], |row| {
-            row.get::<_, String>(0)
+    stmt.query_map([], |row| {
+        Ok(UnprotectedPeer {
+            dest_hash: row.get(0)?,
+            last_seen: row.get(1)?,
+            ratspeak: row.get(2)?,
         })
-        .map(|it| it.filter_map(|r| r.ok()).collect())
-        .unwrap_or_default();
-    if protected_extra.is_empty() {
-        rows.into_iter().take(limit).collect()
-    } else {
-        rows.into_iter()
-            .filter(|h| !protected_extra.contains(h))
-            .take(limit)
+    })
+    .map(|it| {
+        it.filter_map(|r| r.ok())
+            .filter(|peer| !protected_extra.contains(&peer.dest_hash))
             .collect()
+    })
+    .unwrap_or_default()
+}
+
+const USED_PROPAGATION_NODES_KEY: &str = "used_propagation_nodes";
+
+fn propagation_node_hash(value: &str) -> Option<String> {
+    let value = value.trim();
+    (value.len() == 32 && value.bytes().all(|b| b.is_ascii_hexdigit()))
+        .then(|| value.to_ascii_lowercase())
+}
+
+/// Remember an Offline Inbox node as used by some identity; used nodes are
+/// never pruned. Idempotent, and reads before it writes.
+pub fn record_used_propagation_node(pool: &DbPool, dest_hash: &str) -> bool {
+    let Some(hash) = propagation_node_hash(dest_hash) else {
+        return false;
+    };
+    let Some(conn) = pool.get().or_report("record_used_propagation_node") else {
+        return false;
+    };
+    let known = conn
+        .query_row(
+            "SELECT instr(',' || COALESCE(value, '') || ',', ',' || ?2 || ',') > 0
+             FROM settings WHERE key = ?1",
+            params![USED_PROPAGATION_NODES_KEY, hash],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if known {
+        return true;
     }
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = CASE
+             WHEN COALESCE(value, '') = '' THEN excluded.value
+             ELSE value || ',' || excluded.value
+         END
+         WHERE instr(',' || COALESCE(value, '') || ',', ',' || excluded.value || ',') = 0",
+        params![USED_PROPAGATION_NODES_KEY, hash],
+    )
+    .or_report("record_used_propagation_node")
+    .is_some()
+}
+
+/// Offline Inbox nodes any identity uses now or has used.
+pub fn used_propagation_nodes(pool: &DbPool) -> Result<std::collections::HashSet<String>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let recorded = conn
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![USED_PROPAGATION_NODES_KEY],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .flatten()
+        .unwrap_or_default();
+    let current = conn
+        .prepare("SELECT propagation_node FROM identities WHERE propagation_node != ''")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| error.to_string())?;
+    Ok(recorded
+        .split(',')
+        .chain(current.iter().map(String::as_str))
+        .filter_map(propagation_node_hash)
+        .collect())
+}
+
+/// Drop the listed heard nodes still last heard before `heard_before`.
+pub fn forget_propagation_nodes(pool: &DbPool, hashes: &[String], heard_before: f64) -> usize {
+    if hashes.is_empty() {
+        return 0;
+    }
+    let Some(conn) = pool.get().or_report("forget_propagation_nodes") else {
+        return 0;
+    };
+    let mut forgotten = 0usize;
+    for chunk in hashes.chunks(500) {
+        let placeholders = (2..chunk.len() + 2)
+            .map(|index| format!("?{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "DELETE FROM propagation_nodes WHERE last_seen < ?1 AND dest_hash IN ({placeholders})"
+        );
+        let mut params: Vec<&dyn rusqlite::types::ToSql> = vec![&heard_before];
+        params.extend(chunk.iter().map(|hash| hash as &dyn rusqlite::types::ToSql));
+        if let Some(n) = conn
+            .execute(&sql, params.as_slice())
+            .or_report("forget_propagation_nodes")
+        {
+            forgotten += n;
+        }
+    }
+    forgotten
 }
 
 /// Chunked at 500 to stay under SQLite's default parameter limit.
@@ -10018,13 +10128,7 @@ where
             "SELECT dest_hash FROM identity_activity
              WHERE dest_hash IN ({placeholders})
                AND last_seen < ?{cutoff_index}
-               AND dest_hash NOT IN (SELECT dest_hash FROM contacts)
-               AND dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts)
-               AND dest_hash NOT IN (SELECT source FROM messages WHERE source != '')
-               AND dest_hash NOT IN (SELECT destination FROM messages WHERE destination != '')
-               AND dest_hash NOT IN (
-                   SELECT propagation_node FROM identities WHERE propagation_node != ''
-               )"
+               AND {PRUNE_PROTECTED_SQL}"
         );
         let mut params: Vec<&dyn rusqlite::types::ToSql> = chunk
             .iter()
@@ -16779,6 +16883,117 @@ mod pending_blackhole_tests {
             .collect::<Result<Vec<_>, _>>()
             .unwrap();
         assert_eq!(remaining, vec![reobserved, protected]);
+    }
+
+    #[test]
+    fn peers_age_out_after_seven_days_unless_a_lifetime_was_stored() {
+        let pool = test_pool();
+        assert_eq!(DEFAULT_PRUNE_DAYS, 7);
+        assert_eq!(get_prune_days(&pool), Some(7));
+        set_setting(&pool, "known_identities_prune_days", "30");
+        assert_eq!(get_prune_days(&pool), Some(30), "a stored lifetime stays");
+        set_setting(&pool, "known_identities_prune_days", "0");
+        assert_eq!(get_prune_days(&pool), None);
+    }
+
+    #[test]
+    fn unprotected_peers_exclude_every_protection_and_flag_ratspeak() {
+        let pool = test_pool();
+        let hash = |n: u8| format!("{n:02x}").repeat(16);
+        let services: &[(u8, &[&str])] = &[
+            (1, &[PEER_SERVICE_LXMF_DELIVERY]),
+            (2, &[PEER_SERVICE_LXMF_DELIVERY, PEER_SERVICE_RATSPEAK_CLIENT]),
+            (3, &[PEER_SERVICE_LXST_TELEPHONY]),
+        ];
+        for (n, services) in services {
+            touch_identity_activity_for_services(
+                &pool,
+                &[(hash(*n), 1.0, None, None)],
+                None,
+                services,
+                false,
+            );
+        }
+        for n in 4..=9 {
+            touch_identity_activity(&pool, &[(hash(n), 1.0, None, None)]);
+        }
+        save_identity(&pool, "identity", "", "Me", "Me");
+        set_identity_propagation_node(&pool, "identity", &hash(8)).unwrap();
+        pool.get()
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO contacts(dest_hash, identity_id) VALUES ('{}', 'identity');
+                 INSERT INTO blocked_contacts(dest_hash, identity_id) VALUES ('{}', 'identity');
+                 INSERT INTO messages(id, source, destination, timestamp, identity_id)
+                     VALUES ('in', '{}', 'me', 1, 'identity'), ('out', 'me', '{}', 1, 'identity');",
+                hash(4),
+                hash(5),
+                hash(6),
+                hash(7),
+            ))
+            .unwrap();
+
+        let mut peers = find_unprotected_peers(&pool, &std::collections::HashSet::from([hash(9)]));
+        peers.sort_by(|a, b| a.dest_hash.cmp(&b.dest_hash));
+        let found: Vec<(String, bool)> = peers
+            .into_iter()
+            .map(|peer| (peer.dest_hash, peer.ratspeak))
+            .collect();
+        assert_eq!(
+            found,
+            vec![(hash(1), false), (hash(2), true), (hash(3), false)]
+        );
+    }
+
+    #[test]
+    fn a_selected_or_replaced_inbox_node_stays_recorded_as_used() {
+        let pool = test_pool();
+        let first = "aa".repeat(16);
+        let second = "bb".repeat(16);
+        let synced = "cc".repeat(16);
+        save_identity(&pool, "identity", "", "Me", "Me");
+        set_identity_propagation_node(&pool, "identity", &first).unwrap();
+        set_identity_propagation_node(&pool, "identity", &second).unwrap();
+        assert!(record_used_propagation_node(&pool, &synced.to_uppercase()));
+        assert!(record_used_propagation_node(&pool, &synced));
+        assert!(!record_used_propagation_node(&pool, "not-a-node"));
+        set_identity_propagation_node(&pool, "identity", "").unwrap();
+
+        assert_eq!(
+            used_propagation_nodes(&pool).unwrap(),
+            std::collections::HashSet::from([first.clone(), second.clone(), synced.clone()])
+        );
+        assert_eq!(
+            get_setting(&pool, "used_propagation_nodes").unwrap(),
+            format!("{first},{second},{synced}"),
+            "each node is recorded once"
+        );
+    }
+
+    #[test]
+    fn forgetting_heard_inbox_nodes_keeps_one_heard_again() {
+        let pool = test_pool();
+        for (hash, last_seen) in [("aa", 10.0), ("bb", 30.0), ("cc", 10.0)] {
+            save_propagation_node(
+                &pool,
+                &HeardPropagationNode {
+                    dest_hash: hash.repeat(16),
+                    app_data: vec![0x90],
+                    hops: Some(1),
+                    last_seen,
+                },
+            );
+        }
+        assert_eq!(
+            forget_propagation_nodes(&pool, &["aa".repeat(16), "bb".repeat(16)], 20.0),
+            1
+        );
+        let left: Vec<String> = load_propagation_nodes(&pool, 0.0, 10)
+            .unwrap()
+            .into_iter()
+            .map(|node| node.dest_hash)
+            .collect();
+        assert_eq!(left, vec!["bb".repeat(16), "cc".repeat(16)]);
     }
 }
 

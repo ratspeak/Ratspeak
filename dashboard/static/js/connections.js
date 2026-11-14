@@ -274,7 +274,7 @@ function renderConnectionsTable(contacts, scrollOnly) {
         return 0;
     });
 
-    // Recent = recently-heard peer with a real name; Recent* = hash-only.
+    // Active = recently-heard peer with a real name; Active* = hash-only.
     var flatItems = RS.buildPeerGroupItems(filtered, collapsedGroups, hasRealDisplayName);
 
     // Mobile uses native scroll; scroll events are no-ops there.

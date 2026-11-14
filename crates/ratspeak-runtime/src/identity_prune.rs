@@ -1,29 +1,122 @@
-//! Background pruning of stale entries from `LxmfManager::known_identities`.
-//! Two passes per sweep: time-based (configurable, off when `prune_days = 0`)
-//! and cap-based (always on, evicts oldest beyond `CAP_HARD_FLOOR_DAYS` once
-//! over `SOFT_CAP_IDENTITIES`). Protection set: contacts, blocked contacts,
-//! message peers, propagation_node identities, discovered PN cache.
+//! Background pruning of peers (`identity_activity` rows and their
+//! `LxmfManager::known_identities` entries). Two passes per sweep: by age
+//! (`known_identities_prune_days`, off at 0) and by watermark (always on:
+//! past `HIGH_WATERMARK` unprotected peers, evict down to `LOW_WATERMARK`,
+//! never one heard within `EVICTION_FLOOR_SECS`). Protection set: contacts,
+//! blocked contacts, message peers, used and Ratspeak Offline Inbox nodes,
+//! and the discovered inbox nodes kept by `propagation::trim_discovered_nodes`.
 
+use std::collections::HashSet;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use rns_transport::messages::PathTableRpcEntry;
 use serde_json::json;
 
 use crate::db;
 use crate::state::AppState;
 
-/// Run one sweep (time pass + cap pass). Returns `(pruned, kept)`.
+const HIGH_WATERMARK: usize = 5_000;
+const LOW_WATERMARK: usize = 4_000;
+const EVICTION_FLOOR_SECS: f64 = 24.0 * 3600.0;
+const STARTUP_SWEEP_DELAY: Duration = Duration::from_secs(5);
+const SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
+
+/// Set while the floor holds back overflow, so it is logged once per episode.
+static FLOOR_HOLD_LOGGED: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Default, PartialEq)]
+struct WatermarkPlan {
+    victims: Vec<String>,
+    /// Overflow kept because it was heard within the floor.
+    held: usize,
+}
+
+/// Ratspeak-capable or directly reachable peers are evicted last.
+fn evicted_last(peer: &db::UnprotectedPeer, direct: &HashSet<String>) -> bool {
+    peer.ratspeak || direct.contains(&peer.dest_hash)
+}
+
+fn plan_watermark_eviction(
+    mut peers: Vec<db::UnprotectedPeer>,
+    direct: &HashSet<String>,
+    now: f64,
+) -> WatermarkPlan {
+    if peers.len() <= HIGH_WATERMARK {
+        return WatermarkPlan::default();
+    }
+    let overflow = peers.len() - LOW_WATERMARK;
+    let floor = now - EVICTION_FLOOR_SECS;
+    peers.retain(|peer| peer.last_seen < floor);
+    peers.sort_by(|a, b| {
+        evicted_last(a, direct)
+            .cmp(&evicted_last(b, direct))
+            .then(a.last_seen.total_cmp(&b.last_seen))
+            .then_with(|| a.dest_hash.cmp(&b.dest_hash))
+    });
+    let victims: Vec<String> = peers
+        .into_iter()
+        .take(overflow)
+        .map(|peer| peer.dest_hash)
+        .collect();
+    WatermarkPlan {
+        held: overflow - victims.len(),
+        victims,
+    }
+}
+
+/// Whether this sweep's floor hold starts a new episode worth a warning.
+fn floor_hold_is_news(held: usize, logged: &AtomicBool) -> bool {
+    if held == 0 {
+        logged.store(false, Ordering::Relaxed);
+        false
+    } else {
+        !logged.swap(true, Ordering::Relaxed)
+    }
+}
+
+/// Destinations one hop away on a live path.
+fn direct_destinations(paths: &[PathTableRpcEntry], now: f64) -> HashSet<String> {
+    paths
+        .iter()
+        .filter(|path| path.hops <= 1 && path.expires > now)
+        .map(|path| hex::encode(path.hash))
+        .collect()
+}
+
+async fn current_direct_destinations(state: &AppState, now: f64) -> HashSet<String> {
+    let handle = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|rns| rns.as_ref().map(|mgr| mgr.handle.clone()));
+    let Some(handle) = handle else {
+        return HashSet::new();
+    };
+    crate::transport_observation::authoritative_path_table(&handle)
+        .await
+        .map(|paths| direct_destinations(&paths, now))
+        .unwrap_or_default()
+}
+
+/// A sweep runs shortly after start, then hourly.
+fn next_sweep_delay(swept_before: bool) -> Duration {
+    if swept_before {
+        SWEEP_INTERVAL
+    } else {
+        STARTUP_SWEEP_DELAY
+    }
+}
+
+/// Run one sweep (age pass + watermark pass). Returns `(pruned, kept)`.
 pub async fn sweep_once(state: Arc<AppState>) -> (usize, usize) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs_f64();
 
-    let protected_extra: std::collections::HashSet<String> = state
-        .discovered_propagation_nodes
-        .lock()
-        .map(|m| m.keys().cloned().collect())
-        .unwrap_or_default();
+    let protected_extra = crate::propagation::trim_discovered_nodes(&state, now).await;
 
     let mut total_pruned = 0usize;
     let mut kept_count = 0usize;
@@ -61,50 +154,53 @@ pub async fn sweep_once(state: Arc<AppState>) -> (usize, usize) {
             kept_count = kept;
         }
     } else {
-        tracing::debug!("time-based identity pruning disabled — cap pass only");
+        tracing::debug!("time-based identity pruning disabled — watermark pass only");
     }
 
-    // Pass 2: cap-based.
-    let current_len = {
-        state
-            .lxmf
-            .lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(|m| m.known_identities.len()))
-    };
-    if let Some(current_len) = current_len {
+    // Pass 2: watermark.
+    if let Some(current_len) = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|m| m.known_identities.len()))
+    {
         kept_count = current_len;
-        if current_len > db::SOFT_CAP_IDENTITIES {
-            let overflow = current_len - db::SOFT_CAP_IDENTITIES;
-            let cap_cutoff = now - (db::CAP_HARD_FLOOR_DAYS as f64) * 86_400.0;
-            let cap_victims = {
-                let protected_extra = protected_extra.clone();
-                db::spawn_db(state.db.clone(), move |p| {
-                    db::find_cap_eviction_candidates(&p, cap_cutoff, overflow, &protected_extra)
-                })
-                .await
-                .unwrap_or_default()
-            };
-            if cap_victims.is_empty() {
-                tracing::warn!(
-                    current = current_len,
-                    soft_cap = db::SOFT_CAP_IDENTITIES,
-                    floor_days = db::CAP_HARD_FLOOR_DAYS,
-                    "known_identities above soft cap but all overflow is within the recency floor — no cap eviction this pass"
-                );
-            } else {
-                let (pruned, kept) = apply_eviction(
-                    &state,
-                    cap_victims,
-                    cap_cutoff,
-                    protected_extra.clone(),
-                    "cap-based identity eviction",
-                )
-                .await;
-                total_pruned += pruned;
-                kept_count = kept;
-            }
+    }
+    let peers = {
+        let protected_extra = protected_extra.clone();
+        db::spawn_db(state.db.clone(), move |p| {
+            db::find_unprotected_peers(&p, &protected_extra)
+        })
+        .await
+        .unwrap_or_default()
+    };
+    let unprotected = peers.len();
+    if unprotected > HIGH_WATERMARK {
+        let direct = current_direct_destinations(&state, now).await;
+        let plan = plan_watermark_eviction(peers, &direct, now);
+        if floor_hold_is_news(plan.held, &FLOOR_HOLD_LOGGED) {
+            tracing::warn!(
+                unprotected,
+                held = plan.held,
+                high_watermark = HIGH_WATERMARK,
+                low_watermark = LOW_WATERMARK,
+                "peers above the watermark were heard within the last 24 hours; kept"
+            );
         }
+        if !plan.victims.is_empty() {
+            let (pruned, kept) = apply_eviction(
+                &state,
+                plan.victims,
+                now - EVICTION_FLOOR_SECS,
+                protected_extra.clone(),
+                "watermark identity eviction",
+            )
+            .await;
+            total_pruned += pruned;
+            kept_count = kept;
+        }
+    } else {
+        floor_hold_is_news(0, &FLOOR_HOLD_LOGGED);
     }
 
     if total_pruned > 0 {
@@ -120,8 +216,9 @@ pub async fn sweep_once(state: Arc<AppState>) -> (usize, usize) {
     } else {
         tracing::debug!(
             kept = kept_count,
+            unprotected,
             cutoff_days = ?prune_days_opt,
-            soft_cap = db::SOFT_CAP_IDENTITIES,
+            high_watermark = HIGH_WATERMARK,
             "identity prune sweep: nothing to prune"
         );
     }
@@ -331,25 +428,17 @@ fn restore_known_identities(state: &AppState, entries: &[(String, [u8; 64])]) ->
         .unwrap_or(0)
 }
 
-/// Spawn the background sweeper: one post-ready cleanup, then a 24h tick.
-/// Spawn after `set_startup_stage("ready")`.
+/// Spawn the background sweeper (cadence: `next_sweep_delay`); never per
+/// announce. Spawn after `set_startup_stage("ready")`.
 pub fn spawn_scheduler(state: Arc<AppState>, shutdown: rns_runtime::lifecycle::ShutdownSignal) {
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(5)).await;
-
-        if shutdown.is_triggered() {
-            return;
-        }
-        sweep_once(state.clone()).await;
-
-        let mut ticker = tokio::time::interval(Duration::from_secs(24 * 3600));
-        ticker.tick().await; // discard immediate first tick
-
+        let mut swept = false;
         loop {
             tokio::select! {
                 _ = shutdown.wait() => break,
-                _ = ticker.tick() => {
+                _ = tokio::time::sleep(next_sweep_delay(swept)) => {
                     sweep_once(state.clone()).await;
+                    swept = true;
                 }
             }
         }
@@ -613,5 +702,197 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(task.await.unwrap(), (1, 0));
+    }
+
+    const NOW: f64 = 10_000_000.0;
+    const DAY: f64 = 86_400.0;
+
+    fn hash(index: usize) -> String {
+        format!("{index:032x}")
+    }
+
+    fn peer(index: usize, age_secs: f64) -> db::UnprotectedPeer {
+        db::UnprotectedPeer {
+            dest_hash: hash(index),
+            last_seen: NOW - age_secs,
+            ratspeak: false,
+        }
+    }
+
+    fn stale_peers(count: usize) -> Vec<db::UnprotectedPeer> {
+        (0..count).map(|i| peer(i, 2.0 * DAY + i as f64)).collect()
+    }
+
+    #[test]
+    fn overflow_past_the_high_watermark_is_trimmed_to_the_low_watermark() {
+        let plan = plan_watermark_eviction(stale_peers(5_001), &HashSet::new(), NOW);
+        assert_eq!(plan.victims.len(), 1_001);
+        assert_eq!(plan.held, 0);
+        for count in [4_999, 5_000] {
+            assert_eq!(
+                plan_watermark_eviction(stale_peers(count), &HashSet::new(), NOW),
+                WatermarkPlan::default(),
+                "{count} unprotected peers stay"
+            );
+        }
+    }
+
+    #[test]
+    fn a_trimmed_list_takes_a_thousand_new_peers_before_trimming_again() {
+        let mut peers = stale_peers(6_000);
+        let victims: HashSet<String> = plan_watermark_eviction(peers.clone(), &HashSet::new(), NOW)
+            .victims
+            .into_iter()
+            .collect();
+        peers.retain(|peer| !victims.contains(&peer.dest_hash));
+        assert_eq!(peers.len(), LOW_WATERMARK);
+        for added in [999, 1_000] {
+            let mut grown = peers.clone();
+            grown.extend((0..added).map(|i| peer(10_000 + i, 2.0 * DAY)));
+            assert!(
+                plan_watermark_eviction(grown, &HashSet::new(), NOW)
+                    .victims
+                    .is_empty(),
+                "{added} new peers evict nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn peers_heard_within_a_day_are_never_evicted() {
+        let fresh: Vec<_> = (0..6_000).map(|i| peer(i, DAY - 60.0)).collect();
+        let plan = plan_watermark_eviction(fresh, &HashSet::new(), NOW);
+        assert!(plan.victims.is_empty());
+        assert_eq!(plan.held, 2_000);
+
+        let mut mixed: Vec<_> = (0..5_200).map(|i| peer(i, 60.0)).collect();
+        mixed.extend((5_200..5_500).map(|i| peer(i, DAY + 60.0)));
+        let plan = plan_watermark_eviction(mixed, &HashSet::new(), NOW);
+        assert_eq!(plan.victims.len(), 300, "only peers older than a day go");
+        assert_eq!(plan.held, 1_200);
+    }
+
+    #[test]
+    fn plain_peers_go_before_ratspeak_and_direct_ones_oldest_first() {
+        let mut peers = stale_peers(5_000);
+        let mut ratspeak = peer(90_001, 30.0 * DAY);
+        ratspeak.ratspeak = true;
+        let direct = peer(90_002, 29.0 * DAY);
+        let old_plain = peer(90_003, 3.0 * DAY);
+        peers.extend([ratspeak.clone(), direct.clone(), old_plain.clone()]);
+        let direct_set = HashSet::from([direct.dest_hash.clone()]);
+
+        let plan = plan_watermark_eviction(peers.clone(), &direct_set, NOW);
+        assert_eq!(plan.victims.len(), 1_003);
+        assert_eq!(plan.victims[0], old_plain.dest_hash, "oldest plain peer first");
+        assert!(!plan.victims.contains(&ratspeak.dest_hash));
+        assert!(!plan.victims.contains(&direct.dest_hash));
+
+        // Evicted last, not never: once plain peers run out, the oldest go.
+        let mut crowd: Vec<_> = (0..4_500)
+            .map(|i| db::UnprotectedPeer {
+                ratspeak: true,
+                ..peer(i, 2.0 * DAY + i as f64)
+            })
+            .collect();
+        crowd.extend((5_000..5_600).map(|i| peer(i, 2.0 * DAY)));
+        let plan = plan_watermark_eviction(crowd, &HashSet::new(), NOW);
+        assert_eq!(plan.victims.len(), 1_100);
+        let plain: HashSet<String> = (5_000..5_600).map(hash).collect();
+        assert!(plan.victims[..600].iter().all(|h| plain.contains(h)));
+        assert_eq!(plan.victims[600], hash(4_499), "then the oldest Ratspeak peer");
+    }
+
+    #[test]
+    fn only_live_one_hop_paths_count_as_direct() {
+        let path = |n: u8, hops: u8, expires: f64| {
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = [n; 16];
+            entry.hops = hops;
+            entry.expires = expires;
+            entry
+        };
+        let direct = direct_destinations(
+            &[
+                path(1, 1, NOW + 60.0),
+                path(2, 2, NOW + 60.0),
+                path(3, 1, NOW - 60.0),
+            ],
+            NOW,
+        );
+        assert_eq!(direct, HashSet::from([hex::encode([1u8; 16])]));
+    }
+
+    #[test]
+    fn sweeps_run_at_start_then_hourly() {
+        assert_eq!(next_sweep_delay(false), Duration::from_secs(5));
+        assert_eq!(next_sweep_delay(true), Duration::from_secs(3_600));
+    }
+
+    #[test]
+    fn a_floor_hold_is_logged_once_per_episode() {
+        let logged = AtomicBool::new(false);
+        assert!(floor_hold_is_news(10, &logged));
+        assert!(!floor_hold_is_news(12, &logged));
+        assert!(!floor_hold_is_news(0, &logged));
+        assert!(floor_hold_is_news(3, &logged));
+    }
+
+    #[tokio::test]
+    async fn a_sweep_ages_out_week_old_peers_and_trims_to_the_low_watermark() {
+        let (_temp, state) = make_state();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let contact = hash(1_000_000);
+        let week_old = hash(1_000_001);
+        let six_days = hash(1_000_002);
+        let mut rows: Vec<(String, f64)> = (0..5_100).map(|i| (hash(i), now - 2.0 * DAY)).collect();
+        rows.extend([
+            (contact.clone(), now - 6.5 * DAY),
+            (week_old.clone(), now - 8.0 * DAY),
+            (six_days.clone(), now - 6.0 * DAY),
+        ]);
+        let updates: Vec<db::IdentityActivityUpdate> = rows
+            .iter()
+            .map(|(dest_hash, timestamp)| db::IdentityActivityUpdate {
+                dest_hash: dest_hash.clone(),
+                timestamp: *timestamp,
+                display_name: None,
+                status: None,
+                last_interface: None,
+                identity_hash: None,
+                services: vec![db::PEER_SERVICE_LXMF_DELIVERY.into()],
+                clear_ratspeak_services: false,
+                lxmf_compression_support: None,
+            })
+            .collect();
+        db::touch_identity_activity_updates(&state.db, &updates);
+        db::save_contact(&state.db, &contact, Some("Friend"), "trusted", "identity");
+        {
+            let mut manager = state.lxmf.lock().unwrap();
+            let manager = manager.as_mut().unwrap();
+            for (dest_hash, _) in &rows {
+                manager.known_identities.insert(dest_hash.clone(), [1; 64]);
+            }
+        }
+
+        let (pruned, kept) = sweep_once(state.clone()).await;
+
+        assert_eq!(pruned, 1 + 1_101, "one aged out, then 5,101 trimmed to 4,000");
+        assert_eq!(kept, 4_000 + 1, "the low watermark plus the protected contact");
+        let remaining = db::find_unprotected_peers(&state.db, &HashSet::new());
+        assert_eq!(remaining.len(), LOW_WATERMARK);
+        assert_eq!(db::get_identity_activity_first_seen(&state.db, &week_old), None);
+        assert!(db::get_identity_activity_first_seen(&state.db, &contact).is_some());
+        assert!(
+            !remaining.iter().any(|peer| peer.dest_hash == six_days),
+            "the oldest unprotected peer goes first"
+        );
+        let manager = state.lxmf.lock().unwrap();
+        let manager = manager.as_ref().unwrap();
+        assert!(manager.known_identities.contains_key(&contact));
+        assert_eq!(manager.known_identities.len(), 4_001);
     }
 }

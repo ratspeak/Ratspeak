@@ -316,6 +316,10 @@ pub ratspeak_db::db::StoredChannelRoomSecret::seal_version: u32
 pub ratspeak_db::db::StoredChannelRoomSecret::updated_at: f64
 impl core::fmt::Debug for ratspeak_db::StoredChannelRoomSecret
 pub fn ratspeak_db::StoredChannelRoomSecret::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct ratspeak_db::db::UnprotectedPeer
+pub ratspeak_db::db::UnprotectedPeer::dest_hash: alloc::string::String
+pub ratspeak_db::db::UnprotectedPeer::last_seen: f64
+pub ratspeak_db::db::UnprotectedPeer::ratspeak: bool
 pub struct ratspeak_db::db::WaitingQueue
 pub ratspeak_db::db::WaitingQueue::auto_sends: u32
 pub ratspeak_db::db::WaitingQueue::destination: alloc::string::String
@@ -326,7 +330,6 @@ pub ratspeak_db::db::WaitingQueue::preference: alloc::string::String
 pub ratspeak_db::db::WaitingQueue::profile: alloc::string::String
 pub ratspeak_db::db::WaitingQueue::queued_at: f64
 pub const ratspeak_db::db::ATTACHMENT_UNAVAILABLE_STORED_NAME: &str
-pub const ratspeak_db::db::CAP_HARD_FLOOR_DAYS: u32
 pub const ratspeak_db::db::CHANNEL_HISTORY_DEFAULT_PAGE_SIZE: usize
 pub const ratspeak_db::db::CHANNEL_HISTORY_MAX_APPEND_BATCH: usize
 pub const ratspeak_db::db::CHANNEL_HISTORY_MAX_EVENTS_GLOBAL: usize
@@ -357,7 +360,6 @@ pub const ratspeak_db::db::PUBLIC_CHANNEL_CONSENT_ACCEPTED_AT_SETTING: &str
 pub const ratspeak_db::db::PUBLIC_CHANNEL_CONSENT_SETTING: &str
 pub const ratspeak_db::db::PUBLIC_CHANNEL_CONSENT_VERSION: u16
 pub const ratspeak_db::db::RESET_TABLES: &[&str]
-pub const ratspeak_db::db::SOFT_CAP_IDENTITIES: usize
 pub fn ratspeak_db::db::activate_identity(&ratspeak_db::DbPool, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::add_contact_cap(&ratspeak_db::DbPool, &str, &str, &str) -> bool
 pub fn ratspeak_db::db::append_channel_history_events(&ratspeak_db::DbPool, &str, &[ratspeak_db::NewChannelHistoryEvent]) -> core::result::Result<ratspeak_db::ChannelHistoryAppendOutcome, alloc::string::String>
@@ -393,8 +395,9 @@ pub fn ratspeak_db::db::enqueue_pending_blackhole(&ratspeak_db::DbPool, &str, &s
 pub fn ratspeak_db::db::expire_waiting(&ratspeak_db::DbPool, &str, f64) -> core::result::Result<alloc::vec::Vec<ratspeak_db::ExpiredWait>, alloc::string::String>
 pub fn ratspeak_db::db::fail_all_waiting(&ratspeak_db::DbPool) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String>
 pub fn ratspeak_db::db::fill_unnamed_contact_names(&ratspeak_db::DbPool, &str, &[(alloc::string::String, alloc::string::String)]) -> bool
-pub fn ratspeak_db::db::find_cap_eviction_candidates(&ratspeak_db::DbPool, f64, usize, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::db::find_prune_candidates(&ratspeak_db::DbPool, f64, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
+pub fn ratspeak_db::db::find_unprotected_peers(&ratspeak_db::DbPool, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<ratspeak_db::UnprotectedPeer>
+pub fn ratspeak_db::db::forget_propagation_nodes(&ratspeak_db::DbPool, &[alloc::string::String], f64) -> usize
 pub fn ratspeak_db::db::get_active_identity(&ratspeak_db::DbPool) -> core::result::Result<core::option::Option<serde_json::value::Value>, alloc::string::String>
 pub fn ratspeak_db::db::get_all_contacts(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn ratspeak_db::db::get_all_contacts_conn(&rusqlite::Connection, &str) -> alloc::vec::Vec<serde_json::value::Value>
@@ -482,6 +485,7 @@ pub fn ratspeak_db::db::prune_expired_channel_history(&ratspeak_db::DbPool) -> c
 pub fn ratspeak_db::db::public_channel_consent_is_current(core::option::Option<&str>) -> bool
 pub fn ratspeak_db::db::queue_blocks_new_send(&ratspeak_db::DbPool, &str, &str, &str, &str) -> bool
 pub fn ratspeak_db::db::queue_pending_network_lift(&ratspeak_db::DbPool, &str, &str) -> bool
+pub fn ratspeak_db::db::record_used_propagation_node(&ratspeak_db::DbPool, &str) -> bool
 pub fn ratspeak_db::db::refuse_newer_database(&std::path::Path) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn ratspeak_db::db::remember_channel_participants(&ratspeak_db::DbPool, &str, &[ratspeak_db::NewChannelParticipantObservation]) -> core::result::Result<usize, alloc::string::String>
 pub fn ratspeak_db::db::remove_channel_hub(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<bool, alloc::string::String>
@@ -544,6 +548,7 @@ pub fn ratspeak_db::db::update_identity(&ratspeak_db::DbPool, &str, core::option
 pub fn ratspeak_db::db::update_identity_status(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::update_message_delivery_method(&ratspeak_db::DbPool, &str, &str, &str)
 pub fn ratspeak_db::db::update_message_state(&ratspeak_db::DbPool, &str, &str, &str, core::option::Option<f64>) -> bool
+pub fn ratspeak_db::db::used_propagation_nodes(&ratspeak_db::DbPool) -> core::result::Result<std::collections::hash::set::HashSet<alloc::string::String>, alloc::string::String>
 pub fn ratspeak_db::db::validate_channel_history_after_cursor(&str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::validate_channel_history_cursor(core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::validate_channel_history_event(&str, &ratspeak_db::NewChannelHistoryEvent) -> core::result::Result<(), alloc::string::String>
@@ -783,6 +788,10 @@ pub ratspeak_db::StoredChannelRoomSecret::seal_version: u32
 pub ratspeak_db::StoredChannelRoomSecret::updated_at: f64
 impl core::fmt::Debug for ratspeak_db::StoredChannelRoomSecret
 pub fn ratspeak_db::StoredChannelRoomSecret::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct ratspeak_db::UnprotectedPeer
+pub ratspeak_db::UnprotectedPeer::dest_hash: alloc::string::String
+pub ratspeak_db::UnprotectedPeer::last_seen: f64
+pub ratspeak_db::UnprotectedPeer::ratspeak: bool
 pub struct ratspeak_db::WaitingQueue
 pub ratspeak_db::WaitingQueue::auto_sends: u32
 pub ratspeak_db::WaitingQueue::destination: alloc::string::String
@@ -793,7 +802,6 @@ pub ratspeak_db::WaitingQueue::preference: alloc::string::String
 pub ratspeak_db::WaitingQueue::profile: alloc::string::String
 pub ratspeak_db::WaitingQueue::queued_at: f64
 pub const ratspeak_db::ATTACHMENT_UNAVAILABLE_STORED_NAME: &str
-pub const ratspeak_db::CAP_HARD_FLOOR_DAYS: u32
 pub const ratspeak_db::CHANNEL_HISTORY_DEFAULT_PAGE_SIZE: usize
 pub const ratspeak_db::CHANNEL_HISTORY_MAX_APPEND_BATCH: usize
 pub const ratspeak_db::CHANNEL_HISTORY_MAX_EVENTS_GLOBAL: usize
@@ -824,7 +832,6 @@ pub const ratspeak_db::PUBLIC_CHANNEL_CONSENT_ACCEPTED_AT_SETTING: &str
 pub const ratspeak_db::PUBLIC_CHANNEL_CONSENT_SETTING: &str
 pub const ratspeak_db::PUBLIC_CHANNEL_CONSENT_VERSION: u16
 pub const ratspeak_db::RESET_TABLES: &[&str]
-pub const ratspeak_db::SOFT_CAP_IDENTITIES: usize
 pub fn ratspeak_db::activate_identity(&ratspeak_db::DbPool, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::add_contact_cap(&ratspeak_db::DbPool, &str, &str, &str) -> bool
 pub fn ratspeak_db::append_channel_history_events(&ratspeak_db::DbPool, &str, &[ratspeak_db::NewChannelHistoryEvent]) -> core::result::Result<ratspeak_db::ChannelHistoryAppendOutcome, alloc::string::String>
@@ -860,8 +867,9 @@ pub fn ratspeak_db::enqueue_pending_blackhole(&ratspeak_db::DbPool, &str, &str, 
 pub fn ratspeak_db::expire_waiting(&ratspeak_db::DbPool, &str, f64) -> core::result::Result<alloc::vec::Vec<ratspeak_db::ExpiredWait>, alloc::string::String>
 pub fn ratspeak_db::fail_all_waiting(&ratspeak_db::DbPool) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String>
 pub fn ratspeak_db::fill_unnamed_contact_names(&ratspeak_db::DbPool, &str, &[(alloc::string::String, alloc::string::String)]) -> bool
-pub fn ratspeak_db::find_cap_eviction_candidates(&ratspeak_db::DbPool, f64, usize, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::find_prune_candidates(&ratspeak_db::DbPool, f64, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<alloc::string::String>
+pub fn ratspeak_db::find_unprotected_peers(&ratspeak_db::DbPool, &std::collections::hash::set::HashSet<alloc::string::String>) -> alloc::vec::Vec<ratspeak_db::UnprotectedPeer>
+pub fn ratspeak_db::forget_propagation_nodes(&ratspeak_db::DbPool, &[alloc::string::String], f64) -> usize
 pub fn ratspeak_db::get_active_identity(&ratspeak_db::DbPool) -> core::result::Result<core::option::Option<serde_json::value::Value>, alloc::string::String>
 pub fn ratspeak_db::get_all_contacts(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<serde_json::value::Value>
 pub fn ratspeak_db::get_all_contacts_conn(&rusqlite::Connection, &str) -> alloc::vec::Vec<serde_json::value::Value>
@@ -949,6 +957,7 @@ pub fn ratspeak_db::prune_expired_channel_history(&ratspeak_db::DbPool) -> core:
 pub fn ratspeak_db::public_channel_consent_is_current(core::option::Option<&str>) -> bool
 pub fn ratspeak_db::queue_blocks_new_send(&ratspeak_db::DbPool, &str, &str, &str, &str) -> bool
 pub fn ratspeak_db::queue_pending_network_lift(&ratspeak_db::DbPool, &str, &str) -> bool
+pub fn ratspeak_db::record_used_propagation_node(&ratspeak_db::DbPool, &str) -> bool
 pub fn ratspeak_db::refuse_newer_database(&std::path::Path) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn ratspeak_db::remember_channel_participants(&ratspeak_db::DbPool, &str, &[ratspeak_db::NewChannelParticipantObservation]) -> core::result::Result<usize, alloc::string::String>
 pub fn ratspeak_db::remove_channel_hub(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<bool, alloc::string::String>
@@ -1011,6 +1020,7 @@ pub fn ratspeak_db::update_identity(&ratspeak_db::DbPool, &str, core::option::Op
 pub fn ratspeak_db::update_identity_status(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::update_message_delivery_method(&ratspeak_db::DbPool, &str, &str, &str)
 pub fn ratspeak_db::update_message_state(&ratspeak_db::DbPool, &str, &str, &str, core::option::Option<f64>) -> bool
+pub fn ratspeak_db::used_propagation_nodes(&ratspeak_db::DbPool) -> core::result::Result<std::collections::hash::set::HashSet<alloc::string::String>, alloc::string::String>
 pub fn ratspeak_db::validate_channel_history_after_cursor(&str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::validate_channel_history_cursor(core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::validate_channel_history_event(&str, &ratspeak_db::NewChannelHistoryEvent) -> core::result::Result<(), alloc::string::String>

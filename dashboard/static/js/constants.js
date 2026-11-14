@@ -132,10 +132,27 @@ RS.invokeOrToast = function(command, args, failMessage) {
     });
 };
 
+// Rows a capped group shows when no search is active; search reaches every peer.
+RS.PEERS_OLDER_DISPLAY_CAP = 300;
+
+RS.newestPeerItems = function(items, cap) {
+    if (!(cap > 0) || items.length <= cap) return items;
+    var ranked = items.map(function(c, i) {
+        return { i: i, t: c.last_seen != null ? c.last_seen : -Infinity };
+    });
+    ranked.sort(function(a, b) { return (b.t - a.t) || (a.i - b.i); });
+    var keep = {};
+    for (var k = 0; k < cap; k++) keep[ranked[k].i] = true;
+    return items.filter(function(c, i) { return keep[i]; });
+};
+
 // Shared Peers/Connections grouping: same buckets, labels, and collapse
 // semantics in both lists. Row markup and virtualization stay view-specific
 // (peers uses variable-height profile rows; connections a fixed-height table).
-RS.buildPeerGroupItems = function(peers, collapsedGroups, hasName) {
+// `opts.olderDisplayCap` limits the not-heard-recently group to its newest
+// rows (in the list's own order), followed by a `cap` item.
+RS.buildPeerGroupItems = function(peers, collapsedGroups, hasName, opts) {
+    var olderCap = opts && opts.olderDisplayCap;
     var contactItems = [], onlineItems = [], onlineStarItems = [], staleItems = [], offlineItems = [];
     peers.forEach(function(c) {
         if (c.is_contact) contactItems.push(c);
@@ -149,15 +166,23 @@ RS.buildPeerGroupItems = function(peers, collapsedGroups, hasName) {
     var flatItems = [];
     [
         { items: contactItems, key: 'contacts', label: 'Contacts' },
-        { items: onlineItems, key: 'online', label: 'Recent' },
-        { items: onlineStarItems, key: 'online_star', label: 'Recent*' },
-        { items: staleItems, key: 'stale', label: 'Seen today' },
-        { items: offlineItems, key: 'offline', label: 'Older / unknown' }
+        { items: onlineItems, key: 'online', label: 'Active' },
+        { items: onlineStarItems, key: 'online_star', label: 'Active*' },
+        { items: staleItems, key: 'stale', label: 'Seen recently' },
+        { items: offlineItems, key: 'offline', label: 'Older / unknown', cap: olderCap }
     ].forEach(function(g) {
         if (g.items.length > 0) {
             flatItems.push({ type: 'header', group: g.key, label: g.label, count: g.items.length });
             if (!collapsedGroups[g.key]) {
-                g.items.forEach(function(c) { flatItems.push({ type: 'row', data: c }); });
+                var shown = RS.newestPeerItems(g.items, g.cap);
+                shown.forEach(function(c) { flatItems.push({ type: 'row', data: c }); });
+                if (shown.length < g.items.length) {
+                    flatItems.push({
+                        type: 'cap',
+                        group: g.key,
+                        label: 'Showing the ' + shown.length + ' most recent. Search to find others.'
+                    });
+                }
             }
         }
     });

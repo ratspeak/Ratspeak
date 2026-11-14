@@ -401,7 +401,7 @@ function renderPeersList(scrollOnly) {
 
     var flatItems = RS.buildPeerGroupItems(filtered, peersCollapsedGroups, function(c) {
         return typeof hasRealDisplayName === 'function' && hasRealDisplayName(c);
-    });
+    }, { olderDisplayCap: peersSearch ? 0 : RS.PEERS_OLDER_DISPLAY_CAP });
 
     if (filtered.length === 0 && !scrollOnly) {
         container.innerHTML = '<div class="dashboard-peers-empty" style="padding:32px;">No peers match your filter</div>';
@@ -453,6 +453,10 @@ function buildPeersHTML(flatItems, start, end, rowHeights) {
                 '<span class="conn-group-chevron">' + chevron + '</span>' +
                 '<span class="conn-group-label">' + item.label + '</span>' +
                 '<span class="conn-group-count">(' + item.count + ')</span>' +
+            '</div>';
+        } else if (item.type === 'cap') {
+            html += '<div class="dashboard-peers-empty text-xs" data-peer-index="' + i + '" style="height:' + rowHeight + 'px;flex-shrink:0;padding:0 var(--space-7);display:flex;align-items:center;justify-content:center">' +
+                escapeHtml(item.label) +
             '</div>';
         } else {
             var c = item.data;

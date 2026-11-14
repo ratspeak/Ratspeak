@@ -70,6 +70,11 @@ const STATIC_PROBE_TIMEOUT_GRACE: f64 = 5.0;
 const STATIC_FAILURE_BASE_BACKOFF: f64 = 60.0;
 const STATIC_FAILURE_MAX_BACKOFF: f64 = 30.0 * 60.0;
 const DISCOVERED_REFRESH_BUDGET: usize = 20;
+/// Discovered inbox nodes that are neither used nor Ratspeak's own: trim
+/// past the high mark down to the low mark, never one heard within the floor.
+const DISCOVERED_NODES_HIGH: usize = 20;
+const DISCOVERED_NODES_LOW: usize = 15;
+const DISCOVERED_NODE_TRIM_FLOOR_SECS: f64 = 24.0 * 3600.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayReadiness {
@@ -540,6 +545,12 @@ pub fn mark_relay_transaction_success(state: &AppState, hash: [u8; 16], kind: &s
         obj.insert("failure_count".to_string(), json!(0));
         obj.insert("backoff_until".to_string(), serde_json::Value::Null);
         obj.insert("last_failure_reason".to_string(), serde_json::Value::Null);
+    }
+    if matches!(kind, "sync_ok" | "deposit_ok")
+        && let Ok(runtime) = tokio::runtime::Handle::try_current()
+    {
+        let pool = state.db.clone();
+        runtime.spawn_blocking(move || db::record_used_propagation_node(&pool, &hash_hex));
     }
 }
 
@@ -1720,6 +1731,124 @@ pub fn seed_static_nodes(state: &AppState) {
     }
 }
 
+/// What ranks a discovered node that is neither used nor Ratspeak's own.
+#[derive(Debug, Clone, PartialEq)]
+struct DiscoveredNodeStanding {
+    hash: String,
+    /// A sync or deposit through it has succeeded.
+    succeeded: bool,
+    failures: u64,
+    last_seen: f64,
+}
+
+impl DiscoveredNodeStanding {
+    fn of(hash: &str, value: &serde_json::Value) -> Self {
+        let succeeded = ["last_sync_success", "last_deposit_success"]
+            .iter()
+            .any(|key| value.get(*key).and_then(json_f64).is_some());
+        Self {
+            hash: hash.to_string(),
+            succeeded,
+            failures: value
+                .get("failure_count")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0),
+            last_seen: value.get("last_seen").and_then(json_f64).unwrap_or(0.0),
+        }
+    }
+}
+
+/// Best first: proven by a transaction, fewest failures, most recently heard.
+fn rank_discovered_nodes(nodes: &mut [DiscoveredNodeStanding]) {
+    nodes.sort_by(|a, b| {
+        b.succeeded
+            .cmp(&a.succeeded)
+            .then(a.failures.cmp(&b.failures))
+            .then(b.last_seen.total_cmp(&a.last_seen))
+            .then_with(|| a.hash.cmp(&b.hash))
+    });
+}
+
+fn discovered_nodes_to_trim(mut nodes: Vec<DiscoveredNodeStanding>, now: f64) -> Vec<String> {
+    if nodes.len() <= DISCOVERED_NODES_HIGH {
+        return Vec::new();
+    }
+    rank_discovered_nodes(&mut nodes);
+    nodes
+        .into_iter()
+        .skip(DISCOVERED_NODES_LOW)
+        .filter(|node| now - node.last_seen >= DISCOVERED_NODE_TRIM_FLOOR_SECS)
+        .map(|node| node.hash)
+        .collect()
+}
+
+/// Trim the discovered list to the best nodes beyond the used and Ratspeak
+/// ones, then return every inbox node the peer pruner must keep.
+pub(crate) async fn trim_discovered_nodes(state: &AppState, now: f64) -> HashSet<String> {
+    let used = db::spawn_db(state.db.clone(), |p| db::used_propagation_nodes(&p))
+        .await
+        .map_err(|error| error.to_string())
+        .and_then(|used| used);
+    let mut keep: HashSet<String> = static_nodes::load()
+        .iter()
+        .map(|node| hex::encode(node.hash))
+        .collect();
+    let in_use = state
+        .auto_active_node
+        .read()
+        .ok()
+        .and_then(|node| *node)
+        .into_iter()
+        .chain(configured_client_relay(state));
+    keep.extend(in_use.map(hex::encode));
+    let trimmed = {
+        let Ok(mut registry) = state.discovered_propagation_nodes.lock() else {
+            return keep;
+        };
+        let trimmed = match &used {
+            Ok(used) => {
+                keep.extend(used.iter().cloned());
+                let static_set = static_nodes::hash_set();
+                let others = registry
+                    .iter()
+                    .filter(|(hash, value)| {
+                        !keep.contains(*hash)
+                            && !hex::decode(hash)
+                                .ok()
+                                .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+                                .is_some_and(|h| registry_entry_is_static(static_set, &h, value))
+                    })
+                    .map(|(hash, value)| DiscoveredNodeStanding::of(hash, value))
+                    .collect();
+                discovered_nodes_to_trim(others, now)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "used Offline Inbox nodes unreadable; nothing trimmed");
+                Vec::new()
+            }
+        };
+        for hash in &trimmed {
+            registry.remove(hash);
+        }
+        keep.extend(registry.keys().cloned());
+        trimmed
+    };
+    if !trimmed.is_empty() {
+        let heard_before = now - DISCOVERED_NODE_TRIM_FLOOR_SECS;
+        let forget = trimmed.clone();
+        let _ = db::spawn_db(state.db.clone(), move |p| {
+            db::forget_propagation_nodes(&p, &forget, heard_before)
+        })
+        .await;
+        tracing::info!(
+            trimmed = trimmed.len(),
+            "trimmed discovered Offline Inbox nodes"
+        );
+        emit_propagation_update(state);
+    }
+    keep
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2454,5 +2583,152 @@ mod tests {
             picks
         );
         assert!(picks.contains_key(&[0xAA; 16]));
+    }
+
+    const DAY: f64 = 86_400.0;
+
+    fn standing(n: u8, age_secs: f64) -> DiscoveredNodeStanding {
+        DiscoveredNodeStanding {
+            hash: hex::encode([n; 16]),
+            succeeded: false,
+            failures: 0,
+            last_seen: 1_000_000.0 - age_secs,
+        }
+    }
+
+    #[test]
+    fn discovered_nodes_trim_past_twenty_down_to_fifteen() {
+        let old = |count: u8| -> Vec<_> {
+            (0..count)
+                .map(|n| standing(n, 2.0 * DAY + f64::from(n)))
+                .collect()
+        };
+        let trimmed = discovered_nodes_to_trim(old(21), 1_000_000.0);
+        assert_eq!(trimmed.len(), 6);
+        assert!(
+            (15..21).all(|n| trimmed.contains(&hex::encode([n; 16]))),
+            "the least recently heard go"
+        );
+        assert!(discovered_nodes_to_trim(old(20), 1_000_000.0).is_empty());
+
+        let fresh: Vec<_> = (0..25).map(|n| standing(n, DAY - 60.0)).collect();
+        assert!(
+            discovered_nodes_to_trim(fresh, 1_000_000.0).is_empty(),
+            "a node heard within a day is never trimmed"
+        );
+    }
+
+    #[test]
+    fn discovered_nodes_rank_proven_then_reliable_then_recent() {
+        let mut nodes = vec![
+            standing(1, 10.0),
+            DiscoveredNodeStanding {
+                failures: 2,
+                ..standing(2, 5.0)
+            },
+            DiscoveredNodeStanding {
+                succeeded: true,
+                failures: 1,
+                ..standing(3, 3.0 * DAY)
+            },
+            standing(4, 60.0),
+            standing(5, 10.0),
+        ];
+        rank_discovered_nodes(&mut nodes);
+        let order: Vec<String> = nodes.into_iter().map(|node| node.hash).collect();
+        let expected: Vec<String> = [3u8, 1, 5, 4, 2]
+            .into_iter()
+            .map(|n| hex::encode([n; 16]))
+            .collect();
+        assert_eq!(order, expected);
+    }
+
+    #[tokio::test]
+    async fn used_and_ratspeak_inbox_nodes_stay_while_the_best_others_are_kept() {
+        let state = make_state();
+        let now = now_f64();
+        set_active_identity_settings(&state, "auto", true);
+        let current = [0xE1; 16];
+        let past = [0xE2; 16];
+        state
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "UPDATE identities SET propagation_node = ?1",
+                rusqlite::params![hex::encode(current)],
+            )
+            .unwrap();
+        assert!(db::record_used_propagation_node(&state.db, &hex::encode(past)));
+        seed_static_nodes(&state);
+        for hash in [current, past] {
+            seed_node(&state, hash, 3, now - 40.0 * DAY);
+        }
+        let others: Vec<[u8; 16]> = (0..30u8).map(|n| [0x40 + n; 16]).collect();
+        for (n, hash) in others.iter().enumerate() {
+            let last_seen = now - 2.0 * DAY - n as f64 * 60.0;
+            seed_node(&state, *hash, 2, last_seen);
+            db::save_propagation_node(
+                &state.db,
+                &db::HeardPropagationNode {
+                    dest_hash: hex::encode(hash),
+                    app_data: vec![0x90],
+                    hops: Some(2),
+                    last_seen,
+                },
+            );
+        }
+
+        let keep = trim_discovered_nodes(&state, now).await;
+
+        let (best, rest) = others.split_at(15);
+        {
+            let registry = state.discovered_propagation_nodes.lock().unwrap();
+            for hash in [current, past]
+                .iter()
+                .chain(static_nodes::load().iter().map(|node| &node.hash))
+                .chain(best)
+            {
+                let hash = hex::encode(hash);
+                assert!(registry.contains_key(&hash), "{hash} stays listed");
+                assert!(keep.contains(&hash), "{hash} stays protected");
+            }
+            for hash in rest {
+                let hash = hex::encode(hash);
+                assert!(!registry.contains_key(&hash), "{hash} leaves the list");
+                assert!(!keep.contains(&hash), "{hash} is an ordinary peer again");
+            }
+        }
+        let heard: HashSet<String> = db::load_propagation_nodes(&state.db, 0.0, 100)
+            .unwrap()
+            .into_iter()
+            .map(|node| node.dest_hash)
+            .collect();
+        assert_eq!(heard, best.iter().map(hex::encode).collect());
+
+        assert_eq!(
+            trim_discovered_nodes(&state, now).await,
+            keep,
+            "fifteen others are under the high mark: nothing more goes"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_sync_or_deposit_records_the_node_as_used() {
+        let state = make_state();
+        let synced = [0xD1; 16];
+        let deposited = [0xD2; 16];
+        mark_relay_transaction_success(&state, synced, "sync_ok");
+        mark_relay_transaction_success(&state, deposited, "deposit_ok");
+        let expected = HashSet::from([hex::encode(synced), hex::encode(deposited)]);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let used = db::used_propagation_nodes(&state.db).unwrap();
+            if used == expected {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "used nodes: {used:?}");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
     }
 }
