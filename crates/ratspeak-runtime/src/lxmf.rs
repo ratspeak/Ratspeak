@@ -5545,25 +5545,59 @@ impl LxmfManager {
         }
     }
 
+    /// App data of an announce heard now.
     pub fn update_lxmf_announce_app_data(
         &mut self,
         dest_hash: [u8; 16],
         name_hash: [u8; 10],
         app_data: Option<&[u8]>,
     ) -> bool {
+        self.apply_lxmf_announce_app_data(dest_hash, name_hash, app_data, None)
+    }
+
+    /// App data of an announce Reticulum remembered, last heard at `heard_at`.
+    /// Stamp costs follow announces heard (Handlers.py), and a node's policy
+    /// dates from that hearing unless a newer one is held.
+    pub fn recall_lxmf_announce_app_data(
+        &mut self,
+        dest_hash: [u8; 16],
+        name_hash: [u8; 10],
+        app_data: Option<&[u8]>,
+        heard_at: f64,
+    ) -> bool {
+        self.apply_lxmf_announce_app_data(dest_hash, name_hash, app_data, Some(heard_at))
+    }
+
+    fn apply_lxmf_announce_app_data(
+        &mut self,
+        dest_hash: [u8; 16],
+        name_hash: [u8; 10],
+        app_data: Option<&[u8]>,
+        recalled_at: Option<f64>,
+    ) -> bool {
         let Some(app_data) = app_data else {
             return false;
         };
 
         if name_hash == rns_identity::name_hash::name_hash(LXMF_PROPAGATION_APP_NAME) {
-            let heard_at = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64();
+            let heard_at = recalled_at.unwrap_or_else(|| {
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs_f64()
+            });
             if let Some(pn) = lxmf_core::handlers::parse_pn_announce_data(app_data)
                 && let Some(policy) = AdvertisedNodePolicy::from_announce(app_data, heard_at)
             {
-                self.router.set_stamp_cost(dest_hash, pn.stamp_cost);
+                if recalled_at.is_none() {
+                    self.router.set_stamp_cost(dest_hash, pn.stamp_cost);
+                } else if self
+                    .propagation_node_policies
+                    .get(&dest_hash)
+                    .is_some_and(|held| held.recorded_at >= heard_at)
+                {
+                    return false;
+                }
                 // Whole kilobytes, as upstream's handler reads it (Handlers.py).
                 self.propagation_transfer_limits_kb
                     .insert(dest_hash, pn.transfer_limit.as_f64() as u64);
@@ -5573,7 +5607,9 @@ impl LxmfManager {
             }
         } else if name_hash == rns_identity::name_hash::name_hash(LXMF_APP_NAME) {
             let mut changed = false;
-            if let Some(cost) = lxmf_core::handlers::stamp_cost_from_app_data(app_data) {
+            if recalled_at.is_none()
+                && let Some(cost) = lxmf_core::handlers::stamp_cost_from_app_data(app_data)
+            {
                 changed |= self.router.get_stamp_cost(&dest_hash) != Some(cost);
                 self.router.set_stamp_cost(dest_hash, cost);
             }
@@ -13031,6 +13067,63 @@ mod tests {
         assert!(failures[0].actual_bytes > 0);
         assert_eq!(failures[0].limit_bytes, 0);
         assert!(mgr.link_delivery.is_none());
+    }
+
+    // A remembered announce keeps its costs and dates as last heard, so the
+    // 45-day expiries still reach destinations no longer heard.
+    #[test]
+    fn a_remembered_announce_refreshes_no_stamp_cost_or_node_policy() {
+        let mut mgr = test_manager();
+        let delivery = [0x61; 16];
+        let node = [0x62; 16];
+        let delivery_name = rns_identity::name_hash::name_hash("lxmf.delivery");
+        let node_name = rns_identity::name_hash::name_hash("lxmf.propagation");
+        let delivery_data = lxmf_core::handlers::get_announce_app_data(Some("peer"), Some(7.0));
+        let node_data = lxmf_core::handlers::get_propagation_node_app_data(
+            &lxmf_core::handlers::PropagationNodeAnnounceData::new(
+                true, 1024, 1024, 23.0, 3.0, 0.0,
+            ),
+        );
+        let last_heard = unix_now_for_test() - 30.0 * 86_400.0;
+
+        // Its app data still teaches compression support.
+        assert!(mgr.recall_lxmf_announce_app_data(
+            delivery,
+            delivery_name,
+            Some(&delivery_data),
+            last_heard,
+        ));
+        assert_eq!(
+            mgr.peer_lxmf_compression_support.get(&delivery),
+            Some(&CompressionSupport::Supported)
+        );
+        assert_eq!(mgr.router.get_stamp_cost(&delivery), None);
+        mgr.router.set_stamp_cost(delivery, 3.0);
+        assert!(!mgr.recall_lxmf_announce_app_data(
+            delivery,
+            delivery_name,
+            Some(&delivery_data),
+            last_heard,
+        ));
+        assert_eq!(mgr.router.get_stamp_cost(&delivery), Some(3.0));
+
+        assert!(mgr.recall_lxmf_announce_app_data(node, node_name, Some(&node_data), last_heard));
+        assert_eq!(mgr.propagation_node_policies[&node].recorded_at, last_heard);
+        assert_eq!(mgr.propagation_transfer_limits_kb.get(&node), Some(&1024));
+        assert_eq!(mgr.router.get_stamp_cost(&node), None);
+        // The next start lists it again: nothing changes, nothing to persist.
+        assert!(!mgr.recall_lxmf_announce_app_data(node, node_name, Some(&node_data), last_heard));
+
+        // Heard now: costs and the node's policy are recorded as of now.
+        assert!(mgr.update_lxmf_announce_app_data(delivery, delivery_name, Some(&delivery_data)));
+        assert_eq!(mgr.router.get_stamp_cost(&delivery), Some(7.0));
+        assert!(mgr.update_lxmf_announce_app_data(node, node_name, Some(&node_data)));
+        let heard_at = mgr.propagation_node_policies[&node].recorded_at;
+        assert!(heard_at > unix_now_for_test() - 60.0);
+        assert_eq!(mgr.router.get_stamp_cost(&node), Some(23.0));
+        // An older remembered hearing never dates it back.
+        assert!(!mgr.recall_lxmf_announce_app_data(node, node_name, Some(&node_data), last_heard));
+        assert_eq!(mgr.propagation_node_policies[&node].recorded_at, heard_at);
     }
 
     #[test]

@@ -6334,6 +6334,7 @@ async fn poll_stats_loop(
     let mut applied_announces: std::collections::HashMap<[u8; 16], f64> =
         std::collections::HashMap::new();
     let mut processed_generation = None;
+    let mut restored_announces = RestoredAnnounces::default();
     // A backgrounded mobile poll skips the UI emit; resume must not wait out the cooldown.
     let mut stats_emit_skipped = false;
 
@@ -6386,10 +6387,10 @@ async fn poll_stats_loop(
             let rns = state.rns.read().ok();
             rns.as_ref()
                 .and_then(|r| r.as_ref())
-                .map(|mgr| mgr.handle.clone())
+                .map(|mgr| (mgr.handle.clone(), mgr.started()))
         };
 
-        let Some(handle) = handle else {
+        let Some((handle, network_started)) = handle else {
             continue;
         };
 
@@ -6579,6 +6580,11 @@ async fn poll_stats_loop(
                     processed_announces.clear();
                     applied_announces.clear();
                     processed_generation = Some(poll_generation);
+                    restored_announces = RestoredAnnounces::from_listing(
+                        &announces,
+                        network_started.elapsed(),
+                        local_now_ts(),
+                    );
                 }
                 if let Ok(mut lxmf) = state.lxmf.lock()
                     && let Some(mgr) = lxmf.as_mut()
@@ -6617,11 +6623,17 @@ async fn poll_stats_loop(
                             a,
                             &[LXMF_DELIVERY_APP_NAME, LXMF_PROPAGATION_APP_NAME],
                         ) {
-                            router_changed |= mgr.update_lxmf_announce_app_data(
-                                a.dest_hash,
-                                name_hash,
-                                a.app_data.as_deref(),
-                            );
+                            let app_data = a.app_data.as_deref();
+                            router_changed |= if restored_announces.heard_now(a) {
+                                mgr.update_lxmf_announce_app_data(a.dest_hash, name_hash, app_data)
+                            } else {
+                                mgr.recall_lxmf_announce_app_data(
+                                    a.dest_hash,
+                                    name_hash,
+                                    app_data,
+                                    a.timestamp,
+                                )
+                            };
                         }
                     }
                     processed_announces = announces
@@ -6683,9 +6695,9 @@ async fn poll_stats_loop(
                         } else {
                             false
                         };
-                        // Without its facts an entry is a restored row, not an
-                        // announce heard now: peers stay as the database has them.
-                        if announce_timestamp_changed && a.facts_known && !a.is_path_response {
+                        // A restored row is not an announce heard now: peers stay
+                        // as the database has them.
+                        if restored_announces.touches_peer(&applied_announces, a) {
                             if a.name_hash == lxmf_delivery_name_hash {
                                 let mut services = vec![db::PEER_SERVICE_LXMF_DELIVERY.to_string()];
                                 let lxmf_compression_support = a
@@ -7957,6 +7969,51 @@ fn announce_is_newer(
         .is_none_or(|seen| timestamp > seen + 0.001)
 }
 
+/// The entries a poll generation's first listing holds that the network
+/// runtime did not record since it started: rows restored from storage. One
+/// is heard once Reticulum records it again, past the timestamp it came with.
+#[derive(Default)]
+struct RestoredAnnounces {
+    timestamps: std::collections::HashMap<[u8; 16], f64>,
+}
+
+impl RestoredAnnounces {
+    /// `running` is the runtime's age on the boot clock, so a wall-clock step
+    /// since it started cannot stretch the span over restored timestamps; a
+    /// restored row stamped ahead of `now` stays restored.
+    fn from_listing(
+        announces: &[rns_transport::messages::AnnounceRpcEntry],
+        running: Duration,
+        now: f64,
+    ) -> Self {
+        let recorded = (now - running.as_secs_f64())..=now;
+        Self {
+            timestamps: announces
+                .iter()
+                .filter(|a| !recorded.contains(&a.timestamp))
+                .map(|a| (a.dest_hash, a.timestamp))
+                .collect(),
+        }
+    }
+
+    /// Heard during this run. A row restored without its facts never was.
+    fn heard_now(&self, a: &rns_transport::messages::AnnounceRpcEntry) -> bool {
+        a.facts_known && announce_is_newer(&self.timestamps, &a.dest_hash, a.timestamp)
+    }
+
+    /// A hearing that touches the peer and wakes what waits for it: past what
+    /// the last poll applied, heard during this run, not a path response.
+    fn touches_peer(
+        &self,
+        applied: &std::collections::HashMap<[u8; 16], f64>,
+        a: &rns_transport::messages::AnnounceRpcEntry,
+    ) -> bool {
+        announce_is_newer(applied, &a.dest_hash, a.timestamp)
+            && self.heard_now(a)
+            && !a.is_path_response
+    }
+}
+
 pub(crate) fn extract_display_name(data: &[u8]) -> String {
     if let Ok(s) = std::str::from_utf8(data) {
         return s.to_string();
@@ -8518,6 +8575,82 @@ mod announce_ingest_tests {
         let first = *applied.keys().next().unwrap();
         assert!(announce_is_newer(&applied, &first, 101.0));
         assert!(announce_is_newer(&applied, &[0xff; 16], 1.0));
+    }
+
+    fn heard(dest: u8, timestamp: f64) -> rns_transport::messages::AnnounceRpcEntry {
+        let mut entry = rns_transport::messages::AnnounceRpcEntry::default();
+        entry.dest_hash = [dest; 16];
+        entry.timestamp = timestamp;
+        entry.facts_known = true;
+        entry
+    }
+
+    fn applied(
+        listing: &[rns_transport::messages::AnnounceRpcEntry],
+    ) -> std::collections::HashMap<[u8; 16], f64> {
+        listing.iter().map(|a| (a.dest_hash, a.timestamp)).collect()
+    }
+
+    // Each start lists every remembered peer: only what this run hears again
+    // touches it, wakes what waits for it, or refreshes its costs.
+    #[test]
+    fn a_restored_announce_is_heard_only_once_recorded_again() {
+        let started = 1_000_000.0;
+        let restored = heard(1, started - 86_400.0);
+        let heard_since_start = heard(2, started + 2.0);
+        let mut without_facts = heard(3, started + 1.0);
+        without_facts.facts_known = false;
+        let ahead = heard(4, started + 3_600.0);
+        let first = vec![
+            restored.clone(),
+            heard_since_start.clone(),
+            without_facts.clone(),
+            ahead.clone(),
+        ];
+        let start = RestoredAnnounces::from_listing(&first, Duration::from_secs(5), started + 5.0);
+        let nothing_applied = std::collections::HashMap::new();
+        for remembered in [&restored, &without_facts, &ahead] {
+            assert!(!start.heard_now(remembered));
+            assert!(!start.touches_peer(&nothing_applied, remembered));
+        }
+        assert!(start.heard_now(&heard_since_start));
+        assert!(start.touches_peer(&nothing_applied, &heard_since_start));
+
+        let reheard = heard(1, started + 60.0);
+        let new_peer = heard(5, started + 61.0);
+        let mut second = first.clone();
+        second[0] = reheard.clone();
+        second.push(new_peer.clone());
+        for live in [&reheard, &new_peer] {
+            assert!(start.heard_now(live));
+            assert!(start.touches_peer(&applied(&first), live));
+            assert!(!start.touches_peer(&applied(&second), live), "heard once");
+        }
+        let mut path_response = heard(6, started + 62.0);
+        path_response.is_path_response = true;
+        assert!(start.heard_now(&path_response));
+        assert!(!start.touches_peer(&applied(&second), &path_response));
+
+        let restarted =
+            RestoredAnnounces::from_listing(&second, Duration::from_secs(5), started + 900.0);
+        let nothing_applied = std::collections::HashMap::new();
+        for entry in &second {
+            assert!(!restarted.heard_now(entry));
+            assert!(!restarted.touches_peer(&nothing_applied, entry));
+        }
+    }
+
+    #[test]
+    fn a_wall_clock_step_does_not_make_restored_announces_heard() {
+        // The runtime started 30 s ago on a clock a day behind; the first poll
+        // reads the corrected one, which a wall-clock start mark would not.
+        let now = 2_000_000.0;
+        let restored = heard(1, now - 3_600.0);
+        let heard_since_step = heard(2, now - 1.0);
+        let listing = [restored.clone(), heard_since_step.clone()];
+        let start = RestoredAnnounces::from_listing(&listing, Duration::from_secs(30), now);
+        assert!(!start.heard_now(&restored));
+        assert!(start.heard_now(&heard_since_step));
     }
 
     #[test]

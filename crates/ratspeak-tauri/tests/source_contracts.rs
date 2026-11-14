@@ -5165,7 +5165,8 @@ fn restored_announce_placeholders_are_never_read_as_hops_or_aspects() {
 
     assert!(!runtime.contains("\"hops\": a.hops"));
     assert!(!runtime.contains("hops: a.hops"));
-    assert!(runtime.contains("a.facts_known && !a.is_path_response"));
+    assert!(runtime.contains("a.facts_known && announce_is_newer(&self.timestamps"));
+    assert!(runtime.contains("restored_announces.touches_peer(&applied_announces, a)"));
     assert!(runtime.contains("transport_observation::announce_name_hash("));
     assert!(!channels.contains("entry.name_hash == aspect_hash"));
     assert!(!channels.contains("hops: entry.hops"));

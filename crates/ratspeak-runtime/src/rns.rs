@@ -16,7 +16,7 @@ use rns_runtime::reticulum::{
 use rns_transport::messages::{TransportMessage, TransportQuery, TransportQueryResponse};
 
 use crate::rnode_activity::RNodeActivityRuntimeContext;
-use crate::state::RNodeActivityOrigin;
+use crate::state::{ContinuousInstant, RNodeActivityOrigin};
 
 pub const UI_PATH_TABLE_LIMIT: usize = 500;
 
@@ -42,6 +42,7 @@ pub struct RnsManager {
     /// Entries are session tombstones and live until this manager is dropped.
     activity_covered_rnodes: HashSet<rns_interface::traits::InterfaceId>,
     activity_session: Option<RNodeActivityOrigin>,
+    started: ContinuousInstant,
 }
 
 impl RnsManager {
@@ -67,6 +68,7 @@ impl RnsManager {
         is_foreground: Arc<AtomicBool>,
         policy: rns_runtime::shared_instance::InstancePolicy,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let started = ContinuousInstant::now();
         let shutdown = ShutdownSignal::new();
         // One failed interface is shown as a warning; the others still start.
         let mut options = InitOptions::default();
@@ -116,7 +118,13 @@ impl RnsManager {
             startup_rnode_runtimes,
             activity_covered_rnodes,
             activity_session: None,
+            started,
         })
+    }
+
+    /// When this runtime began to start, before it restored anything.
+    pub fn started(&self) -> ContinuousInstant {
+        self.started
     }
 
     /// Exact startup registrations retained for this runtime session.
