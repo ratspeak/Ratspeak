@@ -152,7 +152,21 @@ function identityAvatar(hashValue, size) {
         clock: '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
         eye: '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>',
         // The Ratspeak mark: a filled face with drooping whiskers, legible at 14-18 px.
-        ratspeak: '<g fill="currentColor" stroke="none"><circle cx="6.2" cy="7" r="4.2"/><circle cx="17.8" cy="7" r="4.2"/><path fill-rule="evenodd" d="M12 22.5c-2.3 0-7-4.6-7-9.2C5 9.6 8.1 7.4 12 7.4s7 2.2 7 5.9c0 4.6-4.7 9.2-7 9.2zM9.4 12a1.15 1.15 0 1 0 0 2.3 1.15 1.15 0 0 0 0-2.3zm5.2 0a1.15 1.15 0 1 0 0 2.3 1.15 1.15 0 0 0 0-2.3z"/></g><path d="M5.3 15.1 1.2 16.3M5.9 17.5 1.9 18.9M18.7 15.1 22.8 16.3M18.1 17.5 22.1 18.9" fill="none" stroke-width="1.8"/>'
+        ratspeak: '<g fill="currentColor" stroke="none"><circle cx="6.2" cy="7" r="4.2"/><circle cx="17.8" cy="7" r="4.2"/><path fill-rule="evenodd" d="M12 22.5c-2.3 0-7-4.6-7-9.2C5 9.6 8.1 7.4 12 7.4s7 2.2 7 5.9c0 4.6-4.7 9.2-7 9.2zM9.4 12a1.15 1.15 0 1 0 0 2.3 1.15 1.15 0 0 0 0-2.3zm5.2 0a1.15 1.15 0 1 0 0 2.3 1.15 1.15 0 0 0 0-2.3z"/></g><path d="M5.3 15.1 1.2 16.3M5.9 17.5 1.9 18.9M18.7 15.1 22.8 16.3M18.1 17.5 22.1 18.9" fill="none" stroke-width="1.8"/>',
+        sidebar: '<rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>',
+        'more-v': '<circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/>',
+        'message-plus': '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v6"/><path d="M9 10h6"/>',
+        tag: '<path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r="1"/>',
+        'square-check': '<rect x="3" y="3" width="18" height="18" rx="3"/><polyline points="8 12.5 11 15.5 16 9.5"/>',
+        smile: '<circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/>',
+        'smile-plus': '<path d="M22 11v1a10 10 0 1 1-9-10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/><path d="M16 5h6"/><path d="M19 2v6"/>',
+        stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+        file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>',
+        camera: '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/>',
+        video: '<path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/>',
+        opportunistic: '<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>',
+        direct: '<path d="M8 19V5"/><path d="m4 9 4-4 4 4"/><path d="M16 5v14"/><path d="m12 15 4 4 4-4"/>',
+        envelope: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>'
     };
 
     function esc(value) {
@@ -444,8 +458,8 @@ function identityAvatar(hashValue, size) {
     var dialogSeq = 0;
 
     // A dialog on desktop and a bottom sheet on a phone. opts: { title, size: 'md' | 'lg', className,
-    // body, foot, sheet (markup in place of body and foot), onClose(value), focus: selector,
-    // locked (no close button; only the dialog's own actions close it) }.
+    // body, foot, sheet (markup in place of body and foot), onClose(value), focus: selector (false leaves
+    // focus, and a phone's keyboard, where it is), locked (no close button; only its own actions close it) }.
     // Returns { modal, dialog, body, foot, close(value), q(selector) }.
     function dialog(opts) {
         opts = opts || {};
@@ -508,8 +522,10 @@ function identityAvatar(hashValue, size) {
                 onCommit: function() { close(null); }
             });
         }
-        var target = (opts.focus && box.querySelector(opts.focus)) || (!compact() && box.querySelector('input:not([type="checkbox"]):not([type="radio"]), textarea')) || box;
-        try { target.focus({ preventScroll: true }); } catch (_) {}
+        if (opts.focus !== false) {
+            var target = (opts.focus && box.querySelector(opts.focus)) || (!compact() && box.querySelector('input:not([type="checkbox"]):not([type="radio"]), textarea')) || box;
+            try { target.focus({ preventScroll: true }); } catch (_) {}
+        }
         return {
             modal: modal,
             dialog: box,
@@ -521,100 +537,160 @@ function identityAvatar(hashValue, size) {
         };
     }
 
-    // A menu under its trigger on desktop, a sheet on a phone. opts: { title, caption, items: [{ label,
-    // hint (phone only), icon, checked (radio items), danger, disabled, onSelect }] }.
-    var openMenu = null;
-    function closeMenu() {
-        if (!openMenu) return;
-        var m = openMenu;
-        openMenu = null;
-        m.cleanup();
+    // Detail header: back (phone), one identity button (avatar or tile, name, one status line), trailing icon buttons.
+    // o: { back (label), lead, name | nameHtml, sub (html), label (aria), actions, after, rule, id, cls }.
+    function detailHead(o) {
+        o = o || {};
+        return '<header class="ui-detail-head' + (o.rule ? ' ui-detail-head--rule' : '') + (o.cls ? ' ' + esc(o.cls) : '') + '"' + (o.id ? ' id="' + esc(o.id) + '"' : '') + '>' +
+            (o.back ? '<button type="button" class="ui-icon-btn ui-phone-only" aria-label="' + esc(o.back) + '" title="Back">' + icon('chevron-left') + '</button>' : '') +
+            '<button type="button" class="ui-who" aria-label="' + esc(o.label || o.name || 'Details') + '">' + (o.lead || '') +
+                '<span class="ui-who-text"><span class="ui-who-name">' + (o.nameHtml || esc(o.name)) + '</span>' +
+                (o.sub ? '<span class="ui-who-sub">' + o.sub + '</span>' : '') + '</span></button>' +
+            (o.actions ? '<div class="ui-pane-actions">' + o.actions + '</div>' : '') + (o.after || '') +
+        '</header>';
     }
 
-    function menuItemsHtml(items, sheet) {
+    function glyph(value) { return /^\s*</.test(value || '') ? value : icon(value); }
+
+    // A menu under its trigger on desktop, a sheet on a phone. opts: { title (the sheet's head and the
+    // menu's name), label (its name when there is no title), caption, items, align: 'end' (default) or
+    // 'start', placement: 'top', rect (an anchor box in place of the trigger's), sheet (true or false
+    // forces one), hints (show hints on desktop too), keepFocus (leave focus, and a phone's keyboard,
+    // where it is), cls, onClose(item | null) }.
+    // Item: { label, hint, icon (glyph name or svg), checked (radio items), danger, disabled, onSelect }
+    // or { separator: true }. Returns { trigger, el, close() }, or null when a second press closed it.
+    var openMenu = null;
+    function closeMenu() {
+        if (openMenu) openMenu.close(null);
+    }
+
+    function menuItemsHtml(items, hints) {
         return items.map(function(item, index) {
+            if (item.separator) return '<div class="ui-menu-sep" role="separator"></div>';
             var radio = Object.prototype.hasOwnProperty.call(item, 'checked');
             return '<button type="button" class="ui-menu-item' + (item.danger ? ' ui-menu-item--danger' : '') + '" role="' + (radio ? 'menuitemradio' : 'menuitem') + '"' +
                 (radio ? ' aria-checked="' + (item.checked ? 'true' : 'false') + '"' : '') + (item.disabled ? ' disabled' : '') + ' data-ui-menu-index="' + index + '">' +
-                (item.icon ? icon(item.icon) : '') + '<span class="lbl">' + esc(item.label) + (sheet && item.hint ? '<small>' + esc(item.hint) + '</small>' : '') + '</span>' +
+                (item.icon ? glyph(item.icon) : '') + '<span class="lbl">' + esc(item.label) + (hints && item.hint ? '<small>' + esc(item.hint) + '</small>' : '') + '</span>' +
                 (radio && item.checked ? icon('check', 'check') : '') + '</button>';
         }).join('');
+    }
+
+    function placeMenu(pop, rect, opts) {
+        var safe = typeof safeAreaInsets === 'function' ? safeAreaInsets() : { top: 0, right: 0, bottom: 0, left: 0 };
+        var m = 8, w = pop.offsetWidth, h = pop.offsetHeight;
+        var minX = safe.left + m, maxX = window.innerWidth - safe.right - m;
+        var minY = safe.top + m, maxY = window.innerHeight - safe.bottom - m;
+        var start = opts.align === 'start';
+        var left = Math.max(minX, Math.min(start ? rect.left : rect.right - w, maxX - w));
+        var above = rect.top - 4 - h, below = rect.bottom + 4;
+        var up = opts.placement === 'top' ? above >= minY : (below + h > maxY && above >= minY);
+        pop.style.left = Math.round(left) + 'px';
+        pop.style.top = Math.round(Math.max(minY, Math.min(up ? above : below, maxY - h))) + 'px';
     }
 
     function menu(trigger, opts) {
         opts = opts || {};
         var items = opts.items || [];
-        if (openMenu && openMenu.trigger === trigger) { closeMenu(); return null; }
+        // A second press on the same trigger closes its menu.
+        if (openMenu && trigger && openMenu.trigger === trigger) {
+            closeMenu();
+            return null;
+        }
         closeMenu();
+        var useSheet = opts.sheet != null ? !!opts.sheet : compact();
+        var name = opts.title || opts.label || '';
         var caption = opts.caption ? '<div class="ui-menu-caption">' + esc(opts.caption) + '</div>' : '';
+        var handle = { trigger: trigger, closed: false };
+        var expands = !!(trigger && trigger.setAttribute);
         function choose(index) {
             var item = items[index];
-            if (!item || item.disabled) return;
-            closeMenu();
+            if (!item || item.disabled || item.separator) return;
+            handle.close(item);
             if (typeof item.onSelect === 'function') item.onSelect();
         }
-        if (compact()) {
+        function finish(value) {
+            if (openMenu === handle) openMenu = null;
+            if (expands) trigger.setAttribute('aria-expanded', 'false');
+            if (typeof opts.onClose === 'function') opts.onClose(value || null);
+        }
+        if (expands) trigger.setAttribute('aria-expanded', 'true');
+        if (useSheet) {
             var sheet = dialog({
                 title: opts.title || '',
-                sheet: '<div class="ui-menu ui-menu--sheet" role="menu">' + caption + menuItemsHtml(items, true) + '</div>',
-                onClose: function() { if (openMenu && openMenu.sheet === sheet) openMenu = null; }
+                className: opts.cls,
+                focus: opts.keepFocus ? false : null,
+                sheet: '<div class="ui-menu ui-menu--sheet" role="menu"' + (name ? ' aria-label="' + esc(name) + '"' : '') + '>' + caption + menuItemsHtml(items, true) + '</div>',
+                onClose: function(value) { handle.closed = true; finish(value); }
             });
+            sheet.dialog.addEventListener('mousedown', function(e) { if (opts.keepFocus) e.preventDefault(); });
             sheet.dialog.addEventListener('click', function(e) {
                 var btn = e.target.closest && e.target.closest('[data-ui-menu-index]');
                 if (btn) choose(Number(btn.getAttribute('data-ui-menu-index')));
             });
-            openMenu = { trigger: trigger, sheet: sheet, cleanup: function() { sheet.close(null); } };
-            return openMenu;
+            handle.el = sheet.dialog;
+            handle.close = function(value) { sheet.close(value); };
+            openMenu = handle;
+            return handle;
         }
         var pop = document.createElement('div');
-        pop.className = 'ui-menu ui-pop';
+        pop.className = 'ui-menu ui-pop' + (opts.cls ? ' ' + opts.cls : '');
         pop.setAttribute('role', 'menu');
-        if (opts.title) pop.setAttribute('aria-label', opts.title);
-        pop.innerHTML = caption + menuItemsHtml(items, false);
+        if (name) pop.setAttribute('aria-label', name);
+        pop.innerHTML = caption + menuItemsHtml(items, !!opts.hints);
         document.body.appendChild(pop);
-        var r = trigger.getBoundingClientRect();
-        var width = pop.offsetWidth, height = pop.offsetHeight;
-        var left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8));
-        var top = r.bottom + 4;
-        if (top + height > window.innerHeight - 8) top = Math.max(8, r.top - height - 4);
-        pop.style.left = left + 'px';
-        pop.style.top = top + 'px';
-        if (trigger.setAttribute) trigger.setAttribute('aria-expanded', 'true');
-        function onDoc(e) {
-            if (pop.contains(e.target)) return;
-            if (trigger.contains && trigger.contains(e.target)) return;
-            closeMenu();
+        placeMenu(pop, opts.rect || trigger.getBoundingClientRect(), opts);
+        function reflow() { if (!handle.closed && !opts.rect && trigger.isConnected) placeMenu(pop, trigger.getBoundingClientRect(), opts); }
+        function outside(e) {
+            if (pop.contains(e.target) || (trigger && trigger.contains && trigger.contains(e.target))) return;
+            handle.close(null);
         }
         function onKey(e) {
             var buttons = Array.prototype.slice.call(pop.querySelectorAll('.ui-menu-item:not([disabled])'));
             var at = buttons.indexOf(document.activeElement);
-            if (e.key === 'Escape') { e.preventDefault(); closeMenu(); if (trigger.focus) trigger.focus(); }
-            else if (e.key === 'ArrowDown') { e.preventDefault(); (buttons[at + 1] || buttons[0]).focus(); }
-            else if (e.key === 'ArrowUp') { e.preventDefault(); (buttons[at - 1] || buttons[buttons.length - 1]).focus(); }
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                e.stopPropagation();
+                handle.close(null, true);
+            } else if (e.key === 'Tab') {
+                handle.close(null);
+            } else if (/^(ArrowDown|ArrowUp|Home|End)$/.test(e.key) && buttons.length) {
+                e.preventDefault();
+                var next = e.key === 'Home' ? 0 : e.key === 'End' ? buttons.length - 1 :
+                    at === -1 && e.key === 'ArrowUp' ? buttons.length - 1 :
+                    (at + (e.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length;
+                buttons[next].focus();
+            }
         }
+        pop.addEventListener('mousedown', function(e) { if (opts.keepFocus) e.preventDefault(); });
         pop.addEventListener('click', function(e) {
             var btn = e.target.closest && e.target.closest('[data-ui-menu-index]');
             if (btn) choose(Number(btn.getAttribute('data-ui-menu-index')));
         });
-        setTimeout(function() { document.addEventListener('mousedown', onDoc, true); }, 0);
+        document.addEventListener('pointerdown', outside, true);
         document.addEventListener('keydown', onKey, true);
-        window.addEventListener('resize', closeMenu);
-        window.addEventListener('scroll', closeMenu, true);
-        openMenu = {
-            trigger: trigger,
-            pop: pop,
-            cleanup: function() {
-                document.removeEventListener('mousedown', onDoc, true);
-                document.removeEventListener('keydown', onKey, true);
-                window.removeEventListener('resize', closeMenu);
-                window.removeEventListener('scroll', closeMenu, true);
-                if (trigger.setAttribute) trigger.setAttribute('aria-expanded', 'false');
-                if (pop.parentNode) pop.parentNode.removeChild(pop);
+        window.addEventListener('resize', reflow);
+        window.addEventListener('scroll', reflow, true);
+        handle.el = pop;
+        handle.close = function(value, returnFocus) {
+            if (handle.closed) return;
+            handle.closed = true;
+            document.removeEventListener('pointerdown', outside, true);
+            document.removeEventListener('keydown', onKey, true);
+            window.removeEventListener('resize', reflow);
+            window.removeEventListener('scroll', reflow, true);
+            var hadFocus = pop.contains(document.activeElement);
+            if (pop.parentNode) pop.parentNode.removeChild(pop);
+            if ((hadFocus || returnFocus) && trigger && trigger.focus && trigger.isConnected) {
+                try { trigger.focus({ preventScroll: true }); } catch (_) { trigger.focus(); }
             }
+            finish(value);
         };
-        var firstItem = pop.querySelector('.ui-menu-item[aria-checked="true"], .ui-menu-item:not([disabled])');
-        if (firstItem) firstItem.focus({ preventScroll: true });
-        return openMenu;
+        openMenu = handle;
+        if (!opts.keepFocus) {
+            var first = pop.querySelector('.ui-menu-item[aria-checked="true"], .ui-menu-item:not([disabled])');
+            if (first) try { first.focus({ preventScroll: true }); } catch (_) { first.focus(); }
+        }
+        return handle;
     }
 
     kit.esc = esc;
@@ -623,6 +699,7 @@ function identityAvatar(hashValue, size) {
     kit.dialog = dialog;
     kit.menu = menu;
     kit.closeMenu = closeMenu;
+    kit.detailHead = detailHead;
     kit.icon = icon;
     kit.icons = Object.keys(GLYPHS);
     kit.time = time;
