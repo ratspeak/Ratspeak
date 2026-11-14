@@ -270,7 +270,8 @@
         if (helpPopover) return helpPopover;
         helpPopover = document.createElement('div');
         helpPopover.id = 'rs-help-popover';
-        helpPopover.className = 'rs-help-popover';
+        // The kit tooltip, placed beside its info icon button.
+        helpPopover.className = 'ui-tooltip rs-help-popover';
         helpPopover.setAttribute('role', 'tooltip');
         helpPopover.hidden = true;
         document.body.appendChild(helpPopover);

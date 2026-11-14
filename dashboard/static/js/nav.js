@@ -622,66 +622,84 @@ function _initHistoryNavigation() {
     });
 }
 
+// About Ratspeak: the kit's Small dialog. Settings › About opens it.
 function showAboutModal() {
-    var existing = document.getElementById('about-modal-overlay');
-    if (existing) existing.remove();
+    var built = _rsBuildSheet({ title: 'About Ratspeak', sheetClass: 'about-dialog' });
+    built.overlay.addEventListener('click', function(e) {
+        if (e.target === built.overlay) built.dismiss(null);
+    });
 
-    var overlay = document.createElement('div');
-    overlay.id = 'about-modal-overlay';
-    overlay.className = 'modal-overlay active';
-    overlay.innerHTML =
-        '<div class="modal" style="max-width:420px;">' +
-            '<div class="modal-header">' +
-                '<h3>About Ratspeak</h3>' +
-                '<button class="modal-close" id="about-modal-close">&times;</button>' +
-            '</div>' +
-            '<div class="modal-body about-modal-body">' +
-                '<p class="font-600 about-modal-title">Ratspeak <span class="mono text-muted-color about-modal-version" id="about-modal-version"></span></p>' +
-                '<p>Real-time dashboard for Reticulum mesh networks. Encrypted messaging, dynamic node management, and network health monitoring.</p>' +
-                '<p class="about-modal-link-row">' +
-                    '<a href="https://ratspeak.org" target="_blank" rel="noopener" class="text-link">ratspeak.org</a>' +
-                    ' &middot; ' +
-                    '<a href="https://reticulum.network" target="_blank" rel="noopener" class="text-link">reticulum.network</a>' +
-                '</p>' +
-                '<div class="about-policy-links" aria-label="Ratspeak policies and support">' +
-                    '<button type="button" data-about-document="privacy">Privacy</button>' +
-                    '<button type="button" data-about-document="terms">Terms</button>' +
-                    '<button type="button" data-about-document="guidelines">Guidelines</button>' +
-                    '<button type="button" data-about-document="support">Support</button>' +
-                    '<button type="button" data-about-document="licenses">Licenses</button>' +
-                '</div>' +
-            '</div>' +
-        '</div>';
-    document.body.appendChild(overlay);
+    // The brand mark is drawn once in the shell; reuse it rather than repeat its path.
+    var brand = document.querySelector('.sidebar-brand-logo, .header-logo-icon');
+    var mark = brand ? brand.cloneNode(true) : null;
+    if (mark) {
+        mark.removeAttribute('width');
+        mark.removeAttribute('height');
+        mark.removeAttribute('class');
+        mark.setAttribute('aria-hidden', 'true');
+    }
+    var hero = document.createElement('div');
+    hero.className = 'about-dialog-hero';
+    hero.innerHTML = '<span class="about-dialog-mark"></span>' +
+        '<p class="about-dialog-name">Ratspeak</p>' +
+        '<span class="about-dialog-version" id="about-modal-version"></span>';
+    if (mark) hero.firstChild.appendChild(mark);
+    built.body.appendChild(hero);
+
+    var lead = document.createElement('p');
+    lead.textContent = 'End-to-end encrypted messages, channels, and games over Reticulum: the internet, radio, and Bluetooth.';
+    built.body.appendChild(lead);
+
+    var facts = document.createElement('dl');
+    facts.className = 'ui-dl';
+    facts.innerHTML =
+        '<dt>Website</dt><dd><a class="ui-link" href="https://ratspeak.org" target="_blank" rel="noopener">ratspeak.org</a></dd>' +
+        '<dt>Source</dt><dd><a class="ui-link" href="https://github.com/ratspeak" target="_blank" rel="noopener">github.com/ratspeak</a></dd>';
+    built.body.appendChild(facts);
+
+    var links = document.createElement('div');
+    links.className = 'about-dialog-links';
+    links.setAttribute('aria-label', 'Ratspeak policies and support');
+    [['Privacy', 'privacy'], ['Terms', 'terms'], ['Guidelines', 'guidelines'], ['Support', 'support'], ['Licenses', 'licenses']]
+        .forEach(function(entry) {
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'ui-link';
+            button.setAttribute('data-about-document', entry[1]);
+            button.textContent = entry[0];
+            button.addEventListener('click', function() {
+                var documentId = button.getAttribute('data-about-document');
+                built.dismiss(null);
+                if (RS.legal && typeof RS.legal.open === 'function') RS.legal.open(documentId);
+            });
+            links.appendChild(button);
+        });
+    built.body.appendChild(links);
+    built.footer.hidden = true;
 
     RS.invoke('api_version').then(function(data) {
         var version = data && data.version ? String(data.version) : '';
         var versionEl = document.getElementById('about-modal-version');
-        if (versionEl && version) versionEl.textContent = 'v.' + version;
+        if (versionEl && version) versionEl.textContent = 'Version ' + version;
+        // The protocol versions show once the backend reports them.
+        var rows = '';
+        if (data && data.reticulum) rows += '<dt>Reticulum</dt><dd>' + escapeHtml(String(data.reticulum)) + '</dd>';
+        if (data && data.lxmf) rows += '<dt>LXMF</dt><dd>' + escapeHtml(String(data.lxmf)) + '</dd>';
+        if (rows) facts.insertAdjacentHTML('afterbegin', rows);
     }).catch(function() {});
 
-    function close() { overlay.remove(); }
-    document.getElementById('about-modal-close').addEventListener('click', close);
-    overlay.querySelectorAll('[data-about-document]').forEach(function(button) {
-        button.addEventListener('click', function() {
-            var documentId = button.getAttribute('data-about-document');
-            close();
-            if (RS.legal && typeof RS.legal.open === 'function') RS.legal.open(documentId);
-        });
+    RS.gestures.attachDragDismiss(built.sheet, {
+        axis: 'y',
+        blockIfScrolled: true,
+        skipIf: function(e) { return !!e.target.closest('button, a'); },
+        parallaxOverlay: built.overlay,
+        onCommit: function() { built.dismiss(null); }
     });
-    overlay.addEventListener('click', function(e) {
-        if (e.target === overlay) close();
-    });
-
-    var content = overlay.querySelector('.modal');
-    if (content) {
-        RS.gestures.attachDragDismiss(content, {
-            axis: 'y',
-            blockIfScrolled: true,
-            onCommit: close
-        });
-    }
+    built.present();
+    var first = built.sheet.querySelector('.ui-dialog-head .ui-icon-btn');
+    if (first && (!RS.ui || typeof RS.ui.prefersKeyboardFocus !== 'function' || RS.ui.prefersKeyboardFocus())) first.focus();
 }
+window.showAboutModal = showAboutModal;
 
 function initSidebarCollapse() {
     var btn = document.getElementById('sidebar-collapse-btn');

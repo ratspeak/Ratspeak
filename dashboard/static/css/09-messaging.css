@@ -261,7 +261,7 @@ span.md-spoiler { padding: 0 2px; }
 .image-viewer.open {
     opacity: 1;
     pointer-events: auto;
-    background: rgba(0, 0, 0, 0.86);
+    background: rgba(10, 10, 12, 0.92);
 }
 .image-viewer-backdrop {
     position: absolute;
@@ -272,34 +272,8 @@ span.md-spoiler { padding: 0 2px; }
     z-index: 2;
     display: flex;
     justify-content: flex-end;
-    gap: var(--space-3);
-    padding: calc(12px + var(--sat)) calc(14px + var(--sar)) 10px calc(14px + var(--sal));
-}
-.image-viewer-btn {
-    width: 42px;
-    height: 42px;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    border-radius: var(--radius-full);
-    color: var(--on-overlay);
-    background: rgba(18, 18, 20, 0.56);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    backdrop-filter: blur(18px);
-    -webkit-backdrop-filter: blur(18px);
-    transition: background var(--transition-fast), border-color var(--transition-fast), transform var(--transition-fast);
-}
-.image-viewer-btn:hover {
-    background: rgba(255, 255, 255, 0.16);
-    border-color: rgba(255, 255, 255, 0.28);
-}
-.image-viewer-btn:active {
-    transform: scale(0.96);
-}
-.image-viewer-btn svg {
-    width: 20px;
-    height: 20px;
+    gap: 8px;
+    padding: calc(12px + var(--sat)) calc(16px + var(--sar)) 12px calc(16px + var(--sal));
 }
 .image-viewer-stage {
     position: relative;
@@ -328,7 +302,7 @@ span.md-spoiler { padding: 0 2px; }
     width: auto;
     height: auto;
     object-fit: contain;
-    border-radius: 10px;
+    border-radius: var(--radius-control);
     box-shadow: 0 18px 60px rgba(0, 0, 0, 0.45);
     cursor: zoom-in;
     transition: transform 160ms ease, opacity 160ms ease;

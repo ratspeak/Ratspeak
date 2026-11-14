@@ -663,39 +663,20 @@
     cursor: help;
 }
 
+/* Help popover (ui_shared.js): the kit tooltip, fixed beside its trigger; it fades in toward it. */
 .rs-help-popover {
     position: fixed;
     z-index: var(--z-tooltip);
-    box-sizing: border-box;
     width: max-content;
     max-width: min(300px, calc(100vw - 24px));
-    background: var(--surface-popover);
-    border: 1px solid var(--border-surface);
-    border-radius: var(--radius-md);
-    padding: var(--space-3) var(--space-4);
-    font-size: var(--text-xs);
-    font-weight: var(--type-weight-regular);
-    line-height: 1.45;
-    color: var(--text-secondary);
     pointer-events: none;
     opacity: 0;
     transform: translateY(-3px);
     transition: opacity var(--transition-fast), transform var(--transition-fast);
-    box-shadow: var(--shadow-popover);
 }
-
-.rs-help-popover[data-placement="above"] {
-    transform: translateY(3px);
-}
-
-.rs-help-popover.open {
-    opacity: 1;
-    transform: translateY(0);
-}
-
-.rs-help-popover[hidden] {
-    display: none;
-}
+.rs-help-popover[data-placement="above"] { transform: translateY(3px); }
+.rs-help-popover.open { opacity: 1; transform: none; }
+.rs-help-popover[hidden] { display: none; }
 
 .tooltip-trigger:focus-visible {
     outline: 2px solid var(--focus-ring);

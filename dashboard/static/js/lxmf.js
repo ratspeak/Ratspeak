@@ -7498,14 +7498,6 @@ setInterval(function() {
     }
 }, 30000);
 
-function _imageActionIcon(name) {
-    var icons = {
-        close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="6" y1="6" x2="18" y2="18"/><line x1="18" y1="6" x2="6" y2="18"/></svg>',
-        copy: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
-        save: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>'
-    };
-    return icons[name] || '';
-}
 
 function _filenameWithImageExtension(filename, mime) {
     var name = (filename || 'image').trim() || 'image';
@@ -7605,9 +7597,9 @@ function _ensureImageViewer() {
     viewer.innerHTML =
         '<div class="image-viewer-backdrop" data-image-viewer-close></div>' +
         '<div class="image-viewer-toolbar">' +
-            '<button type="button" class="image-viewer-btn" id="image-viewer-close" title="Close" aria-label="Close">' + _imageActionIcon('close') + '</button>' +
-            '<button type="button" class="image-viewer-btn" id="image-viewer-copy" title="Copy image" aria-label="Copy image">' + _imageActionIcon('copy') + '</button>' +
-            '<button type="button" class="image-viewer-btn" id="image-viewer-save" title="Save image" aria-label="Save image">' + _imageActionIcon('save') + '</button>' +
+            '<button type="button" class="ui-icon-btn ui-icon-btn--media" id="image-viewer-copy" title="Copy image" aria-label="Copy image">' + RS.kit.icon('copy') + '</button>' +
+            '<button type="button" class="ui-icon-btn ui-icon-btn--media" id="image-viewer-save" title="Save image" aria-label="Save image">' + RS.kit.icon('download') + '</button>' +
+            '<button type="button" class="ui-icon-btn ui-icon-btn--media" id="image-viewer-close" title="Close" aria-label="Close">' + RS.kit.icon('x') + '</button>' +
         '</div>' +
         '<div class="image-viewer-stage">' +
             '<img id="image-viewer-img" class="image-viewer-img" alt="">' +

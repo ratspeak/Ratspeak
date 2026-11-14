@@ -1633,41 +1633,11 @@
 }
 .about-messages-link:hover { text-decoration: underline; }
 
-.about-modal-body {
-    color: var(--text-secondary);
-    font-size: var(--type-row-meta-size);
-    line-height: var(--type-leading-body);
-    padding: var(--space-10);
-}
-.about-modal-title {
-    color: var(--text-primary);
-    margin-bottom: var(--space-4);
-}
-.about-modal-version {
-    font-weight: var(--type-weight-regular);
-}
-.about-modal-link-row {
-    margin-top: var(--space-6);
-}
-.about-policy-links {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--space-2);
-    margin-top: var(--space-7);
-}
-.about-policy-links button {
-    min-height: var(--control-height-sm);
-    border: 1px solid var(--border-control);
-    border-radius: var(--radius-md);
-    background: var(--bg-tertiary);
-    color: var(--text-secondary);
-    cursor: pointer;
-    font: inherit;
-    font-size: var(--type-row-meta-size);
-    font-weight: var(--type-weight-semibold);
-}
-.about-policy-links button:hover,
-.about-policy-links button:focus-visible {
-    border-color: color-mix(in srgb, var(--accent) 52%, var(--border-control));
-    color: var(--accent);
-}
+/* About Ratspeak (nav.js), a Small kit dialog. */
+.about-dialog-hero { display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; }
+.about-dialog-mark { display: block; width: 48px; height: 48px; margin-bottom: 8px; }
+.about-dialog-mark svg { display: block; width: 100%; height: 100%; fill: var(--accent); }
+.about-dialog-name { margin: 0; font-size: var(--text-xl); font-weight: 600; line-height: 1.25; color: var(--text-primary); }
+.about-dialog-version { min-height: 1.4em; font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-muted); }
+.about-dialog-links { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px 12px; }
+@media (max-width: 768px) { .about-dialog-links { gap: 0 20px; } }
