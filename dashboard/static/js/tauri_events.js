@@ -210,6 +210,7 @@ function _notificationDashboardCanNavigate() {
         (typeof _navTransitioning === 'undefined' || !_navTransitioning) &&
         !document.body.classList.contains('checking-setup') &&
         !document.body.classList.contains('setup-active') &&
+        !document.body.classList.contains('migrating-active') &&
         !document.getElementById('hw-unlock-overlay');
 }
 

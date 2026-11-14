@@ -59,10 +59,11 @@ function hasAndroidBridge() {
 }
 
 // Global gesture handlers early-return on this so swipes can't translate
-// non-setup views into view during first-run setup.
+// non-setup views into view during first-run setup or the network data move.
 function _isSetupActive() {
     var b = document.body;
-    return b && (b.classList.contains('checking-setup') || b.classList.contains('setup-active'));
+    return b && (b.classList.contains('checking-setup') || b.classList.contains('setup-active') ||
+        b.classList.contains('migrating-active'));
 }
 
 window.RS = window.RS || {};

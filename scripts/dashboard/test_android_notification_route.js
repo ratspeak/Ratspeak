@@ -67,6 +67,9 @@ async function main() {
         d.classes.add('setup-active');
         assert.equal(d.receive(), false);
         d.classes.clear();
+        d.classes.add('migrating-active');
+        assert.equal(d.receive(), false, 'the network data move holds a tapped route');
+        d.classes.clear();
         d.controls.overlay = true;
         assert.equal(d.receive(), false);
         assert.equal(d.calls.length, 0, 'No navigation while initial UI/setup/unlock is unsettled');
