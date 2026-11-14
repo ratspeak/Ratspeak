@@ -447,6 +447,7 @@ button.ui-prop, a.ui-prop { cursor: pointer; text-decoration: none; }
 .ui-dialog-head { display: flex; align-items: center; gap: 12px; padding: 16px 16px 4px 24px; flex: 0 0 auto; }
 .ui-dialog-title { flex: 1; min-width: 0; margin: 0; font-size: var(--text-xl); font-weight: 600; color: var(--text-primary); line-height: 1.25; }
 .ui-dialog-body { display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow-y: auto; padding: 8px 24px 24px; font-size: var(--text-base); color: var(--text-secondary); line-height: 1.5; }
+.ui-dialog-body > * { flex-shrink: 0; }
 .ui-dialog-body p { margin: 0; }
 .ui-dialog-foot { display: flex; justify-content: flex-end; gap: 8px; flex: 0 0 auto; padding: 0 24px 24px; }
 /* Open: the scrim fades and the dialog rises (a sheet slides up on a phone). Close: .is-closing fades both out. */
