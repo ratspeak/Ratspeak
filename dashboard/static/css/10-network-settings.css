@@ -1,6 +1,8 @@
 /* Network, Activity, and Settings: screen layout on the ui-* components. */
 
 /* ---------------------------------------------------------------- Settings */
+/* hidden hides every screen part here, whatever its display. */
+#view-settings [hidden], #view-activity [hidden], #view-network [hidden] { display: none !important; }
 #view-settings { padding: 0; overflow: hidden; }
 .settings-page { height: 100%; }
 .settings-nav-pane { flex: 0 0 300px; width: 300px; }
@@ -110,3 +112,74 @@
 }
 /* Another app's Reticulum owns discovery. */
 .network-external #discovery-settings-body { display: none; }
+
+/* ---------------------------------------------------------------- Activity */
+#view-activity { padding: 0; overflow: hidden; }
+.activity-split { height: 100%; }
+.activity-master { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--border-row); background: var(--surface-workspace); --row-surface: var(--surface-workspace); }
+.activity-detail { flex: 0 0 380px; width: 380px; }
+.activity-head .ui-pane-title { flex: 0 1 auto; }
+.activity-head .ui-status { margin-left: 4px; }
+.activity-head .ui-pane-actions { margin-left: auto; }
+.activity-desc { margin: -8px 0 12px; padding: 0 var(--ui-gutter); font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.4; }
+.activity-active { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.activity-tools { display: flex; align-items: center; gap: 12px; padding: 0 var(--ui-gutter) 12px; }
+.activity-tools .ui-search { flex: 1; }
+.activity-mode { display: flex; align-items: center; gap: 8px; }
+.activity-mode > .ui-label { margin: 0; white-space: nowrap; }
+.activity-drops { margin: 0 var(--ui-gutter) 12px; }
+.activity-cols { flex: 1; min-height: 0; display: flex; gap: 8px; }
+.activity-rail { flex: 0 0 220px; min-height: 0; overflow-y: auto; padding-bottom: 8px; }
+.activity-rail .ui-row-title { font-weight: 500; }
+.activity-rail .activity-problems { margin-top: 8px; }
+.activity-feed-wrap { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.activity-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 8px; }
+.activity-feedhead { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px 0 20px; background: var(--row-surface); }
+.activity-feedhead > .t { font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary); }
+.activity-feedhead .ui-pane-count { margin-left: auto; }
+.activity-message-filter { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.activity-list > .ui-caption { top: 44px; }
+.activity-time { font-family: var(--font-mono); }
+.activity-event .activity-adot { align-self: flex-start; margin-top: 7px; }
+.activity-out--online { color: var(--status-online-fg); }
+.activity-out--error { color: var(--status-error-fg); }
+.activity-out--warning { color: var(--status-warning-fg); }
+/* Area dot: a ring in the area's colour, filled for a problem. */
+.activity-adot { display: inline-block; flex: 0 0 auto; width: 10px; height: 10px; box-sizing: border-box; border-radius: 50%; border: 2px solid var(--ac, var(--text-muted)); }
+.activity-adot.is-blank { visibility: hidden; }
+.activity-adot.is-problem { background: var(--status-error-fg); border-color: var(--status-error-fg); }
+.activity-adot.a-network { --ac: var(--accent); }
+.activity-adot.a-interfaces { --ac: var(--status-warning-fg); }
+.activity-adot.a-links, .activity-adot.a-calls { --ac: var(--status-purple-fg); }
+.activity-adot.a-messages { --ac: var(--status-online-fg); }
+.activity-adot.a-channels { --ac: var(--status-info-fg); }
+.activity-adot.a-apps, .activity-adot.a-ratspeak { --ac: var(--text-muted); }
+.activity-adot.a-problems { --ac: var(--status-error-fg); }
+.activity-dscroll { padding: 24px; }
+.activity-dscroll .ui-detail-title { margin: 0 0 8px; overflow-wrap: anywhere; }
+.activity-dscroll .ui-status { margin: 0 0 16px; }
+.activity-dscroll .ui-notice { margin-bottom: 20px; }
+.activity-dscroll .ui-dl { margin: 0 0 24px; }
+.activity-dscroll .ui-dl code { font-family: var(--font-mono); font-size: var(--text-xs); color: var(--text-secondary); overflow-wrap: anywhere; }
+.activity-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.activity-copy-value { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px; margin: -2px -6px; border: 0; border-radius: var(--radius-tag); background: transparent; color: var(--text-secondary); font: inherit; cursor: pointer; }
+.activity-copy-value:hover { background: var(--control-hover); color: var(--text-primary); }
+.activity-copy-value:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 1px; }
+.activity-copy-value[data-action="reveal"] code { font-family: inherit; color: var(--accent-ink); }
+.activity-identifier-icon { width: 13px; height: 13px; fill: none; stroke: currentColor; stroke-width: 2; }
+.activity-gate { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }
+.activity-gate .ui-empty { max-width: 420px; }
+.activity-checks { display: flex; flex-direction: column; gap: 8px; margin: 16px auto 0; padding: 0; list-style: none; text-align: left; }
+.activity-checks li { display: flex; align-items: flex-start; gap: 8px; font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.4; }
+.activity-checks .ui-ico { flex: 0 0 auto; width: 16px; height: 16px; margin-top: 2px; color: var(--status-online-fg); }
+@media (max-width: 768px) {
+    .activity-master { border-right: 0; }
+    .activity-tools { flex-direction: column; align-items: stretch; }
+    .activity-tools .ui-search { flex: 0 0 auto; }
+    .activity-mode { justify-content: space-between; }
+    .activity-mode .ui-seg { flex: 0 0 60%; }
+    .activity-cols { flex-direction: column; gap: 0; }
+    .activity-chips { padding: 0 16px 8px; }
+    .activity-feedhead { padding: 0 8px 0 16px; }
+    .ui-dialog .activity-dscroll { padding: 0; }
+}

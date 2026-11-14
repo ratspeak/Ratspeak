@@ -544,11 +544,6 @@
                     </div>
                 </div>
 
-                <div class="network-subtabs section-subtabs" id="network-subtabs" role="tablist" aria-label="Network details">
-                    <button class="network-subtab-btn section-subtab-btn active" type="button" role="tab" aria-selected="true" data-subtab="connections">Connections</button>
-                    <button class="network-subtab-btn section-subtab-btn" type="button" role="tab" aria-selected="false" data-subtab="activity">Activity</button>
-                </div>
-
                 <div class="network-main">
                     <div class="network-connections">
                         <div id="network-owner-notice" class="network-owner-notice" role="status" hidden></div>
@@ -617,75 +612,52 @@
                         </div>
                     </div>
 
-                    <div class="network-activity" id="network-activity">
-                        <div class="system-drops-card" id="system-drops-card" style="display:none;">
-                            <div class="system-drops-header" role="button" tabindex="0" aria-expanded="false">
-                                <svg class="system-drops-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                                    <circle cx="12" cy="12" r="10"/>
-                                    <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
-                                </svg>
-                                <span class="system-drops-title">System drops</span>
-                                <span class="system-drops-summary" id="system-drops-summary">0</span>
-                                <svg class="system-drops-chevron" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><polyline points="6 9 12 15 18 9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                            </div>
-                            <div class="system-drops-body" id="system-drops-body" hidden>
-                                <div class="system-drops-list" id="system-drops-list"></div>
-                                <div class="system-drops-footer">
-                                    <button class="nr-btn nr-btn-xs" id="system-drops-clear-btn">Clear system drops</button>
-                                    <button class="nr-btn nr-btn-xs" id="system-drops-purge-unverified-btn" title="Remove manual blocks not backed by a recent announce — cleans up pre-fix entries">Purge unverified</button>
-                                </div>
-                            </div>
-                        </div>
+                </div>
+            </div>
+        </div>
 
-                        <div class="activity-header">
-                            <div class="activity-heading">
-                                <div class="activity-title-row">
-                                    <span class="activity-title">Activity</span>
-                                    <span class="activity-status" id="activity-status" data-state="off" hidden>
-                                        <span id="activity-status-label"></span>
-                                    </span>
-                                </div>
-                                <span class="activity-subtitle">Network, messages, channels, and calls</span>
-                            </div>
-                            <div class="activity-controls">
-                                <button class="nr-btn nr-btn-xs nr-btn-ghost" id="activity-capture-btn" style="display:none;">Stop</button>
-                                <button class="nr-btn nr-btn-xs nr-btn-ghost" id="activity-clear-btn" style="display:none;">Clear</button>
-                            </div>
+        <div class="view" id="view-activity">
+            <div class="ui-split activity-split">
+                <section class="activity-master" aria-labelledby="activity-title">
+                    <header class="ui-pane-head activity-head">
+                        <h1 class="ui-pane-title" id="activity-title">Activity</h1>
+                        <span class="ui-status" id="activity-status"><span class="ui-dot" id="activity-status-dot" aria-hidden="true"></span><span id="activity-status-label">Off</span></span>
+                        <div class="ui-pane-actions ui-phone-only" id="activity-phone-actions" hidden>
+                            <button type="button" class="ui-icon-btn" id="activity-capture-btn-phone" aria-label="Pause" title="Pause"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg></button>
+                            <button type="button" class="ui-icon-btn" id="activity-more-btn-phone" aria-haspopup="menu" aria-expanded="false" aria-label="More" title="More"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button>
                         </div>
-
-                        <div class="activity-privacy-gate" id="activity-privacy-gate">
-                            <svg class="activity-privacy-icon" viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5">
-                                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
-                            </svg>
-                            <span class="activity-privacy-label">Activity is off</span>
-                            <span class="activity-privacy-desc">Start a private, on-device view of what Ratspeak is doing.</span>
-                            <button class="nr-btn nr-btn-sm" id="activity-enable-btn">Start Activity</button>
-                        </div>
-
-                        <div class="activity-active" id="activity-active" style="display:none;">
-                            <div class="activity-toolbar">
-                                <label class="activity-search">
-                                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
-                                        <circle cx="11" cy="11" r="7"/>
-                                        <line x1="16.5" y1="16.5" x2="21" y2="21"/>
-                                    </svg>
-                                    <input id="activity-search-input" type="search" placeholder="Search activity" aria-label="Search activity" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
-                                </label>
-                                <div class="activity-profile-select" id="activity-profile-select" aria-label="Capture detail">
-                                    <button class="activity-profile-btn active" data-profile="normal" aria-pressed="true">Normal</button>
-                                    <button class="activity-profile-btn" data-profile="trace" aria-pressed="false" title="More detail for 10 minutes">Trace</button>
-                                </div>
-                            </div>
-                            <div class="activity-filter-bar">
-                                <div class="activity-filters" id="activity-filters" aria-label="Filter activity"></div>
-                                <span class="activity-result-count" id="activity-result-count"></span>
-                            </div>
-                            <div class="activity-feed" id="activity-feed" role="log" aria-live="polite">
-                                <div class="activity-empty">Waiting for activity…</div>
-                            </div>
+                    </header>
+                    <p class="activity-desc ui-desk-only">What Ratspeak is doing: network, messages, channels, and calls. On this device only.</p>
+                    <div class="activity-gate" id="activity-privacy-gate" hidden>
+                        <div class="ui-empty">
+                            <span class="ui-tile ui-tile--lg" aria-hidden="true"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg></span>
+                            <h2 class="ui-empty-title">See what Ratspeak is doing</h2>
+                            <p class="ui-empty-body">Announces, routes, messages, channels, and calls, as they happen. Useful when something doesn’t arrive.</p>
+                            <ul class="activity-checks"><li><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="20 6 9 17 4 12"/></svg>Kept on this device. Nothing is sent anywhere.</li><li><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="20 6 9 17 4 12"/></svg>Turn it off any time.</li></ul>
+                            <div class="ui-empty-actions"><button type="button" class="ui-btn ui-btn--primary ui-btn--lg" id="activity-enable-btn">Start Activity</button></div>
                         </div>
                     </div>
-                </div>
+                    <div class="activity-active" id="activity-active">
+                        <div class="activity-tools">
+                            <div class="ui-search" role="search"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input type="search" id="activity-search-input" placeholder="Search activity" aria-label="Search activity" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"><button type="button" class="ui-icon-btn ui-icon-btn--sm" id="activity-search-clear" aria-label="Clear search" title="Clear search" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+                            <div class="activity-mode"><span class="ui-label" id="activity-detail-label">Detail</span><div class="ui-seg" role="radiogroup" id="activity-profile-select" aria-labelledby="activity-detail-label"><button type="button" role="radio" class="activity-profile-btn" data-profile="normal" aria-checked="true">Normal</button><button type="button" role="radio" class="activity-profile-btn" data-profile="trace" aria-checked="false" title="More detail for 10 minutes">High</button></div></div>
+                            <button type="button" class="ui-btn ui-btn--quiet ui-desk-only" id="activity-capture-btn"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg><span>Pause</span></button>
+                            <button type="button" class="ui-icon-btn ui-desk-only" id="activity-more-btn" aria-haspopup="menu" aria-expanded="false" aria-label="More" title="More"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg></button>
+                        </div>
+                        <div class="ui-notice ui-notice--warning activity-drops" id="system-drops-card" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg><div class="ui-notice-body" id="system-drops-summary"></div><button type="button" class="ui-btn ui-btn--sm" id="system-drops-review-btn">Review</button></div>
+                        <div class="ui-chips ui-chips--scroll ui-phone-only activity-chips" id="activity-chips" role="group" aria-label="Filter by area"></div>
+                        <div class="activity-cols">
+                            <nav class="activity-rail ui-desk-only" id="activity-filters" aria-label="Filter by area"></nav>
+                            <section class="activity-feed-wrap" aria-label="Events">
+                                <div class="activity-scroll" id="activity-scroll">
+                                    <div class="activity-feedhead"><span class="t" id="activity-feed-label">Everything</span><span class="ui-pane-count" id="activity-result-count"></span></div>
+                                    <div id="activity-feed" role="log" aria-live="polite"></div>
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+                </section>
+                <section class="ui-detail activity-detail ui-desk-only" id="activity-detail" aria-label="Event detail"></section>
             </div>
         </div>
 

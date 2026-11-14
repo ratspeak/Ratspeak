@@ -5,13 +5,15 @@ var activityProfile = 'normal';
 var activityAreaFilter = 'all';
 var activityProblemsOnly = false;
 var activitySearchQuery = '';
-var activityExpandedSequence = null;
+var activitySelectedSequence = null;
 var activityRevealedFields = Object.create(null);
 var activityRevealPending = Object.create(null);
 var activityRevealEventPending = Object.create(null);
 var activityIdentityProtectionEnabled = true;
 // Set by Show in Activity: { msgId, session, token, retryable }.
 var activityMessageFilter = null;
+// Turn off: capture stops and its events are cleared, so the off state shows until Start Activity.
+var activityTurnedOff = false;
 var activityFirstStatusOverdue = false;
 var ACTIVITY_FIRST_STATUS_MS = 10000;
 
@@ -37,7 +39,7 @@ var ACTIVITY_AREA_ORDER = [
 
 var ACTIVITY_AREA_LABELS = {
     network: 'Network',
-    interfaces: 'Interfaces',
+    interfaces: 'Connections',
     links: 'Links',
     messages: 'Messages',
     channels: 'Channels',
@@ -783,10 +785,10 @@ var activityBootstrap = createActivityBootstrap({
     },
     onEvents: function(events) {
         activityEvents = events.slice();
-        if (activityExpandedSequence && !activityEvents.some(function(event) {
-            return event.sequence === activityExpandedSequence;
+        if (activitySelectedSequence && !activityEvents.some(function(event) {
+            return event.sequence === activitySelectedSequence;
         })) {
-            activityExpandedSequence = null;
+            activitySelectedSequence = null;
         }
         scheduleActivityRender();
     },
@@ -801,7 +803,7 @@ var activityBootstrap = createActivityBootstrap({
         activityProblemsOnly = false;
         activitySearchQuery = '';
         activityMessageFilter = null;
-        activityExpandedSequence = null;
+        activitySelectedSequence = null;
         activityResetReveals();
         activityStickToBottom = true;
         setActivityControlPending(false);
@@ -817,7 +819,7 @@ var activityBootstrap = createActivityBootstrap({
         activityProfile = 'normal';
         activityEvents = [];
         activityMessageFilter = null;
-        activityExpandedSequence = null;
+        activitySelectedSequence = null;
         activityResetReveals();
         setActivityControlPending(false);
         updateActivityUI();
@@ -880,14 +882,13 @@ function openActivityMessageFilter(filter, opts) {
     activitySearchQuery = '';
     var searchInput = document.getElementById('activity-search-input');
     if (searchInput) searchInput.value = '';
-    activityExpandedSequence = null;
+    activitySelectedSequence = null;
     activityStickToBottom = true;
-    if (typeof switchView === 'function') switchView('network');
-    if (typeof selectNetworkSubtab === 'function') selectNetworkSubtab('activity');
+    if (typeof switchView === 'function') switchView('activity');
     renderActivityFilters();
     renderActivityFeed();
     if (opts.focusChip) {
-        var chip = document.querySelector('#activity-filters .activity-filter-message');
+        var chip = document.querySelector('#activity-scroll .activity-message-filter .ui-icon-btn');
         if (chip && typeof chip.focus === 'function') chip.focus();
     }
 }
@@ -898,14 +899,22 @@ function clearActivityMessageFilter(moveFocus) {
     renderActivityFilters();
     renderActivityFeed();
     if (moveFocus) {
-        var all = document.querySelector('#activity-filters [data-area="all"]');
-        if (all && typeof all.focus === 'function') all.focus();
+        var search = document.getElementById('activity-search-input');
+        if (search && typeof search.focus === 'function') search.focus();
     }
+}
+
+// Show this message only, from an event's detail: the event's own message pseudonym.
+function activityShowEventMessage(event) {
+    var attribute = activityAttribute(event, 'message');
+    var value = attribute && attribute.value && attribute.value.type === 'identifier' ? attribute.value.value : null;
+    if (!value || !value.pseudonym) return;
+    openActivityMessageFilter({ msgId: null, session: event.capture_session, token: value.pseudonym, retryable: false }, {});
 }
 
 function activityControlElements() {
     var elements = [];
-    ['activity-enable-btn', 'activity-capture-btn', 'activity-clear-btn'].forEach(function(id) {
+    ['activity-enable-btn', 'activity-capture-btn', 'activity-capture-btn-phone', 'activity-more-btn', 'activity-more-btn-phone'].forEach(function(id) {
         var element = document.getElementById(id);
         if (element) elements.push(element);
     });
@@ -970,80 +979,101 @@ function initActivity() {
     var enableBtn = document.getElementById('activity-enable-btn');
     if (enableBtn) {
         enableBtn.addEventListener('click', function() {
+            activityTurnedOff = false;
             setActivityCapture(true);
         });
     }
 
-    var captureBtn = document.getElementById('activity-capture-btn');
-    if (captureBtn) {
+    ['activity-capture-btn', 'activity-capture-btn-phone'].forEach(function(id) {
+        var captureBtn = document.getElementById(id);
+        if (!captureBtn) return;
         captureBtn.addEventListener('click', function() {
             setActivityCapture(activityCaptureState !== 'capturing');
         });
-    }
-
-    document.querySelectorAll('.activity-profile-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            setActivityProfile(this.getAttribute('data-profile'));
-        });
     });
 
-    var clearBtn = document.getElementById('activity-clear-btn');
-    if (clearBtn) {
-        clearBtn.addEventListener('click', function() {
-            clearActivity();
+    ['activity-more-btn', 'activity-more-btn-phone'].forEach(function(id) {
+        var moreBtn = document.getElementById(id);
+        if (!moreBtn) return;
+        moreBtn.addEventListener('click', function() { openActivityMenu(moreBtn); });
+    });
+
+    var profiles = document.getElementById('activity-profile-select');
+    if (profiles) {
+        profiles.addEventListener('click', function(event) {
+            var btn = activityClosestEventTarget(event.target, 'activity-profile-btn', profiles);
+            if (btn && !btn.disabled) setActivityProfile(btn.getAttribute('data-profile'));
         });
     }
 
     var searchInput = document.getElementById('activity-search-input');
+    var searchClear = document.getElementById('activity-search-clear');
     if (searchInput) {
         searchInput.addEventListener('input', function() {
             activitySearchQuery = this.value.trim().toLowerCase();
             activityStickToBottom = !activitySearchQuery;
+            if (searchClear) searchClear.hidden = !this.value;
             renderActivityFeed();
         });
     }
+    if (searchClear) searchClear.addEventListener('click', clearActivitySearch);
+    // "/" focuses the search, as before.
+    document.addEventListener('keydown', function(event) {
+        if (event.key !== '/' || typeof isViewActive !== 'function' || !isViewActive('activity')) return;
+        var tag = document.activeElement && document.activeElement.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || (document.activeElement && document.activeElement.isContentEditable)) return;
+        if (!searchInput || searchInput.offsetParent === null) return;
+        event.preventDefault();
+        searchInput.focus();
+    });
 
-    var filters = document.getElementById('activity-filters');
-    if (filters) {
+    ['activity-filters', 'activity-chips'].forEach(function(id) {
+        var filters = document.getElementById(id);
+        if (!filters) return;
         filters.addEventListener('click', function(event) {
-            var button = activityClosestEventTarget(event.target, 'activity-filter-chip', filters);
-            if (!button) return;
-            if (button.classList.contains('activity-filter-message')) {
-                clearActivityMessageFilter(true);
-                return;
-            }
+            var button = event.target.closest && event.target.closest('[data-area], [data-problems]');
+            if (!button || !filters.contains(button)) return;
             var area = button.getAttribute('data-area');
             if (area) {
                 activityAreaFilter = area;
-            } else if (button.getAttribute('data-problems') === 'true') {
+                activityProblemsOnly = false;
+            } else {
                 activityProblemsOnly = !activityProblemsOnly;
+                activityAreaFilter = 'all';
             }
             activityStickToBottom = false;
+            var scroller = document.getElementById('activity-scroll');
+            if (scroller) scroller.scrollTop = 0;
             renderActivityFilters();
             renderActivityFeed();
         });
-    }
+    });
 
-    var feed = document.getElementById('activity-feed');
-    if (feed) {
-        feed.addEventListener('scroll', function() {
-            var distanceFromBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+    var scroll = document.getElementById('activity-scroll');
+    if (scroll) {
+        scroll.addEventListener('scroll', function() {
+            var distanceFromBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
             activityStickToBottom = distanceFromBottom <= ACTIVITY_STICK_TOLERANCE_PX;
         }, { passive: true });
-        feed.addEventListener('click', function(event) {
-            var copyControl = activityClosestEventTarget(event.target, 'activity-copy-value', feed);
-            if (copyControl) {
-                event.stopPropagation();
-                activateActivityIdentifier(
-                    copyControl.getAttribute('data-sequence'),
-                    copyControl.getAttribute('data-field')
-                );
+        scroll.addEventListener('click', function(event) {
+            if (event.target.closest && event.target.closest('[data-activity-action="unmsg"]')) {
+                clearActivityMessageFilter(true);
                 return;
             }
-            var row = activityClosestEventTarget(event.target, 'activity-event', feed);
-            if (row) toggleActivityEvent(row.getAttribute('data-sequence'));
+            if (event.target.closest && event.target.closest('[data-activity-action="clear-search"]')) {
+                clearActivitySearch();
+                return;
+            }
+            var row = activityClosestEventTarget(event.target, 'activity-event', scroll);
+            if (row) selectActivityEvent(row.getAttribute('data-sequence'));
         });
     }
+
+    var detail = document.getElementById('activity-detail');
+    if (detail) detail.addEventListener('click', handleActivityDetailClick);
+
+    var dropsBtn = document.getElementById('system-drops-review-btn');
+    if (dropsBtn) dropsBtn.addEventListener('click', openSystemDrops);
 
     document.addEventListener('rs-lifecycle-foreground-handled', function(event) {
         var detail = event && event.detail ? event.detail : {};
@@ -1058,6 +1088,45 @@ function initActivity() {
         activityFirstStatusOverdue = true;
         updateActivityUI();
     }, ACTIVITY_FIRST_STATUS_MS);
+}
+
+function clearActivitySearch() {
+    var searchInput = document.getElementById('activity-search-input');
+    var searchClear = document.getElementById('activity-search-clear');
+    if (searchInput) searchInput.value = '';
+    if (searchClear) searchClear.hidden = true;
+    activitySearchQuery = '';
+    activityStickToBottom = true;
+    renderActivityFeed();
+    if (searchInput) searchInput.focus();
+}
+
+// Clear and Turn off are rare resets of capture, so they share the ⋯ menu.
+function openActivityMenu(trigger) {
+    if (!RS.kit || typeof RS.kit.menu !== 'function') return;
+    RS.kit.menu(trigger, {
+        title: 'Activity',
+        items: [
+            { label: 'Clear events', icon: 'trash', disabled: !activityEvents.length, onSelect: function() { clearActivity(); } },
+            { separator: true },
+            { label: 'Turn off Activity', icon: 'power', onSelect: turnOffActivity }
+        ]
+    });
+}
+
+function turnOffActivity() {
+    var stop = activityCaptureState === 'capturing' ? setActivityCapture(false) : Promise.resolve(activityStatus);
+    return stop.then(function() {
+        if (activityCaptureState === 'capturing') return null;
+        return clearActivity().then(function(status) {
+            activityTurnedOff = true;
+            activitySelectedSequence = null;
+            updateActivityUI();
+            renderActivityFeed();
+            if (typeof showToast === 'function') showToast('Activity is off. Its events were cleared.', 'toast-success', 3000);
+            return status;
+        });
+    });
 }
 
 function setActivityCapture(enabled) {
@@ -1123,7 +1192,7 @@ function clearActivity() {
         if (context.token !== _activityControlToken) return status;
         if (!applyActivityStatus(status)) throw new Error('Invalid Activity clear acknowledgement');
         activityEvents = [];
-        activityExpandedSequence = null;
+        activitySelectedSequence = null;
         activityResetReveals();
         activityStickToBottom = true;
         renderActivityFilters();
@@ -1144,53 +1213,53 @@ function clearActivity() {
 function updateActivityUI() {
     var gate = document.getElementById('activity-privacy-gate');
     var active = document.getElementById('activity-active');
-    var clearBtn = document.getElementById('activity-clear-btn');
-    var captureBtn = document.getElementById('activity-capture-btn');
-    var status = document.getElementById('activity-status');
-    var statusLabel = document.getElementById('activity-status-label');
+    var dot = document.getElementById('activity-status-dot');
+    var label = document.getElementById('activity-status-label');
+    var phoneActions = document.getElementById('activity-phone-actions');
+    var detail = document.getElementById('activity-detail');
 
-    var hasSession = activityCaptureState === 'capturing' || activityCaptureState === 'stopped';
-    // Capture is on by default: show the gate only once the backend says it is
+    var hasSession = (activityCaptureState === 'capturing' || activityCaptureState === 'stopped') && !activityTurnedOff;
+    // Capture is on by default: show the off state only once the backend says it is
     // off, or when no status arrives at all.
-    if (!activityStatus && activityCaptureState === 'off' && !activityFirstStatusOverdue) {
-        if (gate) gate.style.display = 'none';
-        if (active) active.style.display = '';
-        if (clearBtn) clearBtn.style.display = 'none';
-        if (captureBtn) captureBtn.style.display = 'none';
-        if (status) status.hidden = true;
-        updateProfileButtons();
-        return;
+    var waiting = !activityStatus && activityCaptureState === 'off' && !activityFirstStatusOverdue;
+    var off = !waiting && !hasSession;
+    if (gate) gate.hidden = !off;
+    if (active) active.hidden = off;
+    if (detail) detail.hidden = off;
+    if (phoneActions) phoneActions.hidden = off || waiting;
+
+    var state = off ? 'off' : (activityCaptureState === 'stopped' ? 'paused' : (activityProfile === 'trace' ? 'high' : 'live'));
+    if (waiting) state = 'waiting';
+    if (dot) dot.className = 'ui-dot' + ({ live: ' ui-dot--online ui-dot--pulse', high: ' ui-dot--warning' }[state] || '');
+    if (label) {
+        label.textContent = { off: 'Off', paused: 'Paused', high: 'High detail · 10 min', live: 'Live', waiting: '' }[state];
     }
-    if (hasSession) {
-        if (gate) gate.style.display = 'none';
-        if (active) active.style.display = '';
-        if (clearBtn) clearBtn.style.display = '';
-        if (captureBtn) {
-            captureBtn.style.display = '';
-            captureBtn.textContent = activityCaptureState === 'capturing' ? 'Stop' : 'Start';
-            captureBtn.setAttribute(
-                'aria-label',
-                activityCaptureState === 'capturing' ? 'Stop Activity' : 'Start Activity'
-            );
-            captureBtn.setAttribute('data-state', activityCaptureState);
-        }
-    } else {
-        if (gate) gate.style.display = '';
-        if (active) active.style.display = 'none';
-        if (clearBtn) clearBtn.style.display = 'none';
-        if (captureBtn) captureBtn.style.display = 'none';
-    }
+    var status = document.getElementById('activity-status');
     if (status) {
         status.setAttribute('data-state', activityCaptureState);
-        status.hidden = !hasSession;
+        status.hidden = state === 'waiting';
     }
-    if (statusLabel) {
-        statusLabel.textContent = activityCaptureState === 'capturing'
-            ? 'Live'
-            : (activityCaptureState === 'stopped' ? 'Stopped' : '');
+
+    var capturing = activityCaptureState === 'capturing';
+    var word = capturing ? 'Pause' : 'Resume';
+    var glyph = RS.kit ? RS.kit.icon(capturing ? 'pause' : 'play') : '';
+    var desk = document.getElementById('activity-capture-btn');
+    if (desk) {
+        desk.innerHTML = glyph + '<span>' + word + '</span>';
+        desk.setAttribute('data-state', activityCaptureState);
+        desk.disabled = _activityControlPending;
     }
-    if (captureBtn) captureBtn.disabled = _activityControlPending;
-    if (clearBtn) clearBtn.disabled = _activityControlPending || activityEvents.length === 0;
+    var phone = document.getElementById('activity-capture-btn-phone');
+    if (phone) {
+        phone.innerHTML = glyph;
+        phone.setAttribute('aria-label', word);
+        phone.title = word;
+        phone.disabled = _activityControlPending;
+    }
+    ['activity-more-btn', 'activity-more-btn-phone'].forEach(function(id) {
+        var more = document.getElementById(id);
+        if (more) more.disabled = _activityControlPending;
+    });
     var enableBtn = document.getElementById('activity-enable-btn');
     if (enableBtn) enableBtn.disabled = _activityControlPending;
     updateProfileButtons();
@@ -1199,29 +1268,16 @@ function updateActivityUI() {
 function updateProfileButtons() {
     var btns = document.querySelectorAll('.activity-profile-btn');
     btns.forEach(function(btn) {
-        if (btn.getAttribute('data-profile') === activityProfile) {
-            btn.classList.add('active');
-            btn.setAttribute('aria-pressed', 'true');
-        } else {
-            btn.classList.remove('active');
-            btn.setAttribute('aria-pressed', 'false');
-        }
+        btn.setAttribute('aria-checked', btn.getAttribute('data-profile') === activityProfile ? 'true' : 'false');
         btn.disabled = _activityControlPending || activityCaptureState !== 'capturing';
     });
 }
 
+// Areas: a rail of one-line rows on desktop, chips with a check on a phone.
 function renderActivityFilters() {
-    var container = document.getElementById('activity-filters');
-    if (!container) return;
-    var bar = container.parentElement;
-    if (bar && bar.classList) bar.classList.toggle('has-message-filter', !!activityMessageFilter);
-    if (activityMessageFilter) {
-        container.innerHTML = '<button type="button" class="activity-filter-chip activity-filter-message" ' +
-            'aria-label="Clear filter: This message">This message' +
-            '<svg viewBox="0 0 24 24" aria-hidden="true"><line x1="6" y1="6" x2="18" y2="18"/>' +
-            '<line x1="18" y1="6" x2="6" y2="18"/></svg></button>';
-        return;
-    }
+    var rail = document.getElementById('activity-filters');
+    var chips = document.getElementById('activity-chips');
+    if (!rail && !chips) return;
 
     var areaCounts = Object.create(null);
     var problemCount = 0;
@@ -1231,28 +1287,34 @@ function renderActivityFilters() {
         areaCounts[eventArea] = (areaCounts[eventArea] || 0) + 1;
         if (activityIsProblem(event)) problemCount++;
     }
-    if (activityAreaFilter !== 'all' && !areaCounts[activityAreaFilter]) {
-        activityAreaFilter = 'all';
+    if (activityAreaFilter !== 'all' && !areaCounts[activityAreaFilter]) activityAreaFilter = 'all';
+    if (!problemCount) activityProblemsOnly = false;
+    var allOn = activityAreaFilter === 'all' && !activityProblemsOnly && !activityMessageFilter;
+
+    function railRow(key, label, count, current, attrs, extra) {
+        return '<li><button type="button" class="ui-row ui-row--one' + (extra || '') + '" ' + attrs + (current ? ' aria-current="true"' : '') + '>' +
+            '<span class="activity-adot' + (key ? ' a-' + escapeHtml(key) : ' is-blank') + '" aria-hidden="true"></span>' +
+            '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + escapeHtml(label) + '</span>' +
+            '<span class="ui-time">' + count + '</span></span></span></button></li>';
     }
-    var html = '<button class="activity-filter-chip' + (activityAreaFilter === 'all' ? ' active' : '') +
-        '" data-area="all" aria-pressed="' + (activityAreaFilter === 'all' ? 'true' : 'false') + '">All</button>';
+    function chip(label, count, on, attrs) {
+        return '<button type="button" class="ui-chip" role="checkbox" aria-checked="' + (on ? 'true' : 'false') + '" ' + attrs + '>' +
+            (on && RS.kit ? RS.kit.icon('check') : '') + escapeHtml(label) + ' <span class="n">' + count + '</span></button>';
+    }
+
+    var rows = railRow('', 'All', activityEvents.length, allOn, 'data-area="all"');
+    var chipHtml = chip('All', activityEvents.length, allOn, 'data-area="all"');
     for (var areaIndex = 0; areaIndex < ACTIVITY_AREA_ORDER.length; areaIndex++) {
         var area = ACTIVITY_AREA_ORDER[areaIndex];
-        if (!areaCounts[area]) continue;
-        var isActive = activityAreaFilter === area;
-        html += '<button class="activity-filter-chip' + (isActive ? ' active' : '') +
-            '" data-area="' + area + '" aria-pressed="' + (isActive ? 'true' : 'false') + '">' +
-            escapeHtml(ACTIVITY_AREA_LABELS[area] || activityHumanizeCode(area)) + '</button>';
+        var label = ACTIVITY_AREA_LABELS[area] || activityHumanizeCode(area);
+        var on = activityAreaFilter === area && !activityProblemsOnly && !activityMessageFilter;
+        rows += railRow(area, label, areaCounts[area] || 0, on, 'data-area="' + area + '"');
+        if (areaCounts[area]) chipHtml += chip(label, areaCounts[area], on, 'data-area="' + area + '"');
     }
-    if (problemCount > 0) {
-        html += '<button class="activity-filter-chip activity-filter-problems' +
-            (activityProblemsOnly ? ' active' : '') +
-            '" data-problems="true" aria-pressed="' + (activityProblemsOnly ? 'true' : 'false') +
-            '">Problems <span>' + problemCount + '</span></button>';
-    } else {
-        activityProblemsOnly = false;
-    }
-    container.innerHTML = html;
+    rows += railRow('problems', 'Problems', problemCount, activityProblemsOnly && !activityMessageFilter, 'data-problems="true"', ' activity-problems');
+    if (problemCount) chipHtml += chip('Problems', problemCount, activityProblemsOnly, 'data-problems="true"');
+    if (rail) rail.innerHTML = '<ul class="ui-list"><li class="ui-caption">Areas</li>' + rows + '</ul>';
+    if (chips) chips.innerHTML = chipHtml;
 }
 
 function activityClosestEventTarget(target, className, boundary) {
@@ -1264,17 +1326,17 @@ function activityClosestEventTarget(target, className, boundary) {
     return null;
 }
 
-function toggleActivityEvent(sequence) {
+// Selecting an event shows it in the detail panel; on a phone it opens in a sheet.
+function selectActivityEvent(sequence) {
     if (!activityIsCanonicalU64(sequence, false)) return;
-    var expanding = activityExpandedSequence !== sequence;
-    activityExpandedSequence = expanding ? sequence : null;
+    activitySelectedSequence = sequence;
     activityStickToBottom = false;
-    renderActivityFeed();
-    var row = document.querySelector('[data-activity-sequence="' + sequence + '"]');
-    var toggle = row && row.querySelector ? row.querySelector('.activity-event-toggle') : null;
-    if (toggle && typeof toggle.focus === 'function') {
-        try { toggle.focus({ preventScroll: true }); } catch (_) { toggle.focus(); }
+    var event = activityEventBySequence(sequence);
+    if (event && !activityIdentityProtectionEnabled && !activityEventIdentifiersRevealed(event)) {
+        activityRevealEvent(event);
     }
+    renderActivityFeed();
+    if (typeof isCompactLayout === 'function' && isCompactLayout()) openActivityEventSheet(sequence);
 }
 
 function activityEventBySequence(sequence) {
@@ -1934,18 +1996,12 @@ function activityTimestampIso(timestamp) {
     return isNaN(date.getTime()) ? '' : date.toISOString();
 }
 
-function activityEventDetails(event) {
+// The facts in an event's detail, as rows of [label, html].
+function activityEventFacts(event) {
     var rows = [];
     var announce = activityAnnounceContext(event);
     if (announce && announce.displayName) {
         rows.push(['Name', '<span class="activity-identity-name">' + escapeHtml(announce.displayName) + '</span>']);
-    }
-    rows.push(['Event', '<code>' + escapeHtml(event.kind) + '</code>']);
-    if (event.kind === 'channels.session.closed' && activityCodeValue(event, 'reason') === 'remote') {
-        rows.push([
-            'Meaning',
-            '<span>The hub ended the authenticated Reticulum Link. The close signal carries no detailed reason.</span>'
-        ]);
     }
     (event.attributes || []).forEach(function(attribute) {
         // Older captured lifecycle rows can contain a one-time percentage.
@@ -1971,14 +2027,136 @@ function activityEventDetails(event) {
     if (event.direction && event.direction !== 'none') {
         rows.push(['Direction', escapeHtml(activityHumanizeCode(event.direction))]);
     }
-    rows.push(['Capture', escapeHtml(activityHumanizeCode(event.capture_profile || 'normal'))]);
+    rows.push(['Detail', escapeHtml(event.capture_profile === 'trace' ? 'High' : 'Normal')]);
+    rows.push(['Event', '<code class="activity-code">' + escapeHtml(event.kind) + '</code>']);
     rows.push(['Sequence', '<code>#' + escapeHtml(event.sequence) + '</code>']);
+    return rows;
+}
 
-    var html = '<dl class="activity-event-details">';
+// In plain words, when an event's name alone doesn't say it.
+function activityPlainWords(event) {
+    if (event.kind === 'channels.session.closed' && activityCodeValue(event, 'reason') === 'remote') {
+        return 'The hub ended the authenticated Reticulum Link. The close signal carries no detailed reason.';
+    }
+    return '';
+}
+
+function activityEventDetails(event) {
+    var rows = activityEventFacts(event);
+    var html = '<dl class="ui-dl activity-event-details">';
     for (var i = 0; i < rows.length; i++) {
-        html += '<div><dt>' + escapeHtml(rows[i][0]) + '</dt><dd>' + rows[i][1] + '</dd></div>';
+        html += '<dt>' + escapeHtml(rows[i][0]) + '</dt><dd>' + rows[i][1] + '</dd>';
     }
     return html + '</dl>';
+}
+
+function activityOutcomeTone(event) {
+    if (activityIsProblem(event)) return 'error';
+    if (event.outcome === 'in_progress') return 'warning';
+    return event.outcome && event.outcome !== 'none' ? 'online' : '';
+}
+
+// The detail: the summary, one status line, plain words when needed, the facts, and actions.
+function activityDetailHtml(event, inSheet) {
+    var area = activityPresentationArea(event);
+    var outcome = event.outcome && event.outcome !== 'none' ? activityOutcomeLabel(event.outcome) : 'Recorded';
+    var tone = activityOutcomeTone(event);
+    var plain = activityPlainWords(event);
+    var acts = [];
+    if (area === 'interfaces') acts.push('<button type="button" class="ui-btn" data-activity-action="network">Open in Network</button>');
+    var message = activityAttribute(event, 'message');
+    if (message && message.value && message.value.type === 'identifier' && !activityMessageFilter) {
+        acts.push('<button type="button" class="ui-btn" data-activity-action="message">Show this message only</button>');
+    }
+    acts.push('<button type="button" class="ui-btn ui-btn--quiet" data-activity-action="copy">Copy details</button>');
+    return '<div class="activity-dscroll" data-sequence="' + escapeHtml(event.sequence) + '">' +
+        (inSheet ? '' : '<h2 class="ui-detail-title">' + escapeHtml(activityEventSummary(event)) + '</h2>') +
+        '<p class="ui-status"><span class="ui-dot' + (tone ? ' ui-dot--' + tone : '') + '" aria-hidden="true"></span><span>' +
+            escapeHtml(outcome) + ' · ' + escapeHtml(ACTIVITY_AREA_LABELS[area] || activityHumanizeCode(area)) + ' · ' +
+            '<time datetime="' + escapeHtml(activityTimestampIso(event.timestamp_unix_ms)) + '" title="' +
+                escapeHtml(RS.kit ? RS.kit.time.full(event.timestamp_unix_ms) : '') + '">' +
+                escapeHtml(formatActivityTime(event.timestamp_unix_ms)) + '</time></span></p>' +
+        (plain ? '<div class="ui-notice ui-notice--info">' + (RS.kit ? RS.kit.icon('info') : '') + '<div class="ui-notice-body">' + escapeHtml(plain) + '</div></div>' : '') +
+        activityEventDetails(event) +
+        '<div class="activity-acts">' + acts.join('') + '</div></div>';
+}
+
+function renderActivityDetail() {
+    var detail = document.getElementById('activity-detail');
+    if (!detail) return;
+    var event = activitySelectedSequence ? activityEventBySequence(activitySelectedSequence) : null;
+    if (event && !activityIdentityProtectionEnabled && !activityEventIdentifiersRevealed(event)) activityRevealEvent(event);
+    detail.innerHTML = event ? activityDetailHtml(event, false)
+        : '<div class="ui-empty ui-empty--quiet ui-empty--center"><h3 class="ui-empty-title">Select an event</h3>' +
+            '<p class="ui-empty-body">What happened, in plain words, shows here.</p></div>';
+}
+
+var _activitySheet = null;
+function openActivityEventSheet(sequence) {
+    var event = activityEventBySequence(sequence);
+    if (!event || !RS.kit || typeof RS.kit.dialog !== 'function') return;
+    if (_activitySheet && _activitySheet.isOpen()) _activitySheet.close(null);
+    _activitySheet = RS.kit.dialog({
+        title: activityEventSummary(event),
+        size: 'md',
+        body: activityDetailHtml(event, true),
+        onClose: function() { _activitySheet = null; }
+    });
+    _activitySheet.dialog.addEventListener('click', handleActivityDetailClick);
+}
+
+function refreshActivityEventSheet() {
+    if (!_activitySheet || !_activitySheet.isOpen() || !_activitySheet.body) return;
+    var event = activitySelectedSequence ? activityEventBySequence(activitySelectedSequence) : null;
+    if (!event) { _activitySheet.close(null); return; }
+    _activitySheet.body.innerHTML = activityDetailHtml(event, true);
+}
+
+function handleActivityDetailClick(event) {
+    var scope = event.currentTarget;
+    var copyControl = activityClosestEventTarget(event.target, 'activity-copy-value', scope);
+    if (copyControl) {
+        event.stopPropagation();
+        activateActivityIdentifier(copyControl.getAttribute('data-sequence'), copyControl.getAttribute('data-field'));
+        return;
+    }
+    var action = event.target.closest && event.target.closest('[data-activity-action]');
+    if (!action) return;
+    var holder = action.closest('[data-sequence]');
+    var current = holder ? activityEventBySequence(holder.getAttribute('data-sequence')) : null;
+    if (!current) return;
+    var kind = action.getAttribute('data-activity-action');
+    if (kind === 'network') {
+        if (_activitySheet) _activitySheet.close(null);
+        if (typeof switchView === 'function') switchView('network');
+    } else if (kind === 'message') {
+        if (_activitySheet) _activitySheet.close(null);
+        activityShowEventMessage(current);
+    } else if (kind === 'copy') {
+        copyActivityEventDetails(current);
+    }
+}
+
+function copyActivityEventDetails(event) {
+    RS.invoke('activity_safe_copy', { args: { capture_session: event.capture_session, sequence: event.sequence } }).then(function(result) {
+        if (!result || result.result !== 'found' || typeof result.json !== 'string') throw new Error('not found');
+        return RS.copyText(result.json);
+    }).then(function(copied) {
+        if (typeof showToast === 'function') {
+            showToast(copied ? 'Event details copied' : 'Could not copy event details', copied ? 'toast-success' : 'toast-error', 2000);
+        }
+    }).catch(function() {
+        if (typeof showToast === 'function') showToast('Could not copy event details', 'toast-error', 3000);
+    });
+}
+
+function activityRowTime(ts) {
+    return formatActivityTime(ts).replace(/ [AP]M$/, '');
+}
+
+function activityMinuteLabel(ts) {
+    var d = new Date(typeof ts === 'number' ? ts : Date.parse(ts));
+    return isNaN(d.getTime()) ? '' : (RS.kit ? RS.kit.time.clock(d.getTime()) : formatActivityTime(ts));
 }
 
 function renderActivityFeed() {
@@ -1991,78 +2169,94 @@ function renderActivityFeed() {
         : filtered;
     var count = document.getElementById('activity-result-count');
     if (count) {
-        if (filtered.length === activityEvents.length) {
-            count.textContent = filtered.length + (filtered.length === 1 ? ' event' : ' events');
+        count.textContent = visible.length < filtered.length
+            ? 'Latest ' + visible.length + ' of ' + filtered.length
+            : filtered.length + (filtered.length === 1 ? ' event' : ' events');
+    }
+    var label = document.getElementById('activity-feed-label');
+    if (label) {
+        if (activityMessageFilter) {
+            label.className = 'activity-message-filter';
+            label.innerHTML = '<span class="ui-chip" aria-checked="true">' + (RS.kit ? RS.kit.icon('check') : '') + 'One message</span>' +
+                '<button type="button" class="ui-icon-btn ui-icon-btn--sm" data-activity-action="unmsg" aria-label="Show all activity" title="Show all activity">' +
+                (RS.kit ? RS.kit.icon('x') : '') + '</button>';
         } else {
-            count.textContent = filtered.length + ' of ' + activityEvents.length;
-        }
-        if (visible.length < filtered.length) {
-            count.textContent = 'Latest ' + visible.length + ' of ' + filtered.length;
+            label.className = 't';
+            label.textContent = activityProblemsOnly ? 'Problems'
+                : (activityAreaFilter === 'all' ? 'Everything' : (ACTIVITY_AREA_LABELS[activityAreaFilter] || activityHumanizeCode(activityAreaFilter)));
         }
     }
 
+    if (activitySelectedSequence && !activityEventBySequence(activitySelectedSequence)) activitySelectedSequence = null;
+
     if (activityMessageFilter && !activityEvents.some(activityEventIsFilteredMessage)) {
-        feed.innerHTML = '<div class="activity-empty">' +
-            '<span class="type-empty-title activity-empty-title">Nothing recorded for this message</span>' +
-            '<span class="type-empty-hint">Activity records while it\'s on, keeps recent events only, and clears them on restart.' +
-            (activityMessageFilter.retryable ? ' Retry the message to record a new attempt.' : '') + '</span>' +
+        feed.innerHTML = '<div class="ui-empty ui-empty--quiet">' +
+            '<h3 class="ui-empty-title">Nothing recorded for this message</h3>' +
+            '<p class="ui-empty-body">Activity records while it’s on, keeps recent events only, and clears them on restart.' +
+            (activityMessageFilter.retryable ? ' Retry the message to record a new attempt.' : '') + '</p>' +
         '</div>';
+        renderActivityDetail();
         return;
     }
 
     if (visible.length === 0) {
-        var emptyMessage = activityEvents.length
-            ? 'No activity matches these filters.'
-            : (activityCaptureState === 'stopped' ? 'No activity was captured.' : 'Waiting for activity…');
-        feed.innerHTML = '<div class="activity-empty">' + emptyMessage + '</div>';
+        if (activitySearchQuery) {
+            feed.innerHTML = '<div class="ui-empty"><h3 class="ui-empty-title">No activity matches “' + escapeHtml(activitySearchQuery) + '”</h3>' +
+                '<p class="ui-empty-body">Search checks what happened, who, and the event name.</p>' +
+                '<div class="ui-empty-actions"><button type="button" class="ui-link" data-activity-action="clear-search">Clear search</button></div></div>';
+        } else if (activityEvents.length) {
+            feed.innerHTML = '<div class="ui-empty ui-empty--quiet"><h3 class="ui-empty-title">Nothing in this area yet</h3></div>';
+        } else if (activityCaptureState === 'stopped') {
+            feed.innerHTML = '<div class="ui-empty ui-empty--quiet"><h3 class="ui-empty-title">No activity was captured</h3></div>';
+        } else {
+            feed.innerHTML = '<div class="ui-empty ui-empty--inline" role="status"><span class="ui-spin ui-spin--ring" aria-hidden="true"></span>' +
+                'Waiting for activity. Events show here as they happen.</div>';
+        }
+        renderActivityDetail();
         return;
     }
 
+    var compact = typeof isCompactLayout === 'function' && isCompactLayout();
+    // One list per minute, so each minute's caption sticks only over its own rows.
     var html = '';
+    var lastMinute = null;
     for (var i = 0; i < visible.length; i++) {
         var event = visible[i];
-        var expanded = event.sequence === activityExpandedSequence;
-        if (expanded && !activityIdentityProtectionEnabled && !activityEventIdentifiersRevealed(event)) {
-            activityRevealEvent(event);
+        var minute = activityMinuteLabel(event.timestamp_unix_ms);
+        if (minute !== lastMinute) {
+            if (lastMinute !== null) html += '</ul>';
+            html += '<ul class="ui-list activity-list" aria-label="' + escapeHtml(minute) + '"><li class="ui-caption">' + escapeHtml(minute) + '</li>';
+            lastMinute = minute;
         }
+        var selected = event.sequence === activitySelectedSequence && !compact;
         var problem = activityIsProblem(event);
         var outcome = event.outcome && event.outcome !== 'none' ? event.outcome : '';
         var presentationArea = activityPresentationArea(event);
-        html += '<div class="activity-event' + (expanded ? ' expanded' : '') + (problem ? ' is-problem' : '') +
+        var meta = ['<span>' + escapeHtml(ACTIVITY_AREA_LABELS[presentationArea] || activityHumanizeCode(presentationArea)) + '</span>'];
+        if (outcome) {
+            meta.push('<span class="activity-out activity-out--' + escapeHtml(activityOutcomeTone(event) || 'none') + '" data-outcome="' + escapeHtml(outcome) + '">' +
+                escapeHtml(activityOutcomeLabel(outcome)) + '</span>');
+        }
+        if (ACTIVITY_REASON_IN_META_KINDS.indexOf(event.kind) !== -1 && activityDeliveryReasonLabel(event)) {
+            meta.push('<span data-reason>' + escapeHtml(activityDeliveryReasonLabel(event)) + '</span>');
+        }
+        if (event.count > 1) meta.push('<span>' + escapeHtml(String(event.count)) + ' events</span>');
+        html += '<li><button type="button" class="ui-row activity-event' + (problem ? ' is-problem' : '') +
             '" data-area="' + escapeHtml(presentationArea) + '" data-sequence="' + escapeHtml(event.sequence) +
-            '" data-activity-sequence="' + escapeHtml(event.sequence) + '">' +
-                '<span class="activity-event-rail"><span></span></span>' +
-                '<div class="activity-event-content">' +
-                    '<div class="activity-event-heading">' +
-                        '<span class="activity-event-summary">' + escapeHtml(activityEventSummary(event)) + '</span>' +
-                        '<time class="activity-event-time" datetime="' +
-                            escapeHtml(activityTimestampIso(event.timestamp_unix_ms)) + '">' +
-                            escapeHtml(formatActivityTime(event.timestamp_unix_ms)) + '</time>' +
-                    '</div>' +
-                    '<div class="activity-event-meta">' +
-                        '<span>' + escapeHtml(ACTIVITY_AREA_LABELS[presentationArea] || activityHumanizeCode(presentationArea)) + '</span>' +
-                        (outcome ? '<span data-outcome="' + escapeHtml(outcome) + '">' +
-                            escapeHtml(activityOutcomeLabel(outcome)) + '</span>' : '') +
-                        (ACTIVITY_REASON_IN_META_KINDS.indexOf(event.kind) !== -1 && activityDeliveryReasonLabel(event)
-                            ? '<span data-reason>' + escapeHtml(activityDeliveryReasonLabel(event)) + '</span>'
-                            : '') +
-                        (event.count > 1 ? '<span>' + escapeHtml(String(event.count)) + ' events</span>' : '') +
-                    '</div>' +
-                    (expanded ? activityEventDetails(event) : '') +
-                '</div>' +
-                '<button type="button" class="activity-event-toggle" data-sequence="' +
-                    escapeHtml(event.sequence) + '" aria-expanded="' + (expanded ? 'true' : 'false') +
-                    '" aria-label="' + (expanded ? 'Hide event details' : 'Show event details') + '">' +
-                    '<svg class="activity-event-chevron" viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">' +
-                        '<polyline points="6 9 12 15 18 9"></polyline>' +
-                    '</svg>' +
-                '</button>' +
-            '</div>';
+            '" data-activity-sequence="' + escapeHtml(event.sequence) + '"' + (selected ? ' aria-current="true"' : '') + '>' +
+                '<span class="activity-adot a-' + escapeHtml(presentationArea) + (problem ? ' is-problem' : '') + '" aria-hidden="true"></span>' +
+                '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + escapeHtml(activityEventSummary(event)) + '</span>' +
+                    '<time class="ui-time activity-time" datetime="' + escapeHtml(activityTimestampIso(event.timestamp_unix_ms)) + '" title="' +
+                        escapeHtml(RS.kit ? RS.kit.time.full(event.timestamp_unix_ms) : '') + '">' +
+                        escapeHtml(activityRowTime(event.timestamp_unix_ms)) + '</time></span>' +
+                '<span class="ui-row-sub"><span class="t">' + meta.join(' · ') + '</span></span></span>' +
+            '</button></li>';
     }
-    feed.innerHTML = html;
-    if (activityStickToBottom) {
-        feed.scrollTop = feed.scrollHeight;
-    }
+    feed.innerHTML = html + '</ul>';
+    var scroller = document.getElementById('activity-scroll');
+    if (activityStickToBottom && scroller) scroller.scrollTop = scroller.scrollHeight;
+    renderActivityDetail();
+    refreshActivityEventSheet();
 }
 
 function formatActivityTime(ts) {
@@ -2092,67 +2286,100 @@ function fetchSystemDrops() {
         .catch(function() { return []; });
 }
 
+var _systemDropEntries = [];
+
+function systemDropsSplit(entries) {
+    var allEntries = entries || [];
+    return {
+        system: allEntries.filter(function(e) { return e.reason !== 'Manual'; }),
+        // Unverified manual entries: pre-fix leftovers or identities pruned from
+        // recent announces, counted apart so they can be purged.
+        unverified: allEntries.filter(function(e) { return e.reason === 'Manual' && e.verified === false; })
+    };
+}
+
 function renderSystemDrops(entries) {
     var card = document.getElementById('system-drops-card');
     var summary = document.getElementById('system-drops-summary');
-    var list = document.getElementById('system-drops-list');
-    var purgeBtn = document.getElementById('system-drops-purge-unverified-btn');
-    if (!card || !summary || !list) return;
+    if (!card || !summary) return;
+    _systemDropEntries = entries || [];
+    var split = systemDropsSplit(_systemDropEntries);
+    var total = split.system.length + split.unverified.length;
+    card.hidden = total === 0;
+    if (!total) return;
+    summary.textContent = total === 1
+        ? 'The network filter drops 1 peer.'
+        : 'The network filter drops ' + total + ' peers.';
+}
 
-    var allEntries = entries || [];
-    var systemEntries = allEntries.filter(function(e) { return e.reason !== 'Manual'; });
-    // Unverified manual entries \u2014 pre-fix garbage or identities pruned from
-    // recent_announces. Count separately so the user has a clear path to clean
-    // them up via "Purge unverified".
-    var unverifiedManual = allEntries.filter(function(e) {
-        return e.reason === 'Manual' && e.verified === false;
-    });
-
-    if (purgeBtn) {
-        purgeBtn.style.display = unverifiedManual.length > 0 ? '' : 'none';
+function systemDropRows(entries) {
+    var split = systemDropsSplit(entries);
+    function row(e, unverified) {
+        var label = REASON_LABELS[e.reason] || e.reason || 'unknown';
+        var expiry = typeof e.expires_in === 'number'
+            ? (e.expires_in > 0 ? 'ends in ' + formatExpiryShort(Math.floor(e.expires_in)) : 'expired')
+            : 'no end';
+        return '<div class="ui-prop"><span class="ui-prop-text">' +
+            (RS.kit ? RS.kit.hash.copy(e.hash || '', { noun: 'Identity hash' }) : escapeHtml(e.hash || '')) +
+            '<span class="ui-prop-desc">' + escapeHtml(label.charAt(0).toUpperCase() + label.slice(1)) +
+                (unverified ? ' · no announce backs it' : '') + ' · ' + escapeHtml(expiry) + '</span></span></div>';
     }
+    return split.system.map(function(e) { return row(e, false); }).concat(split.unverified.map(function(e) { return row(e, true); }));
+}
 
-    if (systemEntries.length === 0 && unverifiedManual.length === 0) {
-        card.style.display = 'none';
+function openSystemDrops() {
+    if (!RS.kit || typeof RS.kit.dialog !== 'function') return;
+    var split = systemDropsSplit(_systemDropEntries);
+    var built = RS.kit.dialog({
+        title: 'Network drops',
+        size: 'md',
+        body: '<p>Peers the network filter drops on its own. Blocks you made stay until you unblock them.</p>' +
+            '<div class="ui-group">' + systemDropRows(_systemDropEntries).join('') + '</div>',
+        foot: (split.unverified.length ? '<button type="button" class="ui-btn ui-btn--danger" data-drops="purge">Purge unverified</button>' : '') +
+            '<button type="button" class="ui-btn" data-drops="clear"' + (split.system.length ? '' : ' disabled') + '>Clear network drops</button>'
+    });
+    built.dialog.addEventListener('click', function(e) {
+        var btn = e.target.closest && e.target.closest('[data-drops]');
+        if (!btn) return;
+        built.close(null);
+        if (btn.getAttribute('data-drops') === 'clear') clearSystemDrops();
+        else purgeUnverifiedDrops();
+    });
+}
+
+function clearSystemDrops() {
+    if (typeof rsConfirm !== 'function') {
+        RS.invoke('clear_system_blackholes').catch(function() {});
         return;
     }
-
-    var counts = {};
-    systemEntries.forEach(function(e) {
-        var label = REASON_LABELS[e.reason] || e.reason || 'unknown';
-        counts[label] = (counts[label] || 0) + 1;
+    rsConfirm({
+        title: 'Clear network drops?',
+        message: 'Peers the network filter dropped can reach you again. Blocks you made aren’t affected.',
+        confirmText: 'Clear'
+    }).then(function(ok) {
+        if (!ok) return;
+        RS.invoke('clear_system_blackholes').catch(function() {});
     });
-    if (unverifiedManual.length > 0) {
-        counts['unverified manual'] = unverifiedManual.length;
-    }
-    var summaryParts = Object.keys(counts).sort().map(function(k) { return counts[k] + ' ' + k; });
-    var totalShown = systemEntries.length + unverifiedManual.length;
-    summary.textContent = totalShown + ' \u00B7 ' + summaryParts.join(', ');
+}
 
-    var html = '';
-    var renderRow = function(e, extraPill) {
-        var hashShort = (e.hash || '').substring(0, 16);
-        var label = REASON_LABELS[e.reason] || e.reason || 'unknown';
-        var pillClass = 'system-drops-pill system-drops-pill-' + (e.reason || 'unknown').toLowerCase();
-        var expiry;
-        if (typeof e.expires_in === 'number') {
-            expiry = e.expires_in > 0 ? formatExpiryShort(Math.floor(e.expires_in)) : 'expired';
-        } else {
-            expiry = 'no expiry';
-        }
-        return '<div class="system-drops-row">' +
-            '<span class="system-drops-hash" title="' + escapeHtml(e.hash || '') + '">' + escapeHtml(hashShort) + '\u2026</span>' +
-            '<span class="' + pillClass + '">' + escapeHtml(label) + '</span>' +
-            (extraPill || '') +
-            '<span class="system-drops-expiry">' + escapeHtml(expiry) + '</span>' +
-        '</div>';
-    };
-    systemEntries.forEach(function(e) { html += renderRow(e); });
-    unverifiedManual.forEach(function(e) {
-        html += renderRow(e, '<span class="system-drops-pill system-drops-pill-unverified" title="No announce backs this identity">unverified</span>');
+// Drops Manual blackhole entries no known announce backs: leftovers from
+// pre-fix builds that can never match, and blocks for long-unheard contacts.
+function purgeUnverifiedDrops() {
+    if (typeof rsConfirm !== 'function') return;
+    rsConfirm({
+        title: 'Purge unverified blocks?',
+        message: 'Removes network blocks with no recent announce behind them. This cleans up old leftovers, and may also drop blocks for contacts you haven’t heard from in a long time.',
+        confirmText: 'Purge',
+        danger: true
+    }).then(function(ok) {
+        if (!ok) return;
+        RS.invoke('purge_unverified_blackholes').then(function(resp) {
+            if (typeof showToast !== 'function') return;
+            var n = (resp && resp.purged) | 0;
+            if (n === 0) showToast('Nothing to purge. Every block is verified.', 'toast-info', 3000);
+            else showToast('Purged ' + n + ' unverified ' + (n === 1 ? 'block' : 'blocks') + '.', 'toast-success', 3000);
+        }).catch(function() {});
     });
-    list.innerHTML = html;
-    card.style.display = '';
 }
 
 function formatExpiryShort(sec) {
@@ -2167,71 +2394,54 @@ function refreshSystemDrops() {
 }
 
 function initSystemDrops() {
-    var header = document.querySelector('#system-drops-card .system-drops-header');
-    var body = document.getElementById('system-drops-body');
-    if (header && body) {
-        var toggle = function() {
-            var open = !body.hasAttribute('hidden');
-            if (open) {
-                body.setAttribute('hidden', '');
-                header.setAttribute('aria-expanded', 'false');
-            } else {
-                body.removeAttribute('hidden');
-                header.setAttribute('aria-expanded', 'true');
-            }
-        };
-        header.addEventListener('click', toggle);
-        header.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
-        });
-    }
-
-    var clearBtn = document.getElementById('system-drops-clear-btn');
-    if (clearBtn) {
-        clearBtn.addEventListener('click', function() {
-            if (typeof rsConfirm !== 'function') {
-                RS.invoke('clear_system_blackholes').catch(function() {});
-                return;
-            }
-            rsConfirm({
-                message: 'Clear all system-populated network drops? Manual blocks are not affected.',
-                confirmText: 'Clear'
-            }).then(function(ok) {
-                if (!ok) return;
-                RS.invoke('clear_system_blackholes').catch(function() {});
-            });
-        });
-    }
-
-    var purgeBtn = document.getElementById('system-drops-purge-unverified-btn');
-    if (purgeBtn) {
-        // Drops Manual blackhole entries whose identity is not currently
-        // backed by a known announce. Useful after pre-fix builds populated
-        // the table with LXMF-dest-hash bytes that can never match an
-        // announcer. Also removes legit-but-unseen entries — warn the user.
-        purgeBtn.addEventListener('click', function() {
-            if (typeof rsConfirm !== 'function') return;
-            rsConfirm({
-                message: 'Remove network blocks with no recent announce evidence? This cleans up pre-fix garbage entries but may also drop blocks for contacts you have not heard from in a long time.',
-                confirmText: 'Purge',
-                danger: true
-            }).then(function(ok) {
-                if (!ok) return;
-                RS.invoke('purge_unverified_blackholes').then(function(resp) {
-                    if (typeof showToast !== 'function') return;
-                    var n = (resp && resp.purged) | 0;
-                    if (n === 0) {
-                        showToast('Nothing to purge — all blocks are verified.', 'toast-info', 3000);
-                    } else {
-                        showToast('Purged ' + n + ' unverified entr' + (n === 1 ? 'y' : 'ies') + '.', 'toast-success', 3000);
-                    }
-                }).catch(function() {});
-            });
-        });
-    }
-
     RS.listen('blackhole_update', refreshSystemDrops);
     refreshSystemDrops();
+}
+
+// The "New" tag on Activity's sidebar and More items: 1.1.x only, until Activity is
+// opened once by any route. The flag lives in app settings. Remove in 1.2.
+var _activityTabSeen = null;
+var _activityAppVersion = '';
+
+function activityNewTagShows() {
+    return _activityTabSeen === false && /^1\.1\./.test(_activityAppVersion);
+}
+
+function syncActivityNewTag() {
+    var show = activityNewTagShows();
+    document.querySelectorAll('[data-new-tag="activity"]').forEach(function(tag) { tag.hidden = !show; });
+}
+
+function markActivityTabSeen() {
+    if (_activityTabSeen === true) return;
+    _activityTabSeen = true;
+    syncActivityNewTag();
+    RS.invoke('set_ui_state', { key: 'activity_tab_seen', value: true }).catch(function() {});
+}
+
+// App settings arrive in settings.js; Activity takes the flags it owns.
+var _uiStateListeners = RS.uiStateListeners = RS.uiStateListeners || [];
+RS.adoptUiState = function(data) {
+    _uiStateListeners.forEach(function(fn) { try { fn(data || {}); } catch (_) {} });
+};
+_uiStateListeners.push(function(data) {
+    if (data.activity_tab_seen === undefined || _activityTabSeen === true) return;
+    _activityTabSeen = !!data.activity_tab_seen;
+    syncActivityNewTag();
+});
+
+RS.invoke('api_version').then(function(data) {
+    _activityAppVersion = (data && data.version) || '';
+    syncActivityNewTag();
+}).catch(function() {});
+
+if (typeof VIEW_LIFECYCLE !== 'undefined') {
+    VIEW_LIFECYCLE.activity = function() {
+        markActivityTabSeen();
+        updateActivityUI();
+        renderActivityFilters();
+        renderActivityFeed();
+    };
 }
 
 initSystemDrops();

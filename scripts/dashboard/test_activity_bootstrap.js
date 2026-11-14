@@ -851,9 +851,10 @@ function loadUiHarness(options) {
     var end = activitySource.indexOf('\nvar REASON_LABELS');
     assert(end !== -1, 'Activity UI source boundary must exist');
     var ids = {};
-    ['activity-enable-btn', 'activity-capture-btn', 'activity-clear-btn', 'activity-privacy-gate',
-        'activity-active', 'activity-feed', 'activity-filters', 'activity-status',
-        'activity-status-label', 'activity-result-count', 'activity-search-input'].forEach(function(id) {
+    ['activity-enable-btn', 'activity-capture-btn', 'activity-more-btn', 'activity-privacy-gate',
+        'activity-active', 'activity-feed', 'activity-filters', 'activity-chips', 'activity-status',
+        'activity-status-dot', 'activity-status-label', 'activity-result-count', 'activity-search-input',
+        'activity-feed-label', 'activity-detail', 'activity-scroll'].forEach(function(id) {
         ids[id] = new FakeElement(id);
     });
     var profiles = ['normal', 'trace'].map(function(profile) {
@@ -942,9 +943,8 @@ test('pending controls are tokened, disabled/aria-busy, roll back with status re
     await stop;
     assert.strictEqual(ctx.activityCaptureState, 'stopped');
     assert.strictEqual(ctx.activityEvents.length, 1, 'Stop retains visible rows');
-    assert.strictEqual(ui.ids['activity-active'].style.display, '');
-    assert.strictEqual(ui.ids['activity-capture-btn'].textContent, 'Start');
-    assert.strictEqual(ui.ids['activity-capture-btn'].attributes['aria-label'], 'Start Activity');
+    assert.strictEqual(ui.ids['activity-active'].hidden, false);
+    assert(ui.ids['activity-capture-btn'].innerHTML.includes('<span>Resume</span>'), 'a paused log offers Resume');
     assert.strictEqual(ui.ids['activity-capture-btn'].disabled, false);
     assert.strictEqual(ui.ids['activity-capture-btn'].attributes['aria-busy'], undefined);
     assert(ui.ids['activity-capture-btn'].focusCount > 0);
@@ -964,7 +964,7 @@ test('pending controls are tokened, disabled/aria-busy, roll back with status re
     assert(ui.resyncs.indexOf('control_status_reconciled') !== -1);
 });
 
-test('Activity title shows status only for live and stopped sessions', function() {
+test('Activity title shows a status dot and words once the backend answers', function() {
     var ui = loadUiHarness();
     var ctx = ui.context;
     var statusElement = ui.ids['activity-status'];
@@ -972,7 +972,7 @@ test('Activity title shows status only for live and stopped sessions', function(
 
     ctx.activityCaptureState = 'off';
     ctx.updateActivityUI();
-    assert.strictEqual(statusElement.hidden, true);
+    assert.strictEqual(statusElement.hidden, true, 'nothing to say before the first status');
     assert.strictEqual(statusLabel.textContent, '');
 
     ctx.applyActivityStatus(status(SESSION_A, 'capturing', '1', '1'));
@@ -981,7 +981,8 @@ test('Activity title shows status only for live and stopped sessions', function(
 
     ctx.applyActivityStatus(status(SESSION_A, 'stopped', '1', '1'));
     assert.strictEqual(statusElement.hidden, false);
-    assert.strictEqual(statusLabel.textContent, 'Stopped');
+    assert.strictEqual(statusLabel.textContent, 'Paused');
+
 });
 
 test('the off gate waits for the backend, since capture is on by default', function() {
@@ -990,12 +991,12 @@ test('the off gate waits for the backend, since capture is on by default', funct
     ctx.activityStatus = null;
     ctx.activityCaptureState = 'off';
     ctx.updateActivityUI();
-    assert.strictEqual(ui.ids['activity-privacy-gate'].style.display, 'none', 'no gate flash at launch');
-    assert.strictEqual(ui.ids['activity-active'].style.display, '');
+    assert.strictEqual(ui.ids['activity-privacy-gate'].hidden, true, 'no gate flash at launch');
+    assert.strictEqual(ui.ids['activity-active'].hidden, false);
 
     ctx.applyActivityStatus(status(null, 'off', null, null));
-    assert.strictEqual(ui.ids['activity-privacy-gate'].style.display, '', 'a stopped log shows the gate');
-    assert.strictEqual(ui.ids['activity-active'].style.display, 'none');
+    assert.strictEqual(ui.ids['activity-privacy-gate'].hidden, false, 'an off log shows the gate');
+    assert.strictEqual(ui.ids['activity-active'].hidden, true);
 });
 
 function messageEvent(session, sequence, kind, token, reason) {
@@ -1032,9 +1033,9 @@ test('Show in Activity filters to one message and explains an empty result', fun
     assert.deepStrictEqual(ctx.activityEvents.filter(ctx.activityEventMatches).map(function(e) { return e.sequence; }), ['1']);
 
     ctx.renderActivityFilters();
-    var chips = ctx.document.getElementById('activity-filters').innerHTML;
-    assert(chips.includes('aria-label="Clear filter: This message"'));
-    assert(!chips.includes('data-area='), 'area chips step aside while a message is shown');
+    ctx.renderActivityFeed();
+    assert(!ctx.document.getElementById('activity-filters').innerHTML.includes('aria-current'), 'no area is current while a message is shown');
+    assert(ctx.document.getElementById('activity-feed-label').innerHTML.includes('aria-label="Show all activity"'));
 
     ctx.activityEvents = [other];
     ctx.renderActivityFeed();
@@ -1063,7 +1064,7 @@ test('Clear waits for acknowledgement, clears only on success, and failure retai
     });
     var clearing = ctx.clearActivity();
     assert.strictEqual(ctx.activityEvents.length, 1);
-    assert.strictEqual(ui.ids['activity-clear-btn'].disabled, true);
+    assert.strictEqual(ui.ids['activity-more-btn'].disabled, true);
     clearGate.resolve(stopped);
     await clearing;
     assert.strictEqual(ctx.activityEvents.length, 0);
@@ -1079,7 +1080,7 @@ test('Clear waits for acknowledgement, clears only on success, and failure retai
     });
     await ctx.clearActivity();
     assert.strictEqual(ctx.activityEvents.length, 1);
-    assert.strictEqual(ui.ids['activity-clear-btn'].disabled, false);
+    assert.strictEqual(ui.ids['activity-more-btn'].disabled, false);
 });
 
 test('Normal and Trace controls call the typed profile command and Resume uses the typed capture command', async function() {
@@ -1096,7 +1097,7 @@ test('Normal and Trace controls call the typed profile command and Resume uses t
     await ctx.setActivityProfile('normal');
     assert.deepStrictEqual(profiles, ['trace', 'normal']);
     assert.strictEqual(ctx.activityProfile, 'normal');
-    assert.strictEqual(ui.profiles[0].attributes['aria-pressed'], 'true');
+    assert.strictEqual(ui.profiles[0].attributes['aria-checked'], 'true');
 
     ctx.applyActivityStatus(status(SESSION_A, 'stopped', '1', '1', 'trace'));
     assert.strictEqual(ctx.activityProfile, 'trace');
@@ -1127,22 +1128,23 @@ test('canonical channel events render as readable, filterable rows with privacy-
     ctx.activityEvents = [channelEvent];
     ctx.renderActivityFilters();
     assert(ui.ids['activity-filters'].innerHTML.indexOf('Channels') !== -1);
-    assert(ui.ids['activity-filters'].innerHTML.indexOf('Links') === -1);
+    assert(ui.ids['activity-filters'].innerHTML.indexOf('Channels</span><span class="ui-time">1</span>') !== -1);
+    assert(ui.ids['activity-chips'].innerHTML.indexOf('Links') === -1, 'phone chips list only areas with events');
 
     ctx.renderActivityFeed();
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('Channel join requested') !== -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-area="channels"') !== -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('masked-hub-token-123456') === -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('Channel join requested') !== -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('data-area="channels"') !== -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('masked-hub-token-123456') === -1);
 
-    ctx.activityExpandedSequence = '7';
+    ctx.activitySelectedSequence = '7';
     ctx.renderActivityFeed();
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('channels.room.join_requested') !== -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('<code>Reveal</code>') !== -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-action="reveal"') !== -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-icon="reveal"') !== -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-icon="copy"') === -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-field="hub"') !== -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('masked-hub-token-123456') === -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('channels.room.join_requested') !== -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('<code>Reveal</code>') !== -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('data-action="reveal"') !== -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('data-icon="reveal"') !== -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('data-icon="copy"') === -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('data-field="hub"') !== -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('masked-hub-token-123456') === -1);
 });
 
 test('remote channel closes explain the authenticated teardown without guessing a cause', function() {
@@ -1174,10 +1176,10 @@ test('remote channel closes explain the authenticated teardown without guessing 
         value: { type: 'unsigned', value: 321000 }
     }];
     ctx.activityEvents = [closeEvent];
-    ctx.activityExpandedSequence = '8';
+    ctx.activitySelectedSequence = '8';
     ctx.renderActivityFeed();
 
-    var html = ui.ids['activity-feed'].innerHTML;
+    var html = (ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML);
     assert(html.indexOf('Hub ended channel session') !== -1);
     assert(html.indexOf('Remote Link teardown') !== -1);
     assert(html.indexOf('authenticated Reticulum Link') !== -1);
@@ -1207,7 +1209,7 @@ test('identifier controls reveal first and copy only after disclosure', async fu
         value: { type: 'unsigned', value: 2 }
     }];
     ctx.activityEvents = [announceEvent];
-    ctx.activityExpandedSequence = '9';
+    ctx.activitySelectedSequence = '9';
     ctx.PeersCache = {
         get: function(hash) {
             assert.strictEqual(hash, rawAddress);
@@ -1235,7 +1237,7 @@ test('identifier controls reveal first and copy only after disclosure', async fu
     });
 
     ctx.renderActivityFeed();
-    var hiddenHtml = ui.ids['activity-feed'].innerHTML;
+    var hiddenHtml = (ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML);
     assert(hiddenHtml.indexOf('<code>Reveal</code>') !== -1);
     assert(hiddenHtml.indexOf('data-action="reveal"') !== -1);
     assert(hiddenHtml.indexOf('data-icon="reveal"') !== -1);
@@ -1251,7 +1253,7 @@ test('identifier controls reveal first and copy only after disclosure', async fu
     assert.strictEqual(copied, null, 'the reveal action must not copy');
 
     ctx.renderActivityFeed();
-    var html = ui.ids['activity-feed'].innerHTML;
+    var html = (ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML);
     assert(html.indexOf('Alice announced') !== -1);
     assert(html.indexOf('activity-identity-name">Alice') !== -1);
     assert(html.indexOf('LXMF address') !== -1);
@@ -1289,7 +1291,7 @@ test('one Activity disclosure reveals every identifier in only that event', asyn
         }
     }];
     ctx.activityEvents = [peerEvent];
-    ctx.activityExpandedSequence = '10';
+    ctx.activitySelectedSequence = '10';
     var fields = [];
     ui.setInvoke(function(name, args) {
         assert.strictEqual(name, 'activity_reveal');
@@ -1304,19 +1306,19 @@ test('one Activity disclosure reveals every identifier in only that event', asyn
     });
 
     ctx.renderActivityFeed();
-    assert.strictEqual((ui.ids['activity-feed'].innerHTML.match(/data-action="reveal"/g) || []).length, 2);
+    assert.strictEqual(((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).match(/data-action="reveal"/g) || []).length, 2);
     assert.strictEqual(await ctx.activateActivityIdentifier('10', 'destination'), true);
     await flush();
     ctx.renderActivityFeed();
     assert.deepStrictEqual(fields.sort(), ['destination', 'identity']);
-    assert.strictEqual((ui.ids['activity-feed'].innerHTML.match(/data-action="copy"/g) || []).length, 2);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('001122334…eeff') !== -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('ffeeddccb…1100') !== -1);
+    assert.strictEqual(((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).match(/data-action="copy"/g) || []).length, 2);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('001122334…eeff') !== -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('ffeeddccb…1100') !== -1);
 
     ctx.setActivityIdentityProtectionEnabled(false);
     ctx.setActivityIdentityProtectionEnabled(true);
     ctx.renderActivityFeed();
-    assert.strictEqual((ui.ids['activity-feed'].innerHTML.match(/data-action="reveal"/g) || []).length, 2,
+    assert.strictEqual(((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).match(/data-action="reveal"/g) || []).length, 2,
         'turning protection on clears every transient disclosure');
 });
 
@@ -1336,7 +1338,7 @@ test('disabling Activity identity protection removes reveal friction without cha
         }
     }];
     ctx.activityEvents = [peerEvent];
-    ctx.activityExpandedSequence = '11';
+    ctx.activitySelectedSequence = '11';
     ui.setInvoke(function(name, args) {
         assert.strictEqual(name, 'activity_reveal');
         return Promise.resolve({
@@ -1350,9 +1352,9 @@ test('disabling Activity identity protection removes reveal friction without cha
     ctx.setActivityIdentityProtectionEnabled(false);
     await flush();
     ctx.renderActivityFeed();
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-action="copy"') !== -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf('data-action="reveal"') === -1);
-    assert(ui.ids['activity-feed'].innerHTML.indexOf(raw) === -1,
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('data-action="copy"') !== -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf('data-action="reveal"') === -1);
+    assert((ui.ids['activity-feed'].innerHTML + ui.ids['activity-detail'].innerHTML).indexOf(raw) === -1,
         'even unprotected mode keeps full addresses out of the DOM');
 });
 
@@ -1413,15 +1415,15 @@ test('Activity state stays session-only and the transformed controls are explici
     assert.strictEqual(activitySource.indexOf('enable_network_log'), -1);
     assert.strictEqual(activitySource.indexOf('set_network_log_level'), -1);
     assert(indexSource.indexOf('id="activity-capture-btn"') !== -1);
-    assert(indexSource.indexOf('data-profile="normal" aria-pressed="true"') !== -1);
-    assert(indexSource.indexOf('data-profile="trace" aria-pressed="false"') !== -1);
-    assert(indexSource.indexOf('id="activity-search-input" type="search"') !== -1);
+    assert(indexSource.indexOf('data-profile="normal" aria-checked="true"') !== -1);
+    assert(indexSource.indexOf('data-profile="trace" aria-checked="false"') !== -1);
+    assert(indexSource.indexOf('>High</button>') !== -1, 'Trace reads as High');
+    assert(indexSource.indexOf('type="search" id="activity-search-input"') !== -1);
     assert(indexSource.indexOf('autocapitalize="off"') !== -1);
     assert(indexSource.indexOf('role="log" aria-live="polite"') !== -1);
-    assert.strictEqual(indexSource.indexOf('activity-status-dot'), -1);
-    assert(indexSource.indexOf('id="activity-status" data-state="off" hidden') !== -1);
-    assert.strictEqual(indexSource.indexOf('id="activity-status-label">Off'), -1);
-    assert(activitySource.indexOf("? 'Live'") !== -1);
+    assert(indexSource.indexOf('<span class="ui-status" id="activity-status"><span class="ui-dot" id="activity-status-dot" aria-hidden="true"></span>') !== -1);
+    assert(indexSource.indexOf('<h2 class="ui-empty-title">See what Ratspeak is doing</h2>') !== -1);
+    assert(activitySource.indexOf("live: 'Live'") !== -1);
     assert.strictEqual(activitySource.indexOf("? 'Recording'"), -1);
 });
 
@@ -1508,13 +1510,13 @@ test('a waiting message, its new attempt, and the 24-hour stop read as three pla
     ctx.activityEvents = [waiting, again, gaveUp];
     ctx.renderActivityFeed();
     var rows = ctx.document.getElementById('activity-feed').innerHTML
-        .split(/(?=<div class="activity-event(?: [a-z-]+)*" data-area=)/);
+        .split(/(?=<li><button type="button" class="ui-row activity-event)/).slice(1);
     assert.strictEqual(rows.length, 3);
-    assert(rows[0].includes('<span>Messages</span><span data-reason>No network connection</span>'),
+    assert(rows[0].includes('<span>Messages</span> · <span data-reason>No network connection</span>'),
         'the reason follows the area; waiting has no outcome');
-    assert(rows[1].includes('<span>Messages</span><span data-reason>Network connected</span>'),
+    assert(rows[1].includes('<span>Messages</span> · <span data-reason>Network connected</span>'),
         'what set off the attempt follows the area');
-    assert(rows[2].includes('<span data-outcome="failed">Failed</span><span data-reason>Not delivered after 24 hours</span>'));
+    assert(rows[2].includes('data-outcome="failed">Failed</span> · <span data-reason>Not delivered after 24 hours</span>'));
     assert(!rows[0].includes('is-problem') && !rows[1].includes('is-problem') && rows[2].includes('is-problem'));
     ctx.activityProblemsOnly = true;
     assert.deepStrictEqual(ctx.activityEvents.filter(ctx.activityEventMatches).map(function(e) { return e.sequence; }), ['3']);

@@ -7778,12 +7778,10 @@ fn mobile_primary_lists_share_readable_row_scale() {
     assert!(!responsive_css.contains(".conv-row,"));
     assert!(responsive_css.contains(".conn-section-label,\n    .conn-iface-name"));
     assert!(responsive_css.contains(".conn-iface-empty,"));
-    assert!(responsive_css.contains(".activity-empty,"));
     assert!(
         responsive_css
             .contains(".conn-card-label {\n        font-size: var(--mobile-list-title-size);")
     );
-    assert!(responsive_css.contains(".activity-profile-btn,\n    .activity-filter-chip"));
     assert!(responsive_css.contains("font-size: var(--mobile-list-meta-size);"));
     assert!(
         responsive_css.contains(

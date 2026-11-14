@@ -120,8 +120,8 @@ assert(html.includes('class="cmp-input" rows="1" id="channel-message-input"'));
 assert(!html.includes('message-send-btn'), 'the old composer circles are gone');
 assert(/id="games-filter"[\s\S]*?class="ui-seg ui-seg--block" role="radiogroup" aria-label="Show games"/.test(html),
     'the Games filter is the kit segmented control');
-assert(html.includes('network-subtabs section-subtabs'));
-assert(html.includes('network-subtab-btn section-subtab-btn'));
+assert(!html.includes('network-subtabs'), 'Activity is its own tab, not half of Network');
+assert(html.includes('<div class="view" id="view-activity">'));
 assert(!/<a class="(?:bottom-sheet-item|ui-menu-item|ui-row)"[^>]*data-view/.test(html), 'mobile navigation rows must be buttons');
 assert(!/<a class="ui-tab"/.test(html), 'mobile primary navigation must use semantic buttons');
 
