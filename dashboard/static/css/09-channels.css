@@ -1622,7 +1622,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     border-bottom: 0;
 }
 
-.channel-room-detail span {
+.channel-room-detail > span {
     color: var(--text-muted);
 }
 

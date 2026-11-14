@@ -4692,7 +4692,10 @@ function _channelsPresentSharedTarget(target) {
 
     var details = document.createElement('div');
     details.className = 'channel-room-details channel-share-details';
-    details.appendChild(_channelsRoomDetail('Hub destination', destination));
+    var destinationRow = _channelsRoomDetail('Hub destination', destination);
+    destinationRow.querySelector('strong').innerHTML =
+        RS.kit.hash.copy(destination, { form: 'full', noun: 'Hub address' });
+    details.appendChild(destinationRow);
     if (target.room) details.appendChild(_channelsRoomDetail('Channel', target.room));
     var availability;
     if (sameHub) {
@@ -5602,10 +5605,16 @@ function channelsOpenJoinSheet(prefillRoom, options) {
     _channelsPresentSheet(built, normalizedPrefill ? join : roomInput);
 }
 
-function _channelsHubProfileDetail(labelText, value, mono) {
+function _channelsHubProfileDetail(labelText, value, mono, hashNoun) {
     var row = _channelsRoomDetail(labelText, value);
     row.classList.add('channel-hub-profile-detail');
-    if (mono) row.querySelector('strong').classList.add('mono');
+    var strong = row.querySelector('strong');
+    // A hash is the kit's copyable hash, in full.
+    if (hashNoun && /^[0-9a-f]{32}$/.test(String(value))) {
+        strong.innerHTML = RS.kit.hash.copy(value, { form: 'full', noun: hashNoun });
+    } else if (mono) {
+        strong.classList.add('mono');
+    }
     return row;
 }
 
@@ -5752,12 +5761,14 @@ function channelsOpenHubDetails() {
     identityDetails.appendChild(_channelsHubProfileDetail(
         'Destination',
         profile.destination_hash || 'Unavailable',
-        true
+        true,
+        'Hub address'
     ));
     identityDetails.appendChild(_channelsHubProfileDetail(
         'Hub identity',
         profile.identity_hash || 'Unavailable',
-        true
+        true,
+        'Identity hash'
     ));
     if (profile.authenticated_name) {
         identityDetails.appendChild(_channelsHubProfileDetail(
