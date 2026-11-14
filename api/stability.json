@@ -33,8 +33,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-db.txt",
-      "itemCount": 1043,
-      "sha256": "aecd34826c33f55a6984cf2064fb63de1f9170c8106aef1e569406e1f78495fd"
+      "itemCount": 1047,
+      "sha256": "9ecaae16d294b3940dae3e2abd5eae92543473a910042b6204a12fa803855036"
     },
     {
       "name": "ratspeak-runtime",

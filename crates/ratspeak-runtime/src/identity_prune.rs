@@ -5,13 +5,18 @@
 //! never one heard within `EVICTION_FLOOR_SECS`). Protection set: contacts,
 //! blocked contacts, message peers, used and Ratspeak Offline Inbox nodes,
 //! and the discovered inbox nodes kept by `propagation::trim_discovered_nodes`.
+//!
+//! A third pass reads Reticulum's known destinations: it retains the user's
+//! contacts and selected inbox nodes there, then drops keys with no peer row
+//! that Reticulum has forgotten and no protection or feature keeps.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use rns_transport::messages::PathTableRpcEntry;
+use rns_runtime::reticulum::ReticulumHandle;
+use rns_transport::messages::{PathTableRpcEntry, TransportQuery, TransportQueryResponse};
 use serde_json::json;
 
 use crate::db;
@@ -22,6 +27,7 @@ const LOW_WATERMARK: usize = 4_000;
 const EVICTION_FLOOR_SECS: f64 = 24.0 * 3600.0;
 const STARTUP_SWEEP_DELAY: Duration = Duration::from_secs(5);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
+const RETAIN_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Set while the floor holds back overflow, so it is logged once per episode.
 static FLOOR_HOLD_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -109,7 +115,129 @@ fn next_sweep_delay(swept_before: bool) -> Duration {
     }
 }
 
-/// Run one sweep (age pass + watermark pass). Returns `(pruned, kept)`.
+/// Reticulum's known destinations (`Identity.known_destinations`) with whether
+/// each is retained, and the keys of the identity whose runtime answered.
+struct ReticulumView {
+    handle: ReticulumHandle,
+    identity: String,
+    keys: Vec<String>,
+    known: HashMap<String, bool>,
+}
+
+/// `None` when there is no runtime or no full answer; the pass then removes
+/// nothing. Keys are read first, so a key learned meanwhile is no candidate.
+async fn reticulum_view(state: &AppState) -> Option<ReticulumView> {
+    let handle = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|rns| rns.as_ref().map(|mgr| mgr.handle.clone()))?;
+    let (identity, keys) = state.lxmf.lock().ok().and_then(|manager| {
+        manager.as_ref().map(|manager| {
+            (
+                manager.identity_hash.clone(),
+                manager.known_identities.keys().cloned().collect::<Vec<_>>(),
+            )
+        })
+    })?;
+    // The whole local table, as Ratspeak recalls from it, not a recent subset.
+    let Some(TransportQueryResponse::Announces(entries)) = handle
+        .query_transport(TransportQuery::GetRecentAnnounces)
+        .await
+    else {
+        return None;
+    };
+    // An empty table is a failed load as often as a quiet network.
+    if entries.is_empty() || !crate::is_current_network_runtime(state, &handle) {
+        return None;
+    }
+    let known = entries
+        .into_iter()
+        .map(|entry| (hex::encode(entry.dest_hash), entry.retained))
+        .collect();
+    Some(ReticulumView {
+        handle,
+        identity,
+        keys,
+        known,
+    })
+}
+
+/// Retain the contacts and selected inbox nodes Reticulum knows but has not
+/// pinned. Never released: the pins grow only with the user's own choices.
+async fn retain_user_pins(state: &AppState, view: &ReticulumView) {
+    let Some(pins) = db::spawn_db(state.db.clone(), |p| db::user_pinned_destinations(&p))
+        .await
+        .ok()
+        .and_then(Result::ok)
+    else {
+        return;
+    };
+    let mut retained = 0usize;
+    for pin in pins {
+        let pin = pin.to_ascii_lowercase();
+        if view.known.get(&pin) != Some(&false) {
+            continue;
+        }
+        let Some(dest) = hex::decode(&pin)
+            .ok()
+            .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+        else {
+            continue;
+        };
+        let answer = tokio::time::timeout(
+            RETAIN_TIMEOUT,
+            view.handle
+                .query_control(TransportQuery::RetainDestination { dest }),
+        )
+        .await;
+        if matches!(answer, Ok(Some(TransportQueryResponse::BoolResult(true)))) {
+            retained += 1;
+        } else {
+            tracing::debug!(
+                dest = %crate::short_id(&pin),
+                "Reticulum did not retain a contact or inbox node"
+            );
+        }
+    }
+    if retained > 0 {
+        tracing::info!(
+            retained,
+            "retained contacts and Offline Inbox nodes in Reticulum"
+        );
+    }
+}
+
+/// Remove the keys with no peer row that Reticulum no longer knows and that
+/// no protection or feature keeps.
+async fn prune_orphan_keys(
+    state: &Arc<AppState>,
+    view: ReticulumView,
+    protected_extra: HashSet<String>,
+) {
+    let candidates: Vec<String> = view
+        .keys
+        .into_iter()
+        .filter(|key| !view.known.contains_key(key) && !protected_extra.contains(key))
+        .collect();
+    if candidates.is_empty() {
+        tracing::info!(removed = 0, "orphan key prune: nothing to remove");
+        return;
+    }
+    apply_prune(
+        state,
+        PruneScope::OrphanKeys {
+            identity: view.identity,
+        },
+        candidates,
+        protected_extra,
+        "orphan key prune",
+    )
+    .await;
+}
+
+/// Run one sweep (age, watermark, then Reticulum passes). Returns `(pruned
+/// peer rows, kept keys)`.
 pub async fn sweep_once(state: Arc<AppState>) -> (usize, usize) {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -203,6 +331,22 @@ pub async fn sweep_once(state: Arc<AppState>) -> (usize, usize) {
         floor_hold_is_news(0, &FLOOR_HOLD_LOGGED);
     }
 
+    // Pass 3: against Reticulum's known destinations.
+    if let Some(view) = reticulum_view(&state).await {
+        retain_user_pins(&state, &view).await;
+        prune_orphan_keys(&state, view, protected_extra).await;
+        if let Some(current_len) = state
+            .lxmf
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|m| m.known_identities.len()))
+        {
+            kept_count = current_len;
+        }
+    } else {
+        tracing::debug!("orphan key prune skipped: Reticulum's known destinations unavailable");
+    }
+
     if total_pruned > 0 {
         state.emit_to_all(
             "identity_prune_completed",
@@ -226,10 +370,14 @@ pub async fn sweep_once(state: Arc<AppState>) -> (usize, usize) {
     (total_pruned, kept_count)
 }
 
-/// Revalidate candidates in one immediate DB transaction, persist the exact
-/// matching known-identity mutation, then commit those row deletions. Disk
-/// rewrite MUST commit before DB delete: reverse order could strand a peer
-/// with no activity row and make it appear freshly-seen forever.
+/// What a prune pass removes.
+enum PruneScope {
+    /// Peer rows last heard before `cutoff`, with their keys.
+    Peers { cutoff: f64 },
+    /// Keys without a peer row, from `identity`'s map only.
+    OrphanKeys { identity: String },
+}
+
 async fn apply_eviction(
     state: &Arc<AppState>,
     victims: Vec<String>,
@@ -237,16 +385,37 @@ async fn apply_eviction(
     protected_extra: std::collections::HashSet<String>,
     label: &'static str,
 ) -> (usize, usize) {
-    apply_eviction_with_persist(state, victims, cutoff, protected_extra, label, |snapshot| {
+    apply_prune(
+        state,
+        PruneScope::Peers { cutoff },
+        victims,
+        protected_extra,
+        label,
+    )
+    .await
+}
+
+async fn apply_prune(
+    state: &Arc<AppState>,
+    scope: PruneScope,
+    victims: Vec<String>,
+    protected_extra: std::collections::HashSet<String>,
+    label: &'static str,
+) -> (usize, usize) {
+    apply_prune_with_persist(state, scope, victims, protected_extra, label, |snapshot| {
         snapshot.persist()
     })
     .await
 }
 
-async fn apply_eviction_with_persist<F>(
+/// Revalidate candidates in one immediate DB transaction, persist the exact
+/// matching known-identity mutation, then commit those row deletions. Disk
+/// rewrite MUST commit before DB delete: reverse order could strand a peer
+/// with no activity row and make it appear freshly-seen forever.
+async fn apply_prune_with_persist<F>(
     state: &Arc<AppState>,
+    scope: PruneScope,
     victims: Vec<String>,
-    cutoff: f64,
     protected_extra: std::collections::HashSet<String>,
     label: &'static str,
     persist_snapshot: F,
@@ -254,6 +423,7 @@ async fn apply_eviction_with_persist<F>(
 where
     F: FnOnce(&crate::lxmf::KnownIdentitiesSnapshot) -> std::io::Result<()> + Send + 'static,
 {
+    let peer_rows = matches!(scope, PruneScope::Peers { .. });
     let phase_started = std::time::Instant::now();
     let persistence_queued_at = std::time::Instant::now();
     let persistence_owner = state.lxmf_persistence_lock.lock().await;
@@ -266,48 +436,61 @@ where
     let db_victims = victims.clone();
     let db_protected = protected_extra.clone();
     let deleted_result = db::spawn_db(state.db.clone(), move |pool| {
-        db::delete_prunable_identity_activity_after(
-            &pool,
-            &db_victims,
-            cutoff,
-            &db_protected,
-            |eligible| {
-                if eligible.is_empty() {
-                    return Ok(());
-                }
-                let eligible = eligible.iter().cloned().collect();
-                // The DB transaction already owns SQLite write admission.
-                // Never wait DB -> manager because user paths may hold the
-                // manager while entering SQLite. Abort this prune pass and
-                // retry later if the protocol owner is busy.
-                let (removed, snapshot) = {
-                    let mut manager =
-                        callback_state
-                            .lxmf
-                            .try_lock()
-                            .map_err(|error| match error {
-                                std::sync::TryLockError::WouldBlock => {
-                                    "LXMF manager busy during identity prune".to_string()
-                                }
-                                std::sync::TryLockError::Poisoned(_) => {
-                                    "LXMF manager unavailable during identity prune".to_string()
-                                }
-                            })?;
-                    let manager = manager.as_mut().ok_or_else(|| {
-                        "LXMF manager unavailable during identity prune".to_string()
+        let remove_keys = |eligible: &[String]| -> Result<(), String> {
+            if eligible.is_empty() {
+                return Ok(());
+            }
+            let eligible = eligible.iter().cloned().collect();
+            // The DB transaction already owns SQLite write admission.
+            // Never wait DB -> manager because user paths may hold the
+            // manager while entering SQLite. Abort this prune pass and
+            // retry later if the protocol owner is busy.
+            let (removed, snapshot) = {
+                let mut manager = callback_state
+                    .lxmf
+                    .try_lock()
+                    .map_err(|error| match error {
+                        std::sync::TryLockError::WouldBlock => {
+                            "LXMF manager busy during identity prune".to_string()
+                        }
+                        std::sync::TryLockError::Poisoned(_) => {
+                            "LXMF manager unavailable during identity prune".to_string()
+                        }
                     })?;
-                    (
-                        manager.remove_known_identities(&eligible),
-                        manager.known_identities_snapshot(),
-                    )
-                };
-                *callback_removed.lock().unwrap() = removed.clone();
-                persist_snapshot(&snapshot)
-                    .map_err(|error| format!("known-identity snapshot failed: {error}"))?;
-                *callback_snapshot.lock().unwrap() = Some(snapshot);
-                Ok(())
-            },
-        )
+                let manager = manager
+                    .as_mut()
+                    .ok_or_else(|| "LXMF manager unavailable during identity prune".to_string())?;
+                if let PruneScope::OrphanKeys { identity } = &scope
+                    && manager.identity_hash != *identity
+                {
+                    return Err("identity changed during key prune".to_string());
+                }
+                (
+                    manager.remove_known_identities(&eligible),
+                    manager.known_identities_snapshot(),
+                )
+            };
+            *callback_removed.lock().unwrap() = removed.clone();
+            persist_snapshot(&snapshot)
+                .map_err(|error| format!("known-identity snapshot failed: {error}"))?;
+            *callback_snapshot.lock().unwrap() = Some(snapshot);
+            Ok(())
+        };
+        match &scope {
+            PruneScope::Peers { cutoff } => db::delete_prunable_identity_activity_after(
+                &pool,
+                &db_victims,
+                *cutoff,
+                &db_protected,
+                remove_keys,
+            ),
+            PruneScope::OrphanKeys { .. } => db::confirm_orphan_identity_keys_after(
+                &pool,
+                &db_victims,
+                &db_protected,
+                remove_keys,
+            ),
+        }
     })
     .await;
     let deleted = match deleted_result {
@@ -396,8 +579,11 @@ where
         .unwrap_or(0);
     drop(persistence_owner);
 
-    for hash in &deleted {
-        state.emit_to_all("peer_removed", json!({ "hash": hash }));
+    let removed_rows = if peer_rows { deleted.len() } else { 0 };
+    if peer_rows {
+        for hash in &deleted {
+            state.emit_to_all("peer_removed", json!({ "hash": hash }));
+        }
     }
 
     tracing::info!(
@@ -406,7 +592,7 @@ where
         removed_from_map = removed_count,
         pruned = deleted.len(),
         kept = kept_count,
-        removed_rows = deleted.len(),
+        removed_rows,
         persistence_wait_ms = persistence_wait.as_millis() as u64,
         total_ms = phase_started.elapsed().as_millis() as u64,
         "identity prune pass complete"
@@ -647,10 +833,10 @@ mod tests {
         let task_release = Arc::clone(&release);
         let task_victim = victim.clone();
         let task = tokio::spawn(async move {
-            apply_eviction_with_persist(
+            apply_prune_with_persist(
                 &task_state,
+                PruneScope::Peers { cutoff: 10.0 },
                 vec![task_victim],
-                10.0,
                 std::collections::HashSet::new(),
                 "test_prune_snapshot_window",
                 move |_snapshot| {
@@ -784,7 +970,10 @@ mod tests {
 
         let plan = plan_watermark_eviction(peers.clone(), &direct_set, NOW);
         assert_eq!(plan.victims.len(), 1_003);
-        assert_eq!(plan.victims[0], old_plain.dest_hash, "oldest plain peer first");
+        assert_eq!(
+            plan.victims[0], old_plain.dest_hash,
+            "oldest plain peer first"
+        );
         assert!(!plan.victims.contains(&ratspeak.dest_hash));
         assert!(!plan.victims.contains(&direct.dest_hash));
 
@@ -800,7 +989,11 @@ mod tests {
         assert_eq!(plan.victims.len(), 1_100);
         let plain: HashSet<String> = (5_000..5_600).map(hash).collect();
         assert!(plan.victims[..600].iter().all(|h| plain.contains(h)));
-        assert_eq!(plan.victims[600], hash(4_499), "then the oldest Ratspeak peer");
+        assert_eq!(
+            plan.victims[600],
+            hash(4_499),
+            "then the oldest Ratspeak peer"
+        );
     }
 
     #[test]
@@ -839,8 +1032,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_sweep_ages_out_week_old_peers_and_trims_to_the_low_watermark() {
+    async fn a_sweep_ages_out_peers_past_a_stored_week_and_trims_to_the_low_watermark() {
         let (_temp, state) = make_state();
+        db::set_setting(&state.db, "known_identities_prune_days", "7");
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -880,11 +1074,22 @@ mod tests {
 
         let (pruned, kept) = sweep_once(state.clone()).await;
 
-        assert_eq!(pruned, 1 + 1_101, "one aged out, then 5,101 trimmed to 4,000");
-        assert_eq!(kept, 4_000 + 1, "the low watermark plus the protected contact");
+        assert_eq!(
+            pruned,
+            1 + 1_101,
+            "one aged out, then 5,101 trimmed to 4,000"
+        );
+        assert_eq!(
+            kept,
+            4_000 + 1,
+            "the low watermark plus the protected contact"
+        );
         let remaining = db::find_unprotected_peers(&state.db, &HashSet::new());
         assert_eq!(remaining.len(), LOW_WATERMARK);
-        assert_eq!(db::get_identity_activity_first_seen(&state.db, &week_old), None);
+        assert_eq!(
+            db::get_identity_activity_first_seen(&state.db, &week_old),
+            None
+        );
         assert!(db::get_identity_activity_first_seen(&state.db, &contact).is_some());
         assert!(
             !remaining.iter().any(|peer| peer.dest_hash == six_days),
@@ -894,5 +1099,214 @@ mod tests {
         let manager = manager.as_ref().unwrap();
         assert!(manager.known_identities.contains_key(&contact));
         assert_eq!(manager.known_identities.len(), 4_001);
+    }
+
+    #[tokio::test]
+    async fn a_sweep_ages_out_peers_after_a_day_by_default() {
+        let (_temp, state) = make_state();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let (stale, fresh) = (hash(2_000_001), hash(2_000_002));
+        db::touch_identity_activity(
+            &state.db,
+            &[
+                (stale.clone(), now - 1.5 * DAY, None, None),
+                (fresh.clone(), now - 0.5 * DAY, None, None),
+            ],
+        );
+        insert_keys(&state, [&stale, &fresh]);
+
+        assert_eq!(sweep_once(state.clone()).await, (1, 1));
+        assert_eq!(
+            db::get_identity_activity_first_seen(&state.db, &stale),
+            None
+        );
+        assert!(db::get_identity_activity_first_seen(&state.db, &fresh).is_some());
+        assert_eq!(keys(&state), vec![fresh]);
+    }
+
+    fn dest(hash: &str) -> [u8; 16] {
+        hex::decode(hash).unwrap().try_into().unwrap()
+    }
+
+    fn insert_keys<'a>(state: &AppState, hashes: impl IntoIterator<Item = &'a String>) {
+        let mut manager = state.lxmf.lock().unwrap();
+        let manager = manager.as_mut().unwrap();
+        for hash in hashes {
+            manager.known_identities.insert(hash.clone(), [3; 64]);
+        }
+    }
+
+    fn keys(state: &AppState) -> Vec<String> {
+        let manager = state.lxmf.lock().unwrap();
+        let mut keys: Vec<String> = manager
+            .as_ref()
+            .unwrap()
+            .known_identities
+            .keys()
+            .cloned()
+            .collect();
+        keys.sort();
+        keys
+    }
+
+    type Retained = Arc<Mutex<Vec<[u8; 16]>>>;
+
+    /// A runtime whose transport lists `known` (destination, retained), or
+    /// fails the listing on `None`, and retains whatever it is asked to.
+    async fn install_reticulum(
+        state: &AppState,
+        known: Option<Vec<([u8; 16], bool)>>,
+    ) -> (tempfile::TempDir, Retained, tokio::task::JoinHandle<()>) {
+        use rns_transport::messages::{AnnounceRpcEntry, TransportMessage};
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config"),
+            "[reticulum]\nshare_instance = No\nenable_transport = No\n[interfaces]\n",
+        )
+        .unwrap();
+        let mut network = crate::rns::RnsManager::init(
+            root.path().to_str().unwrap(),
+            Some(root.path().join("cache")),
+            Arc::new(AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+        let (tx, mut queries) = tokio::sync::mpsc::channel(8);
+        network.handle.transport_tx = tx;
+        *state.rns.write().unwrap() = Some(network);
+        let retained = Retained::default();
+        let answer = tokio::spawn({
+            let retained = Arc::clone(&retained);
+            async move {
+                while let Some(message) = queries.recv().await {
+                    let TransportMessage::Rpc { query, response_tx } = message else {
+                        continue;
+                    };
+                    let response = match (query, &known) {
+                        (TransportQuery::GetRecentAnnounces, Some(known)) => {
+                            TransportQueryResponse::Announces(
+                                known
+                                    .iter()
+                                    .map(|(dest, pinned)| {
+                                        let mut entry = AnnounceRpcEntry::default();
+                                        entry.dest_hash = *dest;
+                                        entry.retained = *pinned;
+                                        entry
+                                    })
+                                    .collect(),
+                            )
+                        }
+                        (TransportQuery::RetainDestination { dest }, _) => {
+                            retained.lock().unwrap().push(dest);
+                            TransportQueryResponse::BoolResult(true)
+                        }
+                        // Dropping the reply fails the query.
+                        _ => continue,
+                    };
+                    let _ = response_tx.send(response);
+                }
+            }
+        });
+        (root, retained, answer)
+    }
+
+    fn remove_reticulum(state: &AppState, answer: tokio::task::JoinHandle<()>) {
+        if let Some(network) = state.rns.write().unwrap().take() {
+            network.handle.shutdown.trigger();
+        }
+        answer.abort();
+    }
+
+    #[tokio::test]
+    async fn a_sweep_drops_only_keys_that_nothing_and_no_reticulum_entry_keeps() {
+        let (_temp, state) = make_state();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let [orphan, contact, known, peer, hub] = [1, 2, 3, 4, 5].map(|n| hash(2_100_000 + n));
+        insert_keys(&state, [&orphan, &contact, &known, &peer, &hub]);
+        db::save_contact(&state.db, &contact, None, "pending", "identity");
+        db::touch_identity_activity(&state.db, &[(peer.clone(), now, None, None)]);
+        db::save_identity(&state.db, "identity", "", "Me", "Me");
+        db::save_channel_hub(&state.db, "identity", &hub, "Hub", "me", false).unwrap();
+        let (_root, _, answer) = install_reticulum(&state, Some(vec![(dest(&known), false)])).await;
+
+        let (pruned, kept) = sweep_once(state.clone()).await;
+
+        remove_reticulum(&state, answer);
+        assert_eq!((pruned, kept), (0, 4), "a key is not a peer row");
+        let mut expected = vec![contact, known, peer.clone(), hub];
+        expected.sort();
+        assert_eq!(keys(&state), expected);
+        assert!(db::get_identity_activity_first_seen(&state.db, &peer).is_some());
+        let manager = state.lxmf.lock().unwrap();
+        let manager = manager.as_ref().unwrap();
+        assert!(!manager.known_identities_dirty());
+        assert_eq!(
+            std::fs::read(manager.ratchets_dir().join("known_identities"))
+                .unwrap()
+                .len(),
+            4 * 80
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sweep_without_a_full_reticulum_listing_removes_no_key() {
+        let (_temp, state) = make_state();
+        let orphan = hash(2_200_001);
+        insert_keys(&state, [&orphan]);
+        sweep_once(state.clone()).await;
+        assert_eq!(keys(&state), vec![orphan.clone()], "no runtime");
+
+        for listing in [None, Some(Vec::new())] {
+            let (_root, _, answer) = install_reticulum(&state, listing).await;
+            sweep_once(state.clone()).await;
+            remove_reticulum(&state, answer);
+            assert_eq!(keys(&state), vec![orphan.clone()]);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_orphan_key_prune_never_touches_another_identitys_keys() {
+        let (_temp, state) = make_state();
+        let orphan = hash(2_300_001);
+        insert_keys(&state, [&orphan]);
+        let scope = PruneScope::OrphanKeys {
+            identity: "another".into(),
+        };
+        let (pruned, _) =
+            apply_prune(&state, scope, vec![orphan.clone()], HashSet::new(), "test").await;
+        assert_eq!(pruned, 0);
+        assert_eq!(keys(&state), vec![orphan]);
+    }
+
+    #[tokio::test]
+    async fn a_sweep_retains_known_contacts_and_selected_inbox_nodes_in_reticulum() {
+        let (_temp, state) = make_state();
+        let [contact, pinned, unheard, node, stranger] =
+            [1, 2, 3, 4, 5].map(|n| hash(2_400_000 + n));
+        db::save_identity(&state.db, "identity", "", "Me", "Me");
+        db::set_identity_propagation_node(&state.db, "identity", &node).unwrap();
+        for hash in [&contact, &pinned, &unheard] {
+            db::save_contact(&state.db, hash, None, "pending", "identity");
+        }
+        let listing = vec![
+            (dest(&contact), false),
+            (dest(&pinned), true),
+            (dest(&node), false),
+            (dest(&stranger), false),
+        ];
+        let (_root, retained, answer) = install_reticulum(&state, Some(listing)).await;
+
+        sweep_once(state.clone()).await;
+
+        remove_reticulum(&state, answer);
+        let mut asked = retained.lock().unwrap().clone();
+        asked.sort();
+        assert_eq!(asked, vec![dest(&contact), dest(&node)]);
     }
 }

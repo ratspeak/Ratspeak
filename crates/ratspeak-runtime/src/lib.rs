@@ -1341,6 +1341,48 @@ async fn refresh_outbound_ratchets(state: &AppState) {
     }
 }
 
+/// Retain each destination the router delivered to in Reticulum, through the
+/// shared instance in client mode, as Python's router does (LXMRouter.py).
+async fn forward_destination_retains(state: &AppState) {
+    let Some(handle) = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|rns| rns.as_ref().map(|mgr| mgr.handle.clone()))
+    else {
+        return;
+    };
+    let retains = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|mut lxmf| {
+            lxmf.as_mut()
+                .map(|mgr| mgr.router.take_destination_retains())
+        })
+        .unwrap_or_default();
+    // A runtime still current after the drain is the drained manager's own.
+    if retains.is_empty() || !is_current_network_runtime(state, &handle) {
+        return;
+    }
+    for dest in retains {
+        let query = rns_transport::messages::TransportQuery::RetainDestination { dest };
+        let retained =
+            tokio::time::timeout(Duration::from_millis(250), handle.query_control(query)).await;
+        if !matches!(
+            retained,
+            Ok(Some(
+                rns_transport::messages::TransportQueryResponse::BoolResult(true)
+            ))
+        ) {
+            tracing::debug!(
+                dest = %short_id(&hex::encode(dest)),
+                "Reticulum did not retain a delivered destination"
+            );
+        }
+    }
+}
+
 async fn teardown_rns_runtime_interfaces(handle: &rns_runtime::reticulum::ReticulumHandle) {
     let stats = tokio::time::timeout(
         Duration::from_secs(2),
@@ -3416,6 +3458,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                         inbound_admission::admit_download(&tick_state, data, tick_activity_origin)
                             .await;
                     }
+                    forward_destination_retains(&tick_state).await;
 
                     if delivery_only {
                         // Drain in bounded turns, giving shutdown and unrelated work a chance.
@@ -11678,6 +11721,80 @@ mod notification_tests {
             state.is_current_activity_origin_fence(bystander),
             "sending the announce invalidated another request"
         );
+        network_shutdown.trigger();
+        state.rns.write().unwrap().take();
+        answer.abort();
+    }
+
+    // Python's router retains every delivered or propagated recipient.
+    #[tokio::test]
+    async fn delivered_and_propagated_recipients_are_retained_in_reticulum() {
+        use lxmf_core::message::LxMessageDraft;
+        use lxmf_core::message_api::DeliveryMethod;
+        use rns_transport::messages::{TransportMessage, TransportQuery, TransportQueryResponse};
+        let state = announce_state();
+        let (delivered, propagated) = ([0xD1; 16], [0xD2; 16]);
+        {
+            let mut lxmf = state.lxmf.lock().unwrap();
+            let mgr = lxmf.as_mut().unwrap();
+            let key = mgr.identity.get_signing_key().unwrap();
+            let source = mgr.lxmf_dest_hash;
+            let message = |dest| {
+                LxMessageDraft::new(dest, source, "", "hi", DeliveryMethod::Direct)
+                    .unwrap()
+                    .sign(&key)
+                    .unwrap()
+                    .finalize(None)
+                    .unwrap()
+            };
+            mgr.router.complete_outbound_message(message(delivered));
+            let deposited = message(propagated);
+            let id = deposited.message_id();
+            mgr.router.try_send(deposited).unwrap();
+            assert!(mgr.router.mark_outbound_propagated(&id));
+        }
+
+        // Without a runtime the retains stay queued for the next one.
+        forward_destination_retains(&state).await;
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("config"),
+            "[reticulum]\nshare_instance = No\nenable_transport = No\n[interfaces]\n",
+        )
+        .unwrap();
+        let mut network = crate::rns::RnsManager::init(
+            root.path().to_str().unwrap(),
+            Some(root.path().join("cache")),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+        .await
+        .unwrap();
+        let (tx, mut queries) = tokio::sync::mpsc::channel(4);
+        network.handle.transport_tx = tx;
+        let network_shutdown = network.handle.shutdown.clone();
+        *state.rns.write().unwrap() = Some(network);
+        let retained = Arc::new(Mutex::new(Vec::new()));
+        let answer = tokio::spawn({
+            let retained = Arc::clone(&retained);
+            async move {
+                while let Some(message) = queries.recv().await {
+                    if let TransportMessage::Rpc {
+                        query: TransportQuery::RetainDestination { dest },
+                        response_tx,
+                    } = message
+                    {
+                        retained.lock().unwrap().push(dest);
+                        let _ = response_tx.send(TransportQueryResponse::BoolResult(true));
+                    }
+                }
+            }
+        });
+
+        forward_destination_retains(&state).await;
+        forward_destination_retains(&state).await;
+
+        assert_eq!(*retained.lock().unwrap(), vec![delivered, propagated]);
         network_shutdown.trigger();
         state.rns.write().unwrap().take();
         answer.abort();

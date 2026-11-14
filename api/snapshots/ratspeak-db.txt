@@ -376,6 +376,7 @@ pub fn ratspeak_db::db::clear_channel_room_history(&ratspeak_db::DbPool, &str, &
 pub fn ratspeak_db::db::clear_discovered_identity_activity(&ratspeak_db::DbPool) -> usize
 pub fn ratspeak_db::db::clear_pending_blackhole(&ratspeak_db::DbPool, &str, &str) -> bool
 pub fn ratspeak_db::db::clear_pending_network_lift(&ratspeak_db::DbPool, &str, &str) -> bool
+pub fn ratspeak_db::db::confirm_orphan_identity_keys_after<F>(&ratspeak_db::DbPool, &[alloc::string::String], &std::collections::hash::set::HashSet<alloc::string::String>, F) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String> where F: core::ops::function::FnOnce(&[alloc::string::String]) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::conversation_thread_display_label(&ratspeak_db::DbPool, &str, &str, &str) -> core::option::Option<alloc::string::String>
 pub fn ratspeak_db::db::conversation_thread_labels_conn(&rusqlite::Connection, &str) -> rusqlite::Result<ratspeak_db::ConversationThreadLabels>
 pub fn ratspeak_db::db::conversation_threads(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<alloc::vec::Vec<serde_json::value::Value>, alloc::string::String>
@@ -550,6 +551,7 @@ pub fn ratspeak_db::db::update_identity_status(&ratspeak_db::DbPool, &str, &str)
 pub fn ratspeak_db::db::update_message_delivery_method(&ratspeak_db::DbPool, &str, &str, &str)
 pub fn ratspeak_db::db::update_message_state(&ratspeak_db::DbPool, &str, &str, &str, core::option::Option<f64>) -> bool
 pub fn ratspeak_db::db::used_propagation_nodes(&ratspeak_db::DbPool) -> core::result::Result<std::collections::hash::set::HashSet<alloc::string::String>, alloc::string::String>
+pub fn ratspeak_db::db::user_pinned_destinations(&ratspeak_db::DbPool) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String>
 pub fn ratspeak_db::db::validate_channel_history_after_cursor(&str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::validate_channel_history_cursor(core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::validate_channel_history_event(&str, &ratspeak_db::NewChannelHistoryEvent) -> core::result::Result<(), alloc::string::String>
@@ -858,6 +860,7 @@ pub fn ratspeak_db::clear_channel_room_history(&ratspeak_db::DbPool, &str, &str,
 pub fn ratspeak_db::clear_discovered_identity_activity(&ratspeak_db::DbPool) -> usize
 pub fn ratspeak_db::clear_pending_blackhole(&ratspeak_db::DbPool, &str, &str) -> bool
 pub fn ratspeak_db::clear_pending_network_lift(&ratspeak_db::DbPool, &str, &str) -> bool
+pub fn ratspeak_db::confirm_orphan_identity_keys_after<F>(&ratspeak_db::DbPool, &[alloc::string::String], &std::collections::hash::set::HashSet<alloc::string::String>, F) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String> where F: core::ops::function::FnOnce(&[alloc::string::String]) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::conversation_thread_display_label(&ratspeak_db::DbPool, &str, &str, &str) -> core::option::Option<alloc::string::String>
 pub fn ratspeak_db::conversation_thread_labels_conn(&rusqlite::Connection, &str) -> rusqlite::Result<ratspeak_db::ConversationThreadLabels>
 pub fn ratspeak_db::conversation_threads(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<alloc::vec::Vec<serde_json::value::Value>, alloc::string::String>
@@ -1034,6 +1037,7 @@ pub fn ratspeak_db::update_identity_status(&ratspeak_db::DbPool, &str, &str) -> 
 pub fn ratspeak_db::update_message_delivery_method(&ratspeak_db::DbPool, &str, &str, &str)
 pub fn ratspeak_db::update_message_state(&ratspeak_db::DbPool, &str, &str, &str, core::option::Option<f64>) -> bool
 pub fn ratspeak_db::used_propagation_nodes(&ratspeak_db::DbPool) -> core::result::Result<std::collections::hash::set::HashSet<alloc::string::String>, alloc::string::String>
+pub fn ratspeak_db::user_pinned_destinations(&ratspeak_db::DbPool) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String>
 pub fn ratspeak_db::validate_channel_history_after_cursor(&str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::validate_channel_history_cursor(core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::validate_channel_history_event(&str, &ratspeak_db::NewChannelHistoryEvent) -> core::result::Result<(), alloc::string::String>

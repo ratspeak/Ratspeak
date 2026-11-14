@@ -5997,7 +5997,7 @@ fn channel_participant_cutoff_ms(pool: &DbPool, now_ms: i64) -> Option<i64> {
 /// eventually cleaned without server participation.
 pub fn prune_expired_channel_history(pool: &DbPool) -> Result<usize, String> {
     // Channel participants are identity metadata, so follow the same
-    // user-configurable lifetime as the known-identity cache (14 days by
+    // user-configurable lifetime as the known-identity cache (1 day by
     // default). Read the setting before holding a pooled connection: test and
     // embedded pools may intentionally have a single connection.
     let participant_max_age_ms = channel_participant_retention_ms(pool);
@@ -8382,7 +8382,7 @@ mod channel_history_tests {
         let pool = test_pool();
         let day_ms = MILLIS_PER_DAY;
         let observed_at_ms = 20 * day_ms;
-        let query_at_ms = observed_at_ms + 8 * day_ms;
+        let query_at_ms = observed_at_ms + 2 * day_ms;
         let mut historical = event(HUB_A, "retention", "historical-peer");
         historical.nickname = Some("Ada".into());
         append_channel_history_events_at(
@@ -8407,7 +8407,7 @@ mod channel_history_tests {
                 .unwrap()
                 .participants
                 .is_empty(),
-            "the default 7-day known-identity lifetime also bounds Seen here"
+            "the default 1-day known-identity lifetime also bounds Seen here"
         );
 
         assert_eq!(
@@ -9356,14 +9356,16 @@ mod channel_bookmark_tests {
 }
 
 /// Overridable via `known_identities_prune_days` (0 disables).
-pub const DEFAULT_PRUNE_DAYS: u32 = 7;
+pub const DEFAULT_PRUNE_DAYS: u32 = 1;
 
-/// Peers the pruner never evicts: contacts, blocked, message counterparties,
-/// and any identity's Offline Inbox node.
+/// Peers the pruner never evicts: contacts, blocked, message, game and app
+/// counterparties, and any identity's Offline Inbox node.
 const PRUNE_PROTECTED_SQL: &str = "dest_hash NOT IN (SELECT dest_hash FROM contacts)
            AND dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts)
            AND dest_hash NOT IN (SELECT source FROM messages WHERE source != '')
            AND dest_hash NOT IN (SELECT destination FROM messages WHERE destination != '')
+           AND dest_hash NOT IN (SELECT contact_hash FROM games)
+           AND dest_hash NOT IN (SELECT contact_hash FROM app_sessions)
            AND dest_hash NOT IN (SELECT propagation_node FROM identities WHERE propagation_node != '')";
 
 /// `None` disables pruning; `Some(n)` evicts entries older than `n` days.
@@ -10163,6 +10165,86 @@ where
     }
     tx.commit().map_err(|error| error.to_string())?;
     Ok(eligible)
+}
+
+/// What a key-only prune also keeps: a key with a peer row (the peer passes
+/// govern it), joined hubs, and this device's identities.
+const KEY_PRUNE_PROTECTED_SQL: &str = "dest_hash NOT IN (SELECT dest_hash FROM identity_activity)
+           AND dest_hash NOT IN (SELECT destination_hash FROM channel_hubs)
+           AND dest_hash NOT IN (SELECT lxmf_hash FROM identities WHERE lxmf_hash != '')";
+
+/// Revalidate key-only candidates in one immediate transaction, run the
+/// caller's durable removal against the exact unprotected ones, then commit.
+/// Nothing is deleted here: the write lock keeps a peer row, contact, or
+/// message from landing between the check and the removal.
+pub fn confirm_orphan_identity_keys_after<F>(
+    pool: &DbPool,
+    hashes: &[String],
+    protected_extra: &std::collections::HashSet<String>,
+    before_commit: F,
+) -> Result<Vec<String>, String>
+where
+    F: FnOnce(&[String]) -> Result<(), String>,
+{
+    let candidates: Vec<&String> = hashes
+        .iter()
+        .filter(|hash| !protected_extra.contains(*hash))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| error.to_string())?;
+    let mut eligible = Vec::new();
+    for chunk in candidates.chunks(500) {
+        let rows = (1..=chunk.len())
+            .map(|index| format!("(?{index})"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT dest_hash FROM (SELECT column1 AS dest_hash FROM (VALUES {rows}))
+             WHERE {PRUNE_PROTECTED_SQL}
+               AND {KEY_PRUNE_PROTECTED_SQL}"
+        );
+        let params: Vec<&dyn rusqlite::types::ToSql> = chunk
+            .iter()
+            .map(|hash| *hash as &dyn rusqlite::types::ToSql)
+            .collect();
+        let mut selected = {
+            let mut statement = tx.prepare(&sql).map_err(|error| error.to_string())?;
+            statement
+                .query_map(params.as_slice(), |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?
+        };
+        eligible.append(&mut selected);
+    }
+
+    before_commit(&eligible)?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(eligible)
+}
+
+/// Destinations the user chose: every contact, and each identity's selected
+/// Offline Inbox node.
+pub fn user_pinned_destinations(pool: &DbPool) -> Result<Vec<String>, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let mut statement = conn
+        .prepare(
+            "SELECT dest_hash FROM contacts
+             UNION
+             SELECT propagation_node FROM identities WHERE propagation_node != ''",
+        )
+        .map_err(|error| error.to_string())?;
+    statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
 }
 
 /// Clear discovered peer activity while preserving rows needed by user data.
@@ -16886,10 +16968,10 @@ mod pending_blackhole_tests {
     }
 
     #[test]
-    fn peers_age_out_after_seven_days_unless_a_lifetime_was_stored() {
+    fn peers_age_out_after_a_day_unless_a_lifetime_was_stored() {
         let pool = test_pool();
-        assert_eq!(DEFAULT_PRUNE_DAYS, 7);
-        assert_eq!(get_prune_days(&pool), Some(7));
+        assert_eq!(DEFAULT_PRUNE_DAYS, 1);
+        assert_eq!(get_prune_days(&pool), Some(1));
         set_setting(&pool, "known_identities_prune_days", "30");
         assert_eq!(get_prune_days(&pool), Some(30), "a stored lifetime stays");
         set_setting(&pool, "known_identities_prune_days", "0");
@@ -16902,7 +16984,10 @@ mod pending_blackhole_tests {
         let hash = |n: u8| format!("{n:02x}").repeat(16);
         let services: &[(u8, &[&str])] = &[
             (1, &[PEER_SERVICE_LXMF_DELIVERY]),
-            (2, &[PEER_SERVICE_LXMF_DELIVERY, PEER_SERVICE_RATSPEAK_CLIENT]),
+            (
+                2,
+                &[PEER_SERVICE_LXMF_DELIVERY, PEER_SERVICE_RATSPEAK_CLIENT],
+            ),
             (3, &[PEER_SERVICE_LXST_TELEPHONY]),
         ];
         for (n, services) in services {
@@ -16914,7 +16999,7 @@ mod pending_blackhole_tests {
                 false,
             );
         }
-        for n in 4..=9 {
+        for n in 4..=11 {
             touch_identity_activity(&pool, &[(hash(n), 1.0, None, None)]);
         }
         save_identity(&pool, "identity", "", "Me", "Me");
@@ -16925,11 +17010,17 @@ mod pending_blackhole_tests {
                 "INSERT INTO contacts(dest_hash, identity_id) VALUES ('{}', 'identity');
                  INSERT INTO blocked_contacts(dest_hash, identity_id) VALUES ('{}', 'identity');
                  INSERT INTO messages(id, source, destination, timestamp, identity_id)
-                     VALUES ('in', '{}', 'me', 1, 'identity'), ('out', 'me', '{}', 1, 'identity');",
+                     VALUES ('in', '{}', 'me', 1, 'identity'), ('out', 'me', '{}', 1, 'identity');
+                 INSERT INTO games(game_id, game, contact_hash, identity_id, challenger, created_at, updated_at)
+                     VALUES ('g', 'chess', '{}', 'identity', 'me', 1, 1);
+                 INSERT INTO app_sessions(session_id, identity_id, app_id, contact_hash)
+                     VALUES ('s', 'identity', 'app', '{}');",
                 hash(4),
                 hash(5),
                 hash(6),
                 hash(7),
+                hash(10),
+                hash(11),
             ))
             .unwrap();
 
@@ -16943,6 +17034,72 @@ mod pending_blackhole_tests {
             found,
             vec![(hash(1), false), (hash(2), true), (hash(3), false)]
         );
+    }
+
+    #[test]
+    fn orphan_key_prune_keeps_peer_rows_and_every_protection() {
+        let pool = test_pool();
+        let hash = |n: u8| format!("{n:02x}").repeat(16);
+        touch_identity_activity(&pool, &[(hash(2), 1.0, None, None)]);
+        save_identity(&pool, "identity", &hash(3), "Me", "Me");
+        set_identity_propagation_node(&pool, "identity", &hash(4)).unwrap();
+        save_channel_hub(&pool, "identity", &hash(5), "Hub", "me", false).unwrap();
+        pool.get()
+            .unwrap()
+            .execute_batch(&format!(
+                "INSERT INTO contacts(dest_hash, identity_id) VALUES ('{}', 'identity');
+                 INSERT INTO blocked_contacts(dest_hash, identity_id) VALUES ('{}', 'identity');
+                 INSERT INTO messages(id, source, destination, timestamp, identity_id)
+                     VALUES ('out', 'me', '{}', 1, 'identity');
+                 INSERT INTO games(game_id, game, contact_hash, identity_id, challenger, created_at, updated_at)
+                     VALUES ('g', 'chess', '{}', 'identity', 'me', 1, 1);
+                 INSERT INTO app_sessions(session_id, identity_id, app_id, contact_hash)
+                     VALUES ('s', 'identity', 'app', '{}');",
+                hash(6),
+                hash(7),
+                hash(8),
+                hash(9),
+                hash(10),
+            ))
+            .unwrap();
+        let candidates: Vec<String> = (1..=11).map(hash).collect();
+
+        let mut seen = Vec::new();
+        let confirmed = confirm_orphan_identity_keys_after(
+            &pool,
+            &candidates,
+            &std::collections::HashSet::from([hash(11)]),
+            |eligible| {
+                seen = eligible.to_vec();
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(confirmed, vec![hash(1)]);
+        assert_eq!(seen, confirmed);
+
+        let failed =
+            confirm_orphan_identity_keys_after(&pool, &candidates, &Default::default(), |_| {
+                Err("snapshot failed".into())
+            });
+        assert_eq!(failed, Err("snapshot failed".into()));
+    }
+
+    #[test]
+    fn contacts_and_selected_inbox_nodes_are_the_user_pins() {
+        let pool = test_pool();
+        let hash = |n: u8| format!("{n:02x}").repeat(16);
+        save_identity(&pool, "a", "", "A", "A");
+        save_identity(&pool, "b", "", "B", "B");
+        set_identity_propagation_node(&pool, "a", &hash(1)).unwrap();
+        save_contact(&pool, &hash(2), Some("Friend"), "trusted", "a");
+        save_contact(&pool, &hash(3), None, "pending", "b");
+        save_contact(&pool, &hash(1), None, "pending", "b");
+        touch_identity_activity(&pool, &[(hash(4), 1.0, None, None)]);
+
+        let mut pins = user_pinned_destinations(&pool).unwrap();
+        pins.sort();
+        assert_eq!(pins, vec![hash(1), hash(2), hash(3)]);
     }
 
     #[test]
