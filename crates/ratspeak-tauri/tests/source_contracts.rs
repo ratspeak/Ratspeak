@@ -4453,6 +4453,22 @@ fn an_unenforced_profile_lock_is_shown_beside_the_storage_warning() {
     assert!(events.contains("showToast(data.profile_lock_warning, 'toast-warning', 5000);"));
 }
 
+/// First run ticks its steps from polled startup stages, so the setup
+/// session's "ready" must be gone before the restart command replies, and a
+/// restart refused at the lifecycle boundary must end in the error stage.
+#[test]
+fn setup_restart_marks_its_stage_before_replying() {
+    let system = read_source(repo_root().join("crates/ratspeak-tauri/src/commands/system.rs"))
+        .expect("system commands");
+    let restart = rust_function_block(&system, "api_setup_restart");
+    let marked = restart
+        .find("state.set_startup_stage(\"checking\");")
+        .expect("restart marks its stage");
+    let spawned = restart.find("tokio::spawn(").expect("restart task");
+    assert!(marked < spawned);
+    assert!(restart.contains("st.set_startup_stage(\"error\");"));
+}
+
 #[test]
 fn modal_action_footers_use_shared_dialog_buttons() {
     let root = repo_root();

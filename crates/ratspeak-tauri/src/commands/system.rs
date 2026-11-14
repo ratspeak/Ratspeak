@@ -219,12 +219,16 @@ pub async fn api_setup_complete(
 
 #[tauri::command]
 pub async fn api_setup_restart(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    // Progress polled after this reply belongs to the restart, never to the
+    // setup session's "ready".
+    state.set_startup_stage("checking");
     let st: Arc<AppState> = Arc::clone(&state);
     tokio::spawn(async move {
         match crate::restart_rns_lxmf(Arc::clone(&st)).await {
             Ok(()) => crate::commands::ble::restore_ble_peer_if_requested(st).await,
             Err(error) => {
                 tracing::error!(%error, "setup restart aborted at lifecycle boundary");
+                st.set_startup_stage("error");
             }
         }
     });
