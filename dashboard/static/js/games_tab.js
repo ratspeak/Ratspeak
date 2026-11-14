@@ -678,7 +678,7 @@
     function _detailHeader(session, statusHtml) {
         var appId = _appId(session);
         var move = _moveNumber(session);
-        return '<header class="game-head">' +
+        return '<header class="game-head ui-scroll-head">' +
             '<button type="button" class="ui-icon-btn ui-phone-only games-back-btn" aria-label="Back to games" title="Back">' + _icon('chevron-left') + '</button>' +
             _thumb(appId, '', true, 'ui-desk-only') +
             '<div class="game-head-main"><h2 class="ui-detail-title"><bdi dir="auto">' + escapeHtml(_contactName(session.contact_hash)) + '</bdi></h2>' +
@@ -2155,11 +2155,11 @@
                         '<div class="ng-picks">' + manifests.map(pick).join('') + '</div>' +
                         '<section class="ng-games" aria-labelledby="ng-gl"><h3 class="ui-section-title" id="ng-gl">Game</h3>' +
                             '<div class="ng-gallery" role="radiogroup" aria-labelledby="ng-gl">' + manifests.map(tile).join('') + '</div></section>' +
-                        '<section class="ng-opp' + (empty ? ' is-empty' : '') + '" aria-labelledby="ng-ol"><div class="ng-opp-head"><h3 class="ui-section-title" id="ng-ol">Opponent</h3>' +
+                        '<section class="ng-opp' + (empty ? ' is-empty' : '') + '" aria-labelledby="ng-ol"><div class="ng-people"><div class="ng-opp-head ui-scroll-head"><h3 class="ui-section-title" id="ng-ol">Opponent</h3>' +
                             (empty ? '' : '<div class="ui-search" role="search">' + _icon('search') +
                                 '<input type="search" class="ng-search" placeholder="Search contacts" aria-label="Search contacts" autocorrect="off" autocapitalize="none" spellcheck="false">' +
                                 '<button type="button" class="ui-icon-btn ui-icon-btn--sm ng-clear" aria-label="Clear search" title="Clear search" hidden>' + _icon('x') + '</button></div>') +
-                            '</div><div class="ng-people" role="radiogroup" aria-labelledby="ng-ol"></div></section>' +
+                            '</div><div class="ng-people-list" role="radiogroup" aria-labelledby="ng-ol"></div></div></section>' +
                     '</div>' +
                     '<div class="ui-dialog-foot"><p class="ng-hint" id="ng-hint" aria-live="polite"></p>' +
                         '<button type="button" class="ui-btn ui-btn--quiet ui-desk-only ng-cancel">Cancel</button>' +
@@ -2168,7 +2168,7 @@
         });
         var root = sheet.dialog;
         var form = root.querySelector('.ng-form');
-        var peopleEl = root.querySelector('.ng-people');
+        var peopleEl = root.querySelector('.ng-people-list');
         var search = root.querySelector('.ng-search');
         var clear = root.querySelector('.ng-clear');
 

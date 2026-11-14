@@ -505,21 +505,25 @@
         <div class="view" id="view-games">
             <div class="ui-split games-layout">
                 <section class="ui-pane games-pane" aria-labelledby="games-title">
-                    <header class="ui-pane-head">
-                        <h2 class="ui-pane-title" id="games-title">Games</h2>
-                        <div class="ui-pane-actions">
-                            <button type="button" class="ui-btn ui-btn--sm" id="games-new-btn"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>New game</button>
+                    <div class="ui-pane-scroll games-scroll">
+                        <div class="ui-scroll-head">
+                            <header class="ui-pane-head games-pane-head">
+                                <h2 class="ui-pane-title" id="games-title">Games</h2>
+                                <div class="ui-pane-actions">
+                                    <button type="button" class="ui-btn ui-btn--sm" id="games-new-btn"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>New game</button>
+                                </div>
+                            </header>
+                            <div class="games-filter" id="games-filter">
+                                <div class="ui-seg ui-seg--block" role="radiogroup" aria-label="Show games">
+                                    <button type="button" role="radio" aria-checked="true" data-filter="all">All</button>
+                                    <button type="button" role="radio" aria-checked="false" tabindex="-1" data-filter="active">Active</button>
+                                    <button type="button" role="radio" aria-checked="false" tabindex="-1" data-filter="pending">Pending</button>
+                                    <button type="button" role="radio" aria-checked="false" tabindex="-1" data-filter="done">Done</button>
+                                </div>
+                            </div>
                         </div>
-                    </header>
-                    <div class="games-filter" id="games-filter">
-                        <div class="ui-seg ui-seg--block" role="radiogroup" aria-label="Show games">
-                            <button type="button" role="radio" aria-checked="true" data-filter="all">All</button>
-                            <button type="button" role="radio" aria-checked="false" tabindex="-1" data-filter="active">Active</button>
-                            <button type="button" role="radio" aria-checked="false" tabindex="-1" data-filter="pending">Pending</button>
-                            <button type="button" role="radio" aria-checked="false" tabindex="-1" data-filter="done">Done</button>
-                        </div>
+                        <div class="games-session-list" id="games-session-list"></div>
                     </div>
-                    <div class="ui-pane-scroll games-session-list" id="games-session-list"></div>
                 </section>
                 <section class="ui-detail games-detail" id="games-detail" aria-label="Game"></section>
             </div>

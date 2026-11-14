@@ -3,10 +3,11 @@
 
 /* ---------------------------------------------------------------- Layout */
 .games-layout { height: 100%; }
+/* The header's buttons end on the content's edge, as the title starts on it. */
+.ui-pane-head.games-pane-head { padding-right: var(--ui-gutter); }
 .games-filter { padding: 0 var(--ui-gutter) 8px; }
 .games-filter[hidden] { display: none; }
 .games-detail { display: flex; flex-direction: column; }
-.games-detail.is-game { overflow: hidden; }
 @media (max-width: 768px) {
     .games-layout.view-game-detail > .games-detail { display: flex; flex: 1; }
     .games-layout.view-game-detail > .games-pane { display: none; }
@@ -102,10 +103,11 @@
 
 /* ---------------------------------------------------------------- A game: header, board, players, and controls */
 .game-head { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 12px 24px; box-sizing: border-box; flex: 0 0 auto; }
+/* The detail scrolls as one; the game's header rides inside it as a sticky scroll head. */
 .game-head-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .game-head-main .ui-detail-title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .game-head-sub { font-size: var(--text-xs); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.game-body { --game-chrome: 168px; flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; align-items: center; padding: 8px 24px 32px; box-sizing: border-box; }
+.game-body { --game-chrome: 168px; flex: 1 0 auto; display: flex; flex-direction: column; align-items: center; padding: 8px 24px 32px; box-sizing: border-box; }
 /* The board and its controls take the space under the header; the board never clips or scrolls inside.
    --game-chrome is the player rows and the controls stacked with it. */
 .game-fit { flex: 1 0 auto; align-self: stretch; display: grid; place-items: center; min-height: calc(var(--game-board-min) + var(--game-chrome)); --game-board-min: 200px; }
@@ -193,15 +195,18 @@
 .ng-body { flex: 1 1 auto; }
 .ng-games { display: flex; flex-direction: column; gap: 8px; flex: 0 0 auto; }
 .ng-gallery { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.ng-opp { display: flex; flex-direction: column; gap: 8px; flex: 1 1 auto; min-height: 200px; }
+.ng-opp { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 200px; }
 .ng-opp.is-empty { flex: 0 0 auto; min-height: 0; }
-.ng-opp-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
-.ng-opp-head .ui-section-title { margin: 0 0 0 4px; }
+.ng-dialog { --row-surface: var(--surface-dialog); }
+/* The opponent list scrolls with its header inside, so a scrollbar narrows both alike. */
+.ng-people { flex: 1 1 auto; min-height: 0; overflow-y: auto; margin: 0 -12px; padding: 0 0 4px; }
+.ng-opp-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 12px 8px; }
+.ng-opp-head .ui-section-title { margin: 0; }
 .ng-opp-head .ui-search { width: 260px; }
 .ng-opp-head .ui-search .ui-icon-btn[hidden] { display: none; }
-.ng-people { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; gap: 2px 8px; margin: 0 -12px; padding: 0 0 4px; list-style: none; }
-.ng-people > .ui-caption { grid-column: 1 / -1; padding-left: 12px; }
-.ng-people > .ui-empty { grid-column: 1 / -1; }
+.ng-people-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-content: start; gap: 2px 8px; }
+.ng-people-list > .ui-caption { grid-column: 1 / -1; padding-left: 12px; }
+.ng-people-list > .ui-empty { grid-column: 1 / -1; }
 /* A row inside the radio group takes the kit's selected fill. */
 .ng-people .ui-row:has(> .game-choice-input:checked) { background: var(--selection-bg); --ring: color-mix(in srgb, var(--accent) 16%, var(--row-surface, var(--surface-workspace))); }
 .ng-people .ui-row:has(> .game-choice-input:checked) :is(.ui-row-sub, .ui-time) { color: var(--text-secondary); }
@@ -223,11 +228,13 @@
     .ng-step-who .ng-back { display: inline-grid; }
     .ng-step-who .ng-head-thumb { display: inline-grid; }
     .ng-opp { flex: 0 0 auto; min-height: 0; }
-    .ng-opp-head { flex-direction: column; align-items: stretch; gap: 8px; }
+    .ng-dialog { --row-surface: var(--surface-page); }
+    .ng-opp-head { flex-direction: column; align-items: stretch; gap: 8px; padding: 0 20px 8px; }
     .ng-opp-head .ui-section-title { display: none; }
     .ng-opp-head .ui-search { width: auto; }
-    .ng-people { display: flex; flex-direction: column; overflow: visible; margin: 0 -20px; gap: 0; }
-    .ng-people > .ui-caption { padding-left: 20px; }
+    .ng-people { overflow: visible; margin: 0 -20px; }
+    .ng-people-list { display: flex; flex-direction: column; gap: 0; }
+    .ng-people-list > .ui-caption { padding-left: 20px; }
     .ng-people .ui-row { padding-left: 20px; padding-right: 20px; }
     .ng-hint { order: 3; margin: 0; text-align: center; font-size: var(--text-xs); }
     .ng-send { max-width: none; }

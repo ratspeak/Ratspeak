@@ -31,7 +31,9 @@ assert(source.includes("'<div class=\"ui-dialog ui-dialog--lg ng-dialog\" role=\
 assert(source.includes('<div class="ng-gallery" role="radiogroup" aria-labelledby="ng-gl">'),
     'the games form one radio group');
 assert(source.includes('<input class="game-choice-input" type="radio" name="ng-game"'));
-assert(source.includes('<div class="ng-people" role="radiogroup" aria-labelledby="ng-ol">'));
+assert(source.includes('<div class="ng-people"><div class="ng-opp-head ui-scroll-head">') &&
+    source.includes('<div class="ng-people-list" role="radiogroup" aria-labelledby="ng-ol">'),
+    'the opponent header scrolls inside the list as a sticky head');
 assert(source.includes('placeholder="Search contacts" aria-label="Search contacts"'));
 assert(source.includes("'<p class=\"ui-caption\">Recent</p>'") && source.includes("'<p class=\"ui-caption\">Contacts</p>'"));
 assert(source.includes('No contacts yet') && source.includes('Games are played with contacts. Add someone first.') &&
@@ -72,6 +74,9 @@ assert(art.includes("var SPRITE = '/static/assets/chess-pieces.svg#';"));
 
 // Layout: three tiles in a row on desktop; a two-step sheet on a phone.
 assert(/\.ng-gallery\s*\{[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\)/.test(gamesCss));
+assert(/\.ui-pane-head\.games-pane-head\s*\{\s*padding-right:\s*var\(--ui-gutter\);/.test(gamesCss),
+    'the Games header button ends on the content edge');
+assert(!/scrollbar-width|::-webkit-scrollbar/.test(gamesCss), 'scrollbars follow the shared rules');
 assert(/\.game-choice:has\(\.game-choice-input:checked\)\s*\{\s*background:\s*var\(--selection-bg\);\s*\}/.test(gamesCss),
     'a chosen tile takes the selection fill, never an accent border');
 assert(!/\.game-choice[^{]*\{[^}]*border:(?!\s*0\b)/.test(gamesCss), 'choice tiles carry no border');
