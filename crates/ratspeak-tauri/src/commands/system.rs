@@ -55,7 +55,12 @@ fn profile_lock_warning(data_root: &std::path::Path) -> Option<&'static str> {
 
 #[tauri::command]
 pub async fn api_version() -> AppResult<Value> {
-    Ok(json!({ "version": app_display_version(), "name": "Ratspeak" }))
+    // The protocol releases the bundled stack follows, for About.
+    Ok(json!({
+        "version": app_display_version(),
+        "name": "Ratspeak",
+        "lxmf": lxmf_core::constants::LXMF_COMPAT_VERSION,
+    }))
 }
 
 #[tauri::command]
@@ -877,6 +882,13 @@ pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Val
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn version_names_the_lxmf_release_the_stack_follows() {
+        let version = api_version().await.unwrap();
+        assert_eq!(version["name"], "Ratspeak");
+        assert_eq!(version["lxmf"], lxmf_core::constants::LXMF_COMPAT_VERSION);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn setup_refuses_a_locked_identity_without_renaming_it() {
