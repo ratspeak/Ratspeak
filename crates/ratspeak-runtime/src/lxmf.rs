@@ -27,7 +27,7 @@ use lxmf_core::link_delivery::{
 use lxmf_core::message::{LxMessageDraft, MessageError, MessageMetadata, SignedLxMessage};
 use lxmf_core::message_api::{DeliveryMethod, DeliveryRepresentation, LxMessage};
 use lxmf_core::propagation_send::{
-    AdvertisedNodePolicy, PropagationEnvelope, propagation_readiness,
+    AdvertisedNodePolicy, EncryptionBinding, PropagationEnvelope, propagation_readiness,
 };
 use lxmf_core::router::{
     DirectReusableLinkState, LinkDeliveryPlan, LxmRouter, MediumSnapshot, OutboundAction,
@@ -1325,7 +1325,7 @@ enum PreparedPropagation {
     Failed(MessageError),
 }
 struct PendingPropagationEnvelope {
-    binding: [u8; 32],
+    binding: EncryptionBinding,
     cost: f64,
     result: oneshot::Receiver<Result<PropagationEnvelope, MessageError>>,
     cancel: Arc<std::sync::atomic::AtomicBool>,
@@ -5590,22 +5590,18 @@ impl LxmfManager {
         };
 
         if name_hash == rns_identity::name_hash::name_hash(LXMF_PROPAGATION_APP_NAME) {
-            if let Some(pn) = lxmf_core::handlers::parse_pn_announce_data(app_data) {
+            let heard_at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            if let Some(pn) = lxmf_core::handlers::parse_pn_announce_data(app_data)
+                && let Some(policy) = AdvertisedNodePolicy::from_announce(app_data, heard_at)
+            {
                 self.router.set_stamp_cost(dest_hash, pn.stamp_cost);
                 // Whole kilobytes, as upstream's handler reads it (Handlers.py).
                 self.propagation_transfer_limits_kb
                     .insert(dest_hash, pn.transfer_limit.as_f64() as u64);
-                self.propagation_node_policies.insert(
-                    dest_hash,
-                    AdvertisedNodePolicy {
-                        stamp_cost: pn.stamp_cost,
-                        transfer_limit_kb: pn.transfer_limit.as_f64(),
-                        recorded_at: SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs_f64(),
-                    },
-                );
+                self.propagation_node_policies.insert(dest_hash, policy);
                 // A refreshed observation must be persisted even when its values match.
                 return true;
             }
@@ -6384,11 +6380,7 @@ impl LxmfManager {
         let Some(ratchet) = self.outbound_ratchet(&dest) else {
             return PreparedPropagation::Pending;
         };
-        let mut binding_data = key.to_vec();
-        if let Some(ratchet) = ratchet {
-            binding_data.extend_from_slice(&ratchet);
-        }
-        let binding = rns_crypto::sha::full_hash(&binding_data);
+        let binding = EncryptionBinding::for_recipient(&key, ratchet.as_ref());
         if let Some(job) = self.pending_propagation_envelopes.get_mut(&id) {
             // Dropping a receiver revokes this generation only; the worker owns
             // its permit and message until it really exits.
