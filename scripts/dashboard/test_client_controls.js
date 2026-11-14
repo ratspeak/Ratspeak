@@ -51,77 +51,57 @@ for (const [width, touch, expected] of [[390, 0, 'sheet'], [768, 1, 'sheet'], [7
     handlers.click({ target: { closest: () => row } });
     assert.equal(actions.at(-1), expected, 'interface actions at ' + width + 'px');
 }
-const picker = html.match(/<div class="[^"]+" id="fab-contact-picker-sheet"[^>]*>/)[0];
-assert(!picker.includes('--mobile-only'), 'desktop Contacts must open a visible picker');
-assert(picker.includes('bottom-sheet rs-dialog-sheet'), 'the shared picker must use the canonical shell');
-assert(html.includes('class="bottom-sheet-body fab-contact-picker-list"'), 'picker content must own its scroll region');
-assert(!read('static/css/13-responsive.css').includes('.fab-picker-row {'), 'contact rows cannot be styled only on phones');
-for (const id of ['msg-search-input']) {
-    const input = html.match(new RegExp('<input[^>]*id="' + id + '"[^>]*>'))[0];
-    assert(input.includes('nr-input-sm list-search-input'), id + ' must use the shared form primitive');
-    assert(input.includes('aria-label="Search '), id + ' needs a specific accessible name');
-}
+// New message is one sheet: a contact's name or a pasted LXMF address.
+assert(lxmf.includes("title: 'New message',") && lxmf.includes('placeholder="Name or LXMF address"'),
+    'New message is one sheet that takes a name or an address');
+assert(!html.includes('fab-contact-picker'), 'the separate contact picker is retired');
+vm.runInContext('var LXMF_ADDRESS_HEX = /^[0-9a-f]{32}$/;\n' + fn(lxmf, '_newMessageAddress'), context);
+assert.equal(context._newMessageAddress(' 4F9A2C71 D03B8E56 A1C4F709 2BE1E0B3 '), '4f9a2c71d03b8e56a1c4f7092be1e0b3');
+assert.equal(context._newMessageAddress('lxma://4f9a2c71d03b8e56a1c4f7092be1e0b3'), '4f9a2c71d03b8e56a1c4f7092be1e0b3');
+assert.equal(context._newMessageAddress('4f9a2c71d03b8e56'), '', 'a short hash is not an address');
 // People panes use the kit search field: glyph, input, and clear in one control.
 for (const id of ['peers-search', 'contacts-search']) {
     const field = html.match(new RegExp('<div class="ui-search" role="search">(?:(?!</div>).)*id="' + id + '"(?:(?!</div>).)*</div>'));
     assert(field, id + ' must sit in the kit search field');
     assert(field[0].includes('aria-label="Search ') && field[0].includes('aria-label="Clear search"'), id + ' needs a specific accessible name and a clear button');
 }
+const messageSearch = html.match(/<div class="ui-search" role="search">[^]*?<input[^>]*id="msg-search-input"[^>]*>/);
+assert(messageSearch && messageSearch[0].includes('aria-label="Search messages"'), 'Messages search is the kit field');
 
-// A FAB can become visible after startup/resizing, even with no touch input.
+// The phone compose button: New message straight away, or with Paper messages on, a menu above a scrim.
 function element() {
     const classes = new Set();
     return {
-        handlers: {}, attributes: {},
-        classList: { add: c => classes.add(c), remove: c => classes.delete(c), contains: c => classes.has(c) },
+        handlers: {}, attributes: {}, innerHTML: '',
+        classList: { add: c => classes.add(c), remove: c => classes.delete(c), contains: c => classes.has(c), toggle: (c, on) => on ? classes.add(c) : classes.delete(c) },
         addEventListener(name, cb) { this.handlers[name] = cb; },
         setAttribute(name, value) { this.attributes[name] = value; }
     };
 }
-const fab = element(), dial = element(), scrim = element();
-context.RS = { gestures: { bindViewFabClick: (el, cb) => el.addEventListener('click', cb) } };
-context.window.addEventListener = (name, cb) => { handlers['window-' + name] = cb; };
-context.document = {
-    getElementById: id => ({ 'lxmf-send-fab': fab, 'fab-dial-actions': dial })[id],
-    createElement: () => scrim, body: { appendChild() {} }
+const fab = element(), wrap = element(), sheets = [], menus = [];
+let menuOptions = null;
+context.RS = {
+    gestures: { bindViewFabClick: (el, cb) => el.addEventListener('click', cb) },
+    kit: { icon: name => '<' + name + '>', menu: (trigger, opts) => { menus.push(opts.items.map(i => i.label)); menuOptions = opts; return {}; }, closeMenu() {} }
 };
-vm.runInContext(fn(lxmf, 'initFabSpeedDial'), context);
-context.initFabSpeedDial();
-assert.equal(typeof fab.handlers.click, 'function', 'wide startup must still wire the responsive FAB');
-context.window.innerWidth = 390;
+context.document = { documentElement: { dataset: {} }, getElementById: id => ({ 'lxmf-send-fab': fab, 'lxmf-fab-dial': wrap })[id] };
+context.openNewMessageSheet = () => sheets.push('sheet');
+context.openPaperDecoder = () => {};
+vm.runInContext(fn(lxmf, '_composeItems') + '\n' + fn(lxmf, '_paperMessagesOn') + '\n' + fn(lxmf, 'initComposeFab'), context);
+context.initComposeFab();
 fab.handlers.click({ stopPropagation() {} });
-assert(dial.classList.contains('open'));
-context.window.innerWidth = 1024; handlers['window-resize']();
-assert(!dial.classList.contains('open'), 'widening must retire the now-hidden dial and its scrim');
+assert.deepEqual([sheets.length, menus.length], [1, 0], 'without Paper messages the button opens New message');
+context.document.documentElement.dataset.paperMessages = 'on';
+fab.handlers.click({ stopPropagation() {} });
+assert.deepEqual(menus.at(-1), ['New message', 'Open a paper message']);
+assert.equal(menuOptions.sheet, false, 'the phone menu opens above the button, not in a sheet');
+assert(wrap.classList.contains('is-open') && fab.attributes['aria-label'] === 'Close', 'the open menu turns the button into Close');
+menuOptions.onClose();
+assert(!wrap.classList.contains('is-open') && fab.attributes['aria-label'] === 'New message');
 
-// Paper sits last in the dial (nearest the FAB), hidden unless the setting is on.
-const dialItems = html.slice(html.indexOf('id="fab-dial-actions"'), html.indexOf('id="lxmf-send-fab"'))
-    .match(/class="fab-dial-item" id="([^"]+)"/g).map(item => item.match(/id="([^"]+)"/)[1]);
-assert.deepEqual(dialItems, ['fab-dial-contacts', 'fab-dial-new', 'fab-dial-paper']);
-assert(html.includes('<button class="fab-dial-btn" aria-label="Open a paper message">'));
-assert(/:root:not\(\[data-paper-messages="on"\]\) #fab-dial-paper\s*\{\s*display:\s*none;/.test(read('static/css/10-views.css')));
-const fab2 = element(), dial2 = element(), paperItem = element(), opened = [], haptics = [];
-context.document = {
-    getElementById: id => ({ 'lxmf-send-fab': fab2, 'fab-dial-actions': dial2, 'fab-dial-paper': paperItem })[id],
-    createElement: () => element(), body: { appendChild() {} }
-};
-context.haptic = level => haptics.push(level);
-context.openPaperDecoder = (...args) => opened.push(args.length);
-vm.runInContext(fn(lxmf, 'initFabSpeedDial'), context);
-context.initFabSpeedDial();
-context.window.innerWidth = 390;
-fab2.handlers.click({ stopPropagation() {} });
-paperItem.handlers.click();
-assert.deepEqual([opened, haptics, dial2.classList.contains('open')], [[0], ['selection'], false],
-    'the Paper dial item closes the dial and opens the decoder with no arguments');
-
-// Send popover: Paper is last, below a separator, disabled with an empty composer.
-assert(lxmf.includes("{ label: 'Offline Inbox', icon: LXMF_SEND_METHOD_ICONS.propagated, disabled: !hasRelay, onSelect: function() { sendLxmfMessage('propagated'); } },\n" +
-    "            { separator: true },\n            { label: 'Paper', icon: ICON_PAPER, disabled: !hasText, onSelect: sendLxmfPaperMessage },"));
+// Send by: Paper is last, below a separator, disabled with an empty composer.
+assert(lxmf.includes("{ separator: true },\n            { label: 'Paper', icon: 'qr', hint: 'A QR code or link you hand over yourself.', disabled: !hasText, onSelect: sendLxmfPaperMessage },"));
 assert(lxmf.includes("var hasText = !!(input && input.value.trim());"));
-// Desktop compose popover: Contacts / New / Paper, only while the setting is on.
-assert(lxmf.includes("if (document.documentElement.dataset.paperMessages === 'on' && typeof openPaperDecoder === 'function') {\n" +
-    "                composeItems.push({ label: 'Paper', icon: ICON_PAPER, onSelect: openPaperDecoder });"));
 
 // Shared keyboard activation must not hijack nested controls or composing text.
 const binding = shared.slice(shared.indexOf('    RS.ui.bindKeyboardActivation ='), shared.indexOf('    var transportLabels'));
@@ -163,5 +143,5 @@ async function clipboard(execResult, fallbackResult) {
     assert(await clipboard(false, true));
     assert(await clipboard(new Error('WebView copy failed'), true));
     assert.equal(await clipboard(new Error('WebView copy failed'), false), false);
-    console.log('client controls: layout dispatch, shared picker, resize, keyboard and clipboard passed');
+    console.log('client controls: layout dispatch, New message, compose button, keyboard and clipboard passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

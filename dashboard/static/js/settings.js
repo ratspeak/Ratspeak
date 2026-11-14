@@ -1442,63 +1442,7 @@ function resolveActiveProfileStatus(explicitStatus) {
     return _activeProfileStatus || '';
 }
 
-function ensureProfileStatusText(parent, id, tagName, className, beforeEl) {
-    var existing = document.getElementById(id);
-    if (existing) return existing;
-    if (!parent) return null;
-    var el = document.createElement(tagName || 'span');
-    el.id = id;
-    el.className = className + ' profile-status-text profile-status-empty';
-    el.textContent = 'Set a status';
-    if (beforeEl && beforeEl.parentNode === parent) parent.insertBefore(el, beforeEl);
-    else parent.appendChild(el);
-    return el;
-}
-
-function ensureProfileStatusElements() {
-    var headerInfo = document.getElementById('header-mobile-info') || document.querySelector('.header-mobile-info');
-    if (headerInfo && !headerInfo.id) headerInfo.id = 'header-mobile-info';
-    ensureProfileStatusText(
-        headerInfo,
-        'header-mobile-status',
-        'span',
-        'header-mobile-status',
-        null
-    );
-
-    var sidebarMeta = document.querySelector('.sidebar-identity-meta');
-    ensureProfileStatusText(
-        sidebarMeta,
-        'sidebar-identity-status',
-        'div',
-        'sidebar-identity-status',
-        document.getElementById('sidebar-identity-hash')
-    );
-
-    var msgProfileInfo = document.querySelector('.msg-profile-info');
-    ensureProfileStatusText(
-        msgProfileInfo,
-        'msg-profile-status',
-        'span',
-        'msg-profile-status',
-        document.getElementById('lxmf-own-hash')
-    );
-}
-
-function updateProfileStatusElement(el, status) {
-    if (!el) return;
-    var value = status || '';
-    el.textContent = value || 'Set a status';
-    el.classList.toggle('profile-status-empty', !value);
-    el.title = value ? 'Edit status' : 'Set a status';
-}
-
 function renderActiveProfileStatus(status) {
-    ensureProfileStatusElements();
-    var value = trimProfileStatusToByteLimit(status || '', PROFILE_STATUS_MAX_BYTES);
-    updateProfileStatusElement(document.getElementById('header-mobile-status'), value);
-    updateProfileStatusElement(document.getElementById('sidebar-identity-status'), value);
-    updateProfileStatusElement(document.getElementById('msg-profile-status'), value);
     syncSettingsIdentityStatus();
 }
 
@@ -1519,31 +1463,6 @@ function syncActiveProfileStatusFromPayload(data) {
     var status = profileStatusFromPayload(data);
     if (status !== null) setActiveProfileStatus(status);
     else renderActiveProfileStatus(_activeProfileStatus);
-}
-
-function wireProfileStatusEditorTrigger(el) {
-    if (!el || el._profileStatusEditorWired) return;
-    el._profileStatusEditorWired = true;
-    el.title = el.title || 'Edit status';
-    el.addEventListener('click', function(e) {
-        e.stopPropagation();
-        if (typeof openIdentityStatusEditor === 'function') openIdentityStatusEditor();
-    });
-    el.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            e.stopPropagation();
-            if (typeof openIdentityStatusEditor === 'function') openIdentityStatusEditor();
-        }
-    });
-}
-
-function wireProfileStatusEditorTriggers() {
-    ensureProfileStatusElements();
-    wireProfileStatusEditorTrigger(document.getElementById('header-mobile-info'));
-    wireProfileStatusEditorTrigger(document.getElementById('msg-profile-name'));
-    wireProfileStatusEditorTrigger(document.getElementById('msg-profile-status'));
-    wireProfileStatusEditorTrigger(document.getElementById('sidebar-identity-status'));
 }
 
 function saveIdentityStatus(nextStatus) {
@@ -1712,85 +1631,9 @@ function openIdentityStatusEditor() {
 }
 
 function updateHeaderIdentity(hash, displayName, status) {
-    var resolvedStatus = resolveActiveProfileStatus(status);
-    setActiveProfileStatus(resolvedStatus);
-    wireProfileStatusEditorTriggers();
-
-    var pill = document.getElementById('header-identity-pill');
-    var iconEl = document.getElementById('header-identity-icon');
-    var hashEl = document.getElementById('header-identity-hash');
-    if (hash && pill) {
-        if (iconEl) iconEl.innerHTML = (typeof identityAvatar === 'function') ? identityAvatar(hash, 20) : '';
-        if (hashEl) {
-            hashEl.textContent = hash.substring(0, 8) + '\u2026';
-            hashEl.dataset.full = hash;
-        }
-        pill.classList.remove('hidden');
-        if (!pill._copyWired) {
-            pill._copyWired = true;
-            pill.addEventListener('click', function() {
-                openActiveIdentityContactCard();
-            });
-        }
-    }
-    var sidebarId = document.getElementById('sidebar-identity');
-    var sidebarIcon = document.getElementById('sidebar-identity-icon');
-    var sidebarName = document.getElementById('sidebar-identity-name');
-    var sidebarHash = document.getElementById('sidebar-identity-hash');
-    if (hash && sidebarId) {
-        if (sidebarIcon) sidebarIcon.innerHTML = (typeof identityAvatar === 'function') ? identityAvatar(hash, 32) : '';
-        var resolvedName = displayName || localStorage.getItem('ratspeak_identity_name') || 'Unnamed';
-        if (sidebarName) sidebarName.textContent = resolvedName;
-        if (sidebarHash) {
-            sidebarHash.textContent = hash.substring(0, 8) + '\u2026' + hash.substring(hash.length - 4);
-            sidebarHash.dataset.full = hash;
-        }
-        var openSidebarIdentity = function() {
-            if (typeof switchView === 'function') switchView('identity');
-        };
-        if (!sidebarId._wired) {
-            sidebarId._wired = true;
-            sidebarId.addEventListener('click', openSidebarIdentity);
-            sidebarId.addEventListener('keydown', function(e) {
-                if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    openSidebarIdentity();
-                }
-            });
-        }
-    }
-    var lxmfHash = document.getElementById('lxmf-own-hash');
-    if (lxmfHash && hash) {
-        lxmfHash.textContent = hash.substring(0, 8) + '\u2026' + hash.substring(hash.length - 4);
-        lxmfHash.title = 'Click to copy: ' + hash;
-        lxmfHash.dataset.full = hash;
-    }
-    var hdrAvatar = document.getElementById('header-mobile-avatar');
-    var hdrName = document.getElementById('header-mobile-name');
-    if (hash && hdrAvatar) hdrAvatar.innerHTML = (typeof identityAvatar === 'function') ? identityAvatar(hash, 36) : '';
-    if (hdrName) hdrName.textContent = displayName || localStorage.getItem('ratspeak_identity_name') || 'Account 1';
-    renderActiveProfileStatus(resolvedStatus);
-
-    // JS fallback for WebView CSS caching. Header profile controls no longer
-    // include chevrons; sidebar identity management keeps its switch affordance.
-    var _chevrons = document.querySelectorAll('.header-identity-chevron');
-    var _showChevron = typeof identityList !== 'undefined' && identityList.length > 1;
-    for (var ci = 0; ci < _chevrons.length; ci++) {
-        _chevrons[ci].style.display = _showChevron ? '' : 'none';
-    }
-
-    var mobileId = document.getElementById('header-mobile-identity');
-    if (mobileId && !mobileId._wired) {
-        mobileId._wired = true;
-        mobileId.addEventListener('click', function() {
-            openActiveIdentityContactCard();
-        });
-        mobileId.addEventListener('keydown', function(e) {
-            if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                openActiveIdentityContactCard();
-            }
-        });
+    setActiveProfileStatus(resolveActiveProfileStatus(status));
+    if (hash && window.RS && RS.shell) {
+        RS.shell.setIdentity(hash, displayName || localStorage.getItem('ratspeak_identity_name') || 'Unnamed');
     }
 }
 

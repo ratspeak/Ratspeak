@@ -3,11 +3,6 @@
         flex-wrap: wrap;
         gap: var(--space-5);
     }
-    .header {
-        padding-right: var(--space-8);
-        padding-bottom: var(--space-4);
-        padding-left: 44px;
-    }
 }
 
 @media (max-width: 768px) {
@@ -221,113 +216,10 @@
         content: attr(data-mobile-label);
         font-size: var(--text-sm);
     }
-    .header {
-        padding-left: var(--space-7);
-        min-height: 55px;
-        padding-top: calc(10px + var(--sat));
-    }
-    body.checking-setup .header,
-    body.setup-active   .header { display: none; }
-    .header-left {
-        gap: 13px;
-    }
-    .header-logo-icon,
-    .header h1 {
-        display: none;
-    }
-    .header-mobile-identity {
-        display: flex;
-        align-items: center;
-        gap: var(--space-4);
-        min-width: 0;
-        max-width: min(58vw, 260px);
-        cursor: pointer;
-        -webkit-tap-highlight-color: transparent;
-        touch-action: manipulation;
-    }
-    .header-mobile-avatar {
-        width: 36px;
-        height: 36px;
-        border-radius: var(--radius-full);
-        overflow: hidden;
-        flex-shrink: 0;
-        line-height: 0;
-        clip-path: circle(50% at 50% 50%);
-    }
-    .header-mobile-avatar svg,
-    .header-mobile-avatar img,
-    .header-mobile-avatar canvas {
-        display: block;
-        width: 100%;
-        height: 100%;
-        border-radius: inherit;
-        aspect-ratio: 1 / 1;
-        clip-path: circle(50% at 50% 50%);
-    }
-    .header-mobile-info {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-start;
-        justify-content: center;
-        gap: 0;
-        min-width: 0;
-        max-width: 100%;
-        cursor: pointer;
-    }
-    .header-mobile-name {
-        font-size: var(--text-xl);
-        font-weight: var(--type-weight-semibold);
-        line-height: 1.04;
-        color: var(--text-primary);
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-    }
-    .header-mobile-status {
-        width: 100%;
-        margin-top: 1px;
-        font-size: var(--type-row-meta-size);
-    }
-    .msg-profile-strip {
-        display: none;
-    }
-    .header .badge {
-        font-size: var(--text-base);
-        padding: var(--space-1) var(--space-5);
-    }
-    .header-right {
-        gap: var(--space-5);
-        font-size: var(--text-base);
-    }
-    .header-identity-pill { display: none; }
-    .header-status-label { display: none; }
-    .header-status-chip { padding: 3px 8px 3px 6px; }
     .connections-header {
         flex-wrap: wrap;
     }
-    .lxmf-layout {
-        flex-direction: column;
-        height: auto;
-    }
-    .lxmf-sidebar {
-        width: 100%;
-        max-width: none;
-        min-width: 0;
-        border-right: none;
-        border-bottom: 1px solid var(--border-row);
-        padding-right: 0;
-        padding-bottom: var(--space-4);
-        max-height: 200px;
-        overflow-y: auto;
-    }
     .connections-header { flex-wrap: wrap; gap: var(--space-3); }
-}
-
-@media (max-width: 480px) {
-    .header h1 { font-size: var(--text-lg); }
-    .header .badge { display: none; }
-    .header-status-detail { display: none; }
-    .header-status-chip { padding: 3px 6px; }
 }
 
 @media (max-width: 700px) {
@@ -435,22 +327,6 @@
         min-width: 56px;
     }
 
-    .lxmf-chat-header {
-        padding: var(--space-3) var(--space-5);
-    }
-
-    .lxmf-msg {
-        max-width: 85%;
-    }
-    .lxmf-msg.msg-has-image {
-        max-width: 75%;
-        padding: 4px;
-    }
-    .lxmf-clickable-img {
-        max-width: 100%;
-        max-height: 70vh;
-    }
-
     .panel-body {
         padding: var(--space-4) var(--space-5);
     }
@@ -465,34 +341,12 @@
         font-size: var(--text-2xs);
     }
 
-    .conv-row {
-        padding: var(--space-4) var(--space-3);
-    }
-
-    .lxmf-msg {
-        max-width: 90%;
-        padding: var(--space-4) var(--space-6);
-    }
-    .lxmf-messages.msg-select-mode .lxmf-msg:not(.msg-has-image) {
-        max-width: calc(100% - 52px);
-    }
-    .lxmf-msg.msg-has-image {
-        max-width: 75%;
-        padding: 4px;
-    }
-    .lxmf-clickable-img {
-        max-width: 100%;
-        max-height: 72vh;
-    }
-
     .toast {
         max-width: calc(100vw - 32px);
     }
 }
 
-.bottom-bar { display: none; }
 .mobile-back-btn { display: none; }
-.sidebar-close-btn { display: none; }
 
 @media (max-width: 768px) {
 
@@ -515,12 +369,6 @@
         -webkit-touch-callout: default;
     }
 
-    .lxmf-msg-content {
-        -webkit-user-select: text;
-        user-select: text;
-        -webkit-touch-callout: default;
-    }
-
     /* Hash displays: select-all so one tap copies the whole value. */
     .hash-copy,
     .relay-card-address-value,
@@ -538,8 +386,8 @@
     /* touch-action: manipulation kills the 300ms double-tap-zoom delay
        without breaking pinch-zoom (WCAG). */
     button, a, input, select, textarea,
-    .nr-btn, .danger-btn, .nav-item, .conn-row, .conv-row,
-    .contacts-row, .bottom-bar-item, .bottom-sheet-item, .fab-picker-row, .games-session-row,
+    .nr-btn, .danger-btn, .ui-tab, .conn-row,
+    .contacts-row, .bottom-sheet-item, .fab-picker-row, .games-session-row,
     .log-filter, .panel-header-btn, .modal-close, .mobile-back-btn,
     .toolbar-dropdown-btn, .toolbar-dropdown-item,
     .theme-toggle-btn, .theme-toggle, .selector-badge, .settings-row,
@@ -583,7 +431,6 @@
     }
 
     #conn-dot, #conn-text { display: none; }
-    .header-right .header-sep { display: none; }
 
     /* 44px minimum touch target (WCAG 2.5.5). */
     .nr-btn { min-height: 44px; padding: 8px 16px; font-size: var(--text-base); }
@@ -660,103 +507,14 @@
     }
     .log-filters::-webkit-scrollbar { display: none; }
 
-    .header-right { font-size: var(--text-base); }
     .contacts-row-name { font-size: var(--text-base); }
     
     .contacts-row-hash { font-size: var(--text-sm); }
-    .lxmf-chat-header-name { font-size: var(--text-lg); }
-    .lxmf-chat-header-hash { font-size: var(--text-xs); }
     .eventlog-full { font-size: var(--text-sm); }
     .log-badge { font-size: var(--text-2xs); }
 
-    .sidebar.open .nav-item {
-        min-height: 48px;
-        padding: var(--space-6) var(--space-8);
-    }
-
     .modal-close { min-width: 44px; min-height: 44px; font-size: var(--text-2xl);
         display: flex; align-items: center; justify-content: center; }
-
-    /* Top bars stop at a side status column (iPhone Duo), so it never sits on their divider. */
-    .header {
-        padding-left: 14px;
-        padding-right: 14px;
-        margin-left: var(--sal);
-        margin-right: var(--sar);
-    }
-
-    /* Extend into --sab so the backdrop-blur glass fills the home-indicator zone;
-       padding-bottom keeps tap targets above it. --sab from 00-tokens.css. */
-    .bottom-bar {
-        display: flex;
-        position: fixed;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        height: calc(62px + var(--sab));
-        padding: 0 calc(4px + var(--sar)) var(--sab) calc(4px + var(--sal));
-        background: var(--glass-bg);
-        backdrop-filter: blur(28px) saturate(1.4);
-        -webkit-backdrop-filter: blur(28px) saturate(1.4);
-        border-top: 1px solid var(--glass-border);
-        border-radius: 0;
-        box-shadow: 0 -2px 12px rgba(0, 0, 0, 0.04);
-        z-index: var(--z-bottom-bar);
-        align-items: stretch;
-        transition: opacity 0.25s ease, transform 0.25s ease;
-    }
-    .bottom-bar-item {
-        flex: 1;
-        display: flex;
-        flex-direction: row;
-        align-items: center;
-        justify-content: center;
-        gap: 0;
-        color: var(--text-muted);
-        font-size: var(--text-2xs);
-        font-family: var(--font-sans);
-        font-weight: 500;
-        letter-spacing: 0;
-        position: relative;
-        min-height: 44px;
-        padding: 0;
-        border: 0;
-        background: transparent;
-        text-decoration: none;
-        cursor: pointer;
-        transition: color 0.25s ease;
-    }
-    .bottom-bar-item.active { color: var(--accent); }
-    .bottom-bar-item::before {
-        content: '';
-        position: absolute;
-        inset: 6px 8px;
-        border-radius: var(--radius-2xl);
-        background: var(--accent-bg);
-        opacity: 0;
-        transition: opacity 0.25s cubic-bezier(0.2, 0, 0, 1);
-        z-index: -1;
-    }
-    .bottom-bar-item.active::before { opacity: 1; }
-    .bottom-bar-item svg {
-        width: 26px;
-        height: 26px;
-        stroke: currentColor;
-        fill: none;
-        stroke-width: 1.9;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-    }
-    .bottom-bar-badge {
-        display: block;
-        position: absolute;
-        top: 9px;
-        right: calc(50% - 18px);
-        width: 8px;
-        height: 8px;
-        border-radius: var(--radius-full);
-        background: var(--accent);
-    }
 
     .main-content {
         padding-bottom: calc(62px + var(--sab));
@@ -770,7 +528,6 @@
     }
     .conn-table-scroll,
     .contacts-list-scroll,
-    #lxmf-conversations-list,
     .activity-feed,
     .settings-page,
     .dashboard-page,
@@ -781,28 +538,16 @@
     .view-grid-identity {
         padding-bottom: var(--space-4);
     }
-    body.view-chat-detail .bottom-bar {
+    body.view-chat-detail .shell-tabbar {
         display: none;
     }
     body.view-chat-detail .main-content {
         padding-bottom: 0;
     }
-    body.view-chat-detail .lxmf-chat-header {
-        padding-top: calc(6px + var(--sat));
+    /* A full-screen detail drops the shell's top inset; its own header carries it. */
+    body.view-chat-detail .msg-chat-top {
+        padding-top: var(--sat);
     }
-    .sidebar .nav-item[data-view="dashboard"],
-    .sidebar .nav-item[data-view="message"],
-    .sidebar .nav-item[data-view="contacts"],
-    .sidebar .nav-item[data-view="identity"],
-    .sidebar .nav-item[data-view="network"],
-    .sidebar .nav-item[data-view="games"],
-    .sidebar .nav-item[data-view="settings"] { display: none; }
-
-    .sidebar-overlay.active { display: none; }
-    .sidebar {
-        display: none !important;
-    }
-
     .connection-bar { display: block; overflow: hidden; }
     .conn-bar-stats { display: flex; }
     .conn-bar-stats {
@@ -823,46 +568,6 @@
     }
 
     #view-message { padding: 0; }
-
-    .msg-profile-strip { padding: 8px 10px; }
-    .msg-profile-name { font-size: var(--text-sm); }
-    .msg-compose-btn { display: none; }
-
-    .lxmf-layout {
-        flex-direction: column;
-        height: 100%;
-        position: relative;
-    }
-
-    .lxmf-sidebar {
-        width: 100%;
-        max-width: none;
-        min-width: 0;
-        max-height: none;
-        height: 100%;
-        border-right: none;
-        border-bottom: none;
-        padding-right: 0;
-        padding-bottom: 0;
-        flex: 1;
-        min-height: 0;
-    }
-
-    .lxmf-chat {
-        display: none;
-        position: absolute;
-        inset: 0;
-        z-index: 5;
-        background: var(--surface-elevation-1);
-        flex-direction: column;
-    }
-
-    .lxmf-layout.view-chat-detail .lxmf-sidebar { display: none; }
-    .lxmf-layout.view-chat-detail .lxmf-chat {
-        display: flex;
-        position: relative;
-        min-height: 0;
-    }
 
     .mobile-back-btn {
         display: flex;
@@ -885,88 +590,13 @@
         height: 20px;
     }
 
-    .lxmf-compose {
-        padding: var(--space-4) var(--space-5);
-        padding-bottom: calc(var(--space-4) + var(--sab));
-        border-top: 1px solid var(--border-row);
-        background: var(--surface-panel);
-    }
-
-    .lxmf-compose textarea {
-        font-size: max(16px, var(--text-base));
-    }
-
-    .lxmf-char-count { display: none !important; }
-
-    .lxmf-compose-attach-btn {
-        box-shadow: var(--shadow-card);
-    }
-    .lxmf-compose-attach-btn:active {
-        background: var(--surface-control-active);
-        transform: scale(0.94);
-    }
-
-    .lxmf-compose .lxmf-send-btn {
-        box-shadow: var(--shadow-card);
-    }
-
     /* Keep all composer circles on the same rail, including multiline input. */
-    .lxmf-compose-attach-btn,
-    .message-send-btn,
-    .voice-memo-record-btn,
-    .voice-memo-action {
+    .message-send-btn{
         width: var(--touch-target);
         height: var(--touch-target);
         min-width: var(--touch-target);
         min-height: var(--touch-target);
         flex-basis: var(--touch-target);
-    }
-
-    .voice-memo-recorder {
-        margin: 0;
-        border-top: 1px solid var(--border-row);
-        background: var(--surface-panel);
-    }
-
-    .voice-memo-field {
-        min-height: 44px;
-        padding: 0 var(--space-2);
-        gap: var(--space-2);
-        grid-template-columns: var(--touch-target) minmax(0, 1fr) auto var(--touch-target);
-    }
-
-    .voice-memo-leading-slot,
-    .voice-memo-trailing-slot,
-    .voice-memo-primary-slot {
-        width: var(--touch-target);
-        height: var(--touch-target);
-        min-width: var(--touch-target);
-        flex-basis: var(--touch-target);
-    }
-
-    .voice-memo-field .voice-memo-action {
-        width: var(--touch-target);
-        height: var(--touch-target);
-        min-width: var(--touch-target);
-        flex-basis: var(--touch-target);
-    }
-
-    .voice-memo-send {
-        width: var(--touch-target);
-        height: var(--touch-target);
-        min-width: var(--touch-target);
-        flex-basis: var(--touch-target);
-    }
-
-    .voice-memo-player {
-        width: min(310px, 76vw);
-        min-width: 210px;
-        grid-template-columns: 44px minmax(0, 1fr);
-    }
-
-    .voice-memo-player-play {
-        width: 44px;
-        height: 44px;
     }
 
     .view-grid-identity {
@@ -1025,13 +655,13 @@
         overflow: hidden;
         overscroll-behavior: none;
     }
-    body.view-game-detail .bottom-bar,
-    body.view-game-detail .header {
+    body.view-game-detail .shell-tabbar {
         display: none;
     }
     body.view-game-detail .app-layout {
         height: var(--app-height, 100vh);
         height: var(--app-height, 100dvh);
+        padding-top: 0;
         padding-bottom: 0;
     }
     body.view-game-detail .main-content {
@@ -1299,13 +929,6 @@
         height: 8px;
     }
 
-    .keyboard-open .lxmf-compose {
-        padding-bottom: var(--space-2);
-    }
-
-    /* Fade not display:none so keyboard-open animates cleanly. */
-    .bottom-bar.keyboard-open { opacity: 0; transform: translateY(20px); pointer-events: none; }
-
     .keyboard-open .view {
         height: 100%;
     }
@@ -1314,7 +937,6 @@
     }
     .keyboard-open .conn-table-scroll,
     .keyboard-open .contacts-list-scroll,
-    .keyboard-open #lxmf-conversations-list,
     .keyboard-open .view-grid-network,
     .keyboard-open .view-grid-identity,
     .keyboard-open .activity-feed,
@@ -1325,17 +947,14 @@
     }
 
     /* Stop WKWebView scroll-chaining when messages area hits its edge. */
-    .lxmf-chat {
-        overscroll-behavior: none;
-    }
     body.view-chat-detail {
         overflow: hidden;
         overscroll-behavior: none;
     }
 
-    .app-layout {
-        height: calc(var(--app-height, 100vh) - 55px - var(--sat));
-        padding-bottom: 0;
+    body.checking-setup .app-layout,
+    body.setup-active .app-layout {
+        padding-top: 0;
     }
 
     .conv-swipe-delete {
@@ -1354,13 +973,10 @@
         pointer-events: none;
     }
 
-    body.view-chat-detail .header {
-        display: none;
-    }
-
     body.view-chat-detail .app-layout {
         height: var(--app-height, 100vh);
         height: var(--app-height, 100dvh);
+        padding-top: 0;
         padding-bottom: 0;
     }
 
@@ -1399,13 +1015,9 @@
         width: auto;
     }
     .conn-card .nr-btn-sm { padding: 6px 16px; min-height: 36px; font-size: var(--text-sm); }
-
-    .bottom-bar-item span:not(.bottom-bar-badge) { display: none; }
 }
 
 @media (max-width: 768px) {
-
-    .hamburger-btn { display: none; }
 
     .bottom-sheet-overlay {
         display: none;
@@ -1524,12 +1136,6 @@
         font-size: var(--text-base);
     }
 
-    .bottom-bar-hamburger svg {
-        width: 26px;
-        height: 26px;
-        stroke-width: 2;
-    }
-
     .panel {
         background: transparent;
         border: none;
@@ -1541,7 +1147,6 @@
     .panel:hover {
         box-shadow: none;
     }
-    .sidebar .nav-item[data-view="contacts"] { display: none; }
 
     .bottom-sheet.keyboard-open { display: none; }
 
@@ -1549,20 +1154,12 @@
 
     .panel-header-btn { min-height: 44px; min-width: 44px; padding: 6px; }
 
-    .conv-row-remove { opacity: 0.6; }
-
-    .lxmf-messages,
     .contacts-list-scroll,
     .eventlog-full,
     .games-session-list,
     .log-container { -webkit-overflow-scrolling: touch; }
 
     /* Contain overscroll so iOS rubber-band doesn't shift header on keyboard open. */
-    .lxmf-messages {
-        overscroll-behavior: contain;
-    }
-
-    .lxmf-chat-header-hash { word-break: break-all; max-width: calc(100vw - 100px); }
 
     .conn-row:active { background: var(--surface-row-active); transition: background 0.05s; }
 
@@ -1891,28 +1488,6 @@
         gap: var(--space-5);
         border-bottom: 1px solid var(--border-row);
     }
-    .conv-row {
-        padding: var(--space-6) var(--space-8);
-        min-height: 64px;
-        gap: var(--space-6);
-        border-radius: 0;
-    }
-    .conv-avatar-wrap {
-        width: 48px;
-        height: 48px;
-    }
-    .conv-avatar {
-        width: 48px;
-        height: 48px;
-    }
-    .conv-avatar svg { width: 48px; height: 48px; }
-    .conv-row + .conv-row {
-        border-top: 1px solid var(--border-row);
-    }
-    .conv-row.active {
-        background: transparent;
-        box-shadow: none;
-    }
     .contacts-row {
         padding: var(--space-6) var(--space-8);
         gap: var(--space-6);
@@ -1978,65 +1553,13 @@
         transform: scale(0.96);
         transition: transform 0.1s;
     }
-    .bottom-bar-item:active {
-        transform: scale(0.92);
-        transition: transform 0.08s ease-in;
-    }
-    .conn-row:active, .conv-row:active, .contacts-row:active {
+    .conn-row:active, .contacts-row:active {
         background: var(--surface-row-active);
     }
     .bottom-sheet-item:active {
         background: var(--surface-row-active);
         transition: background 0.05s;
     }
-    #bottom-sheet .bottom-sheet-items {
-        gap: 0;
-    }
-    #bottom-sheet .bottom-sheet-item {
-        background: transparent;
-        border: 0;
-        border-radius: 0;
-    }
-    #bottom-sheet .bottom-sheet-item:active {
-        background: var(--surface-row-active);
-        border-radius: var(--radius-lg);
-    }
-
-    .lxmf-compose {
-        flex-shrink: 0;
-        background: transparent;
-        backdrop-filter: none;
-        -webkit-backdrop-filter: none;
-        border-top: none;
-        padding: var(--space-4) var(--space-6);
-        padding-bottom: calc(8px + var(--sab));
-        z-index: 5;
-    }
-
-    .lxmf-msg.outbound {
-        border-radius: var(--radius-bubble) var(--radius-bubble) var(--radius-bubble-tail) var(--radius-bubble);
-        margin-left: 20%;
-    }
-    .lxmf-msg.inbound {
-        border-radius: var(--radius-bubble) var(--radius-bubble) var(--radius-bubble) var(--radius-bubble-tail);
-        margin-right: 20%;
-        border-left: 3px solid var(--accent-dim);
-    }
-
-    .lxmf-chat-header {
-        position: sticky;
-        top: 0;
-        z-index: 6;
-        min-height: 56px;
-        display: flex;
-        align-items: center;
-    }
-
-    .lxmf-reply-preview {
-        border-left: 3px solid var(--accent);
-        background: var(--accent-bg);
-    }
-
     .conn-bar-stat {
         background: var(--surface-control);
         border: 1px solid var(--border-control);
@@ -2233,16 +1756,13 @@
         font-size: var(--text-2xs);
     }
 
-    .lxmf-layout .lxmf-chat {
-        transition: transform 0.28s cubic-bezier(0.2, 0, 0, 1);
-    }
     .games-layout .games-detail {
         transition: transform 0.28s cubic-bezier(0.2, 0, 0, 1);
     }
 
     .conn-card { border: none; }
     .panel { border: none; box-shadow: none; }
-    .conn-row, .conv-row, .contacts-row { border-color: var(--border-row); }
+    .conn-row, .contacts-row { border-color: var(--border-row); }
     .panel-header { text-transform: none; letter-spacing: 0; font-size: var(--type-row-title-size); font-weight: var(--type-weight-semibold); background: transparent; border-bottom: none; color: var(--accent); padding: 16px 16px 8px; }
     .view-grid-network { gap: 12px; }
     .dot.green { box-shadow: 0 0 4px rgba(var(--accent-rgb), 0.3); }
@@ -2275,21 +1795,6 @@
 
     .conn-via, .conn-age-label { display: none; }
 
-    .lxmf-identity-bar { display: none; }
-
-    .conv-avatar-wrap {
-        width: 40px;
-        height: 40px;
-    }
-    .conv-avatar {
-        width: 40px;
-        height: 40px;
-    }
-    .conv-avatar svg { width: 40px; height: 40px; }
-    .conv-row {
-        padding: var(--space-5) var(--space-6);
-        min-height: 56px;
-    }
     .contacts-avatar {
         width: 40px;
         height: 40px;
@@ -2320,17 +1825,6 @@
         grid-template-columns: repeat(2, 1fr);
     }
 
-    .lxmf-identity-bar { display: none; }
-
-    .conv-avatar-wrap {
-        width: 32px;
-        height: 32px;
-    }
-    .conv-avatar {
-        width: 32px;
-        height: 32px;
-    }
-    .conv-avatar svg { width: 32px; height: 32px; }
     .contacts-avatar {
         width: 32px;
         height: 32px;
@@ -2420,9 +1914,6 @@
     #view-contacts:not(.active) .view-fab,
     #view-games:not(.active) .view-fab { display: none; }
 
-    .lxmf-layout.view-chat-detail ~ .view-fab,
-    .lxmf-layout.view-chat-detail .view-fab { display: none; }
-
     .games-layout.view-game-detail ~ .view-fab { display: none; }
 
     #games-new-btn { display: none; }
@@ -2438,8 +1929,6 @@
     .conn-bar-stat-paths { display: none; }
 
     #conn-table-body,
-    .lxmf-messages,
-    #lxmf-conversations-list,
     .contacts-list-scroll,
     #peers-list-body,
     #games-session-list,
@@ -2552,11 +2041,6 @@
         z-index: calc(var(--z-fab) - 1);
     }
     .fab-dial-scrim.active { display: block; }
-
-    .msg-search {
-        margin: var(--space-4) var(--space-4);
-        width: auto;
-    }
 
     .games-new-dialog .bottom-sheet-body {
         padding: var(--space-5) var(--space-5);
@@ -2728,25 +2212,12 @@
 
 @media (max-width: 768px) and (orientation: landscape) and (max-height: 500px) {
 
-    .bottom-bar {
+    .shell-tabbar {
         display: none;
     }
 
     .main-content {
         padding-bottom: 0;
-    }
-
-    .header {
-        min-height: 40px;
-        padding-top: calc(4px + var(--sat));
-        padding-bottom: var(--space-2);
-    }
-    .header h1 {
-        font-size: var(--text-lg);
-    }
-
-    .app-layout {
-        height: calc(var(--app-height, 100vh) - 40px - var(--sat));
     }
 
     .view-fab {
@@ -2766,58 +2237,47 @@
         max-height: 60vh;
     }
 
-    .lxmf-compose {
-        padding: var(--space-2) var(--space-4);
-        padding-bottom: var(--space-2);
-    }
-    .lxmf-compose textarea {
-        min-height: 34px;
-    }
-
-    .lxmf-chat-header {
-        min-height: 40px;
-        padding: var(--space-2) var(--space-5);
-    }
 }
 
 /* The full sidebar needs ~625px; short windows tighten it in steps, then scroll. */
 @media (min-width: 769px) {
-    .sidebar {
-        overflow-x: hidden;
+    .shell-sidebar {
         overflow-y: auto;
         scrollbar-width: none;
     }
-    .sidebar::-webkit-scrollbar {
+    .shell-sidebar::-webkit-scrollbar {
         display: none;
+    }
+    /* The rail's tooltips reach past its edge. */
+    .shell-sidebar.collapsed {
+        overflow: visible;
     }
 }
 
 @media (max-height: 640px) and (min-width: 769px) {
-    .sidebar {
-        padding: var(--space-4) 0;
+    .shell-sidebar {
+        padding-top: 8px;
     }
-    .nav-item {
-        min-height: 38px;
+    .shell-sidebar .ui-nav-item {
+        min-height: 36px;
     }
 }
 
 @media (max-height: 560px) and (min-width: 769px) {
-    .sidebar {
-        gap: var(--space-1);
+    .shell-sidebar {
+        gap: 0;
     }
-    .nav-item {
-        min-height: 34px;
+    .shell-sidebar .ui-nav-item {
+        min-height: 32px;
     }
-    .sidebar-brand,
-    .sidebar-divider,
-    .sidebar-group-divider {
+    .shell-sidebar .ui-sidebar-sep {
         display: none;
     }
 }
 
 /* nav.js forces the icon rail here, so its toggle would do nothing. */
 @media (min-width: 769px) and (max-width: 879px) {
-    .sidebar-collapse-btn {
+    #sidebar-collapse-btn {
         display: none;
     }
 }
@@ -2918,7 +2378,6 @@
         --mobile-list-meta-size: var(--text-xs);
     }
 
-    #lxmf-conversations-list,
     .contacts-list-scroll,
     .dashboard-peers-scroll,
     .conn-table-scroll,
@@ -2931,7 +2390,6 @@
         scrollbar-width: none;
         -ms-overflow-style: none;
     }
-    #lxmf-conversations-list::-webkit-scrollbar,
     .contacts-list-scroll::-webkit-scrollbar,
     .dashboard-peers-scroll::-webkit-scrollbar,
     .conn-table-scroll::-webkit-scrollbar,
@@ -2958,34 +2416,26 @@
         font-size: var(--text-sm);
     }
 
-    .conv-row,
     .contacts-row,
     .games-session-row {
         min-height: var(--mobile-list-min-height);
     }
 
-    .conv-row,
     .contacts-row {
         padding: var(--space-3) var(--space-7);
         gap: var(--space-5);
     }
 
-    .conv-avatar-wrap,
-    .conv-avatar,
     .contacts-avatar {
         width: var(--mobile-list-avatar-size);
         height: var(--mobile-list-avatar-size);
     }
 
-    .conv-avatar svg,
     .contacts-avatar svg {
         width: 100%;
         height: 100%;
     }
 
-    .conv-row-content,
-    .conv-row-top,
-    .conv-row-bottom,
     .contacts-row-content,
     .games-session-info,
     .games-session-meta,
@@ -2993,7 +2443,6 @@
         min-width: 0;
     }
 
-    .conv-name,
     .contacts-row-name,
     .games-session-name,
     .conn-section-label,
@@ -3006,7 +2455,6 @@
         font-weight: var(--type-weight-semibold);
     }
 
-    .conv-preview,
     .contacts-row-hash,
     .games-session-status,
     .games-session-game,
@@ -3022,7 +2470,6 @@
         line-height: 1.35;
     }
 
-    .conv-preview,
     .games-session-status,
     .games-session-game,
     .conn-iface-stats {
@@ -3033,7 +2480,6 @@
 
     
 
-    .conv-time,
     .games-session-time,
     .activity-event-time,
     .activity-event-meta {
@@ -3300,7 +2746,6 @@
         --mobile-list-min-height: 56px;
     }
 
-    .conv-row,
     .contacts-row,
     .games-session-row {
         padding-left: var(--space-6);
@@ -3367,10 +2812,6 @@ html[data-text-scale-tier="large"] .activity-event-details > div {
 }
 
 @media (min-width: 769px) {
-html[data-text-scale-tier="xlarge"] .lxmf-sidebar {
-    width: clamp(320px, 34vw, 440px);
-    max-width: 440px;
-}
 
 html[data-text-scale-tier="xlarge"] .view-grid-dashboard,
 html[data-text-scale-tier="xlarge"] .view-grid-network,
@@ -3894,17 +3335,14 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
         overscroll-behavior: none;
     }
 
-    body.view-channel-detail .bottom-bar {
-        display: none;
-    }
-
-    body.view-channel-detail .header {
+    body.view-channel-detail .shell-tabbar {
         display: none;
     }
 
     body.view-channel-detail .app-layout {
         height: var(--app-height, 100vh);
         height: var(--app-height, 100dvh);
+        padding-top: 0;
         padding-bottom: 0;
     }
 
@@ -4091,15 +3529,14 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
         border-right: var(--sar) solid transparent;
         background-origin: border-box;
     }
-    body.view-chat-detail .lxmf-chat-header,
-    body.view-chat-detail .lxmf-select-bar,
+    body.view-chat-detail .msg-chat-top > *,
     body.view-chat-detail .lxst-call-strip {
         margin-left: var(--sal);
         margin-right: var(--sar);
     }
-    body.view-chat-detail .lxmf-compose {
-        padding-left: calc(var(--space-6) + var(--sal));
-        padding-right: calc(var(--space-6) + var(--sar));
+    body.view-chat-detail .cmp {
+        padding-left: calc(var(--chat-inset) + var(--sal));
+        padding-right: calc(var(--chat-inset) + var(--sar));
     }
     body.view-game-detail .games-detail-board,
     body.view-game-detail .games-detail-controls {
@@ -4144,8 +3581,8 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
 
 /* The sidebar footer sits in a bottom corner, so its own padding absorbs the inset. */
 @media (min-width: 769px) {
-    .sidebar {
-        padding-bottom: max(var(--space-8), var(--sab));
+    .shell-sidebar {
+        padding-bottom: max(8px, var(--sab));
     }
 }
 

@@ -25,10 +25,6 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
     outline: 2px solid var(--focus-ring);
     outline-offset: 1px;
 }
-.nav-item:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: -2px;
-}
 
 ::selection {
     background: var(--accent-bg);
@@ -36,9 +32,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 
 html[data-theme] body,
-html[data-theme] .header,
-html[data-theme] .sidebar,
+html[data-theme] .shell-sidebar,
 html[data-theme] .panel,
-html[data-theme] .bottom-bar {
+html[data-theme] .shell-tabbar {
     transition: background-color var(--transition-base), color var(--transition-base), border-color var(--transition-base);
 }

@@ -18,6 +18,7 @@ const context = {
     _conversationOwnerIsCurrent: owner => owner.identity === identity && owner.epoch === epoch,
     _renderConversationsFromCache: rows => renders.push(rows),
     renderDashboardRecentMessages: () => home.push(context.lxmfConversations),
+    _conversationListStateHtml: state => '<div data-list-state="' + state + '"></div>',
     setTimeout(fn) { timers.set(++sequence, fn); return sequence; },
     clearTimeout(id) { timers.delete(id); },
     RS: {
@@ -69,7 +70,7 @@ function fire() { const batch = [...timers.values()]; timers.clear(); batch.forE
     }
     assert.equal(pending.length, 9, 'failures must stop after two retries');
     assert.equal(context._convFetchInFlight, false);
-    assert(container.innerHTML.includes("Couldn't load conversations."));
+    assert(container.innerHTML.includes('data-list-state="error"'), 'a list that cannot load says so, with Try again');
 
     // Use the actual conversation reader to cover A -> B -> A navigation.
     vm.runInContext(source.slice(source.indexOf('function _loadConversation('), source.indexOf('// Placeholder row shown until')), context);
@@ -79,7 +80,7 @@ function fire() { const batch = [...timers.values()]; timers.clear(); batch.forE
         _resolveConversationThread: () => '',
         _conversationKey: hash => hash,
         _activeConversationKey: () => context.lxmfActiveContact,
-        _msgReactions: {}, _messagesClearedCount: 0, cacheGet: () => null,
+        _msgReactions: {}, _messagesClearedCount: 0, cacheGet: () => null, _openingUnreadCount: () => 0,
         renderConversation() {},
         _clearMessageSelection() { return false; },
         _mergeConversationMessages: (_hash, messages) => messages,

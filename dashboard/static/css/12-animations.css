@@ -38,7 +38,6 @@
     50% { opacity: 1; }
 }
 
-.msg-highlight { animation: msg-flash 1.5s ease-out; }
 @keyframes msg-flash {
     0%, 30% { background: var(--accent-bg); }
     100% { background: transparent; }
@@ -170,9 +169,7 @@
 
 /* Parent transform breaks position:fixed; hide FABs during view transitions. */
 .view.entering .view-fab,
-.view.exiting .view-fab,
-.view.entering .fab-speed-dial,
-.view.exiting .fab-speed-dial { opacity: 0; }
+.view.exiting .view-fab{ opacity: 0; }
 
 .ripple-host {
     position: relative;
@@ -180,7 +177,7 @@
     -webkit-tap-highlight-color: transparent;
 }
 
-.bottom-bar-item.ripple-host {
+.ui-tab.ripple-host {
     border-radius: var(--radius-xl);
 }
 
@@ -248,7 +245,7 @@
     transition: transform 0.18s cubic-bezier(0.34, 1.56, 0.64, 1), filter 0.18s ease;
 }
 
-.bottom-bar-item.announcing {
+.ui-tab.announcing {
     color: var(--accent);
     transition: color 1.5s ease-out;
 }
@@ -300,7 +297,7 @@
 }
 
 /* Tight (~450ms) so it doesn't compete with the simultaneous toast. */
-.bottom-bar.announce-rejected {
+.shell-tabbar.announce-rejected {
     animation: barHeadShake 0.45s cubic-bezier(0.36, 0.07, 0.19, 0.97);
 }
 @keyframes barHeadShake {

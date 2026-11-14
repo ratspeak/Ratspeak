@@ -234,7 +234,7 @@ vm.runInContext(
         lxmf.slice(0, lxmf.indexOf('var _imageBlobUrlCache')) +
             ['_canonicalConversationHash', '_canonicalConversationThread', '_conversationKey', '_activeConversationKey', '_resolveConversationThread', '_conversationOwnerSnapshot',
                 '_conversationOwnerIsCurrent', '_utf8ByteLength', 'cacheGet', 'cacheSet',
-                'cacheDel', '_mergeConversationMessages', '_loadConversation'].map(function(name) {
+                'cacheDel', '_mergeConversationMessages', '_openingUnreadCount', '_loadConversation'].map(function(name) {
                 return functionSource(lxmf, name);
             }).join('\n') + '\n' + functionSource(identity, 'resetConversationCaches') + '\n' +
             listenerSource(identity, 'identity_data_cleared'),

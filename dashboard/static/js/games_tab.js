@@ -2102,16 +2102,11 @@
     }
 
     function updateGamesBadge() {
-        var dot = document.getElementById('nav-games-unread');
-        var bsDot = document.getElementById('bs-games-unread');
-        var bbDot = document.getElementById('bb-more-unread');
         var total = 0;
         for (var i = 0; i < _allSessions.length; i++) {
             if (_allSessions[i].unread > 0 && !_isViewingSession(_allSessions[i].game_id)) total++;
         }
-        if (dot) dot.style.display = (total > 0) ? '' : 'none';
-        if (bsDot) bsDot.style.display = (total > 0) ? '' : 'none';
-        if (bbDot) bbDot.style.display = (total > 0) ? '' : 'none';
+        if (window.RS && RS.shell) RS.shell.setGamesWaiting(total);
     }
 
     function _initTabFilters() {

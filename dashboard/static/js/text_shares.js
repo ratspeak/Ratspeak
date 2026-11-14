@@ -181,7 +181,7 @@
         preview.hidden = !selected; preview.textContent = selected
             ? (selected.item.image ? 'Photo · ' + selected.item.image.name + (selected.item.text ? '\n' : '') : '') + selected.item.text : '';
         title.textContent = selected ? (mode === 'contacts' ? 'Contacts' : 'Share to…') : 'Shared items';
-        sender.textContent = 'From ' + (document.getElementById('msg-profile-name').textContent || 'current identity');
+        sender.textContent = 'From ' + (document.getElementById('sidebar-identity-name').textContent || 'current identity');
         document.getElementById('text-share-discard').hidden = !selected || !reviewing || mode === 'contacts';
         document.getElementById('text-share-discard').disabled = selecting;
         if (!selected) {

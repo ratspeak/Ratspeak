@@ -81,7 +81,7 @@
 
     function sentLabel(ts) {
         if (!ts) return '';
-        var date = typeof _formatDateLabel === 'function' ? _formatDateLabel(ts) : '';
+        var date = RS.kit.time.date(ts);
         var time = typeof formatTime === 'function' ? formatTime(ts) : '';
         return date && time ? date + ', ' + time : (date || time);
     }

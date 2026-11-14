@@ -114,7 +114,7 @@ assert(!html.includes('identity-page-kicker'),
 assert(!/<legend\b[^>]*>\s*Text size\s*<\/legend>/.test(html),
     'the visible settings label must be the preset group\'s only text-size heading');
 assert(!html.includes('no_pinch.js'), 'browser zoom must remain available');
-assert(html.includes('lxmf-compose message-composer'));
+assert(html.includes('<div class="cmp" id="lxmf-composer" hidden>'), 'Messages uses the shared composer pill');
 assert(html.includes('channel-compose message-composer'));
 assert(html.includes('message-composer-input'));
 assert(html.includes('message-send-btn'));
@@ -122,8 +122,8 @@ assert(html.includes('games-sidebar-tabs section-subtabs'));
 assert(html.includes('games-tab section-subtab-btn'));
 assert(html.includes('network-subtabs section-subtabs'));
 assert(html.includes('network-subtab-btn section-subtab-btn'));
-assert(!/<a class="bottom-sheet-item"/.test(html), 'mobile navigation rows must be buttons');
-assert(!/<a class="bottom-bar-item"/.test(html), 'mobile primary navigation must use semantic buttons');
+assert(!/<a class="(?:bottom-sheet-item|ui-menu-item|ui-row)"[^>]*data-view/.test(html), 'mobile navigation rows must be buttons');
+assert(!/<a class="ui-tab"/.test(html), 'mobile primary navigation must use semantic buttons');
 
 var revisionMatches = Array.from(html.matchAll(/\/(?:static\/(?!js\/vendor)[^"?]+)\?v=([^"&]+)/g));
 assert(revisionMatches.length > 20, 'first-party asset revisions must be explicit');
@@ -133,8 +133,8 @@ assert.deepStrictEqual(Array.from(revisions), ['ui-20260924-4'],
 
 var nav = read('static/js/nav.js');
 var stateSource = read('static/js/state.js');
-assert(nav.includes("document.querySelectorAll('#bottom-sheet .bottom-sheet-item[data-view]')"));
-assert(nav.includes('sheet._ratspeakDismiss = close;'));
+assert(nav.includes("sheet.querySelectorAll('[data-view]')"));
+assert(nav.includes('sheet._ratspeakDismiss = _closeMoreSheet;'));
 assert(nav.includes('var initialView = _resolveInitialView();'));
 assert(nav.includes('switchView(initialView);'));
 var routeContext = {
@@ -144,6 +144,7 @@ var routeContext = {
     localStorage: { getItem: function() { return 'propagation'; } },
     isCompactLayout: function() { return true; },
     isTauriMobile: function() { return false; },
+    document: { getElementById: function() { return {}; } },
     String: String
 };
 vm.createContext(routeContext);

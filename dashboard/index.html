@@ -16,127 +16,35 @@
 </head>
 <body class="checking-setup">
 
-<div class="header">
-    <div class="header-left">
-        <button class="hamburger-btn" id="hamburger-btn" aria-label="Toggle menu">
-            <svg width="25" height="25" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
-                <line x1="3" y1="5" x2="17" y2="5"/>
-                <line x1="3" y1="10" x2="17" y2="10"/>
-                <line x1="3" y1="15" x2="17" y2="15"/>
-            </svg>
-        </button>
-        <svg class="header-logo-icon" viewBox="243 243 282 282" fill="var(--accent)" width="25" height="25">
-            <path d="M327.97,501.16C314.61,508.03 301.57,514.72 288.56,521.48C283.91,523.91 279.2,524.61 275.05,520.98C271.05,517.49 271.26,512.87 272.63,508.05C275.23,498.93 277.46,489.7 280.08,480.58C281.03,477.27 280.4,475.51 277.14,473.92C255.84,463.53 245.61,446.29 245.66,422.66C245.75,381.16 245.55,339.66 245.75,298.16C245.86,275.62 256.63,259.57 276.93,249.98C283.68,246.79 291.07,246.01 298.4,246C355.74,245.88 413.07,245.83 470.4,245.95C495.22,246.01 516.64,265.69 519.52,290.03C520.6,299.2 520.12,308.32 520.21,317.46C520.37,333.46 520.29,349.46 520.2,365.46C520.17,371.38 518.89,372.03 513.77,369.13C498.9,360.71 498.91,360.71 498.9,343.65C498.88,328.81 498.92,313.98 498.81,299.15C498.66,279.74 486.18,267.28 466.77,267.26C410.94,267.23 355.11,267.23 299.27,267.32C279.54,267.35 267.32,279.36 267.23,299.05C267.05,340.71 267.04,382.38 267.09,424.04C267.11,441.62 277.67,453.85 295.43,456.58C310.83,458.95 307.84,458.98 304.51,471.32C303.3,475.82 302.05,480.31 300.83,484.81C300.35,486.56 299.66,488.32 300.92,490.33C304.48,490.2 307.24,487.87 310.31,486.46C314.99,484.3 319.61,481.95 324.04,479.31C328.78,476.49 333.17,476.59 338.23,478.73C355.38,485.99 373.44,488.84 391.95,487.72C430.98,485.37 461.99,468.13 484.6,436.22C489.79,428.9 493.71,420.74 496.43,412.08C497.17,409.7 496.94,408 494.74,406.52C489.6,403.07 487.33,398.05 487.7,391.96C487.91,388.37 486.58,386.13 483.49,384.24C461.58,370.79 438.6,360.13 412.77,356.87C403.65,355.71 394.49,355.67 385.35,356.73C376.09,357.8 372.64,358.02 369.74,347.74C368.12,341.98 365.71,336.47 362.24,331.47C356.28,322.9 346.68,319.02 337.45,321.63C328.92,324.05 321.83,333.47 321.32,343.14C320.63,356 327.03,371.92 346.66,374.88C350.07,375.39 352.59,376.98 353.16,380.74C353.7,384.21 352.02,386.53 349.33,388.25C347.4,389.48 345.13,389.39 343,389.01C325.7,385.88 313.84,376.01 308.73,359.24C303.68,342.67 306.62,327.49 319.94,315.42C336.41,300.5 361.24,303.86 373.4,322.51C376.14,326.7 378.7,331.06 380.19,335.83C381.41,339.73 383.56,341.03 387.54,340.77C406.5,339.53 425.15,341.26 443.29,347.18C469.21,355.64 492.63,368.82 514.47,384.97C521.5,390.18 521.02,397.62 519.75,405.01C515.1,432.25 501.28,454.4 481.02,472.62C460.48,491.09 436.54,502.92 409.2,507.52C385.77,511.46 362.77,509.7 340.18,502.3C336.39,501.06 332.58,498.31 327.97,501.16z"/>
-            <path d="M414.19,335.38C405.75,335.93 397.65,334.86 389.54,335.84C387,336.15 385.78,334.06 384.8,332.07C380.73,323.83 376.21,315.95 368.77,310.17C366.48,308.38 367.23,307 369.43,305.62C379.53,299.3 389.62,299.22 399.19,306.49C408.52,313.58 414.08,323.09 414.19,335.38z"/>
-            <path d="M417.09,390.21C410.66,388.78 407.34,384.6 408.1,379.44C408.81,374.6 413.31,370.91 418.31,371.05C423.12,371.19 426.94,375.02 427.27,380C427.63,385.61 424.18,389.22 417.09,390.21z"/>
-            <path d="M430.83,418.71C429.47,419.23 428.59,420.25 427.03,419.59C426.81,417.6 428.52,416.83 429.77,416.07C441.62,408.88 453.85,402.56 467.79,400.42C469.45,400.16 471.08,399.82 472.69,400.53C474.42,401.28 475.23,402.66 475.09,404.49C474.92,406.75 473.27,407.6 471.34,407.79C465.71,408.35 460.12,409.05 454.59,410.3C446.44,412.13 438.57,414.68 430.83,418.71z"/>
-            <path d="M448.63,432.62C455.17,424.82 461.54,417.3 470.21,412.35C473.17,410.66 477.33,407.48 479.7,412.18C482.09,416.9 476.91,417.67 473.97,418.99C464.9,423.07 457.39,429.35 449.85,435.63C448.67,436.61 447.95,438.42 445.79,438.04C445.62,435.72 447.39,434.49 448.63,432.62z"/>
-        </svg>
-        <h1>Ratspeak</h1>
-        <div class="header-mobile-identity" id="header-mobile-identity" title="Share contact card" role="button" tabindex="0" aria-label="Share your contact card">
-            <div class="header-mobile-avatar" id="header-mobile-avatar"></div>
-            <div class="header-mobile-info">
-                <span class="header-mobile-name" id="header-mobile-name"></span>
-            </div>
-        </div>
-    </div>
-    <div class="header-right">
-        <button class="header-identity-pill hidden" id="header-identity-pill" title="Share contact card" aria-label="Share your contact card">
-            <span class="header-identity-icon" id="header-identity-icon"></span>
-            <span class="header-identity-hash" id="header-identity-hash"></span>
-        </button>
-    </div>
-</div>
-
 <div class="app-layout">
 
-    <div class="sidebar-overlay" id="sidebar-overlay"></div>
-
-    <nav class="sidebar" id="sidebar">
-        <button class="sidebar-close-btn" id="sidebar-close-btn" aria-label="Close menu">&times;</button>
-        <div class="sidebar-brand">
-            <svg class="sidebar-brand-logo" viewBox="243 243 282 282" fill="var(--accent)" width="20" height="20">
-                <path d="M327.97,501.16C314.61,508.03 301.57,514.72 288.56,521.48C283.91,523.91 279.2,524.61 275.05,520.98C271.05,517.49 271.26,512.87 272.63,508.05C275.23,498.93 277.46,489.7 280.08,480.58C281.03,477.27 280.4,475.51 277.14,473.92C255.84,463.53 245.61,446.29 245.66,422.66C245.75,381.16 245.55,339.66 245.75,298.16C245.86,275.62 256.63,259.57 276.93,249.98C283.68,246.79 291.07,246.01 298.4,246C355.74,245.88 413.07,245.83 470.4,245.95C495.22,246.01 516.64,265.69 519.52,290.03C520.6,299.2 520.12,308.32 520.21,317.46C520.37,333.46 520.29,349.46 520.2,365.46C520.17,371.38 518.89,372.03 513.77,369.13C498.9,360.71 498.91,360.71 498.9,343.65C498.88,328.81 498.92,313.98 498.81,299.15C498.66,279.74 486.18,267.28 466.77,267.26C410.94,267.23 355.11,267.23 299.27,267.32C279.54,267.35 267.32,279.36 267.23,299.05C267.05,340.71 267.04,382.38 267.09,424.04C267.11,441.62 277.67,453.85 295.43,456.58C310.83,458.95 307.84,458.98 304.51,471.32C303.3,475.82 302.05,480.31 300.83,484.81C300.35,486.56 299.66,488.32 300.92,490.33C304.48,490.2 307.24,487.87 310.31,486.46C314.99,484.3 319.61,481.95 324.04,479.31C328.78,476.49 333.17,476.59 338.23,478.73C355.38,485.99 373.44,488.84 391.95,487.72C430.98,485.37 461.99,468.13 484.6,436.22C489.79,428.9 493.71,420.74 496.43,412.08C497.17,409.7 496.94,408 494.74,406.52C489.6,403.07 487.33,398.05 487.7,391.96C487.91,388.37 486.58,386.13 483.49,384.24C461.58,370.79 438.6,360.13 412.77,356.87C403.65,355.71 394.49,355.67 385.35,356.73C376.09,357.8 372.64,358.02 369.74,347.74C368.12,341.98 365.71,336.47 362.24,331.47C356.28,322.9 346.68,319.02 337.45,321.63C328.92,324.05 321.83,333.47 321.32,343.14C320.63,356 327.03,371.92 346.66,374.88C350.07,375.39 352.59,376.98 353.16,380.74C353.7,384.21 352.02,386.53 349.33,388.25C347.4,389.48 345.13,389.39 343,389.01C325.7,385.88 313.84,376.01 308.73,359.24C303.68,342.67 306.62,327.49 319.94,315.42C336.41,300.5 361.24,303.86 373.4,322.51C376.14,326.7 378.7,331.06 380.19,335.83C381.41,339.73 383.56,341.03 387.54,340.77C406.5,339.53 425.15,341.26 443.29,347.18C469.21,355.64 492.63,368.82 514.47,384.97C521.5,390.18 521.02,397.62 519.75,405.01C515.1,432.25 501.28,454.4 481.02,472.62C460.48,491.09 436.54,502.92 409.2,507.52C385.77,511.46 362.77,509.7 340.18,502.3C336.39,501.06 332.58,498.31 327.97,501.16z"/>
-                <path d="M414.19,335.38C405.75,335.93 397.65,334.86 389.54,335.84C387,336.15 385.78,334.06 384.8,332.07C380.73,323.83 376.21,315.95 368.77,310.17C366.48,308.38 367.23,307 369.43,305.62C379.53,299.3 389.62,299.22 399.19,306.49C408.52,313.58 414.08,323.09 414.19,335.38z"/>
-                <path d="M417.09,390.21C410.66,388.78 407.34,384.6 408.1,379.44C408.81,374.6 413.31,370.91 418.31,371.05C423.12,371.19 426.94,375.02 427.27,380C427.63,385.61 424.18,389.22 417.09,390.21z"/>
-                <path d="M430.83,418.71C429.47,419.23 428.59,420.25 427.03,419.59C426.81,417.6 428.52,416.83 429.77,416.07C441.62,408.88 453.85,402.56 467.79,400.42C469.45,400.16 471.08,399.82 472.69,400.53C474.42,401.28 475.23,402.66 475.09,404.49C474.92,406.75 473.27,407.6 471.34,407.79C465.71,408.35 460.12,409.05 454.59,410.3C446.44,412.13 438.57,414.68 430.83,418.71z"/>
-                <path d="M448.63,432.62C455.17,424.82 461.54,417.3 470.21,412.35C473.17,410.66 477.33,407.48 479.7,412.18C482.09,416.9 476.91,417.67 473.97,418.99C464.9,423.07 457.39,429.35 449.85,435.63C448.67,436.61 447.95,438.42 445.79,438.04C445.62,435.72 447.39,434.49 448.63,432.62z"/>
-            </svg>
-            <span class="sidebar-brand-text">Ratspeak</span>
+    <nav class="ui-sidebar shell-sidebar" id="sidebar" aria-label="Main">
+        <div class="shell-brand-row">
+            <div class="ui-brand"><svg viewBox="243 243 282 282" aria-hidden="true" focusable="false"><path d="M327.97,501.16C314.61,508.03 301.57,514.72 288.56,521.48C283.91,523.91 279.2,524.61 275.05,520.98C271.05,517.49 271.26,512.87 272.63,508.05C275.23,498.93 277.46,489.7 280.08,480.58C281.03,477.27 280.4,475.51 277.14,473.92C255.84,463.53 245.61,446.29 245.66,422.66C245.75,381.16 245.55,339.66 245.75,298.16C245.86,275.62 256.63,259.57 276.93,249.98C283.68,246.79 291.07,246.01 298.4,246C355.74,245.88 413.07,245.83 470.4,245.95C495.22,246.01 516.64,265.69 519.52,290.03C520.6,299.2 520.12,308.32 520.21,317.46C520.37,333.46 520.29,349.46 520.2,365.46C520.17,371.38 518.89,372.03 513.77,369.13C498.9,360.71 498.91,360.71 498.9,343.65C498.88,328.81 498.92,313.98 498.81,299.15C498.66,279.74 486.18,267.28 466.77,267.26C410.94,267.23 355.11,267.23 299.27,267.32C279.54,267.35 267.32,279.36 267.23,299.05C267.05,340.71 267.04,382.38 267.09,424.04C267.11,441.62 277.67,453.85 295.43,456.58C310.83,458.95 307.84,458.98 304.51,471.32C303.3,475.82 302.05,480.31 300.83,484.81C300.35,486.56 299.66,488.32 300.92,490.33C304.48,490.2 307.24,487.87 310.31,486.46C314.99,484.3 319.61,481.95 324.04,479.31C328.78,476.49 333.17,476.59 338.23,478.73C355.38,485.99 373.44,488.84 391.95,487.72C430.98,485.37 461.99,468.13 484.6,436.22C489.79,428.9 493.71,420.74 496.43,412.08C497.17,409.7 496.94,408 494.74,406.52C489.6,403.07 487.33,398.05 487.7,391.96C487.91,388.37 486.58,386.13 483.49,384.24C461.58,370.79 438.6,360.13 412.77,356.87C403.65,355.71 394.49,355.67 385.35,356.73C376.09,357.8 372.64,358.02 369.74,347.74C368.12,341.98 365.71,336.47 362.24,331.47C356.28,322.9 346.68,319.02 337.45,321.63C328.92,324.05 321.83,333.47 321.32,343.14C320.63,356 327.03,371.92 346.66,374.88C350.07,375.39 352.59,376.98 353.16,380.74C353.7,384.21 352.02,386.53 349.33,388.25C347.4,389.48 345.13,389.39 343,389.01C325.7,385.88 313.84,376.01 308.73,359.24C303.68,342.67 306.62,327.49 319.94,315.42C336.41,300.5 361.24,303.86 373.4,322.51C376.14,326.7 378.7,331.06 380.19,335.83C381.41,339.73 383.56,341.03 387.54,340.77C406.5,339.53 425.15,341.26 443.29,347.18C469.21,355.64 492.63,368.82 514.47,384.97C521.5,390.18 521.02,397.62 519.75,405.01C515.1,432.25 501.28,454.4 481.02,472.62C460.48,491.09 436.54,502.92 409.2,507.52C385.77,511.46 362.77,509.7 340.18,502.3C336.39,501.06 332.58,498.31 327.97,501.16z"/><path d="M414.19,335.38C405.75,335.93 397.65,334.86 389.54,335.84C387,336.15 385.78,334.06 384.8,332.07C380.73,323.83 376.21,315.95 368.77,310.17C366.48,308.38 367.23,307 369.43,305.62C379.53,299.3 389.62,299.22 399.19,306.49C408.52,313.58 414.08,323.09 414.19,335.38z"/><path d="M417.09,390.21C410.66,388.78 407.34,384.6 408.1,379.44C408.81,374.6 413.31,370.91 418.31,371.05C423.12,371.19 426.94,375.02 427.27,380C427.63,385.61 424.18,389.22 417.09,390.21z"/><path d="M430.83,418.71C429.47,419.23 428.59,420.25 427.03,419.59C426.81,417.6 428.52,416.83 429.77,416.07C441.62,408.88 453.85,402.56 467.79,400.42C469.45,400.16 471.08,399.82 472.69,400.53C474.42,401.28 475.23,402.66 475.09,404.49C474.92,406.75 473.27,407.6 471.34,407.79C465.71,408.35 460.12,409.05 454.59,410.3C446.44,412.13 438.57,414.68 430.83,418.71z"/><path d="M448.63,432.62C455.17,424.82 461.54,417.3 470.21,412.35C473.17,410.66 477.33,407.48 479.7,412.18C482.09,416.9 476.91,417.67 473.97,418.99C464.9,423.07 457.39,429.35 449.85,435.63C448.67,436.61 447.95,438.42 445.79,438.04C445.62,435.72 447.39,434.49 448.63,432.62z"/></svg><span>Ratspeak</span></div>
+            <button type="button" class="ui-icon-btn ui-icon-btn--sm" id="sidebar-collapse-btn" aria-label="Collapse sidebar" title="Collapse sidebar"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg></button>
         </div>
-        <div class="sidebar-divider"></div>
-        <a class="nav-item active" data-view="dashboard" href="#dashboard" title="Home">
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-            <span class="nav-label">Home</span>
-        </a>
-        <a class="nav-item" data-view="message" href="#message" title="Messages">
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            <span class="nav-label">Messages</span>
-            <span class="nav-unread-dot" id="nav-unread-dot" style="display:none;"></span>
-        </a>
-        <a class="nav-item" data-view="channels" href="#channels" title="Channels">
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8.5 16.5a6 6 0 0 1 0-9"/><path d="M15.5 7.5a6 6 0 0 1 0 9"/><path d="M5.5 19.5a10 10 0 0 1 0-15"/><path d="M18.5 4.5a10 10 0 0 1 0 15"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/></svg>
-            <span class="nav-label">Channels</span>
-            <span class="nav-unread-dot" id="nav-channels-unread" style="display:none;"></span>
-        </a>
-        <a class="nav-item" data-view="games" href="#games" title="Games">
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"/></svg>
-            <span class="nav-label">Games</span>
-            <span class="nav-unread-dot games-unread-dot" id="nav-games-unread" style="display:none;"></span>
-        </a>
-        <div class="sidebar-group-divider" role="presentation"></div>
-        <a class="nav-item" data-view="contacts" href="#contacts" title="Contacts">
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-            <span class="nav-label">Contacts</span>
-        </a>
-        <a class="nav-item" data-view="peers" href="#peers" title="Peers">
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-            <span class="nav-label">Peers</span>
-        </a>
-        <div class="sidebar-group-divider" role="presentation"></div>
-        <a class="nav-item" data-view="network" href="#network" title="Network">
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="16" y="2" width="6" height="6" rx="1"/><rect x="9" y="16" width="6" height="6" rx="1"/><path d="M5 8v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="12" y1="13" x2="12" y2="16"/></svg>
-            <span class="nav-label">Network</span>
-        </a>
-        <a class="nav-item" data-view="identity" href="#identity" title="Identity">
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 17.4A2 2 0 0 0 2 18.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8A6.5 6.5 0 1 0 9.4 10.6z"/><circle cx="16.5" cy="7.5" r="1.5"/></svg>
-            <span class="nav-label">Identity</span>
-        </a>
-        <a class="nav-item" data-view="settings" href="#settings" title="Settings">
-            <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-            <span class="nav-label">Settings</span>
-        </a>
-        <div class="sidebar-identity sidebar-identity--profile" id="sidebar-identity" title="Open Identity" role="button" tabindex="0">
-            <span class="sidebar-identity-icon" id="sidebar-identity-icon"></span>
-            <div class="sidebar-identity-meta">
-                <div class="sidebar-identity-name" id="sidebar-identity-name"></div>
-                <div class="sidebar-identity-hash" id="sidebar-identity-hash"></div>
-            </div>
-            <svg class="header-identity-chevron" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
-        </div>
-        <div class="sidebar-footer">
-            <button class="sidebar-collapse-btn" id="sidebar-collapse-btn" title="Collapse sidebar" aria-label="Toggle sidebar">
-                <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>
-            </button>
+        <a class="ui-nav-item" data-view="dashboard" href="#dashboard"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg><span class="lbl">Home</span><span class="ui-tooltip shell-tip" aria-hidden="true">Home</span></a>
+        <a class="ui-nav-item" data-view="message" href="#message"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="lbl">Messages</span><span class="ui-unread" id="nav-unread-dot" role="img" aria-label="Unread" hidden></span><span class="ui-tooltip shell-tip" aria-hidden="true">Messages</span></a>
+        <a class="ui-nav-item" data-view="channels" href="#channels"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8.5 16.5a6 6 0 0 1 0-9"/><path d="M15.5 7.5a6 6 0 0 1 0 9"/><path d="M5.5 19.5a10 10 0 0 1 0-15"/><path d="M18.5 4.5a10 10 0 0 1 0 15"/><circle cx="12" cy="12" r="1.7"/></svg><span class="lbl">Channels</span><span class="ui-unread" id="nav-channels-unread" role="img" aria-label="Unread" hidden></span><span class="ui-tooltip shell-tip" aria-hidden="true">Channels</span></a>
+        <a class="ui-nav-item" data-view="games" href="#games"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258A4 4 0 0 0 17.32 5z"/></svg><span class="lbl">Games</span><span class="ui-unread" id="nav-games-unread" role="img" aria-label="Unread" hidden></span><span class="ui-tooltip shell-tip" aria-hidden="true">Games</span></a>
+        <div class="ui-sidebar-sep" role="presentation"></div>
+        <a class="ui-nav-item" data-view="contacts" href="#contacts"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span class="lbl">Contacts</span><span class="ui-tooltip shell-tip" aria-hidden="true">Contacts</span></a>
+        <a class="ui-nav-item" data-view="peers" href="#peers"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg><span class="lbl">Peers</span><span class="ui-tooltip shell-tip" aria-hidden="true">Peers</span></a>
+        <div class="ui-sidebar-sep" role="presentation"></div>
+        <a class="ui-nav-item" data-view="network" href="#network"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="16" y="2" width="6" height="6" rx="1"/><rect x="9" y="16" width="6" height="6" rx="1"/><path d="M5 8v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="12" y1="13" x2="12" y2="16"/></svg><span class="lbl">Network</span><span class="ui-tooltip shell-tip" aria-hidden="true">Network</span></a>
+        <a class="ui-nav-item" data-view="activity" href="#activity"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg><span class="lbl">Activity</span><span class="ui-tag ui-tag--accent" data-new-tag="activity" hidden>New</span><span class="ui-tooltip shell-tip" aria-hidden="true">Activity</span></a>
+        <a class="ui-nav-item" data-view="identity" href="#identity"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M2.6 17.4A2 2 0 0 0 2 18.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8A6.5 6.5 0 1 0 9.4 10.6z"/><circle cx="16.5" cy="7.5" r="1.5"/></svg><span class="lbl">Identity</span><span class="ui-tooltip shell-tip" aria-hidden="true">Identity</span></a>
+        <a class="ui-nav-item" data-view="settings" href="#settings"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="lbl">Settings</span><span class="ui-tooltip shell-tip" aria-hidden="true">Settings</span></a>
+        <div class="shell-foot">
+            <a class="ui-nav-item shell-me" id="sidebar-identity" data-view="identity" href="#identity" title="Open Identity"><span class="ui-avatar ui-avatar--32" id="sidebar-identity-icon"></span><span class="lbl"><span class="shell-me-name" id="sidebar-identity-name"></span><small class="ui-hash" id="sidebar-identity-hash"></small></span></a>
         </div>
     </nav>
 
-    <nav class="bottom-bar" id="bottom-bar" role="navigation" aria-label="Main navigation">
-        <button class="bottom-bar-item active" type="button" data-view="peers" aria-label="Peers" aria-current="page">
-            <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-        </button>
-        <button class="bottom-bar-item" type="button" data-view="message" aria-label="Messages">
-            <svg viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            <span class="bottom-bar-badge" id="bb-unread" style="display:none;" aria-hidden="true"></span>
-        </button>
-        <button class="bottom-bar-item" type="button" data-view="channels" aria-label="Channels">
-            <svg viewBox="0 0 24 24"><path d="M8.5 16.5a6 6 0 0 1 0-9"/><path d="M15.5 7.5a6 6 0 0 1 0 9"/><path d="M5.5 19.5a10 10 0 0 1 0-15"/><path d="M18.5 4.5a10 10 0 0 1 0 15"/><circle cx="12" cy="12" r="1.7" fill="currentColor" stroke="none"/></svg>
-            <span class="bottom-bar-badge" id="bb-channels-unread" style="display:none;" aria-hidden="true"></span>
-        </button>
-        <button class="bottom-bar-item bottom-bar-hamburger" id="bottom-bar-hamburger" type="button" aria-label="More options">
-            <svg viewBox="0 0 24 24"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg>
-            <span class="bottom-bar-badge" id="bb-more-unread" style="display:none;" aria-hidden="true"></span>
-        </button>
+    <nav class="ui-tabbar shell-tabbar" id="bottom-bar" aria-label="Main">
+        <button type="button" class="ui-tab" data-view="peers" aria-label="Peers"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg></button>
+        <button type="button" class="ui-tab" data-view="message" aria-label="Messages"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span class="ui-unread" id="bb-unread" aria-hidden="true" hidden></span></button>
+        <button type="button" class="ui-tab" data-view="channels" aria-label="Channels"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8.5 16.5a6 6 0 0 1 0-9"/><path d="M15.5 7.5a6 6 0 0 1 0 9"/><path d="M5.5 19.5a10 10 0 0 1 0-15"/><path d="M18.5 4.5a10 10 0 0 1 0 15"/><circle cx="12" cy="12" r="1.7"/></svg><span class="ui-unread" id="bb-channels-unread" aria-hidden="true" hidden></span></button>
+        <button type="button" class="ui-tab" id="bottom-bar-hamburger" aria-label="More" aria-haspopup="dialog"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="4" y1="6" x2="20" y2="6"/><line x1="4" y1="12" x2="20" y2="12"/><line x1="4" y1="18" x2="20" y2="18"/></svg><span class="ui-unread" id="bb-more-unread" aria-hidden="true" hidden></span></button>
     </nav>
 
     <div class="lxst-call-strip lxst-call-global" id="lxst-call-global" hidden aria-live="polite">
@@ -169,32 +77,21 @@
         </div>
     </div>
 
-    <div class="bottom-sheet-overlay bottom-sheet-overlay--mobile-only" id="bottom-sheet-overlay"></div>
-    <div class="bottom-sheet bottom-sheet--mobile-only" id="bottom-sheet" role="dialog" aria-modal="true" aria-label="More navigation">
-        <div class="bottom-sheet-handle"></div>
-        <div class="bottom-sheet-items">
-            <button class="bottom-sheet-item" type="button" data-view="contacts">
-                <svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                Contacts
-            </button>
-            <button class="bottom-sheet-item" type="button" data-view="games">
-                <svg viewBox="0 0 24 24"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"/></svg>
-                Games
-                <span class="bottom-sheet-badge" id="bs-games-unread" style="display:none;"></span>
-            </button>
-            <button class="bottom-sheet-item" type="button" data-view="network">
-                <svg viewBox="0 0 24 24"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="16" y="2" width="6" height="6" rx="1"/><rect x="9" y="16" width="6" height="6" rx="1"/><path d="M5 8v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="12" y1="13" x2="12" y2="16"/></svg>
-                Network
-            </button>
-            <button class="bottom-sheet-item" type="button" data-view="identity">
-                <svg viewBox="0 0 24 24"><path d="M2.6 17.4A2 2 0 0 0 2 18.8V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.2a2 2 0 0 0 1.4-.6l.8-.8A6.5 6.5 0 1 0 9.4 10.6z"/><circle cx="16.5" cy="7.5" r="1.5"/></svg>
-                Identity
-            </button>
-            <div class="bottom-sheet-divider"></div>
-            <button class="bottom-sheet-item" type="button" data-view="settings">
-                <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-                Settings
-            </button>
+    <div class="ui-modal shell-more-modal" id="bottom-sheet-overlay" role="presentation" hidden>
+        <div class="ui-dialog shell-more" id="bottom-sheet" role="dialog" aria-modal="true" aria-label="More">
+            <div class="ui-dialog-handle" aria-hidden="true"></div>
+            <div class="shell-more-me">
+                <button type="button" class="ui-row" id="more-identity" data-view="identity" aria-label="Open Identity"><span class="ui-avatar ui-avatar--row" id="more-identity-icon"></span><span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title" id="more-identity-name"></span></span><span class="ui-row-sub"><span class="t ui-hash" id="more-identity-hash"></span></span></span><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="9 18 15 12 9 6"/></svg></button>
+                <button type="button" class="ui-icon-btn" id="more-share-card" aria-label="Share your contact card" title="Share your contact card"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3"/></svg></button>
+            </div>
+            <div class="ui-menu ui-menu--sheet shell-more-nav" role="menu" aria-label="More">
+                <button type="button" class="ui-menu-item" role="menuitem" data-view="contacts"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg><span class="lbl">Contacts</span></button>
+                <button type="button" class="ui-menu-item" role="menuitem" data-view="games"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258A4 4 0 0 0 17.32 5z"/></svg><span class="lbl">Games</span><span class="ui-count" id="bs-games-unread" hidden></span></button>
+                <button type="button" class="ui-menu-item" role="menuitem" data-view="network"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="2" y="2" width="6" height="6" rx="1"/><rect x="16" y="2" width="6" height="6" rx="1"/><rect x="9" y="16" width="6" height="6" rx="1"/><path d="M5 8v3a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><line x1="12" y1="13" x2="12" y2="16"/></svg><span class="lbl">Network</span></button>
+                <button type="button" class="ui-menu-item" role="menuitem" data-view="activity"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg><span class="lbl">Activity</span><span class="ui-tag ui-tag--accent" data-new-tag="activity" hidden>New</span></button>
+                <div class="ui-menu-sep" role="separator"></div>
+                <button type="button" class="ui-menu-item" role="menuitem" data-view="settings"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg><span class="lbl">Settings</span></button>
+            </div>
         </div>
     </div>
 
@@ -221,15 +118,6 @@
         <div class="bottom-sheet-handle"></div>
         <div class="bottom-sheet-title" id="iface-action-title"></div>
         <div class="bottom-sheet-items" id="iface-action-items"></div>
-    </div>
-
-    <div class="bottom-sheet-overlay" id="fab-contact-picker-overlay"></div>
-    <div class="bottom-sheet rs-dialog-sheet fab-contact-picker-sheet" id="fab-contact-picker-sheet" role="dialog" aria-modal="true" aria-labelledby="fab-contact-picker-title">
-        <div class="bottom-sheet-handle"></div>
-        <div class="bottom-sheet-header">
-            <span class="bottom-sheet-title" id="fab-contact-picker-title">Start Conversation</span>
-        </div>
-        <div class="bottom-sheet-body fab-contact-picker-list" id="fab-contact-picker-list"></div>
     </div>
 
     <div class="bottom-sheet-overlay" id="text-share-overlay"></div>
@@ -446,91 +334,41 @@
         </div>
 
         <div class="view" id="view-message">
-            <div id="lxmf-mode-panel" class="lxmf-container" style="display:flex;">
-                <div class="lxmf-layout">
-                    <div class="lxmf-sidebar">
-                        <div class="msg-profile-strip" id="msg-profile-strip">
-                            <div class="msg-profile-avatar" id="msg-profile-avatar"></div>
-                            <div class="msg-profile-info">
-                                <span class="msg-profile-name" id="msg-profile-name">Me</span>
-                                <span class="msg-profile-hash" id="lxmf-own-hash" title="Click to copy your address">&mdash;</span>
-                            </div>
-                            <button class="msg-compose-btn" id="lxmf-send-message-btn" title="New conversation" aria-label="New conversation">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-                            </button>
+            <div id="lxmf-mode-panel" class="lxmf-container">
+                <div class="lxmf-layout ui-split">
+                    <section class="ui-pane lxmf-sidebar" aria-labelledby="msg-pane-title">
+                        <header class="ui-pane-head">
+                            <h2 class="ui-pane-title" id="msg-pane-title">Messages</h2>
+                            <div class="ui-pane-actions ui-desk-only"><button type="button" class="ui-icon-btn" id="lxmf-send-message-btn" aria-label="New message" title="New message" aria-haspopup="dialog"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button></div>
+                        </header>
+                        <div class="ui-pane-search"><div class="ui-search" role="search"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg><input type="search" id="msg-search-input" placeholder="Search messages" aria-label="Search messages" autocorrect="off" autocapitalize="none" spellcheck="false"><button type="button" class="ui-icon-btn ui-icon-btn--sm" id="msg-search-clear" aria-label="Clear search" title="Clear search" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div></div>
+                        <button type="button" class="ui-btn ui-btn--sm text-share-pending" id="text-share-pending" hidden>Shared items</button>
+                        <div class="ui-pane-scroll" id="msg-pane-scroll">
+                            <div id="msg-search-results" hidden></div>
+                            <div id="lxmf-conversations-list"><div class="ui-empty ui-empty--inline" role="status"><span class="ui-spin ui-spin--ring" aria-hidden="true"></span><span>Loading conversations</span></div></div>
                         </div>
-                        <input type="text" id="msg-search-input" class="nr-input-sm list-search-input msg-search" placeholder="Search..." aria-label="Search messages" autocorrect="off" autocapitalize="none" spellcheck="false">
-                        <button type="button" class="nr-btn nr-btn-ghost nr-btn-sm text-share-pending" id="text-share-pending" hidden>Shared items</button>
-                        <div id="msg-search-results" style="display:none;"></div>
-                        <div id="lxmf-conversations-list">
-                            <div class="empty-state">
-                                <svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                                <span class="empty-state-primary">No conversations yet</span>
-                                <span class="empty-state-hint">Tap the compose button to start messaging</span>
-                            </div>
-                        </div>
-                        <div class="fab-speed-dial" id="lxmf-fab-dial">
-                            <div class="fab-dial-actions" id="fab-dial-actions">
-                                <div class="fab-dial-item" id="fab-dial-contacts">
-                                    <span class="fab-dial-label">Contacts</span>
-                                    <button class="fab-dial-btn" aria-label="Pick from contacts">
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-                                    </button>
+                        <div class="msg-fab ui-phone-only" id="lxmf-fab-dial"><button type="button" class="ui-fab" id="lxmf-send-fab" aria-label="New message" title="New message" aria-haspopup="menu" aria-expanded="false"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg></button></div>
+                    </section>
+                    <section class="ui-detail lxmf-chat" id="lxmf-chat-area" aria-label="Conversation">
+                        <div class="msg-chat-top" id="lxmf-chat-top" hidden>
+                            <header class="ui-detail-head" id="lxmf-chat-header">
+                                <button type="button" class="ui-icon-btn ui-phone-only" id="lxmf-back-btn" aria-label="Back to messages" title="Back"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="15 18 9 12 15 6"/></svg></button>
+                                <button type="button" class="ui-who" id="lxmf-chat-who" aria-label="Conversation details"><span class="ui-avatar ui-avatar--40" id="lxmf-contact-avatar"></span><span class="ui-who-text"><span class="ui-who-name"><span id="lxmf-chat-header-name"></span><span class="rsnode-badge" id="lxmf-rsnode-badge" hidden>rsNode</span></span><span class="ui-who-sub" id="lxmf-chat-header-status"></span></span></button>
+                                <div class="ui-pane-actions">
+                                    <button type="button" class="ui-icon-btn" id="lxst-call-btn" aria-label="Call" title="Call" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg></button>
+                                    <button type="button" class="ui-icon-btn ui-desk-only" id="game-challenge-btn" aria-label="Challenge to a game" title="Challenge to a game" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M6 11h4M8 9v4"/><line x1="15" y1="12" x2="15.01" y2="12"/><line x1="18" y1="10" x2="18.01" y2="10"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258A4 4 0 0 0 17.32 5z"/></svg></button>
+                                    <button type="button" class="ui-icon-btn" id="chat-header-menu-btn" aria-label="Conversation options" title="Options" aria-haspopup="menu" aria-expanded="false"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="5" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="12" cy="19" r="1"/></svg></button>
                                 </div>
-                                <div class="fab-dial-item" id="fab-dial-new">
-                                    <span class="fab-dial-label">New</span>
-                                    <button class="fab-dial-btn" aria-label="New conversation">
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-                                    </button>
-                                </div>
-                                <div class="fab-dial-item" id="fab-dial-paper">
-                                    <span class="fab-dial-label">Paper</span>
-                                    <button class="fab-dial-btn" aria-label="Open a paper message">
-                                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg>
-                                    </button>
-                                </div>
-                            </div>
-                            <button class="view-fab" id="lxmf-send-fab" title="New conversation" aria-expanded="false">
-                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>
-                                </svg>
-                            </button>
+                            </header>
+                            <header class="ui-detail-head msg-selbar" id="lxmf-select-bar" role="toolbar" aria-label="Selected messages" hidden>
+                                <button type="button" class="ui-btn ui-btn--quiet" id="lxmf-select-cancel-btn">Cancel</button>
+                                <h2 class="msg-sel-title" id="lxmf-select-status" aria-live="polite"></h2>
+                                <button type="button" class="ui-btn ui-btn--danger" id="lxmf-select-delete-btn"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg><span>Delete</span></button>
+                            </header>
+                            <div class="msg-threads" id="lxmf-thread-tabs" hidden></div>
+                            <p class="msg-thread-note" id="lxmf-thread-note" hidden></p>
                         </div>
-                    </div>
-                    <div class="lxmf-chat" id="lxmf-chat-area">
-                        <div class="lxmf-chat-header" id="lxmf-chat-header" style="display:none;">
-                            <button class="mobile-back-btn" id="lxmf-back-btn" aria-label="Back to conversations">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
-                            </button>
-                            <div class="lxmf-chat-header-avatar" id="lxmf-contact-avatar"></div>
-                            <div class="lxmf-chat-header-info">
-                                <span class="lxmf-chat-header-title">
-                                    <span class="lxmf-chat-header-name" id="lxmf-chat-header-name"></span>
-                                    <span class="rsnode-badge" id="lxmf-rsnode-badge" hidden>rsNode</span>
-                                </span>
-                                <span class="lxmf-chat-header-status" id="lxmf-chat-header-status"></span>
-                                <button type="button" class="conv-thread-chip" id="lxmf-thread-chip" hidden></button>
-                            </div>
-                            <div class="lxmf-chat-header-actions">
-                                <button class="game-challenge-btn" id="game-challenge-btn" title="Challenge to a game" style="display:none;">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
-                                </button>
-                                <button class="lxst-call-btn" id="lxst-call-btn" title="Call" aria-label="Call" style="display:none;">
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>
-                                </button>
-                                <button class="chat-header-menu-btn" id="chat-header-menu-btn" title="More options" aria-label="More options">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="5" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="19" r="1" fill="currentColor"/></svg>
-                                </button>
-                            </div>
-                        </div>
-                        <div class="conv-thread-tabs" id="lxmf-thread-tabs" role="tablist" aria-label="Conversations" hidden></div>
-                        <div class="conv-thread-note" id="lxmf-thread-note" hidden></div>
                         <section class="rsnode-panel" id="rsnode-panel" aria-label="Node status" hidden></section>
-                        <div class="lxmf-select-bar" id="lxmf-select-bar" role="toolbar" aria-label="Selected messages" hidden>
-                            <button class="lxmf-select-bar-btn" id="lxmf-select-cancel-btn" type="button">Cancel</button>
-                            <span class="sr-only" id="lxmf-select-status" aria-live="polite"></span>
-                            <button class="lxmf-select-bar-btn lxmf-select-delete-btn" id="lxmf-select-delete-btn" type="button">Delete</button>
-                        </div>
                         <div class="lxst-call-strip" id="lxst-call-strip" hidden aria-live="polite">
                             <div class="lxst-call-strip-indicator" aria-hidden="true">
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.8 19.8 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.12 4.2 2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.12.91.33 1.8.63 2.65a2 2 0 0 1-.45 2.11L8.09 9.69a16 16 0 0 0 6.22 6.22l1.21-1.2a2 2 0 0 1 2.11-.45c.85.3 1.74.51 2.65.63A2 2 0 0 1 22 16.92z"/></svg>
@@ -560,75 +398,56 @@
                                 </button>
                             </div>
                         </div>
-                        <div class="lxmf-messages" id="lxmf-messages">
-                            <div class="lxmf-empty">
-                                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.15;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-                                <span class="empty-state-primary">Your messages</span>
-                                <span class="empty-state-hint">Select a conversation or start a new one</span>
-                            </div>
-                        </div>
-                        <div id="lxmf-pending-file" class="file-transfer-info" style="display:none;"></div>
-                        <div id="lxmf-reply-preview" class="reply-preview-bar" style="display:none;">
-                            <div class="reply-preview-content">
-                                <span class="reply-preview-sender"></span>
-                                <span class="reply-preview-text"></span>
-                            </div>
-                            <button class="reply-preview-close" aria-label="Cancel reply">&times;</button>
-                        </div>
-                        <div class="lxmf-compose message-composer voice-memo-recorder" id="lxmf-voice-recorder" data-state="idle" hidden aria-label="Voice message recorder">
-                            <button class="voice-memo-action voice-memo-discard" id="voice-memo-discard-btn" type="button" title="Discard recording" aria-label="Discard voice message">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6m3 0V4h8v2"/></svg>
-                            </button>
-                            <div class="voice-memo-field">
-                                <span class="voice-memo-leading-slot">
-                                    <button class="voice-memo-action voice-memo-play" id="voice-memo-play-btn" type="button" title="Preview recording" aria-label="Play voice message" hidden>
-                                        <svg class="voice-memo-state-icon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>
-                                    </button>
-                                    <span class="voice-memo-live-dot" id="voice-memo-live-dot" aria-hidden="true"></span>
-                                    <span class="loading-spinner voice-memo-state-spinner" id="voice-memo-state-spinner" aria-hidden="true"></span>
-                                </span>
-                                <span class="voice-memo-signal">
-                                    <span class="voice-memo-waveform" id="voice-memo-waveform" aria-hidden="true"></span>
-                                    <span class="voice-memo-inline-status" id="voice-memo-inline-status" role="status" aria-live="polite" aria-atomic="true">Preparing…</span>
-                                </span>
-                                <span class="voice-memo-timer" id="voice-memo-timer" aria-label="Voice message duration">0:00</span>
-                                <span class="sr-only" id="voice-memo-announcer" role="status" aria-live="polite" aria-atomic="true"></span>
-                                <span class="sr-only" id="voice-memo-alert" role="alert" aria-live="assertive" aria-atomic="true"></span>
-                                <span class="voice-memo-trailing-slot">
-                                    <button class="voice-memo-action voice-memo-pause" id="voice-memo-pause-btn" type="button" title="Pause recording" aria-label="Pause voice message recording">
-                                        <svg class="voice-memo-state-icon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
-                                    </button>
-                                </span>
-                            </div>
-                            <span class="voice-memo-primary-slot">
-                                <button class="voice-memo-action voice-memo-stop" id="voice-memo-stop-btn" type="button" title="Finish recording" aria-label="Finish voice message recording">
-                                    <span aria-hidden="true"></span>
-                                </button>
-                                <button class="lxmf-send-btn message-send-btn voice-memo-send" id="voice-memo-send-btn" type="button" title="Send voice message" aria-label="Send voice message" hidden>
-                                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-                                </button>
-                            </span>
+                        <div class="msg-log-wrap">
+                            <div class="lxmf-messages ui-scroll" id="lxmf-messages" role="log" aria-label="Messages"></div>
+                            <button type="button" class="msg-jump" id="lxmf-jump-btn" aria-label="Jump to latest" title="Jump to latest" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="6 9 12 15 18 9"/></svg><span class="ui-count" aria-hidden="true" hidden></span></button>
                         </div>
                         <div class="rsnode-commands" id="rsnode-commands" role="toolbar" aria-label="Node commands" hidden></div>
                         <div class="rsnode-suggest" id="rsnode-suggest" role="listbox" aria-label="Commands" hidden></div>
-                        <div class="lxmf-compose message-composer" id="lxmf-compose-bar" style="display:none;">
-                            <input type="file" id="lxmf-file-input" style="display:none;">
-                            <input type="file" id="lxmf-photos-input" accept="image/*,video/*" style="display:none;">
-                            <input type="file" id="lxmf-camera-input" accept="image/*" capture="environment" style="display:none;">
-                            <input type="file" id="lxmf-video-input" accept="video/*" capture="environment" style="display:none;">
-                            <button class="lxmf-compose-attach-btn" id="attach-file-btn" title="Attach" aria-label="Attach emoji or file">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                            </button>
-                            <textarea id="lxmf-input" class="nr-input message-composer-input" placeholder="Message..." aria-label="Message input" rows="1" title="Enter to send, Shift+Enter for new line"></textarea>
-                            <span class="lxmf-char-count" id="lxmf-char-count" aria-live="polite" style="display:none;"></span>
-                            <button class="voice-memo-record-btn" id="voice-memo-record-btn" type="button" title="Record a voice message" aria-label="Record a voice message">
-                                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
-                            </button>
-                            <button class="lxmf-send-btn message-send-btn" id="send-msg-btn" aria-label="Send message">
-                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg>
-                            </button>
+                        <div class="cmp" id="lxmf-composer" hidden>
+                            <div class="cmp-pill">
+                                <div class="cmp-extras" id="lxmf-composer-extras" hidden>
+                                    <div class="cmp-preview" id="lxmf-reply-preview" hidden><span class="cmp-preview-text"><b class="reply-preview-sender"></b><span class="reply-preview-text"></span></span><button type="button" class="ui-icon-btn ui-icon-btn--sm reply-preview-close" aria-label="Cancel reply" title="Cancel reply"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button></div>
+                                    <div class="cmp-preview" id="lxmf-pending-file" hidden></div>
+                                </div>
+                                <div class="cmp-row" id="lxmf-compose-bar">
+                                    <input type="file" id="lxmf-file-input" hidden>
+                                    <input type="file" id="lxmf-photos-input" accept="image/*,video/*" hidden>
+                                    <input type="file" id="lxmf-camera-input" accept="image/*" capture="environment" hidden>
+                                    <input type="file" id="lxmf-video-input" accept="video/*" capture="environment" hidden>
+                                    <span class="cmp-slot"><button type="button" class="ui-icon-btn cmp-attach" id="attach-file-btn" aria-label="Attach" title="Attach" aria-haspopup="menu" aria-expanded="false"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg></button></span>
+                                    <textarea id="lxmf-input" class="cmp-input" rows="1" placeholder="Message" aria-label="Message" title="Enter to send, Shift+Enter for a new line"></textarea>
+                                    <span class="cmp-slot">
+                                        <button type="button" class="ui-icon-btn cmp-record" id="voice-memo-record-btn" aria-label="Record a voice message" title="Record a voice message"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg></button>
+                                        <button type="button" class="ui-send cmp-send" id="send-msg-btn" aria-label="Send" title="Send. Hold to choose how." hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></button>
+                                    </span>
+                                </div>
+                                <div class="cmp-row voice-memo-recorder" id="lxmf-voice-recorder" data-state="idle" hidden aria-label="Voice message recorder">
+                                    <span class="cmp-slot"><button type="button" class="ui-icon-btn voice-memo-action voice-memo-discard" id="voice-memo-discard-btn" aria-label="Discard voice message" title="Discard"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg></button></span>
+                                    <div class="cmp-rec voice-memo-field">
+                                        <span class="voice-memo-leading-slot">
+                                            <button type="button" class="ui-btn ui-btn--icon voice-memo-action voice-memo-play" id="voice-memo-play-btn" aria-label="Play voice message" title="Play" hidden><svg class="ui-ico voice-memo-state-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg></button>
+                                            <span class="ui-dot ui-dot--error ui-dot--pulse voice-memo-live-dot" id="voice-memo-live-dot" aria-hidden="true"></span>
+                                            <span class="ui-spin voice-memo-state-spinner" id="voice-memo-state-spinner" aria-hidden="true"></span>
+                                        </span>
+                                        <span class="voice-memo-signal">
+                                            <span class="voice-memo-waveform" id="voice-memo-waveform" aria-hidden="true"></span>
+                                            <span class="voice-memo-inline-status" id="voice-memo-inline-status" role="status" aria-live="polite" aria-atomic="true">Preparing…</span>
+                                        </span>
+                                        <span class="cmp-rec-time voice-memo-timer" id="voice-memo-timer" aria-label="Voice message duration">0:00</span>
+                                        <span class="ui-sr" id="voice-memo-announcer" role="status" aria-live="polite" aria-atomic="true"></span>
+                                        <span class="ui-sr" id="voice-memo-alert" role="alert" aria-live="assertive" aria-atomic="true"></span>
+                                    </div>
+                                    <span class="cmp-slot voice-memo-trailing-slot"><button type="button" class="ui-icon-btn voice-memo-action voice-memo-pause" id="voice-memo-pause-btn" aria-label="Pause voice message recording" title="Pause recording"><svg class="ui-ico voice-memo-state-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg></button></span>
+                                    <span class="cmp-slot voice-memo-primary-slot">
+                                        <button type="button" class="ui-send voice-memo-action voice-memo-stop" id="voice-memo-stop-btn" aria-label="Finish voice message recording" title="Finish"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></button>
+                                        <button type="button" class="ui-send voice-memo-send" id="voice-memo-send-btn" aria-label="Send voice message" title="Send" hidden><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></button>
+                                    </span>
+                                </div>
+                                <span class="cmp-count lxmf-char-count" id="lxmf-char-count" aria-live="polite" hidden></span>
+                            </div>
                         </div>
-                    </div>
+                    </section>
                 </div>
             </div>
         </div>
@@ -2165,6 +1984,7 @@
 <script src="/static/js/legal_documents.js?v=ui-20260924-4"></script>
 <script src="/static/js/action_popover.js?v=ui-20260924-4"></script>
 <script src="/static/js/ui_shared.js?v=ui-20260924-4"></script>
+<script src="/static/js/composer.js?v=ui-20260924-4"></script>
 <script src="/static/js/chat_scroll.js?v=ui-20260924-4"></script>
 <script src="/static/js/events.js?v=ui-20260924-4"></script>
 <script src="/static/js/activity.js?v=ui-20260924-4"></script>

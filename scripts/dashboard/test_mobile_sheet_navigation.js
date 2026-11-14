@@ -20,7 +20,7 @@ var responsiveCss = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '1
 
 assert(navSource.includes("var MOBILE_TAB_SLOTS = ['peers', 'message', 'channels', 'more'];"),
     'mobile swipes must traverse the four visible bottom-bar destinations');
-assert(navSource.includes("var MORE_VIEWS = ['contacts', 'identity', 'network', 'games', 'settings'];"),
+assert(navSource.includes("var MORE_VIEWS = ['contacts', 'identity', 'network', 'activity', 'games', 'settings'];"),
     'Contacts must route through More after Channels takes its bottom-bar slot');
 assert(!navSource.includes("if (viewId === 'channels') return 'message';"),
     'Channels must own its selected state instead of aliasing Direct Messages');
@@ -66,12 +66,20 @@ var top = {
     classList: classList(['bottom-sheet', 'open']),
     _ratspeakDismiss: function() { topDismissals += 1; }
 };
-var persistent = { classList: classList(['bottom-sheet', 'open']) };
-var persistentOverlay = { classList: classList(['active']) };
+var persistent = { style: {} };
+var persistentOverlay = { hidden: false };
 var openSheets = [first, top];
+var floatingMenu = null;
+var menuCloses = 0;
 
 var context = {
+    window: {},
+    RS: { kit: { menu: function() {}, closeMenu: function() { menuCloses += 1; floatingMenu = null; } } },
     document: {
+        querySelector: function(selector) {
+            assert.strictEqual(selector, '.ui-pop:not(.msg-menu)');
+            return floatingMenu;
+        },
         querySelectorAll: function(selector) {
             assert.strictEqual(selector, '.rs-sheet-shell.open, .bottom-sheet.open');
             return openSheets;
@@ -83,20 +91,26 @@ var context = {
         }
     }
 };
+context.window.RS = context.RS;
 vm.createContext(context);
-vm.runInContext(functionSource(navSource, '_closeOpenBottomSheet'), context);
+vm.runInContext(functionSource(navSource, '_closeOpenBottomSheet') + '\n' + functionSource(navSource, '_closeMoreSheet'), context);
+
+floatingMenu = {};
+assert.strictEqual(context._closeOpenBottomSheet(), true);
+assert.strictEqual(menuCloses, 1, 'native Back closes an open anchored menu first');
+assert.strictEqual(topDismissals, 0, 'and leaves the sheets beneath it alone');
 
 assert.strictEqual(context._closeOpenBottomSheet(), true);
 assert.strictEqual(topDismissals, 1, 'native Back dismisses the topmost dynamic sheet');
 assert.strictEqual(firstDismissals, 0, 'native Back leaves lower sheets alone');
-assert.strictEqual(persistent.classList.contains('open'), true,
+assert.strictEqual(persistentOverlay.hidden, false,
     'native Back must not close a sheet underneath the topmost dialog');
 
-openSheets = [persistent];
+openSheets = [];
 assert.strictEqual(context._closeOpenBottomSheet(), true);
-assert.strictEqual(persistent.classList.contains('open'), false,
+assert.strictEqual(persistentOverlay.hidden, true,
     'the persistent More sheet keeps its existing native Back behavior');
-assert.strictEqual(persistentOverlay.classList.contains('active'), false);
+assert.strictEqual(context._closeOpenBottomSheet(), false, 'nothing open: Back goes on to navigation');
 
 var sharedListeners = {};
 var sharedDismissals = 0;
@@ -162,7 +176,8 @@ assert(tabSwipe.includes('if (_isMobileNavigationBlocked()) return true;'),
     'tab swipes must not navigate beneath an open sheet');
 assert(drillSwipe.includes('if (!isCompactLayout()) return true;'));
 assert(tabSwipe.includes('if (!isCompactLayout()) return true;'));
-assert(navSource.includes("'.bottom-sheet.open, .bottom-sheet-overlay.active, '"));
+assert(navSource.includes("'.bottom-sheet.open, .bottom-sheet-overlay.active, .ui-modal:not([hidden]), .ui-pop, '"),
+    'kit sheets and anchored menus block swipe navigation like the older sheets');
 assert(navSource.includes('.channels-layout.members-open'));
 assert(constantsSource.includes('sheet._ratspeakDismiss = function()'),
     'all dynamic sheet shells need a native Back dismissal hook');

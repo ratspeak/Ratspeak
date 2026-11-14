@@ -60,11 +60,11 @@ RS.gestures = {
     PULL_TO_REFRESH_SUCCESS_MS: 300,
     RIPPLE_DURATION_MS: 400,
     RIPPLE_SELECTORS: [
-        '.bottom-bar-item', '.bottom-sheet-item', '.nav-item',
-        '.nr-btn', '.conv-row', '.contacts-row', '.conn-row', '.conn-card'
+        '.ui-tab', '.bottom-sheet-item',
+        '.nr-btn', '.contacts-row', '.conn-row', '.conn-card'
     ],
     RIPPLE_HAPTIC_SELECTORS: [
-        '.bottom-bar-item', '.bottom-sheet-item', '.nav-item', '.nr-btn'
+        '.ui-tab', '.bottom-sheet-item', '.nr-btn'
     ],
     DRILL_DOWN_VIEWS: ['identity', 'network', 'settings', 'eventlog', 'propagation'],
     HAPTIC_DURATION_MAP: { light: 10, medium: 20, heavy: 30, success: 15, warning: 25, error: 40, selection: 8 }

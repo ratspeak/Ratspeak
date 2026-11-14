@@ -696,7 +696,6 @@ button:disabled, .nr-btn:disabled, .danger-btn:disabled, .toolbar-btn:disabled {
 .danger-btn:focus-visible,
 .toolbar-btn:focus-visible,
 .conn-row:focus-visible,
-.conv-row:focus-visible,
 .contacts-row:focus-visible {
     outline: 2px solid var(--focus-ring);
     outline-offset: 2px;

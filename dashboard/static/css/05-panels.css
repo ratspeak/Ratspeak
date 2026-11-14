@@ -88,9 +88,6 @@
 #view-message {
     padding: 0;
 }
-#view-message .lxmf-container {
-    height: 100%;
-}
 
 .panel {
     background: var(--surface-panel);

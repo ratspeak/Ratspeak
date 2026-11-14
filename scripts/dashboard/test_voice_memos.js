@@ -14,7 +14,6 @@ var html = read('dashboard/index.html');
 var voice = read('dashboard/static/js/voice_memos.js');
 var messaging = read('dashboard/static/js/lxmf.js');
 var css = read('dashboard/static/css/09-messaging.css');
-var responsive = read('dashboard/static/css/13-responsive.css');
 var capture = read('crates/ratspeak-runtime/src/voice.rs');
 var runtime = read('crates/ratspeak-runtime/src/voice_memo.rs');
 var oggOpus = read('crates/ratspeak-runtime/src/voice_memo/ogg_opus.rs');
@@ -37,12 +36,12 @@ assert(html.includes('id="lxmf-voice-recorder"'));
 assert(html.includes('id="voice-memo-pause-btn"'));
 assert(html.includes('id="voice-memo-stop-btn"'));
 assert(html.includes('id="voice-memo-send-btn"'));
-assert(html.includes('class="lxmf-compose message-composer voice-memo-recorder"'),
-    'voice recording must retain the established composer rails');
-assert(html.includes('class="voice-memo-field"'),
+assert(html.includes('<div class="cmp-row voice-memo-recorder" id="lxmf-voice-recorder"'),
+    'voice recording is a row of the same composer pill');
+assert(html.includes('class="cmp-rec voice-memo-field"'),
     'the recording surface must replace only the text-input slot');
-assert(html.indexOf('id="voice-memo-discard-btn"') < html.indexOf('class="voice-memo-field"') &&
-    html.indexOf('class="voice-memo-field"') < html.indexOf('id="voice-memo-stop-btn"'),
+assert(html.indexOf('id="voice-memo-discard-btn"') < html.indexOf('class="cmp-rec voice-memo-field"') &&
+    html.indexOf('class="cmp-rec voice-memo-field"') < html.indexOf('id="voice-memo-stop-btn"'),
     'discard, recording field, and primary action must keep the normal composer order');
 assert(html.indexOf('/static/js/lxmf.js') < html.indexOf('/static/js/voice_memos.js'),
     'voice memos must extend the established LXMF composer after it loads');
@@ -156,7 +155,7 @@ assert(!voiceSend.includes('send_lxmf_with_staged_attachment'));
 assert(!voiceSend.includes('_stageAttachmentBlob'));
 assert(!voiceSend.includes('data_base64'));
 assert(messaging.includes("_updateConversationPreview(targetHash, 'Voice message'"));
-assert(messaging.includes('if (msg.audio && window.RS && RS.voiceMemos)'));
+assert(messaging.includes('msg.audio && window.RS && RS.voiceMemos ? RS.voiceMemos.renderAudio(msg.audio, msg)'));
 assert(messaging.includes('RS.voiceMemos.hydratePlayers(container)'));
 assert(voice.includes('Number(audio && audio.mode) === 0x10'));
 assert(voice.includes('var unsupported = !isAudio(audio) || audio.supported === false'));
@@ -222,31 +221,30 @@ assert(iosPlatform.includes('AVAudioSessionModeDefault'));
 assert(iosPlatform.includes('VOICE_MEMO_PLAYBACK_SESSION_ACTIVE'));
 assert(iosPlatform.includes('setActive: true'));
 
-assert(/\.voice-memo-field\s*\{[\s\S]*?background:\s*var\(--input-bg\)/.test(css),
-    'the recorder field must use the same themed input surface as text composition');
-assert(/\.voice-memo-recorder\s*\{[\s\S]*?background:\s*transparent/.test(css),
-    'the recorder shell must not become a second full-width pill');
+assert(/\.cmp-pill \{[^}]*background: var\(--input-bg\);/.test(css) &&
+    !/\.voice-memo-(?:field|recorder) \{[^}]*background:/.test(css),
+    'the recorder sits in the composer pill and its themed input surface, never a second pill');
 assert(voice.includes("classes = ['is-recorded']") && voice.includes("classes.push('is-live')"),
     'the live waveform must distinguish captured signal from its single newest sample');
 assert(voice.includes("class=\"is-empty\""),
     'the live waveform must leave uncaptured timeline slots visibly empty');
-assert(/\.voice-memo-waveform\s*>\s*span\.is-recorded\s*\{[\s\S]*?background:\s*var\(--status-error\)/.test(css),
-    'only recorded waveform samples should use the recording color');
+assert(/\.voice-memo-waveform > span\.is-recorded \{ background: var\(--text-secondary\); \}/.test(css) &&
+    /\.voice-memo-waveform > span\.is-live \{ background: var\(--status-error\); \}/.test(css),
+    'captured samples are quiet; only the newest live sample takes the recording color');
 assert(voice.includes('setPlaybackWaveformProgress(waveform, draft.waveform || [], fraction)') &&
     voice.includes("waveform.style.setProperty('--voice-playback-unplayed'") &&
     voice.includes("voice-memo-waveform-layer voice-memo-waveform-played"),
     'preview and message playback must share one stable elapsed-waveform treatment');
 assert(/\.voice-memo-waveform-played\s*\{[\s\S]*?clip-path:\s*inset\(0 var\(--voice-playback-unplayed\) 0 0\)/.test(css) &&
-    /\.voice-memo-waveform-played\s*>\s*span\s*\{[\s\S]*?background:\s*var\(--accent\)/.test(css),
-    'elapsed waveform audio must reveal the existing orange accent over the muted base');
+    /\.voice-memo-waveform-played\s*>\s*span\s*\{[\s\S]*?background:\s*var\(--accent-ink\)/.test(css),
+    'elapsed waveform audio must reveal the accent over the muted base');
 assert(/prefers-reduced-motion:[^)]*reduce[\s\S]*?voice-memo/.test(css),
     'voice animation must honor reduced motion');
-assert(/\.voice-memo-record-btn,\s*\.voice-memo-action\s*\{[^}]*width:\s*var\(--touch-target\)/.test(responsive),
-    'mobile recorder controls must retain 44px touch targets');
-assert(/\.voice-memo-field\s*\{[\s\S]*?min-height:\s*44px/.test(responsive),
-    'the mobile recording field must retain the composer touch-height contract');
-assert(/\.voice-memo-player-play\s*\{[\s\S]*?width:\s*44px;[\s\S]*?height:\s*44px/.test(responsive),
-    'mobile voice-message playback must retain a 44px touch target');
+assert(css.includes('@media (max-width: 768px), (pointer: coarse) { .cmp { --cmp-slot: 44px; } }') &&
+    /\.voice-memo-field \{[^}]*height: var\(--cmp-slot\);/.test(css),
+    'mobile recorder controls and field keep the 44px composer slot');
+assert(voice.includes('<button class="ui-btn ui-btn--icon voice-memo-player-play"'),
+    'mobile voice-message playback uses the kit icon button and its 44px touch size');
 assert(androidManifest.includes('android.permission.RECORD_AUDIO'));
 assert(!androidActivity.includes('startVoiceMemoAudioSession'));
 assert(androidMemoAudio.includes('AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE'));

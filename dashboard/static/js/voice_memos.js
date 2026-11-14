@@ -283,8 +283,10 @@
         var hasText = !!(input && input.value.trim());
         var hasAttachment = typeof lxmfPendingFile !== 'undefined' && !!lxmfPendingFile;
         var canRecord = available && recorderState === 'idle' && !hasText && !hasAttachment;
+        // One trailing slot: Record while the field is empty, Send once there is text or an attachment.
         recordButton.hidden = !canRecord;
         sendButton.hidden = canRecord;
+        sendButton.disabled = !hasText && !hasAttachment;
     }
     function voiceCallOwnsAudio() {
         return typeof lxstVoiceState !== 'undefined' && !!(lxstVoiceState.active || lxstVoiceState.incoming);
@@ -1009,7 +1011,7 @@
             initialState === 'recovering' || initialState === 'stalled' ? 'Restoring playback' :
             initialState === 'error' ? 'Couldn\'t play' : '';
         return '<div class="voice-memo-player' + (loading ? ' is-loading' : '') + '" data-playback-state="' + initialState + '" data-voice-key="' + esc(key) + '" data-stored-name="' + esc(storedName) + '" data-audio-supported="' + (unsupported ? '0' : '1') + '">' +
-            '<button class="voice-memo-player-play" type="button" aria-label="Play voice message"' + (disabled ? ' disabled' : '') + '>' +
+            '<button class="ui-btn ui-btn--icon voice-memo-player-play" type="button" aria-label="Play voice message"' + (disabled ? ' disabled' : '') + '>' +
                 '<svg class="voice-memo-player-icon" width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' + ICON_PLAY + '</svg>' +
                 '<span class="loading-spinner voice-memo-player-spinner" aria-hidden="true"></span>' +
             '</button>' +

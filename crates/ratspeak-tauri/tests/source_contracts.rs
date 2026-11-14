@@ -275,7 +275,7 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(channels_js.contains("You\\u2019re already in "));
     assert!(channels_js.contains("result.local_command"));
     assert!(responsive_css.contains(".channels-layout.view-channel-detail"));
-    assert!(responsive_css.contains("body.view-channel-detail .bottom-bar"));
+    assert!(responsive_css.contains("body.view-channel-detail .shell-tabbar"));
     assert!(responsive_css.contains("calc(64px + var(--sat))"));
     assert!(responsive_css.contains("body.view-channel-detail .main-content"));
     assert!(responsive_css.contains(".channels-layout.room-live.members-open"));
@@ -315,36 +315,27 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(tauri_build.contains(r#""09-channels.css""#));
 
     assert!(nav_js.contains("var MOBILE_TAB_SLOTS = ['peers', 'message', 'channels', 'more'];"));
-    assert!(
-        nav_js
-            .contains("var MORE_VIEWS = ['contacts', 'identity', 'network', 'games', 'settings'];")
-    );
+    assert!(nav_js.contains(
+        "var MORE_VIEWS = ['contacts', 'identity', 'network', 'activity', 'games', 'settings'];"
+    ));
     assert!(!nav_js.contains("if (viewId === 'channels') return 'message';"));
     assert!(nav_js.contains("function setMessageUnreadSource"));
     assert!(nav_js.contains("var _messageUnreadSources = { direct: 0, channels: 0 };"));
-    assert!(
-        index.contains(
-            "<button class=\"bottom-bar-item\" type=\"button\" data-view=\"channels\" aria-label=\"Channels\">"
-        )
-    );
+    assert!(index.contains(
+        "<button type=\"button\" class=\"ui-tab\" data-view=\"channels\" aria-label=\"Channels\">"
+    ));
     assert!(index.contains("id=\"bb-channels-unread\""));
-    assert!(
-        index.contains(
-            "<button class=\"bottom-sheet-item\" type=\"button\" data-view=\"contacts\">"
-        )
-    );
+    // More: you (Identity) first, then the destinations.
+    assert!(index.contains("id=\"more-identity\" data-view=\"identity\""));
     let more = index
-        .split("<button class=\"bottom-sheet-item\" type=\"button\" data-view=\"")
+        .split("<button type=\"button\" class=\"ui-menu-item\" role=\"menuitem\" data-view=\"")
         .skip(1)
         .filter_map(|rest| rest.split('"').next())
         .collect::<Vec<_>>();
-    assert_eq!(
-        more,
-        ["contacts", "games", "network", "identity", "settings"]
-    );
+    assert_eq!(more, ["contacts", "games", "network", "activity", "settings"]);
     assert!(!index.contains("data-message-mode="));
     assert!(nav_js.contains("item.setAttribute('aria-current', 'page')"));
-    assert!(nav_js.contains("'Channels' + (_messageUnreadSources.channels > 0"));
+    assert!(nav_js.contains("'Channels' + (channels > 0 ? ', ' + channels + ' unread' : '')"));
     let keyboard_detection = nav_js
         .split("function initKeyboardDetection()")
         .nth(1)
@@ -2643,7 +2634,7 @@ fn frontend_shared_helpers_are_adopted() {
 
     // Every local optimistic image URL is escaped at the image render site.
     let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
-    assert!(lxmf_js.contains("escapeHtml(localImageUrl)"));
+    assert!(lxmf_js.contains("'<img src=\"' + escapeHtml(image.object_url || image.data_url) + '\""));
 }
 
 #[test]
@@ -2676,7 +2667,8 @@ fn reaction_emoji_is_escaped_and_validated() {
     let root = repo_root();
     // Render site escapes the peer-controlled emoji text (T0-5).
     let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
-    assert!(lxmf_js.contains("escapeHtml(emoji) + (count > 1"));
+    assert!(lxmf_js.contains("'<span aria-hidden=\"true\">' + escapeHtml(emoji) + '</span>' + (count > 1"));
+    assert!(lxmf_js.contains("'<button type=\"button\" class=\"msg-react\" data-emoji=\"' + escapeHtml(emoji)"));
 
     // Runtime rejects markup/control characters at ingest.
     let runtime_rs = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime");
@@ -2691,10 +2683,9 @@ fn profile_status_frontend_contract_is_wired() {
         read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
     assert!(settings_js.contains("var PROFILE_STATUS_MAX_BYTES = 50;"));
     assert!(settings_js.contains("function profileStatusFromPayload"));
-    assert!(settings_js.contains("function ensureProfileStatusElements"));
-    assert!(settings_js.contains("'header-mobile-status'"));
-    assert!(settings_js.contains("'sidebar-identity-status'"));
-    assert!(settings_js.contains("'msg-profile-status'"));
+    // Your status is set in Settings and Identity; the shell shows no status line.
+    assert!(!settings_js.contains("function ensureProfileStatusElements"));
+    assert!(!settings_js.contains("'header-mobile-status'"));
     assert!(settings_js.contains("Set a status"));
     assert!(settings_js.contains("profile_status"));
     assert!(settings_js.contains("function trimProfileStatusToByteLimit"));
@@ -2706,10 +2697,8 @@ fn profile_status_frontend_contract_is_wired() {
     assert!(settings_js.contains("counter.textContent = bytes + '/' + PROFILE_STATUS_MAX_BYTES;"));
 
     let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
-    assert!(lxmf_js.contains("var statusEl = document.getElementById('msg-profile-status');"));
     assert!(lxmf_js.contains("syncActiveProfileStatusFromPayload(data);"));
-    assert!(lxmf_js.contains("peer.profile_status"));
-    assert!(lxmf_js.contains("profileStatus ? (activity + ' \\u00b7 ' + profileStatus)"));
+    assert!(!lxmf_js.contains("msg-profile-status"));
 
     let peers_cache_js =
         read_source(root.join("dashboard/static/js/peers_cache.js")).expect("peers cache js");
@@ -2732,19 +2721,10 @@ fn profile_status_frontend_contract_is_wired() {
         read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
     assert!(identity_js.contains("profileStatusFromPayload(_activeIdent)"));
 
-    let layout_css =
-        read_source(root.join("dashboard/static/css/04-layout.css")).expect("layout css");
-    assert!(layout_css.contains(".profile-status-text"));
-    assert!(layout_css.contains(".profile-status-empty"));
-
     let modals_css =
         read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
     assert!(modals_css.contains(".profile-status-input"));
     assert!(modals_css.contains(".profile-status-counter.at-limit"));
-
-    let responsive_css =
-        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
-    assert!(responsive_css.contains(".header-mobile-status"));
 
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
     assert!(views_css.contains(".dashboard-peers-status"));
@@ -5953,17 +5933,17 @@ fn rnode_radio_catalog_has_single_runtime_source() {
 fn conversation_row_swipe_uses_delete_choice_without_tab_navigation() {
     let root = repo_root();
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
-    assert!(lxmf.contains("delegated: '.conv-row'"));
+    assert!(lxmf.contains("delegated: '.msg-conv-row'"));
     assert!(lxmf.contains("showConversationDeleteDialog(hash, name)"));
     assert!(!lxmf.contains("_swipeHideConversation("));
     assert!(!lxmf.contains("Conversation hidden"));
 
     let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
-    assert!(nav.contains("e.target.closest('.conv-row, .conv-swipe-delete')"));
+    assert!(nav.contains("e.target.closest('.msg-conv-row, .conv-swipe-delete')"));
 
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
-    assert!(messaging_css.contains("touch-action: pan-y;"));
+    assert!(messaging_css.contains(".msg-conv-row { touch-action: pan-y; }"));
 }
 
 #[test]
@@ -5974,7 +5954,8 @@ fn empty_ghost_conversations_are_removed_when_leaving_chat_detail() {
         read_source(root.join("dashboard/static/js/view_stack.js")).expect("view stack js");
 
     assert!(lxmf.contains("function _ensureGhostRow(hash)"));
-    assert!(lxmf.contains("row.dataset.ghost = 'true';"));
+    assert!(lxmf.contains("(opts.ghost ? ' data-ghost=\"true\"' : '')"));
+    assert!(lxmf.contains("_conversationRowHtml({ hash: hash, last_message: '' }, { ghost: true })"));
     assert!(lxmf.contains("function _onChatDetailExit()"));
     assert!(lxmf.contains("function _conversationHasVisibleMessages()"));
     assert!(lxmf.contains("function _mergeOptimisticConversation(convos)"));
@@ -6152,12 +6133,8 @@ fn message_camera_and_photo_attachment_flow_is_native_and_previewed() {
     assert!(lxmf.contains("function triggerVideoAttachment()"));
     assert!(lxmf.contains("var input = document.getElementById('lxmf-camera-input');"));
     assert!(lxmf.contains("var input = document.getElementById('lxmf-video-input');"));
-    assert!(
-        lxmf.contains("{ label: 'Camera', icon: ICON_CAMERA, onSelect: triggerCameraAttachment }")
-    );
-    assert!(
-        lxmf.contains("{ label: 'Video', icon: ICON_VIDEO, onSelect: triggerVideoAttachment }")
-    );
+    assert!(lxmf.contains("{ label: 'Camera', icon: 'camera', onSelect: triggerCameraAttachment }"));
+    assert!(lxmf.contains("{ label: 'Video', icon: 'video', onSelect: triggerVideoAttachment }"));
     assert!(lxmf.contains("function _pendingAttachmentName(file)"));
     assert!(lxmf.contains("function _chooseImageSize(file, inspection)"));
     assert!(lxmf.contains("RS.invoke('inspect_image_attachment_stage'"));
@@ -6166,18 +6143,18 @@ fn message_camera_and_photo_attachment_flow_is_native_and_previewed() {
     assert!(lxmf.contains("Location and camera details are removed."));
     assert!(!lxmf.contains("createImageBitmap("));
     assert!(!lxmf.contains("document.createElement('canvas')"));
-    assert!(lxmf.contains("pending-file-thumbnail"));
     assert!(lxmf.contains("pendingFile.preview_url = _imagePreviewUrl("));
-    assert!(lxmf.contains("escapeHtml(lxmfPendingFile.preview_url || '')"));
+    assert!(lxmf.contains("thumb: isImage ? lxmfPendingFile.preview_url || '' : '',"));
     assert!(lxmf.contains("URL.revokeObjectURL(pending.preview_url)"));
-    assert!(lxmf.contains("container.classList.toggle('pending-file-has-image', isImage);"));
+    // The preview sits inside the composer pill; its thumbnail URL is escaped there.
+    let composer = read_source(root.join("dashboard/static/js/composer.js")).expect("composer js");
+    assert!(composer.contains("'<img class=\"cmp-thumb\" src=\"' + esc(o.thumb) + '\" alt=\"\">'"));
 
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
-    assert!(messaging_css.contains("#lxmf-pending-file.file-transfer-info"));
-    assert!(messaging_css.contains(".pending-file-thumbnail img"));
+    assert!(messaging_css.contains(".cmp-thumb {"));
     assert!(messaging_css.contains("object-fit: cover;"));
-    assert!(messaging_css.contains(".pending-file-copy"));
+    assert!(messaging_css.contains(".cmp-preview-text {"));
 }
 
 #[test]
@@ -6259,7 +6236,9 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     assert!(lxmf.contains("if (!_messageCanCancelSend(msg)) return '';"));
     assert!(lxmf.contains("aria-label=\"Cancel sending message\">Cancel</button>"));
     assert!(lxmf.contains("message: 'Cancel preparation and retries for this message?'"));
-    assert!(lxmf.contains("canCancelSend ? _messageInlineCancelHtml(msg) : '<span class=\"msg-time\">' + time + '</span>'"));
+    // Cancel takes the time's place on the last line while a send can still stop.
+    assert!(lxmf.contains("(canCancelSend && !imageCancels ? '' : '<time class=\"msg-clock\""));
+    assert!(lxmf.contains("(canCancelSend && !imageCancels ? _messageInlineCancelHtml(msg) : '')"));
 
     let state_js = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
     assert!(state_js.contains("saveImageToPhotos"));
@@ -6274,8 +6253,9 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
 
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
-    assert!(messaging_css.contains(".lxmf-msg.msg-has-image"));
-    assert!(messaging_css.contains("max-width: min(560px, 75%);"));
+    assert!(messaging_css.contains(".msg-row .msg-bubble--media { padding: 0; background: transparent; }"));
+    assert!(messaging_css.contains("max-width: min(72%, 520px);"));
+    assert!(messaging_css.contains(".msg-bubble { --msg-img: 300px; }"));
     assert!(messaging_css.contains(".image-viewer-img.is-dragging"));
     assert!(messaging_css.contains("touch-action: pan-x pinch-zoom;"));
     assert!(messaging_css.contains(".image-viewer.is-zoomed .image-viewer-stage"));
@@ -7875,8 +7855,9 @@ fn mobile_primary_lists_share_readable_row_scale() {
     assert!(responsive_css.contains("--mobile-list-title-size: var(--text-base);"));
     assert!(responsive_css.contains("--mobile-list-detail-size: var(--text-sm);"));
     assert!(responsive_css.contains("--mobile-list-meta-size: var(--text-xs);"));
-    assert!(responsive_css.contains(".conv-row,"));
+    // Conversation rows are kit rows (ui-row), which carry their own touch scale.
     assert!(responsive_css.contains(".games-session-row"));
+    assert!(!responsive_css.contains(".conv-row,"));
     assert!(responsive_css.contains(".conn-section-label,\n    .conn-iface-name"));
     assert!(responsive_css.contains(".conn-iface-empty,"));
     assert!(responsive_css.contains(".activity-empty,"));
@@ -7898,6 +7879,10 @@ fn mobile_primary_lists_share_readable_row_scale() {
     assert!(responsive_css.contains(".pulse-announce-btn {\n        min-height: 38px;"));
     assert!(responsive_css.contains(".pulse-announce-btn svg {\n        width: 16px;"));
     assert!(responsive_css.contains(".games-session-game {\n        display: none;"));
+    // Messages scrolls on the kit's rule: no drawn scrollbar on a phone.
+    let index = read_source(root.join("dashboard/index.html")).expect("index html");
+    assert!(index.contains("class=\"lxmf-messages ui-scroll\" id=\"lxmf-messages\""));
+    assert!(index.contains("<div class=\"ui-pane-scroll\" id=\"msg-pane-scroll\">"));
     assert!(responsive_css.contains(".dashboard-peers-scroll,"));
     assert!(responsive_css.contains(".dashboard-peers-scroll::-webkit-scrollbar,"));
     assert!(responsive_css.contains(".conn-group-header {\n        font-size: var(--text-sm);"));
@@ -7906,9 +7891,7 @@ fn mobile_primary_lists_share_readable_row_scale() {
     assert!(responsive_css.contains(".relay-card-header,"));
     assert!(responsive_css.contains(".relay-card-details,"));
     assert!(responsive_css.contains(".propagation-section-desc,"));
-    assert!(responsive_css.contains("#bottom-sheet .bottom-sheet-item"));
-    assert!(responsive_css.contains("background: transparent;"));
-    assert!(responsive_css.contains("border: 0;"));
+    assert!(!responsive_css.contains("#bottom-sheet .bottom-sheet-item"), "More is a kit menu sheet");
     assert!(responsive_css.contains("--mobile-list-avatar-size: 42px;"));
 }
 
@@ -7962,29 +7945,29 @@ fn mobile_peers_toolbar_uses_search_plus_icon_sort_only() {
     assert!(index.contains(r#"<div class="ui-search" role="search">"#));
     assert!(index.contains(r#"id="peers-search" placeholder="Search peers""#));
     let bottom_bar = index
-        .split("<nav class=\"bottom-bar\"")
+        .split("<nav class=\"ui-tabbar shell-tabbar\" id=\"bottom-bar\"")
         .nth(1)
         .expect("bottom navigation")
         .split("</nav>")
         .next()
         .unwrap();
+    // Icon-only tabs named by aria-label.
     assert!(!bottom_bar.contains("<span>Peers</span>"));
     assert!(!bottom_bar.contains("<span>Messages</span>"));
-    assert!(!bottom_bar.contains("<span>Contacts</span>"));
     assert!(!bottom_bar.contains("<span>More</span>"));
-    assert!(
-        responsive_css.contains(".bottom-bar-item span:not(.bottom-bar-badge) { display: none; }")
-    );
-    assert!(responsive_css.contains("height: calc(62px + var(--sab));"));
+    for label in ["Peers", "Messages", "Channels", "More"] {
+        assert!(bottom_bar.contains(&format!("aria-label=\"{label}\"")));
+    }
+    let ui_css =
+        read_source(root.join("dashboard/static/css/07-ui-components.css")).expect("kit css");
+    assert!(ui_css.contains("height: calc(62px + var(--sab, 0px));"));
+    assert!(ui_css.contains(".ui-tab .ui-ico { width: 24px; height: 24px;"));
     assert!(responsive_css.contains("padding-bottom: calc(62px + var(--sab));"));
-    assert!(responsive_css.contains(".bottom-bar-item svg {\n        width: 26px;"));
-    assert!(responsive_css.contains("right: calc(50% - 18px);"));
 
-    assert!(!index.contains("id=\"header-mobile-hash\""));
-    assert!(responsive_css.contains(".header-mobile-avatar {\n        width: 36px;"));
-    assert!(responsive_css.contains(".header-mobile-name {\n        font-size: var(--text-xl);"));
-    assert!(lxmf_js.contains("identityAvatar(hash, 36)"));
-    assert!(settings_js.contains("identityAvatar(hash, 36)"));
+    // No phone header: each view names itself; you are at the top of More.
+    assert!(!index.contains("id=\"header-mobile-hash\"") && !index.contains("header-mobile-avatar"));
+    assert!(!responsive_css.contains(".header-mobile-avatar"));
+    assert!(!lxmf_js.contains("header-mobile") && !settings_js.contains("header-mobile"));
 }
 
 #[test]
@@ -8117,7 +8100,9 @@ fn lxmf_conversation_rows_use_peer_display_names_when_available() {
     assert!(lxmf.contains("var payload = _conversationPayloadForHash(hash);"));
     assert!(lxmf.contains("_conversationNameInfo(c.hash, c.display_name, c.is_contact);"));
     assert!(lxmf.contains("_conversationNameInfo(lxmfActiveContact, null, false);"));
-    assert!(lxmf.contains("nameEl.classList.toggle('is-hash', !!info.isHash);"));
+    assert!(lxmf.contains("function _refreshRenderedConversationNames()"));
+    assert!(lxmf.contains("if (titleEl.innerHTML !== html) titleEl.innerHTML = html;"));
+    assert!(lxmf.contains("'<span class=\"msg-title-hash\" title=\"' + escapeHtml(RS.kit.hash.text(hash, 'full'))"));
 
     let render_start = lxmf
         .find("function _renderConversationsFromCache(convos)")
@@ -8166,21 +8151,22 @@ fn cache_clear_buttons_clear_reticulum_db_and_frontend_caches() {
 fn contacts_tab_is_first_class_on_desktop_and_shows_full_addresses() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
-    assert!(index.contains(r##"class="nav-item" data-view="contacts" href="#contacts""##));
+    assert!(index.contains(r##"class="ui-nav-item" data-view="contacts" href="#contacts""##));
     // The sidebar is three groups: with people, who is there, and this device.
     let sidebar_end = index
         .find(r#"id="sidebar-identity""#)
         .expect("sidebar identity");
     let sidebar = &index[..sidebar_end];
     let mut order = Vec::new();
-    for piece in sidebar.split("<a class=\"nav-item").skip(1) {
+    // The last piece is the "you" row, cut before its data-view.
+    for piece in sidebar.split("<a class=\"ui-nav-item\"").skip(1) {
         let view = piece
             .split("data-view=\"")
             .nth(1)
             .and_then(|rest| rest.split('"').next())
             .expect("nav item view");
         order.push(view);
-        if piece.contains(r#"class="sidebar-group-divider""#) {
+        if piece.contains(r#"class="ui-sidebar-sep""#) {
             order.push("|");
         }
     }
@@ -8196,6 +8182,7 @@ fn contacts_tab_is_first_class_on_desktop_and_shows_full_addresses() {
             "peers",
             "|",
             "network",
+            "activity",
             "identity",
             "settings"
         ]
@@ -8277,17 +8264,15 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     assert!(identity.contains("openIdentityShareScreen(ident.hash)"));
     assert!(settings.contains("function openActiveIdentityContactCard()"));
     assert!(settings.contains("openIdentityShareScreen(identityHash);"));
-    assert!(settings.contains("mobileId.addEventListener('keydown'"));
-    assert!(index.contains("id=\"header-mobile-identity\" title=\"Share contact card\""));
-    assert!(index.contains("id=\"header-identity-pill\" title=\"Share contact card\""));
-    let header_mobile_start = index
-        .find("id=\"header-mobile-identity\"")
-        .expect("mobile identity header");
-    let header_mobile_tail = &index[header_mobile_start..];
-    let header_mobile_end = header_mobile_tail
-        .find("</div>\n    </div>\n    <div class=\"header-right\">")
-        .expect("mobile identity header end");
-    assert!(!header_mobile_tail[..header_mobile_end].contains("header-identity-chevron"));
+    // The phone header is gone: you and "Share your contact card" lead the More sheet.
+    let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    assert!(index.contains(
+        "id=\"more-share-card\" aria-label=\"Share your contact card\" title=\"Share your contact card\""
+    ));
+    assert!(nav.contains(
+        "if (typeof openActiveIdentityContactCard === 'function') openActiveIdentityContactCard();"
+    ));
+    assert!(!index.contains("header-mobile-identity") && !index.contains("header-identity-pill"));
     assert!(lxmf.contains("openContactAddOptions(addBtn)"));
     let contacts = read_source(root.join("dashboard/static/js/contacts.js")).expect("contacts js");
     assert!(contacts.contains("RS.kit.menu(trigger, { title: 'Add contact', items: items });"));
@@ -8426,7 +8411,9 @@ fn mobile_tab_swipe_uses_bottom_bar_slots_without_view_slide_animation() {
     let nav = read_source(repo_root().join("dashboard/static/js/nav.js")).expect("nav js");
     assert!(nav.contains("var MOBILE_TAB_SLOTS = ['peers', 'message', 'channels', 'more'];"));
     assert!(
-        nav.contains("var MORE_VIEWS = ['contacts', 'identity', 'network', 'games', 'settings'];")
+        nav.contains(
+            "var MORE_VIEWS = ['contacts', 'identity', 'network', 'activity', 'games', 'settings'];"
+        )
     );
     assert!(nav.contains("function _mobileTabSlot(viewId)"));
     assert!(nav.contains("function _viewForMobileTabSlot(slot)"));
@@ -8500,7 +8487,7 @@ fn mobile_haptics_use_tauri_plugin_commands_and_semantic_feedback() {
     assert!(lxmf.contains("function _voiceHaptic(name)"));
     assert!(lxmf.contains("_voiceHaptic('success')"));
     assert!(lxmf.contains("_voiceHaptic('warning')"));
-    assert!(lxmf.contains("RS.gestures.bindViewFabClick(mainFab"));
+    assert!(lxmf.contains("RS.gestures.bindViewFabClick(fab, function(e) {"));
     assert!(games.contains("RS.gestures.bindViewFabClick('games-fab-btn'"));
 
     for path in js_files
@@ -8572,7 +8559,7 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(chat_scroll.contains("}, { passive: true });"));
     assert!(lxmf.contains("}, { passive: true });"));
     assert!(lxmf.contains("if (e.defaultPrevented) return;"));
-    assert!(lxmf.contains("(t.closest('.lxmf-msg') && _shouldPreserveLxmfComposerKeyboard())"));
+    assert!(lxmf.contains("(t.closest('.msg-bubble') && _shouldPreserveLxmfComposerKeyboard())"));
     assert!(lxmf.contains("function _bindMessageFocusPreservingActivation"));
     assert!(lxmf.contains("preserveComposerKeyboard"));
     assert!(lxmf.contains("var _pendingMessageHoldActivation = null;"));
@@ -8582,7 +8569,7 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(lxmf.contains("function _consumePendingMessageHoldContext(target, bubble, now)"));
     assert!(lxmf.contains("function _consumePendingMessageHoldActivation(event, surface, now)"));
     assert!(lxmf.contains("pending.surface !== surface || bubble !== pending.bubble"));
-    assert!(lxmf.contains("container.querySelectorAll('.lxmf-send-cancel, .msg-send-cancel-inline').forEach(function(btn)"));
+    assert!(lxmf.contains("container.querySelectorAll('.msg-cancel').forEach(function(btn)"));
     assert!(lxmf.contains("_bindMessageFocusPreservingActivation(btn, function()"));
     assert!(lxmf.contains("_cancelLxmfSend(btn.getAttribute('data-msg-id'));"));
     assert!(lxmf.contains("title: 'Cancel sending?'"));
@@ -8604,16 +8591,19 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(inbound.contains("\"step\": \"timeout\""));
     assert!(lxmf.contains("_armPendingMessageHoldActivation(bubble, msgId, touch);"));
     assert!(lxmf.contains("_releasePendingMessageHoldActivation(this);"));
-    assert!(
-        lxmf.matches("if (_consumePendingMessageHoldActivation(e, this)) return;")
-            .count()
-            >= 4
-    );
+    // The click a successful hold synthesizes never activates image, link, file, or quote.
+    for guard in [
+        "if (!img || _consumePendingMessageHoldActivation(e, img)) return;",
+        "if (_consumePendingMessageHoldActivation(e, this)) return;",
+        "if (_consumePendingMessageHoldActivation(e, save)) return;",
+        "if (_consumePendingMessageHoldActivation(e, quote)) return;",
+    ] {
+        assert!(lxmf.contains(guard), "{guard}");
+    }
     assert!(lxmf.contains("function _restoreLxmfComposerKeyboard"));
     assert!(lxmf.contains("window.RS.closeMessageActionMenu"));
-    assert!(lxmf.contains("var LXMF_SEND_METHOD_ICONS = {"));
-    assert!(lxmf.contains("label: 'Opportunistic', icon: LXMF_SEND_METHOD_ICONS.opportunistic"));
-    assert!(lxmf.contains("label: 'Direct', icon: LXMF_SEND_METHOD_ICONS.direct"));
+    assert!(lxmf.contains("{ label: 'Opportunistic', icon: 'opportunistic', hint: 'Single packets. Best for short text.'"));
+    assert!(lxmf.contains("{ label: 'Direct', icon: 'direct', hint: 'Opens a link first. Best for long text and files.'"));
     assert!(!lxmf.contains("label: 'Direct', icon: ICON_ROUTE"));
     assert!(lxmf.contains("function _copyToClipboard(text)"));
     assert!(lxmf.contains("function _messageMediaContextAction(msgData)"));
@@ -8622,17 +8612,17 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(lxmf.contains("var mediaAction = _messageMediaContextAction(msgData);"));
     assert!(!lxmf.contains("<span>Select Text</span>"));
     assert!(!lxmf.contains("data-message-action', 'select-text"));
-    assert!(lxmf.contains("<span>Copy</span>"));
-    assert!(lxmf.contains("(isSelected ? 'Deselect' : 'Select')"));
-    assert!(lxmf.contains("label: canCopyImage ? 'Copy Image' : 'Save Image'"));
-    assert!(lxmf.contains("label: 'Save File'"));
+    assert!(lxmf.contains("' msg-ctx-copy', 'copy-message', 'copy', 'Copy'"));
+    assert!(lxmf.contains("isSelected ? 'Deselect' : 'Select'"));
+    assert!(lxmf.contains("label: canCopyImage ? 'Copy image' : 'Save image'"));
+    assert!(lxmf.contains("label: 'Save file'"));
     assert!(lxmf.contains("menu.setAttribute('role', 'dialog')"));
     assert!(lxmf.contains("menu.setAttribute('aria-modal', 'false')"));
-    assert!(lxmf.contains("menu.setAttribute('aria-label', 'Message actions')"));
+    assert!(lxmf.contains("menu.setAttribute('aria-label', opts.reactOnly ? 'Reactions' : 'Message actions')"));
     assert!(!lxmf.contains("menu.setAttribute('role', 'menu')"));
-    assert!(lxmf.contains("var messageActionsClass = 'msg-actions-trigger' +"));
-    assert!(lxmf.contains("mobileMessageActions ? ' msg-actions-trigger-mobile-hidden' : ''"));
-    assert!(lxmf.contains("<path d=\"M12 5v14M5 12h14\"/>"));
+    // Pointer only: "+" beside the bubble expands into React, Reply, and More.
+    assert!(lxmf.contains("'<div class=\"msg-hover\" role=\"group\" aria-label=\"Message actions\">'"));
+    assert!(lxmf.contains("msg-hover-plus\" data-msg-id=\"' + id + '\" aria-label=\"Message actions\" title=\"Actions\" aria-expanded=\"false\">' + RS.kit.icon('plus')"));
     assert!(
         lxmf.contains(
             "if (selectionExistedBeforePointer === false) _clearNativeMessageSelection();"
@@ -8673,29 +8663,23 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
         "var touchStartOpts = preventDefaultOnStart ? { passive: false } : { passive: true };"
     ));
     assert!(emoji_picker.contains("btn.addEventListener('touchstart', function(e) { e.preventDefault(); }, { passive: false });"));
-    assert!(messaging_css.contains(".lxmf-messages.msg-action-mode .msg-row"));
-    assert!(messaging_css.contains(".msg-row.msg-action-selected .lxmf-msg"));
-    assert!(messaging_css.contains(".lxmf-msg-content {"));
+    assert!(messaging_css.contains(".lxmf-messages.is-acting .msg-row:not(.is-pressed)"));
+    assert!(messaging_css.contains(".msg-row:is(.is-selected, .is-pressed) .msg-bubble"));
+    assert!(messaging_css.contains(".msg-text { display: flow-root;"));
     assert!(messaging_css.contains("-webkit-touch-callout: default;"));
-    assert!(messaging_css.contains("html[data-input-modality=\"touch\"] .lxmf-msg-content"));
+    assert!(messaging_css.contains("html[data-input-modality=\"touch\"] .msg-text {"));
     assert!(
         messaging_css.contains(
-            ".lxmf-messages.msg-action-mode .msg-row.msg-action-selected .lxmf-msg-content"
+            "html[data-input-modality=\"touch\"] .lxmf-messages.is-acting .msg-row.is-pressed .msg-text"
         )
     );
     assert!(messaging_css.contains("touch-action: auto;"));
-    assert!(messaging_css.contains(".msg-actions-trigger::before"));
-    assert!(messaging_css.contains("pointer-events: none;"));
-    assert!(messaging_css.contains(".lxmf-msg:hover .msg-actions-trigger"));
-    assert!(messaging_css.contains("html[data-input-modality=\"touch\"] .msg-actions-trigger"));
-    assert!(messaging_css.contains(".msg-actions-trigger.msg-actions-trigger-mobile-hidden"));
-    assert!(messaging_css.contains("clip-path: inset(50%);"));
+    assert!(messaging_css.contains(".msg-row:hover .msg-hover, .msg-col:focus-within .msg-hover, .msg-hover.is-open { visibility: visible; }"));
+    assert!(messaging_css.contains("html[data-input-modality=\"touch\"] .msg-hover:not(.is-open) { visibility: hidden; }"));
+    assert!(messaging_css.contains("@media (hover: none), (pointer: coarse), (max-width: 768px) { .msg-hover { display: none; } }"));
     assert!(!messaging_css.contains(".msg-text-selection-guide"));
-    assert!(
-        messaging_css
-            .contains(".msg-ctx-btn + .msg-ctx-btn { border-top: 1px solid var(--divider); }")
-    );
-    assert!(messaging_css.contains("z-index: calc(var(--z-modal) + 3);"));
+    assert!(messaging_css.contains(".msg-menu { min-width: 248px; }"));
+    assert!(messaging_css.contains(".msg-sheet { position: fixed;"));
     assert!(lxmf.contains("function _layoutMessageActionPanels(state, allowScroll)"));
     assert!(nav.contains("RS.closeMessageActionMenu()"));
 
@@ -8786,11 +8770,11 @@ fn identity_management_is_first_class_tab() {
     assert!(index.contains("application/json,application/octet-stream,text/plain"));
     assert!(index.contains("M2.6 17.4A2 2 0 0 0 2 18.8V21"));
     let identity_nav_start = index
-        .find(r#"<a class="nav-item" data-view="identity""#)
+        .find(r#"<a class="ui-nav-item" data-view="identity""#)
         .expect("identity nav item");
     let identity_nav_rest = &index[identity_nav_start + 1..];
     let identity_nav_end = identity_nav_rest
-        .find(r#"<a class="nav-item""#)
+        .find(r#"<a class="ui-nav-item""#)
         .map(|offset| identity_nav_start + 1 + offset)
         .unwrap_or(index.len());
     let identity_nav = &index[identity_nav_start..identity_nav_end];
@@ -10003,24 +9987,22 @@ fn conversation_header_presence_uses_peer_cache_status() {
     let root = repo_root();
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
 
-    assert!(lxmf.contains("function _peerPresenceClass(peer)"));
-    assert!(lxmf.contains("var status = peer && peer.status ? peer.status : 'unknown';"));
+    // Presence is when the peer was last heard (the peer cache), the kit's tiers.
     assert!(lxmf.contains("function _applyChatHeaderPresence()"));
-    assert!(lxmf.contains("avatarEl.className = 'lxmf-chat-header-avatar' +"));
-    assert!(lxmf.contains("statusEl.className = 'lxmf-chat-header-status' +"));
-    assert!(lxmf.contains("if (convPeer) statusClass = _peerPresenceClass(convPeer);"));
+    assert!(lxmf.contains("var peer = _peerInfo(lxmfActiveContact);"));
+    assert!(lxmf.contains("var statusHtml = _peerHeaderStatusHtml(peer);"));
+    assert!(lxmf.contains("escapeHtml(RS.kit.time.lastHeard(peer.last_seen))"));
+    assert!(lxmf.contains(
+        "var tier = peer && peer.last_seen ? RS.kit.presenceFor(peer.last_seen) : 'older';"
+    ));
+    assert!(lxmf.contains(
+        "return { active: RS.kit.presenceFor(peer.last_seen) === 'active', heard: peer.last_seen };"
+    ));
     assert!(lxmf.contains("_refreshRenderedConversationPresence();"));
-    assert!(lxmf.contains("_peerActivityLabel(peer)"));
     assert!(
-        !lxmf.contains(
-            "var statusOnline = !!(peer && peer.route_state && peer.route_state !== 'none')"
-        ),
+        !lxmf.contains("statusOnline") && !lxmf.contains("_peerPresenceClass"),
         "conversation header presence must not be derived from route/path state"
     );
-
-    let css =
-        read_source(root.join("dashboard/static/css/09-messaging.css")).expect("messaging css");
-    assert!(css.contains(".lxmf-chat-header-status.is-stale"));
 }
 
 #[test]
@@ -10397,7 +10379,7 @@ fn voice_memos_share_lxst_capture_and_use_first_class_lxmf_audio() {
     assert!(!messaging_commands.contains(".lxvm"));
     assert!(!messaging.contains(".lxvm"));
     assert!(!voice_memos.contains(".lxvm"));
-    assert!(messaging.contains("if (msg.audio && window.RS && RS.voiceMemos)"));
+    assert!(messaging.contains("msg.audio && window.RS && RS.voiceMemos ? RS.voiceMemos.renderAudio(msg.audio, msg)"));
     assert!(voice_memos.contains("Number(audio && audio.mode) === 0x10"));
     assert!(voice_memos.contains("var unsupported = !isAudio(audio) || audio.supported === false"));
     assert!(voice_memos.contains("data-audio-supported"));
@@ -11505,23 +11487,26 @@ fn a_waiting_message_is_marked_and_stoppable_and_the_list_shows_no_mark() {
         .expect("conversation list");
 
     assert!(lxmf.contains(
-        "if (state === 'waiting') return wrap('msg-state-waiting', 'Waiting to send. Ratspeak keeps trying for up to 24 hours.', ICON.waiting);"
+        "var MSG_WAITING_TITLE = 'Waiting to send. Ratspeak keeps trying for up to 24 hours.';"
     ));
-    assert!(css.contains("\n.msg-state-waiting svg { stroke: var(--text-muted); }\n"));
-    assert_eq!(
-        css.matches("msg-state-waiting").count(),
-        1,
-        "the hourglass has one rule and no animation"
+    assert!(lxmf.contains(
+        "waiting: ['Waiting to send', '<path d=\"M4 2h8M4 14h8M5 2v2.5L8 8l-3 3.5V14M11 2v2.5L8 8l3 3.5V14\"/>'],"
+    ));
+    assert!(
+        lxmf.contains("if (kind === 'failed' || kind === 'waiting') {"),
+        "the hourglass is a button that opens the message menu"
+    );
+    assert!(
+        !css.contains("msg-mark--waiting"),
+        "the hourglass takes the meta colour and has no animation"
     );
 
     let position = |needle: &str| lxmf.find(needle).unwrap_or_else(|| panic!("{needle}"));
-    let try_now = position("tryNowBtn.setAttribute('data-message-action', 'try-now');");
-    let stop_trying = position("stopTryingBtn.setAttribute('data-message-action', 'stop-trying');");
-    let retry = position("retryBtn.setAttribute('data-message-action', 'retry');");
-    let show_in_activity =
-        position("activityBtn.setAttribute('data-message-action', 'show-activity');");
+    let try_now = position("' msg-ctx-try-now', 'try-now', 'refresh', 'Try now'");
+    let stop_trying = position("' msg-ctx-stop-trying', 'stop-trying', 'x', 'Stop trying'");
+    let retry = position("' msg-ctx-retry', 'retry', 'refresh', 'Retry…'");
+    let show_in_activity = position("' msg-ctx-activity', 'show-activity', 'activity', 'Show in Activity'");
     assert!(try_now < stop_trying && stop_trying < retry && retry < show_in_activity);
-    assert!(lxmf.contains("'<span>Try now</span>'") && lxmf.contains("'<span>Stop trying</span>'"));
     assert!(lxmf.contains(
         "return RS.invoke('try_waiting_now', {\n        args: { msg_id: msg.id }\n    })"
     ));

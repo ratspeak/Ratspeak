@@ -48,7 +48,7 @@ function targetWithClasses(classes) {
         closest: function(selectorList) {
             var selectors = String(selectorList).split(',').map(function(value) { return value.trim(); });
             for (var i = 0; i < selectors.length; i++) {
-                if (selectors[i] === '.lxmf-msg' && this._messageBubble) return this._messageBubble;
+                if (selectors[i] === '.msg-bubble' && this._messageBubble) return this._messageBubble;
                 if (selectors[i].charAt(0) === '.' && own.has(selectors[i].slice(1))) return this;
             }
             return null;
@@ -166,25 +166,27 @@ function targetWithClasses(classes) {
         return gesture.state.fired;
     }
 
-    assert.strictEqual(hold(targetWithClasses(['lxmf-msg-content']), false), 1,
+    assert.strictEqual(hold(targetWithClasses(['msg-text']), false), 1,
         'ordinary message text must open actions on its first touch hold');
     assert.strictEqual(hold(targetWithClasses([]), false), 1,
         'blank message padding must open the same actions as message text');
-    assert.strictEqual(hold(targetWithClasses(['lxmf-msg-meta']), false), 1,
+    assert.strictEqual(hold(targetWithClasses(['msg-meta']), false), 1,
         'the blank/meta line beneath message text must open the same actions');
     assert.strictEqual(hold(targetWithClasses(['rs-message-link']), false), 1,
         'touch links must keep message actions reachable');
-    assert.strictEqual(hold(targetWithClasses(['lxmf-clickable-img']), false), 1,
+    assert.strictEqual(hold(targetWithClasses(['msg-img']), false), 1,
         'image surfaces must open the same message actions');
     var hapticsBeforeSelection = haptics.length;
-    assert.strictEqual(hold(targetWithClasses(['lxmf-msg-content']), true), 0,
+    assert.strictEqual(hold(targetWithClasses(['msg-text']), true), 0,
         'elevated message text must yield its next hold to native text selection');
     assert.strictEqual(haptics.length, hapticsBeforeSelection,
         'native selection ownership must not leak a staged reaction haptic');
     assert.strictEqual(hold(targetWithClasses(['voice-memo-player-play']), false), 0,
         'direct playback controls must own their touch');
-    assert.strictEqual(hold(targetWithClasses(['msg-actions-trigger']), false), 0,
-        'the explicit More control must own its touch without a duplicate hold action');
+    assert.strictEqual(hold(targetWithClasses(['msg-hover']), false), 0,
+        'the hover actions own their touch without a duplicate hold action');
+    assert.strictEqual(hold(targetWithClasses(['msg-mark']), false), 0,
+        'a Not delivered or Waiting mark owns its tap, which opens the same menu');
 
     function activationEvent() {
         return {
@@ -197,10 +199,10 @@ function targetWithClasses(classes) {
     }
 
     [
-        ['lxmf-clickable-img', 'image'],
+        ['msg-img', 'image'],
         ['rs-message-link', 'link'],
-        ['rs-file-download', 'file'],
-        ['msg-reply-quote', 'reply quote'],
+        ['msg-file-save', 'file'],
+        ['msg-quote', 'reply quote'],
     ].forEach(function(surfaceCase) {
         var surface = targetWithClasses([surfaceCase[0]]);
         var gesture = beginGesture(surface, false);
@@ -237,7 +239,7 @@ function targetWithClasses(classes) {
     assert.strictEqual(context.consumeActivation(activationEvent(), firstLink, now), true,
         'the synthetic activation remains bound to the exact held link');
 
-    var longSurface = targetWithClasses(['rs-file-download']);
+    var longSurface = targetWithClasses(['msg-file-save']);
     var longGesture = beginGesture(longSurface, false);
     advance(501);
     advance(1200);
@@ -245,7 +247,7 @@ function targetWithClasses(classes) {
     assert.strictEqual(context.consumeActivation(activationEvent(), longSurface, now), true,
         'a hold longer than the fallback window must remain armed through release');
 
-    var noClickSurface = targetWithClasses(['lxmf-clickable-img']);
+    var noClickSurface = targetWithClasses(['msg-img']);
     var noClickGesture = beginGesture(noClickSurface, false);
     advance(501);
     noClickGesture.element.dispatch('touchend', {});
@@ -264,7 +266,7 @@ function targetWithClasses(classes) {
     assert.strictEqual(context.consumeActivation(activationEvent(), contextFirstSurface, now), true,
         'contextmenu before release must not disarm the synthesized click guard');
 
-    var activationFirstSurface = targetWithClasses(['lxmf-clickable-img']);
+    var activationFirstSurface = targetWithClasses(['msg-img']);
     var activationFirstGesture = beginGesture(activationFirstSurface, false);
     advance(501);
     activationFirstGesture.element.dispatch('touchend', {});
@@ -273,24 +275,24 @@ function targetWithClasses(classes) {
         'contextmenu arriving after the synthesized click must still be suppressed');
 
     var cancellationHaptics = haptics.length;
-    var shortTap = beginGesture(targetWithClasses(['lxmf-msg-content']), false);
+    var shortTap = beginGesture(targetWithClasses(['msg-text']), false);
     shortTap.element.dispatch('touchend', {});
     advance(501);
     assert.strictEqual(shortTap.state.fired, 0, 'a short tap must not open message actions');
 
-    var panned = beginGesture(targetWithClasses(['lxmf-msg-content']), false);
+    var panned = beginGesture(targetWithClasses(['msg-text']), false);
     panned.element.dispatch('touchmove', {
         touches: [{ target: panned.target, clientX: 23, clientY: 10 }],
     });
     advance(501);
     assert.strictEqual(panned.state.fired, 0, 'a pan beyond the 12px threshold must cancel actions');
 
-    var cancelled = beginGesture(targetWithClasses(['lxmf-msg-content']), false);
+    var cancelled = beginGesture(targetWithClasses(['msg-text']), false);
     cancelled.element.dispatch('touchcancel', {});
     advance(501);
     assert.strictEqual(cancelled.state.fired, 0, 'touch cancellation must cancel actions');
 
-    var hidden = beginGesture(targetWithClasses(['lxmf-msg-content']), false);
+    var hidden = beginGesture(targetWithClasses(['msg-text']), false);
     documentStub.hidden = true;
     documentStub.dispatch('visibilitychange', {});
     advance(501);
@@ -340,15 +342,14 @@ function classListStub() {
         },
         focus: function() { this.focused = true; },
     };
-    var moreTrigger = { focus: function() { this.focused = true; } };
     var bubble = {
         getAttribute: function(name) { return name === 'data-msg-id' ? 'message-1' : null; },
-        querySelector: function(selector) { return selector === '.msg-actions-trigger' ? moreTrigger : null; },
+        focus: function() { this.focused = true; },
     };
     var container = {
         querySelectorAll: function(selector) {
-            if (selector === '.lxmf-msg[data-msg-id]') return [bubble];
-            if (selector === '.reaction-pill[data-msg-id]') return [reactionPill];
+            if (selector === '.msg-bubble[data-msg-id]') return [bubble];
+            if (selector === '.msg-react[data-msg-id]') return [reactionPill];
             return [];
         },
     };
@@ -378,8 +379,8 @@ function classListStub() {
         'AT reaction activation must focus the fresh semantic reaction pill');
     reactionPill.focused = false;
     context.restoreReactionFocus('message-1', '❤️', expectsFocus);
-    assert.strictEqual(moreTrigger.focused, true,
-        'when the exact pill is absent after rollback, focus must return to fresh More');
+    assert.strictEqual(bubble.focused, true,
+        'when the exact chip is absent after rollback, focus returns to the fresh message');
 }());
 
 // Progress and reaction updates must not detach a pressed action button. The
@@ -640,8 +641,8 @@ function classListStub() {
     var link = {
         getAttribute: function(name) { return name === 'data-url' ? 'https://example.org/' : null; },
         closest: function(selector) {
-            if (selector === '.rs-message-link[data-url]' || selector === '.lxmf-msg-content') return link;
-            if (selector === '.lxmf-msg') return bubble;
+            if (selector === '.rs-message-link[data-url]' || selector === '.msg-text') return link;
+            if (selector === '.msg-bubble') return bubble;
             return null;
         }
     };
@@ -652,8 +653,8 @@ function classListStub() {
         'a selection never hands a link to the platform menu');
     text = {
         closest: function(selector) {
-            if (selector === '.lxmf-msg-content') return text;
-            if (selector === '.lxmf-msg') return bubble;
+            if (selector === '.msg-text') return text;
+            if (selector === '.msg-bubble') return bubble;
             return null;
         }
     };
@@ -703,7 +704,7 @@ function classListStub() {
         { filename: 'message-elevated-selection-lease.js' }
     );
     var text = {
-        closest: function(selector) { return selector === '.lxmf-msg-content' ? text : null; },
+        closest: function(selector) { return selector === '.msg-text' ? text : null; },
     };
     var bubble = { contains: function(candidate) { return candidate === text; } };
     context.open(bubble);
@@ -768,55 +769,43 @@ function classListStub() {
     assert.strictEqual(selection.cleared, false);
 }());
 
-assert(/\.lxmf-msg\s*\{[\s\S]*?user-select:\s*none;[\s\S]*?-webkit-user-select:\s*none;/.test(messagingCss),
+assert(/\.msg-bubble\s*\{[^}]*user-select:\s*none;[^}]*-webkit-user-select:\s*none;/.test(messagingCss),
     'general message chrome must remain non-selectable');
-assert(messagingCss.includes('html[data-input-modality="touch"] .lxmf-msg-content'),
+assert(messagingCss.includes('html[data-input-modality="touch"] .msg-text {'),
     'idle touch message text must not race the long-press action stage');
-assert(messagingCss.includes('.lxmf-messages.msg-action-mode .msg-row.msg-action-selected .lxmf-msg-content'),
-    'only the elevated message may opt into touch selection');
-assert(messagingCss.includes('@media (hover: none) and (pointer: coarse)') &&
-       messagingCss.includes('.lxmf-messages.msg-action-mode .msg-row.msg-action-selected .lxmf-msg-content'),
+assert(messagingCss.includes('html[data-input-modality="touch"] .lxmf-messages.is-acting .msg-row.is-pressed .msg-text'),
+    'only the pressed message may opt into touch selection');
+assert(/@media \(hover: none\) and \(pointer: coarse\) \{\s*\.msg-text \{[^}]*user-select: none;[\s\S]*?\.lxmf-messages\.is-acting \.msg-row\.is-pressed \.msg-text/.test(messagingCss),
     'coarse mobile input must stage selection before the first touch event');
-assert(messagingCss.includes('.msg-actions-trigger::before') && messagingCss.includes('var(--touch-target)'),
-    'the restrained More control must retain a full touch target');
-assert(/\.msg-actions-trigger\s*\{[\s\S]*?width:\s*0;[\s\S]*?opacity:\s*0;[\s\S]*?pointer-events:\s*none;/.test(messagingCss) &&
-       /\.lxmf-msg:hover \.msg-actions-trigger,[\s\S]*?width:\s*24px;[\s\S]*?opacity:\s*1;/.test(messagingCss),
-    'the compact plus control must appear only for its hovered/focused/expanded message');
-assert(/html\[data-input-modality="touch"\] \.msg-actions-trigger\s*\{[\s\S]*?width:\s*0;[\s\S]*?opacity:\s*0;[\s\S]*?pointer-events:\s*none;/.test(messagingCss),
-    'mobile touch UI must keep the redundant plus control visually hidden');
-assert(lxmfSource.includes("mobileMessageActions ? ' msg-actions-trigger-mobile-hidden' : ''") &&
-       /\.msg-actions-trigger\.msg-actions-trigger-mobile-hidden\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?clip-path:\s*inset\(50%\);[\s\S]*?pointer-events:\s*none;/.test(messagingCss),
-    'native and responsive mobile rendering must hide the plus structurally from visual layout and taps');
-assert(lxmfSource.includes('<path d="M12 5v14M5 12h14"/>'),
-    'message actions must use the compact plus glyph instead of an ellipsis');
-var metaSource = lxmfSource.slice(
-    lxmfSource.indexOf('var metaHtml = _messageProgressMetaHtml(msg)'),
-    lxmfSource.indexOf('var bubbleClass = bubbleClassBase')
-);
-assert(metaSource.indexOf('msg-actions-trigger') < metaSource.indexOf('msg-time'),
-    'the plus action must render to the left of the timestamp');
-assert(/\.msg-context-actions\s*\{[\s\S]*?flex-direction:\s*column;/.test(messagingCss) &&
-       messagingCss.includes('.msg-ctx-btn + .msg-ctx-btn { border-top: 1px solid var(--divider); }'),
-    'actions must stack as full-width rows so any count of actions leaves no visual hole');
-assert(lxmfSource.includes("reactBar.className = 'msg-action-panel msg-quick-react'") &&
-       lxmfSource.includes("actions.className = 'msg-action-panel msg-context-actions'"),
-    'reactions and actions must be separately placeable panels');
+assert(/\.msg-hover \{[^}]*position: absolute;[^}]*visibility: hidden;/.test(messagingCss),
+    'the hover actions are absolute and hidden until the message is hovered or focused, so nothing shifts');
+assert(/@media \(hover: hover\) and \(pointer: fine\) and \(min-width: 769px\) \{\s*\.msg-row:hover \.msg-hover, \.msg-col:focus-within \.msg-hover, \.msg-hover\.is-open \{ visibility: visible; \}/.test(messagingCss),
+    'the "+" appears only for a hovered, focused or expanded message on a pointer');
+assert(messagingCss.includes('html[data-input-modality="touch"] .msg-hover:not(.is-open) { visibility: hidden; }') &&
+       messagingCss.includes('@media (hover: none), (pointer: coarse), (max-width: 768px) { .msg-hover { display: none; } }'),
+    'touch never shows the hover actions; a long press opens the sheet');
+var hoverSource = lxmfSource.slice(lxmfSource.indexOf('<div class="msg-hover" role="group"'), lxmfSource.indexOf('function _messageImageHtml('));
+assert(hoverSource.indexOf("'react'") < hoverSource.indexOf("'reply'") && hoverSource.indexOf("'reply'") < hoverSource.indexOf("'more'"),
+    '"+" expands into React, Reply, and More');
+assert(lxmfSource.includes("var MSG_HOVER_LEAVE_GRACE_MS = 280;"), 'leaving the bar collapses it after a 280 ms grace');
+assert(lxmfSource.includes("reactBar.className = 'msg-quick'") && lxmfSource.includes("menu.className = useSheet ? 'ui-dialog msg-sheet' : 'ui-menu ui-pop msg-menu'"),
+    'one menu: the reactions row on top of the kit menu, a sheet on a phone');
 assert(!messagingCss.includes('.msg-text-selection-guide') &&
        !lxmfSource.includes('Text selected. Adjust the selection or choose Done.') &&
        !lxmfSource.includes('<span>Select Text</span>') &&
        !lxmfSource.includes("data-message-action', 'select-text"),
     'selection must rely on the elevated bubble without a Select Text command or Done chrome');
 assert(lxmfSource.includes("menu.setAttribute('role', 'dialog')") &&
-       lxmfSource.includes("menu.setAttribute('aria-label', 'Message actions')"),
+       lxmfSource.includes("menu.setAttribute('aria-label', opts.reactOnly ? 'Reactions' : 'Message actions')"),
     'message actions must expose a labelled nonmodal dialog');
-assert(!lxmfSource.includes("menu.setAttribute('role', 'menu')"),
+assert(!lxmfSource.includes("menu.setAttribute('role', 'menu')") && !/aria-haspopup="menu"[^>]*msg-|msg-[^>]*aria-haspopup="menu"/.test(lxmfSource),
     'message actions must not expose incomplete menu semantics');
-assert(lxmfSource.includes('<button type="button" class="reaction-pill') &&
+assert(lxmfSource.includes('<button type="button" class="msg-react" data-emoji="') &&
        lxmfSource.includes("'aria-pressed=\"' + (isMine ? 'true' : 'false')"),
     'persisted reactions must render as semantic pressed buttons');
-assert(lxmfSource.includes('aria-haspopup="dialog" aria-expanded="false"') &&
+assert(lxmfSource.includes('aria-haspopup="dialog" aria-expanded="false" aria-label="\' + label + \'. Options"') &&
        lxmfSource.includes("trigger.setAttribute('aria-expanded', 'true')") &&
        lxmfSource.includes("trigger.setAttribute('aria-expanded', 'false')"),
-    'More must expose and maintain its dialog expansion state');
+    'More and the delivery marks expose and maintain their dialog expansion state');
 
 console.log('Message action and elevated native-selection behavior tests passed.');

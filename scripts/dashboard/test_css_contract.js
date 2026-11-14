@@ -100,7 +100,8 @@ assert(/--type-msg-meta-size:\s*var\(--text-xs\)/.test(tokens), 'message timesta
 assert(/--text-3xl:\s*1\.75rem/.test(tokens), 'the complete text scale must be defined');
 assert(!/font-weight:\s*800\b/.test(allCss), 'CSS must not request an unloaded Outfit weight');
 assert(!/--font-sans\s*:/.test(sourceByName['09-channels.css']), 'Channels must inherit the app font contract');
-assert(/\.nav-item\s*\{[^}]*min-height:\s*46px/s.test(sourceByName['04-layout.css']),
+assert(/\.ui-nav-item\s*\{[^}]*min-height:\s*40px/s.test(sourceByName['07-ui-components.css']) &&
+    /\.ui-nav-item \.lbl\s*\{[^}]*padding:\s*6px 0/s.test(sourceByName['07-ui-components.css']),
     'navigation labels must grow instead of clipping scaled text');
 var settingsFieldRule = sourceByName['06-forms.css'].match(/\.view-grid-settings input\[type="text"\][\s\S]*?\.view-grid-settings \.modal-input\s*\{([^}]*)\}/);
 assert(settingsFieldRule && /min-height:\s*34px/.test(settingsFieldRule[1]) && /height:\s*auto/.test(settingsFieldRule[1]),
@@ -167,7 +168,7 @@ assert(/@supports \(width: 1cqmin\)\s*\{\s*\.games-detail-board\s*\{\s*container
     /\.chess-board-wrap\s*\{\s*width:\s*clamp\([^;]*100cqh - var\(--chess-chrome\)/.test(gamesCss) &&
     /\.four-board-wrap\s*\{\s*width:\s*clamp\([^;]*\(100cqh - var\(--four-chrome\)\) \* 7 \/ 6/.test(gamesCss),
     'game boards must fit the space between the status line and the controls');
-assert(/body\.view-game-detail \.bottom-bar,\s*body\.view-game-detail \.header\s*\{\s*display:\s*none;/
+assert(/body\.view-game-detail \.shell-tabbar\s*\{\s*display:\s*none;/
     .test(sourceByName['13-responsive.css']),
     'an open game must take the whole phone screen, as a conversation does');
 
@@ -186,17 +187,16 @@ var bottomEdges = wideEdges.split('border-right: var(--sar) solid transparent;')
 ['.lxmf-sidebar,', '.lxmf-chat,', '.people-split > .ui-pane,', '.people-split > .ui-detail,', '.settings-page {'].forEach(function(selector) {
     assert(bottomEdges.includes(selector), selector + ' must paint under the bottom inset');
 });
-assert(/\.sidebar\s*\{\s*padding-bottom:\s*max\(var\(--space-8\), var\(--sab\)\);/.test(safeEdges),
+assert(/\.shell-sidebar\s*\{\s*padding-bottom:\s*max\(8px, var\(--sab\)\);/.test(safeEdges),
     'the sidebar footer must clear the home indicator without stacking the inset on its padding');
-assert(/body\.view-chat-detail \.lxst-call-strip\s*\{[^}]*margin-right:\s*var\(--sar\);/.test(safeEdges) &&
-    /\.header\s*\{[^}]*margin-right:\s*var\(--sar\);/.test(responsiveCss) &&
-    /body\.view-chat-detail \.lxmf-compose\s*\{[^}]*var\(--sar\)/.test(safeEdges),
+assert(/body\.view-chat-detail \.msg-chat-top > \*,\s*body\.view-chat-detail \.lxst-call-strip\s*\{[^}]*margin-right:\s*var\(--sar\);/.test(safeEdges) &&
+    /body\.view-chat-detail \.cmp\s*\{[^}]*var\(--sar\)/.test(safeEdges),
     'phone top bars must stop at a side status column so the camera never sits on their divider');
 assert(/@media \(max-width: 768px\)\s*\{\s*\.main-content\s*\{\s*border-left:\s*var\(--sal\) solid transparent;\s*border-right:\s*var\(--sar\) solid transparent;/
     .test(safeEdges),
     'phone views must keep content inside the side insets');
-assert(/\.bottom-bar\s*\{[^}]*padding:\s*0 calc\(4px \+ var\(--sar\)\) var\(--sab\) calc\(4px \+ var\(--sal\)\);/
-    .test(responsiveCss),
+assert(/\.shell-tabbar\s*\{[^}]*padding:\s*0 calc\(4px \+ var\(--sar\)\) var\(--sab\) calc\(4px \+ var\(--sal\)\);/
+    .test(layoutCss),
     'the fixed bottom bar must keep its tabs inside the side insets');
 
 var paletteCss = sourceByName['00-palettes.css'];

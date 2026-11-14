@@ -25,13 +25,18 @@ function functionSource(name) {
 }
 
 var context = {
-    _messageProgressPercent: function() { return null; }
+    _messageProgressPercent: function() { return null; },
+    escapeHtml: function(value) { return String(value); }
 };
 vm.createContext(context);
-vm.runInContext(functionSource('_messageStateIconHtml'), context);
+vm.runInContext(source.slice(source.indexOf('var MSG_MARKS = {'), source.indexOf('function _messageMarkSvg(')), context);
+['_messageMarkSvg', '_messageMarkKind', '_messageStateIconHtml'].forEach(function(name) {
+    vm.runInContext(functionSource(name), context);
+});
 
 function icon(state, method) {
     return context._messageStateIconHtml({
+        id: 'm1',
         state: state,
         delivery_method: method,
         direction: 'outbound'
@@ -40,17 +45,17 @@ function icon(state, method) {
 
 function assertSent(method) {
     var html = icon('sent', method);
-    assert(html.includes('msg-state-sent'), method + ' sent must use the muted sent treatment');
+    assert(html.includes('msg-mark--sent'), method + ' sent must use the sent mark');
     assert(html.includes('aria-label="Sent"'), method + ' sent must remain accessible as Sent');
-    assert(!html.includes('msg-state-delivered'), method + ' sent must not claim delivery');
+    assert(!html.includes('msg-mark--delivered'), method + ' sent must not claim delivery');
 }
 
 function assertDelivered(method) {
     var html = icon('delivered', method);
-    assert(html.includes('msg-state-delivered'), method + ' proof must use the confirmed treatment');
+    assert(html.includes('msg-mark--delivered'), method + ' proof must use the delivered mark');
     assert(html.includes('aria-label="Delivered"'), method + ' proof must be accessible as Delivered');
-    assert(!html.includes('msg-state-sent'), method + ' proof must not be collapsed back to Sent');
-    assert(html.includes('<polyline points="11 4 4.5 10.5 1.5 7.5"/><polyline points="15 6.5 9.5 12 8.5 11"/>'),
+    assert(!html.includes('msg-mark--sent'), method + ' proof must not be collapsed back to Sent');
+    assert(html.includes('<polyline points="1.5 8.5 5 12 11.5 4.5"/><polyline points="8.5 11 9.5 12 16 4.5"/>'),
         method + ' proof must show two checks');
 }
 
@@ -59,18 +64,22 @@ function assertDelivered(method) {
 assertDelivered(undefined);
 
 var propagated = icon('propagated', 'propagated');
-assert(propagated.includes('msg-state-propagated'));
-assert(propagated.includes('aria-label="Stored in Offline Inbox"'));
+assert(propagated.includes('msg-mark--propagated'));
+assert(propagated.includes('aria-label="In the Offline Inbox"'));
 
+// Not delivered and Waiting are buttons that open the message menu; the rest are images.
 var failed = icon('failed', 'opportunistic');
-assert(failed.includes('msg-state-failed'));
-assert(failed.includes('aria-label="Not delivered"') && failed.includes('title="Not delivered"'),
-    'the bubble shows only the icon; its name is the hover title');
-assert(failed.includes('<line x1="8" y1="2.5" x2="8" y2="9"/>') && !failed.includes('x1="4" y1="4"'),
+assert(failed.startsWith('<button type="button" class="msg-mark msg-mark--failed" data-msg-id="m1"'));
+assert(failed.includes('aria-haspopup="dialog" aria-expanded="false"') && failed.includes('aria-label="Not delivered. Options"') && failed.includes('title="Not delivered"'),
+    'the bubble shows only the mark; its name is the hover title');
+assert(failed.includes('<line x1="8" y1="2.5" x2="8" y2="9.5"/>') && !failed.includes('x1="4" y1="4"'),
     'not delivered is a "!", not the cancel cross');
+var waiting = icon('waiting', 'direct');
+assert(waiting.startsWith('<button type="button" class="msg-mark msg-mark--waiting"') && waiting.includes('aria-label="Waiting to send. Options"'));
 assert(icon('cancelled', 'direct').includes('x1="4" y1="4"'), 'cancelled keeps the cross');
-assert(icon('timeout', 'direct').includes('aria-label="Not delivered"'), 'a timeout is Not delivered');
-assert(!icon('read', 'direct').includes('msg-state-read'), 'no outbound message shows a Read state');
+assert(icon('timeout', 'direct').includes('aria-label="Not delivered. Options"'), 'a timeout is Not delivered');
+assert(!icon('read', 'direct').includes('msg-mark--read'), 'no outbound message shows a Read state');
+assert(icon('routing', 'direct').includes('msg-mark--sending') && icon('routing', 'direct').startsWith('<span'));
 
 var stopped = icon('cancelled', 'direct');
 assert(stopped.includes('aria-label="Sending cancelled"'));
@@ -81,12 +90,10 @@ assert(source.includes('No live send remained. The local message was cancelled, 
 assert(source.includes('Cancelled before the message left this device.'));
 assert(source.includes("title: 'Cancel sending?'"));
 
-// Paper: a neutral chip in the state slot, terminal everywhere, never a clock or check.
+// Paper: "Paper" in the mark's place, terminal everywhere, never a clock or check.
 var paperIcon = icon('paper', 'paper');
-assert(paperIcon.includes('msg-state-paper') && paperIcon.includes('aria-label="Paper message"'));
-assert(!paperIcon.includes('msg-state-sending') && !paperIcon.includes('msg-state-sent'));
-context.escapeHtml = function(value) { return String(value); };
-vm.runInContext(source.slice(source.indexOf('var RS_QR_GLYPH_PATHS'), source.indexOf('var RS_PAPER_LINK_GLYPH')), context);
+assert(paperIcon.includes('msg-mark--paper') && paperIcon.includes('aria-label="Paper message"'));
+assert(!paperIcon.includes('msg-mark--sending') && !paperIcon.includes('msg-mark--sent'));
 vm.runInContext(source.slice(0, source.indexOf('var lxmfIdentity')), context);
 ['_messageDeliveryMethod', '_messageIsPaper', '_messagePaperChipHtml', '_messageCanCancelSend']
     .forEach(function(name) { vm.runInContext(functionSource(name), context); });
@@ -95,12 +102,11 @@ assert.strictEqual(context._messageCanCancelSend({ direction: 'outbound', state:
     'paper messages have no cancel, retry, or progress');
 assert(context._messageIsPaper({ state: 'delivered', delivery_method: 'paper' }), 'inbound filed paper rows are paper');
 var outboundChip = context._messagePaperChipHtml({ id: 'm1' }, true);
-assert(outboundChip.includes('<button type="button" class="msg-paper-state" data-msg-id="m1"'));
-assert(outboundChip.includes('aria-label="Paper message, not sent over the network. Show QR"'));
-assert(outboundChip.includes('<span class="msg-state-label" aria-hidden="true">Paper</span>'));
+assert(outboundChip.includes('<button type="button" class="msg-mark msg-mark--paper" data-msg-id="m1"'));
+assert(outboundChip.includes('aria-label="Paper message, not sent over the network. Show QR code"'));
+assert(outboundChip.includes('<span aria-hidden="true">Paper</span>'));
 var inboundChip = context._messagePaperChipHtml({ id: 'm2' }, false);
 assert(!inboundChip.includes('<button') && inboundChip.includes('aria-label="Received as a paper message"'));
-assert(outboundChip.includes('<path d="M14 21h7v-2"/>'), 'the chip and the chat link share one QR glyph');
 
 // One table of outbound states, and every reader agrees with it for every state.
 var ON_ITS_WAY = ['sending', 'routing', 'propagating', 'link_establishing', 'sending_via_link',
@@ -168,18 +174,18 @@ ON_ITS_WAY.concat(SETTLED, PROGRESS, RETIRED).forEach(function(step) {
         assert.strictEqual(after('lxmf_delivery_progress', settled, step), settled, settled + ' after progress ' + step);
     });
 });
-assert(source.includes("var stateIcon = _messageIsPaper(msg)\n            ? _messagePaperChipHtml(msg, isOut)"));
-assert(source.includes("'.md-spoiler:not(.is-revealed), .md-code-copy, .msg-paper-state'"),
-    'a hold on the chip opens message actions and swallows the trailing tap');
-assert(source.includes("setAttribute('data-message-action', 'paper-qr')") &&
-    source.includes("'<span>Show QR</span>'") && source.includes("'<span>Copy paper link</span>'"));
+assert(source.includes("var mark = paper ? _messagePaperChipHtml(msg, isOut) : (isOut ? _messageStateIconHtml(msg) : '');"));
+assert(source.includes("'.md-spoiler:not(.is-revealed), .md-code-copy, .msg-mark--paper'"),
+    'a hold on the paper mark opens message actions and swallows the trailing tap');
+assert(source.includes("_messageMenuButton(itemClass + ' msg-ctx-paper-qr', 'paper-qr', 'qr', 'Show QR code')") &&
+    source.includes("'copy-paper-link', 'copy', 'Copy paper link'"));
 assert(source.includes("showToast(ok ? 'Paper link copied' : 'Could not copy'"));
 
 var css = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '09-messaging.css'), 'utf8');
-assert(/button\.msg-paper-state::after\s*\{[^}]*width:\s*44px;[^}]*height:\s*44px;/s.test(css),
-    'the paper chip keeps a 44px hit target');
-assert(/\.msg-state-rejected svg\s*\{[^}]*stroke:/s.test(css), 'the rejected icon has a stroke, or it draws nothing');
-assert(/\.msg-state-sent svg,\s*\.msg-state-delivered svg\s*\{[^}]*var\(--text-muted\)/s.test(css),
+assert(/button\.msg-mark::before\s*\{[^}]*inset:\s*-5px;/s.test(css) && /button\.msg-mark::before\s*\{\s*inset:\s*-15px;/.test(css),
+    'a mark that is a button keeps a 24 px hit area, 44 on touch');
+assert(/\.msg-mark--failed, \.msg-mark--rejected\s*\{\s*color:\s*var\(--danger-ink\);/.test(css), 'Not delivered is the one coloured mark');
+assert(!/\.msg-mark--(?:sent|delivered|propagated|sending)\s*\{/.test(css),
     'Sent and Delivered share one colour; the glyph tells them apart');
 
 // Retry: in the message menu only, for messages with an outbox entry.
@@ -198,10 +204,10 @@ assert(!context._messageCanRetry({ id: id, direction: 'outbound', state: 'failed
 assert(!context._messageCanRetry({ id: 'out_1', direction: 'outbound', state: 'cancelled' }),
     'a send cancelled before it was queued has no stored message');
 assert(!context._messageCanRetry({ id: id, direction: 'inbound', state: 'failed' }));
-assert(source.includes("retryBtn.innerHTML = _messageActionIcon('retry') + '<span>Retry</span>';"));
-assert(source.includes("{ label: 'Auto', icon: LXMF_SEND_METHOD_ICONS.auto,"),
-    'Retry offers the send methods, Auto first');
-assert(source.includes("container.querySelector('.lxmf-msg[data-msg-id=\"' + msg.id + '\"]')"),
+assert(source.includes("_messageMenuButton(itemClass + ' msg-ctx-retry', 'retry', 'refresh', 'Retry…')"));
+assert(source.includes("{ label: 'Automatic', icon: 'refresh', onSelect: function() { _retryLxmfMessage(msg, 'auto'); } },"),
+    'Retry… offers the send methods, Automatic first');
+assert(source.includes("anchor = anchor && anchor.isConnected ? anchor : _findRenderedMessageBubble(container, msg.id);"),
     'the method list opens at the bubble');
 
 // A proof outranks an earlier outcome; Not delivered elsewhere is one toast.
@@ -219,26 +225,27 @@ function canExplain(state, direction) {
 ['failed', 'timeout', 'rejected'].forEach(function(state) { assert(canExplain(state), state); });
 ['cancelled', 'sent', 'delivered', 'propagated', 'sending'].forEach(function(state) { assert(!canExplain(state), state); });
 assert(!canExplain('failed', 'inbound'));
-var retryAt = source.indexOf("retryBtn.innerHTML = _messageActionIcon('retry')");
-var activityAt = source.indexOf("activityBtn.innerHTML = _messageActionIcon('activity') + '<span>Show in Activity</span>';");
-var replyAt = source.indexOf("replyBtn.innerHTML = _messageActionIcon('reply')");
+var retryAt = source.indexOf("'retry', 'refresh', 'Retry…'");
+var activityAt = source.indexOf("'show-activity', 'activity', 'Show in Activity'");
+var replyAt = source.indexOf("' msg-ctx-reply', 'reply', 'reply', 'Reply'");
 assert(retryAt !== -1 && activityAt > retryAt && replyAt > activityAt, 'Show in Activity sits right after Retry');
 
 // ---------------------------------------------------------------------------
 // Waiting: a message Ratspeak keeps trying to send.
 // ---------------------------------------------------------------------------
-var WAITING_LABEL = 'Waiting to send. Ratspeak keeps trying for up to 24 hours.';
-var HOURGLASS = '<path d="M3.5 2.5h9M3.5 13.5h9M5 2.5V5l3 3-3 3v2.5M11 2.5V5L8 8l3 3v2.5"/>';
+var WAITING_LABEL = 'Waiting to send';
+var HOURGLASS = '<path d="M4 2h8M4 14h8M5 2v2.5L8 8l-3 3.5V14M11 2v2.5L8 8l3 3.5V14"/>';
 
 // The mark: an hourglass, named on hover and to a screen reader, never the clock, no words.
 var waitingIcon = icon('waiting', 'opportunistic');
-assert(waitingIcon.includes('class="msg-state-icon msg-state-waiting"'));
-assert(waitingIcon.includes('aria-label="' + WAITING_LABEL + '"') && waitingIcon.includes('title="' + WAITING_LABEL + '"'));
+assert(waitingIcon.includes('class="msg-mark msg-mark--waiting"'));
+assert(waitingIcon.includes('aria-label="' + WAITING_LABEL + '. Options"') &&
+    waitingIcon.includes('title="' + WAITING_LABEL + '. Ratspeak keeps trying for up to 24 hours."'),
+    'the hover title says how long it keeps trying');
 assert(waitingIcon.includes(HOURGLASS), 'waiting is the hourglass');
-assert(!waitingIcon.includes('msg-state-sending') && !waitingIcon.includes('<circle'), 'waiting is not the sending clock');
-assert(!waitingIcon.includes('msg-state-label'), 'the bubble carries no words for waiting');
-assert(/\.msg-state-waiting svg\s*\{\s*stroke:\s*var\(--text-muted\);\s*\}/.test(css),
-    'the hourglass is muted and still: one declaration, no animation');
+assert(!waitingIcon.includes('msg-mark--sending') && !waitingIcon.includes('<circle'), 'waiting is not the sending clock');
+assert(!waitingIcon.includes('<span'), 'the bubble carries no words for waiting');
+assert(!/\.msg-mark--waiting[^{]*\{[^}]*animation/.test(css), 'the hourglass is still');
 
 // Not on its way and not settled: the time shows, nothing offers Cancel, and it cannot be selected.
 context._messageIsPaper = function(msg) { return !!msg && msg.state === 'paper'; };
@@ -251,7 +258,7 @@ assert.strictEqual(context._isInFlightStep('waiting'), false);
 assert.strictEqual(context._messageCanCancelSend(waitingMsg), false);
 assert.strictEqual(context._messageInlineCancelHtml(waitingMsg), '', 'no inline Cancel on a waiting message');
 assert.strictEqual(context._messageCanCancelTransfer(waitingMsg), false, 'no cancel overlay on a waiting image');
-assert(source.includes("(canCancelSend ? _messageInlineCancelHtml(msg) : '<span class=\"msg-time\">' + time + '</span>')"),
+assert(source.includes("(canCancelSend && !imageCancels ? '' : '<time class=\"msg-clock\""),
     'a message that cannot be cancelled shows its time');
 assert.strictEqual(context._messageSelectable(waitingMsg), false, 'a waiting message is stopped, not deleted');
 assert.strictEqual(context._messageSelectable({ id: id, direction: 'outbound', state: 'failed' }), true);
@@ -294,25 +301,25 @@ assert.deepStrictEqual(Object.assign({}, events.lxmfConversation[0]),
     { id: id, direction: 'outbound', state: 'waiting', delivery_method: 'direct' });
 
 // The conversation list shows no delivery mark, whatever the last message's state; the bubble keeps its own.
-var listContainer = { innerHTML: '', _convSwipeAttached: true, querySelectorAll: function() { return []; } };
+var listContainer = { innerHTML: '', querySelector: function() { return null; } };
 var list = {
     document: { getElementById: function() { return listContainer; } },
     lxmfActiveContact: null,
     _ghostConversationHash: null,
-    _messageProgressPercent: function() { return null; },
+    _conversationsFirstLoadDone: true,
     _mergeOptimisticConversation: function(rows) { return rows; },
     _canonicalConversationHash: function(hash) { return hash; },
     _conversationNameInfo: function(hash, name) { return { name: name, isHash: false }; },
     _conversationListPreview: function(row) { return row.last_message; },
-    formatConvTime: function() { return 'now'; },
-    identityAvatar: function() { return ''; },
-    _peerInfo: function() { return null; },
+    _conversationPresence: function() { return { active: false, heard: 0 }; },
+    _bindConversationList: function() {},
+    _renderFirstRunDetail: function() {},
     escapeHtml: function(value) { return String(value); },
     ratspeakDisplayNameHtml: function(name) { return name; },
-    _refreshRenderedConversationPresence: function() {}
+    RS: { kit: { avatar: function() { return '<avatar>'; }, time: { full: function() { return 'full'; }, row: function() { return 'now'; } }, hash: { text: function(h) { return h; } } } }
 };
 vm.createContext(list);
-vm.runInContext(functionSource('_messageStateIconHtml') + functionSource('_renderConversationsFromCache'), list);
+vm.runInContext(functionSource('_conversationRowHtml') + functionSource('_renderConversationsFromCache'), list);
 var LIST_STATES = Object.keys(context.LXMF_OUTBOUND_STATES);
 ['sent', 'delivered', 'waiting', 'failed'].forEach(function(state) {
     assert(LIST_STATES.indexOf(state) !== -1, state + ' is a state the list is checked for');
@@ -324,24 +331,23 @@ list._renderConversationsFromCache(LIST_STATES.map(function(state) {
     { hash: 'in', display_name: 'Ivy', last_message: 'Bring the charger', last_direction: 'inbound',
         last_state: null, last_msg_id: 'm9', timestamp: 1, unread: 2 }
 ]));
-var listRows = listContainer.innerHTML.split('<div role="button"').slice(1);
+var listRows = listContainer.innerHTML.split('<li>').slice(1);
 assert.strictEqual(listRows.length, LIST_STATES.length + 1);
 LIST_STATES.forEach(function(state, index) {
     var row = listRows[index];
     assert(row.includes('data-hash="out-' + state + '"'));
-    assert(!row.includes('msg-state') && !row.includes('<svg'), 'the list shows no delivery mark for ' + state);
-    assert(row.includes('<div class="conv-row-bottom"><span class="conv-preview">' +
-        '<span class="conv-preview-text">You: Back by six</span></span></div>'), state + ' previews as You: and the text alone');
-    assert(row.includes('<span class="conv-time">now</span>'));
+    assert(!row.includes('msg-mark') && !row.includes('<svg'), 'the list shows no delivery mark for ' + state);
+    assert(row.includes('<span class="ui-row-sub"><span class="t">You: Back by six</span></span>'), state + ' previews as You: and the text alone');
+    assert(row.includes('<span class="ui-time" title="full">now</span>'));
 });
 var inboundListRow = listRows[LIST_STATES.length];
-assert(!inboundListRow.includes('msg-state') && !inboundListRow.includes('You: '));
-assert(inboundListRow.includes('<span class="conv-preview-text">Bring the charger</span></span>' +
-    '<span class="conv-unread-badge">2</span>'), 'the unread badge follows the preview');
-assert(!/\.conv-preview[^{]*msg-state/.test(css), 'no list rule styles a delivery mark');
-assert(icon('rejected', 'direct').includes('<span class="msg-state-label">Rejected</span>'), 'the bubble keeps its word');
+assert(!inboundListRow.includes('msg-mark') && !inboundListRow.includes('You: '));
+assert(inboundListRow.includes('<span class="t">Bring the charger</span><span class="ui-count" aria-label="2 unread">2</span>'),
+    'the unread count follows the preview');
+assert(inboundListRow.includes('class="ui-row msg-conv-row is-unread"'));
+assert(icon('rejected', 'direct').includes('<span>Rejected</span>'), 'the bubble keeps its word');
 LIST_STATES.forEach(function(state) {
-    assert(icon(state, 'direct').includes('class="msg-state-icon '), 'the bubble keeps its mark for ' + state);
+    assert(icon(state, 'direct').includes('class="msg-mark '), 'the bubble keeps its mark for ' + state);
 });
 
 // The notice: 24 hours is named when that is why; turning the setting off says nothing.
@@ -393,6 +399,7 @@ FakeElement.prototype.appendChild = function(child) { this.children.push(child);
 FakeElement.prototype.addEventListener = function() {};
 FakeElement.prototype.querySelector = function() { return null; };
 FakeElement.prototype.querySelectorAll = function() { return []; };
+FakeElement.prototype.closest = function() { return null; };
 var menuCalls = [];
 var menuToasts = [];
 var menuConfirms = 0;
@@ -406,7 +413,9 @@ var menuContext = {
     document: { body: menuBody, activeElement: null, getElementById: function() { return null; },
         createElement: function(tag) { return new FakeElement(tag); } },
     window: { addEventListener: function() {} },
-    RS: { invoke: function(command, args) { menuCalls.push([command, JSON.parse(JSON.stringify(args))]); return Promise.resolve(cancelReply); } },
+    isCompactLayout: function() { return false; },
+    escapeHtml: function(value) { return String(value); },
+    RS: { kit: { icon: function(name) { return '<' + name + '>'; } }, invoke: function(command, args) { menuCalls.push([command, JSON.parse(JSON.stringify(args))]); return Promise.resolve(cancelReply); } },
     rsConfirm: function() { menuConfirms++; return Promise.resolve(true); },
     showToast: function(text, kind) { menuToasts.push([text, kind]); },
     showMessageInActivity: function() {},
@@ -427,22 +436,24 @@ var menuContext = {
 };
 vm.createContext(menuContext);
 vm.runInContext(source.slice(0, source.indexOf('var lxmfIdentity')), menuContext);
+vm.runInContext(source.slice(source.indexOf('var MSG_QUICK_REACTIONS'), source.indexOf('// Visible transcript band')), menuContext);
 ['_isCanonicalLxmfMsgId', '_messageDeliveryMethod', '_messageIsPaper', '_messageCanCancelSend', '_messageCanRetry',
-    '_messageCanShowInActivity', '_messageIsWaiting', '_messageSelectable', '_messageActionIcon',
+    '_messageCanShowInActivity', '_messageIsWaiting', '_messageSelectable', '_messageMenuButton',
     '_prepareMessageActionTarget', '_findLxmfMessageById', '_markLxmfMessageCancelled', '_invokeLxmfCancel',
     '_showLxmfStopResult', '_tryWaitingLxmfMessage', '_stopWaitingLxmfMessage', '_showMsgContextMenu']
     .forEach(function(name) { vm.runInContext(functionSource(name), menuContext); });
 function openMenu(msg) {
     var bubble = new FakeElement('div');
-    bubble.querySelector = function(selector) { return selector === '.lxmf-msg-content' ? {} : null; };
+    bubble.querySelector = function(selector) { return selector === '.msg-text' ? {} : null; };
     menuContext._showMsgContextMenu(msg, 0, 0, bubble, null);
-    var panel = menuBody.children[menuBody.children.length - 1].children[1];
+    var panel = menuBody.children[menuBody.children.length - 1].children[2];
+    var buttons = panel.children.filter(function(child) { return child.tagName === 'button'; });
     return {
         panel: panel,
-        actions: panel.children.map(function(child) { return child.attrs['data-message-action']; }),
-        labels: panel.children.map(function(child) { return (/<span>([^<]*)<\/span>/.exec(child.innerHTML) || [])[1]; }),
+        actions: buttons.map(function(child) { return child.attrs['data-message-action']; }),
+        labels: buttons.map(function(child) { return (/<span class="lbl">([^<]*)<\/span>/.exec(child.innerHTML) || [])[1]; }),
         button: function(action) {
-            return panel.children.filter(function(child) { return child.attrs['data-message-action'] === action; })[0];
+            return buttons.filter(function(child) { return child.attrs['data-message-action'] === action; })[0];
         }
     };
 }
@@ -450,15 +461,15 @@ function sentMessage(state) { return { id: id, direction: 'outbound', state: sta
 var waitingMenu = openMenu(sentMessage('waiting'));
 assert.deepStrictEqual(waitingMenu.actions, ['try-now', 'stop-trying', 'show-activity', 'reply', 'copy-message']);
 assert.deepStrictEqual(waitingMenu.labels, ['Try now', 'Stop trying', 'Show in Activity', 'Reply', 'Copy']);
-assert(waitingMenu.panel.children.every(function(child) { return child.tagName === 'button'; }),
-    'the menu holds buttons only: no caption row');
-assert.strictEqual(waitingMenu.button('try-now').className, 'msg-ctx-btn msg-ctx-try-now');
-assert.strictEqual(waitingMenu.button('stop-trying').className, 'msg-ctx-btn msg-ctx-stop-trying');
-assert(waitingMenu.button('stop-trying').innerHTML.includes('<path d="M18 6 6 18M6 6l12 12"/>'));
-assert.deepStrictEqual(openMenu(sentMessage('failed')).actions, ['retry', 'show-activity', 'reply', 'select', 'copy-message'],
-    'an ended message keeps Retry and gains nothing');
+assert(waitingMenu.panel.children.every(function(child) { return child.tagName === 'button' || child.className === 'ui-menu-sep'; }),
+    'the menu holds buttons and one rule: no caption row');
+assert.strictEqual(waitingMenu.button('try-now').className, 'ui-menu-item msg-ctx-try-now');
+assert.strictEqual(waitingMenu.button('stop-trying').className, 'ui-menu-item msg-ctx-stop-trying');
+assert(waitingMenu.button('stop-trying').innerHTML.startsWith('<x>'));
+assert.deepStrictEqual(openMenu(sentMessage('failed')).actions, ['retry', 'show-activity', 'reply', 'copy-message', 'select'],
+    'an ended message keeps Retry… and gains nothing');
 assert.deepStrictEqual(openMenu(sentMessage('sending')).actions, ['reply', 'copy-message']);
-assert.deepStrictEqual(openMenu(sentMessage('delivered')).actions, ['reply', 'select', 'copy-message']);
+assert.deepStrictEqual(openMenu(sentMessage('delivered')).actions, ['reply', 'copy-message', 'select']);
 
 (async function() {
     // Try now asks the runtime and leaves the bubble to the attempt's own step.

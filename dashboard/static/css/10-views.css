@@ -55,15 +55,6 @@
     opacity: 1;
 }
 
-#dashboard-recent-messages .conv-row {
-    border-radius: 0;
-    margin: 0;
-    border-bottom: 1px solid var(--border-row);
-}
-#dashboard-recent-messages .conv-row:last-child {
-    border-bottom: none;
-}
-
 .dashboard-peer-counts {
     display: flex;
     gap: var(--space-8);
@@ -2628,12 +2619,10 @@ body.checking-setup .main-content {
     visibility: hidden;
 }
 
-body.checking-setup .header,
-body.checking-setup .sidebar,
-body.checking-setup .bottom-bar,
-body.setup-active .header,
-body.setup-active .sidebar,
-body.setup-active .bottom-bar {
+body.checking-setup .shell-sidebar,
+body.checking-setup .shell-tabbar,
+body.setup-active .shell-sidebar,
+body.setup-active .shell-tabbar {
     display: none;
 }
 
@@ -4039,10 +4028,6 @@ body.setup-active .main-content {
 /* The footer (and its safe-area inset) is hidden while the result shows. */
 .paper-decoder-result .contact-scan-actions {
     padding-bottom: calc(var(--space-4) + var(--sab));
-}
-
-:root:not([data-paper-messages="on"]) #fab-dial-paper {
-    display: none;
 }
 
 @keyframes contactCardSuccessPop {

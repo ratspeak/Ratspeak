@@ -11,42 +11,28 @@ function setMessageUnreadSource(source, count) {
     count = Math.floor(count);
     _messageUnreadSources[source] = count;
 
-    var directDot = document.getElementById('nav-unread-dot');
-    if (directDot) directDot.style.display = _messageUnreadSources.direct > 0 ? '' : 'none';
-    var channelsDot = document.getElementById('nav-channels-unread');
-    if (channelsDot) channelsDot.style.display = _messageUnreadSources.channels > 0 ? '' : 'none';
-    var bottomDot = document.getElementById('bb-unread');
-    if (bottomDot) {
-        bottomDot.style.display = _messageUnreadSources.direct > 0 ? '' : 'none';
-        if (bottomDot.parentElement) {
-            bottomDot.parentElement.setAttribute(
-                'aria-label',
-                'Messages' + (_messageUnreadSources.direct > 0
-                    ? ', ' + _messageUnreadSources.direct + ' unread'
-                    : '')
-            );
-        }
-    }
-    var bottomChannelsDot = document.getElementById('bb-channels-unread');
-    if (bottomChannelsDot) {
-        bottomChannelsDot.style.display = _messageUnreadSources.channels > 0 ? '' : 'none';
-        if (bottomChannelsDot.parentElement) {
-            bottomChannelsDot.parentElement.setAttribute(
-                'aria-label',
-                'Channels' + (_messageUnreadSources.channels > 0
-                    ? ', ' + _messageUnreadSources.channels + ' unread'
-                    : '')
-            );
-        }
-    }
+    var direct = _messageUnreadSources.direct;
+    var channels = _messageUnreadSources.channels;
+    ['nav-unread-dot', 'bb-unread'].forEach(function(id) {
+        var dot = document.getElementById(id);
+        if (dot) dot.hidden = direct <= 0;
+    });
+    ['nav-channels-unread', 'bb-channels-unread'].forEach(function(id) {
+        var dot = document.getElementById(id);
+        if (dot) dot.hidden = channels <= 0;
+    });
+    var directTab = document.querySelector('#bottom-bar .ui-tab[data-view="message"]');
+    if (directTab) directTab.setAttribute('aria-label', 'Messages' + (direct > 0 ? ', ' + direct + ' unread' : ''));
+    var channelsTab = document.querySelector('#bottom-bar .ui-tab[data-view="channels"]');
+    if (channelsTab) channelsTab.setAttribute('aria-label', 'Channels' + (channels > 0 ? ', ' + channels + ' unread' : ''));
 }
 window.setMessageUnreadSource = setMessageUnreadSource;
-var VIEWS = ['dashboard', 'message', 'channels', 'contacts', 'identity', 'peers', 'network', 'games', 'settings'];
+var VIEWS = ['dashboard', 'message', 'channels', 'contacts', 'identity', 'peers', 'network', 'activity', 'games', 'settings'];
 
-// Tab-bar destinations use replaceState; MORE_VIEWS live under the hamburger.
-var TAB_VIEWS = ['peers', 'message', 'channels', 'contacts', 'identity', 'network', 'games', 'settings'];
+// Tab-bar destinations use replaceState; MORE_VIEWS live in the More sheet.
+var TAB_VIEWS = ['peers', 'message', 'channels', 'contacts', 'identity', 'network', 'activity', 'games', 'settings'];
 var PRIMARY_TAB_VIEWS = ['peers', 'message', 'channels'];
-var MORE_VIEWS = ['contacts', 'identity', 'network', 'games', 'settings'];
+var MORE_VIEWS = ['contacts', 'identity', 'network', 'activity', 'games', 'settings'];
 var MOBILE_TAB_SLOTS = ['peers', 'message', 'channels', 'more'];
 var DEFAULT_MORE_VIEW = 'identity';
 var _lastMoreView = DEFAULT_MORE_VIEW;
@@ -86,7 +72,9 @@ var VIEW_ALIASES = {
 function _normalizeViewId(viewId) {
     var normalized = String(viewId || '').replace(/^#/, '');
     if (VIEW_ALIASES[normalized]) normalized = VIEW_ALIASES[normalized];
-    return VIEWS.indexOf(normalized) !== -1 ? normalized : null;
+    if (VIEWS.indexOf(normalized) === -1) return null;
+    // A destination whose screen is not in this build is not a destination.
+    return document.getElementById('view-' + normalized) ? normalized : null;
 }
 
 function _viewForNavigationSurface(viewId) {
@@ -126,10 +114,10 @@ if (window.matchMedia) {
 
 function _mobileBlockingOverlayOpen() {
     return !!document.querySelector(
-        '.bottom-sheet.open, .bottom-sheet-overlay.active, ' +
+        '.bottom-sheet.open, .bottom-sheet-overlay.active, .ui-modal:not([hidden]), .ui-pop, ' +
         '.modal-overlay.active, .game-modal-overlay, .block-list-overlay, ' +
         '#rs-image-viewer.open, .action-popover.open, ' +
-        '[class*="-scrim"].active, .channels-layout.members-open, .ui-modal:not([hidden])'
+        '[class*="-scrim"].active, .channels-layout.members-open'
     );
 }
 
@@ -319,6 +307,20 @@ function _animateViewSwitch(oldView, newView, transitionType) {
     setTimeout(cleanup, 350);
 }
 
+// One selected look: the fill on the sidebar item (and you, on Identity); the accent tab on a phone.
+function _markNavigation(viewId) {
+    var mobileSlot = _mobileTabSlot(viewId);
+    document.querySelectorAll('#sidebar .ui-nav-item[data-view], #bottom-sheet [data-view]').forEach(function(item) {
+        if (item.dataset.view === viewId) item.setAttribute('aria-current', 'page');
+        else item.removeAttribute('aria-current');
+    });
+    document.querySelectorAll('#bottom-bar .ui-tab').forEach(function(tab) {
+        var slot = tab.id === 'bottom-bar-hamburger' ? 'more' : tab.dataset.view;
+        if (slot === mobileSlot) tab.setAttribute('aria-current', 'page');
+        else tab.removeAttribute('aria-current');
+    });
+}
+
 function switchView(viewId, opts) {
     viewId = _viewForNavigationSurface(viewId) ||
         (typeof appLandingView === 'function' ? appLandingView() : 'dashboard');
@@ -361,33 +363,13 @@ function switchView(viewId, opts) {
         if (newEl) newEl.classList.add('active');
     }
 
-    document.querySelectorAll('.nav-item').forEach(function(item) {
-        item.classList.remove('active');
-        if (item.dataset.view === viewId) item.classList.add('active');
-    });
+    _markNavigation(viewId);
     var isMoreView = MORE_VIEWS.indexOf(viewId) !== -1;
     if (isMoreView) {
         _lastMoreView = viewId;
         try { localStorage.setItem('ratspeak_more_view', viewId); } catch(e) {}
     }
     _rememberPrimaryView(viewId);
-    var mobileSlot = _mobileTabSlot(viewId);
-    document.querySelectorAll('.bottom-bar-item').forEach(function(item) {
-        var selected = item.dataset.view === mobileSlot;
-        item.classList.toggle('active', selected);
-        if (selected) item.setAttribute('aria-current', 'page');
-        else item.removeAttribute('aria-current');
-    });
-    var hamburger = document.getElementById('bottom-bar-hamburger');
-    if (hamburger) {
-        hamburger.classList.toggle('active', isMoreView);
-        if (isMoreView) hamburger.setAttribute('aria-current', 'page');
-        else hamburger.removeAttribute('aria-current');
-    }
-    document.querySelectorAll('#bottom-sheet .bottom-sheet-item[data-view]').forEach(function(item) {
-        item.classList.remove('active');
-        if (item.dataset.view === viewId) item.classList.add('active');
-    });
 
     // Dismiss keyboard so new view doesn't inherit stale focus/viewport.
     var active = document.activeElement;
@@ -510,7 +492,7 @@ var VIEW_LIFECYCLE = {
     message: function() {
         // Cache-first; only re-fetch on stuck error state or empty initial load.
         var _convList = document.getElementById('lxmf-conversations-list');
-        var _convStuck = _convList && (_convList.textContent || '').indexOf('Couldn') !== -1;
+        var _convStuck = _convList && !!_convList.querySelector('[data-list-state="error"]');
         if (_convStuck && typeof loadConversationsForce === 'function') {
             loadConversationsForce();
         } else if (typeof lxmfConversations !== 'undefined' && lxmfConversations.length > 0) {
@@ -521,7 +503,6 @@ var VIEW_LIFECYCLE = {
                    && typeof loadConversations === 'function') {
             loadConversations();
         }
-        if (typeof renderMsgProfileStrip === 'function') requestAnimationFrame(renderMsgProfileStrip);
     },
 
     channels: function() {
@@ -550,6 +531,10 @@ function _fireViewLifecycle(viewId) {
 }
 
 function _closeOpenBottomSheet() {
+    if (window.RS && RS.kit && RS.kit.closeMenu && document.querySelector('.ui-pop:not(.msg-menu)')) {
+        RS.kit.closeMenu();
+        return true;
+    }
     var openSheets = document.querySelectorAll('.rs-sheet-shell.open, .bottom-sheet.open');
     if (openSheets.length) {
         var topSheet = openSheets[openSheets.length - 1];
@@ -558,27 +543,9 @@ function _closeOpenBottomSheet() {
             return true;
         }
     }
-    var sheet = document.getElementById('bottom-sheet');
-    if (!sheet || !sheet.classList.contains('open')) return false;
-    sheet.classList.remove('open');
-    var sheetOverlay = document.getElementById('bottom-sheet-overlay');
-    if (sheetOverlay) sheetOverlay.classList.remove('active');
-    return true;
-}
-
-function _closeOpenFabPicker() {
-    var fabPicker = document.getElementById('fab-contact-picker-sheet');
-    if (!fabPicker || !fabPicker.classList.contains('open')) return false;
-    if (typeof closeFabContactPicker === 'function') closeFabContactPicker();
-    return true;
-}
-
-function _closeOpenContactSheet() {
-    var contactSheet = document.getElementById('contact-detail-sheet');
-    if (!contactSheet) return false;
-    contactSheet.remove();
-    var contactOverlay = document.getElementById('contact-detail-overlay');
-    if (contactOverlay) contactOverlay.remove();
+    var more = document.getElementById('bottom-sheet-overlay');
+    if (!more || more.hidden) return false;
+    _closeMoreSheet();
     return true;
 }
 
@@ -595,9 +562,7 @@ function _handleAppBackNavigation(opts) {
         (window.RS && typeof RS.closeImageViewer === 'function' && RS.closeImageViewer()) ||
         (window.RS && typeof RS.closeMessageActionMenu === 'function' && RS.closeMessageActionMenu()) ||
         _closeOpenBottomSheet() ||
-        (typeof channelsHandleMemberPaneBack === 'function' && channelsHandleMemberPaneBack()) ||
-        _closeOpenFabPicker() ||
-        _closeOpenContactSheet()
+        (typeof channelsHandleMemberPaneBack === 'function' && channelsHandleMemberPaneBack())
     ) {
         if (fromPopState) _pushCurrentHistoryAnchor();
         return true;
@@ -735,8 +700,9 @@ function initSidebarCollapse() {
     function apply() {
         var isCollapsed = stored() || !!(narrow && narrow.matches);
         sidebar.classList.toggle('collapsed', isCollapsed);
-        var icon = btn.querySelector('.nav-icon');
-        if (icon) icon.style.transform = isCollapsed ? 'rotate(180deg)' : '';
+        var label = isCollapsed ? 'Expand sidebar' : 'Collapse sidebar';
+        btn.setAttribute('aria-label', label);
+        btn.title = label;
     }
 
     apply();
@@ -745,46 +711,6 @@ function initSidebarCollapse() {
         var next = !sidebar.classList.contains('collapsed');
         try { localStorage.setItem('rs-sidebar-collapsed', next ? '1' : '0'); } catch(e) {}
         apply();
-    });
-}
-
-function initMobileSidebar() {
-    var hamburger = document.getElementById('hamburger-btn');
-    var sidebar = document.getElementById('sidebar');
-    var overlay = document.getElementById('sidebar-overlay');
-    if (!hamburger || !sidebar || !overlay) return;
-
-    function openSidebar() {
-        sidebar.classList.add('open');
-        overlay.classList.add('active');
-    }
-
-    function closeSidebar() {
-        sidebar.classList.remove('open');
-        overlay.classList.remove('active');
-    }
-
-    hamburger.addEventListener('click', function(e) {
-        e.stopPropagation();
-        if (sidebar.classList.contains('open')) {
-            closeSidebar();
-        } else {
-            openSidebar();
-        }
-    });
-
-    overlay.addEventListener('click', closeSidebar);
-
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape' && sidebar.classList.contains('open')) {
-            closeSidebar();
-        }
-    });
-
-    document.querySelectorAll('.nav-item').forEach(function(item) {
-        item.addEventListener('click', function() {
-            closeSidebar();
-        });
     });
 }
 
@@ -798,7 +724,7 @@ function initBottomBar() {
     var bar = document.getElementById('bottom-bar');
     if (!bar) return;
 
-    bar.querySelectorAll('.bottom-bar-item').forEach(function(item) {
+    bar.querySelectorAll('.ui-tab[data-view]').forEach(function(item) {
         item.addEventListener('click', function(e) {
             e.preventDefault();
             if (_isMobileNavigationBlocked()) {
@@ -915,7 +841,7 @@ function initBottomBar() {
             haptic('heavy');
 
             var hit = document.elementFromPoint(touch.clientX, touch.clientY);
-            var bbItem = (hit && hit.closest) ? hit.closest('.bottom-bar-item') : null;
+            var bbItem = (hit && hit.closest) ? hit.closest('.ui-tab') : null;
             if (bbItem) {
                 bbItem.classList.add('announcing');
                 setTimeout(function() { bbItem.classList.remove('announcing'); }, 1500);
@@ -1040,90 +966,65 @@ function showAnnounceFailAnimation(originEl, cx, cy) {
     setTimeout(function() { overlay.remove(); }, 750);
 }
 
-function initSidebarCloseBtn() {
-    var closeBtn = document.getElementById('sidebar-close-btn');
-    var sidebar = document.getElementById('sidebar');
-    var overlay = document.getElementById('sidebar-overlay');
-    if (!closeBtn || !sidebar) return;
-
-    closeBtn.addEventListener('click', function() {
-        sidebar.classList.remove('open');
-        if (overlay) overlay.classList.remove('active');
-    });
+// The phone More sheet: you first (Identity, and your contact card), then the other destinations.
+function _openMoreSheet() {
+    var modal = document.getElementById('bottom-sheet-overlay');
+    var sheet = document.getElementById('bottom-sheet');
+    var trigger = document.getElementById('bottom-bar-hamburger');
+    if (!modal || !sheet || !modal.hidden) return;
+    modal.hidden = false;
+    if (trigger) trigger.setAttribute('aria-expanded', 'true');
+    if (typeof _trapFocus === 'function') _trapFocus(sheet);
+    // Push state so OS back closes the sheet before navigating.
+    history.pushState({ view: currentView, sheet: true }, '', '#' + currentView);
 }
 
-function initSidebarSwipe() {
-    var sidebar = document.getElementById('sidebar');
-    var overlay = document.getElementById('sidebar-overlay');
-    if (!sidebar) return;
-
-    RS.gestures.attachSwipe(sidebar, {
-        direction: 'left',
-        distanceThreshold: RS.gestures.SWIPE_DISTANCE_PX,
-        hapticAt: { commit: 'selection' },
-        skipIf: function() {
-            return typeof _isSetupActive === 'function' && _isSetupActive();
-        },
-        onProgress: function(dx) {
-            if (dx < 0) {
-                sidebar.style.transition = 'none';
-                sidebar.style.transform = 'translateX(' + dx + 'px)';
-            }
-        },
-        onCommit: function() {
-            sidebar.style.transition = '';
-            sidebar.style.transform = '';
-            sidebar.classList.remove('open');
-            if (overlay) overlay.classList.remove('active');
-        },
-        onCancel: function() {
-            sidebar.style.transition = 'transform 0.2s cubic-bezier(0.2, 0, 0, 1)';
-            sidebar.style.transform = '';
-        }
-    });
+function _closeMoreSheet() {
+    var modal = document.getElementById('bottom-sheet-overlay');
+    var sheet = document.getElementById('bottom-sheet');
+    var trigger = document.getElementById('bottom-bar-hamburger');
+    if (!modal || modal.hidden) return;
+    modal.hidden = true;
+    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    if (sheet && typeof _releaseFocus === 'function') _releaseFocus(sheet);
+    if (sheet) { sheet.style.transform = ''; sheet.style.transition = ''; }
 }
 
 function initBottomSheet() {
     var trigger = document.getElementById('bottom-bar-hamburger');
     var sheet = document.getElementById('bottom-sheet');
-    var overlay = document.getElementById('bottom-sheet-overlay');
-    if (!trigger || !sheet || !overlay) return;
-
-    function openSheet() {
-        RS.ui.openExistingSheet(sheet, overlay);
-        // Push state so OS back closes the sheet before navigating.
-        history.pushState({ view: currentView, sheet: true }, '', '#' + currentView);
-    }
-    function closeSheet() {
-        RS.ui.closeExistingSheet(sheet, overlay);
-    }
-    sheet._ratspeakDismiss = closeSheet;
+    var modal = document.getElementById('bottom-sheet-overlay');
+    if (!trigger || !sheet || !modal) return;
+    sheet._ratspeakDismiss = _closeMoreSheet;
 
     trigger.addEventListener('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
-        sheet.classList.contains('open') ? closeSheet() : openSheet();
+        if (_bbDidLongPress) { _bbDidLongPress = false; return; }
+        modal.hidden ? _openMoreSheet() : _closeMoreSheet();
     });
 
-    overlay.addEventListener('click', closeSheet);
+    modal.addEventListener('click', function(e) {
+        if (e.target === modal) _closeMoreSheet();
+    });
 
     document.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape' && sheet.classList.contains('open')) closeSheet();
+        if (e.key === 'Escape' && !modal.hidden) _closeMoreSheet();
     });
 
-    // The sheet extends the bottom bar; unfolding or resizing into the sidebar layout retires both.
+    // The sheet extends the tab bar; unfolding or resizing into the sidebar layout retires both.
     if (window.matchMedia) {
         window.matchMedia('(max-width: ' + RS.config.MOBILE_BREAKPOINT + 'px)').addEventListener('change', function(e) {
-            if (!e.matches && sheet.classList.contains('open')) closeSheet();
+            if (!e.matches) _closeMoreSheet();
         });
     }
 
-    sheet.querySelectorAll('.bottom-sheet-item[data-view]').forEach(function(item) {
+    sheet.querySelectorAll('[data-view]').forEach(function(item) {
         item.addEventListener('click', function(e) {
             e.preventDefault();
             var targetView = this.dataset.view;
-            closeSheet();
-            // Let close animation clear before switching views.
+            _closeMoreSheet();
+            // Let the sheet go before switching views.
             setTimeout(function() {
                 var isDrillDown = TAB_VIEWS.indexOf(targetView) === -1;
                 switchView(targetView, {
@@ -1134,7 +1035,60 @@ function initBottomSheet() {
         });
     });
 
+    var share = document.getElementById('more-share-card');
+    if (share) share.addEventListener('click', function() {
+        _closeMoreSheet();
+        if (typeof openActiveIdentityContactCard === 'function') openActiveIdentityContactCard();
+    });
+
+    RS.gestures.attachDragDismiss(sheet, {
+        axis: 'y',
+        blockIfScrolled: true,
+        onCommit: _closeMoreSheet
+    });
 }
+
+// You, in the sidebar foot and at the top of the phone More sheet.
+function renderShellIdentity(hash, name) {
+    if (!hash) return;
+    var label = name || 'Unnamed';
+    var short = RS.kit.hash.short(hash);
+    var sidebarIcon = document.getElementById('sidebar-identity-icon');
+    if (sidebarIcon) sidebarIcon.innerHTML = identityAvatar(hash, 32);
+    var moreIcon = document.getElementById('more-identity-icon');
+    if (moreIcon) moreIcon.innerHTML = identityAvatar(hash, 48);
+    ['sidebar-identity-name', 'more-identity-name'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = label;
+    });
+    ['sidebar-identity-hash', 'more-identity-hash'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.textContent = short;
+    });
+    var me = document.getElementById('sidebar-identity');
+    if (me) me.setAttribute('aria-label', label + ', open Identity');
+    var more = document.getElementById('more-identity');
+    if (more) more.setAttribute('aria-label', label + ', open Identity');
+}
+// Games waiting for you: a dot in the sidebar and on More, the count in the More sheet.
+function setShellGamesWaiting(count) {
+    count = Math.max(0, Math.floor(Number(count) || 0));
+    var dot = document.getElementById('nav-games-unread');
+    if (dot) dot.hidden = count === 0;
+    var more = document.getElementById('bb-more-unread');
+    if (more) more.hidden = count === 0;
+    var badge = document.getElementById('bs-games-unread');
+    if (badge) {
+        badge.hidden = count === 0;
+        badge.textContent = count > 99 ? '99+' : String(count);
+        badge.setAttribute('aria-label', count + ' waiting for you');
+    }
+    var tab = document.getElementById('bottom-bar-hamburger');
+    if (tab) tab.setAttribute('aria-label', 'More' + (count ? ', ' + count + ' waiting for you' : ''));
+}
+
+window.RS = window.RS || {};
+RS.shell = { setIdentity: renderShellIdentity, setGamesWaiting: setShellGamesWaiting, openMore: _openMoreSheet, closeMore: _closeMoreSheet };
 
 // Wires swipe-down + overlay-tap dismissal in one call.
 function initSheetSwipeDismiss(sheetId, overlayId, closeFn) {
@@ -1654,31 +1608,6 @@ function initSettingsDetailSwipeBack() {
     });
 }
 
-function initEdgeSwipeOpenSidebar() {
-    // Dwell-then-swipe gate prevents scroll-flick from the left edge
-    // accidentally opening the sidebar. Mobile uses bottom bar instead.
-    if (isMobile()) return;
-    var sidebar = document.getElementById('sidebar');
-    var overlay = document.getElementById('sidebar-overlay');
-    if (!sidebar) return;
-
-    RS.gestures.attachSwipe(document, {
-        direction: 'right',
-        edgeZone: RS.gestures.EDGE_ZONE_PX,
-        dwellMs: RS.gestures.SWIPE_DWELL_SIDEBAR_OPEN_MS,
-        skipIf: function() {
-            if (isCompactLayout()) return true;
-            if (typeof _isSetupActive === 'function' && _isSetupActive()) return true;
-            return sidebar.classList.contains('open');
-        },
-        hapticAt: { dwellHit: 'light' },
-        onCommit: function() {
-            sidebar.classList.add('open');
-            if (overlay) overlay.classList.add('active');
-        }
-    });
-}
-
 function initTabSwipe() {
     if (!isTouchDevice()) return;
 
@@ -1697,7 +1626,7 @@ function initTabSwipe() {
             if (e.target.closest('button, a, input, select, .selector-badge')) return true;
             // Conversation rows own horizontal swipes for message actions. The
             // document-level tab recognizer must not also navigate tabs.
-            if (e.target.closest('.conv-row, .conv-swipe-delete')) return true;
+            if (e.target.closest('.msg-conv-row, .conv-swipe-delete')) return true;
             // Active chat and game sessions own horizontal gestures.
             var lxmfLayout = document.querySelector('.lxmf-layout');
             if (lxmfLayout && lxmfLayout.classList.contains('view-chat-detail')) return true;
@@ -1785,7 +1714,7 @@ function _firstRunAnnounceHintEligible() {
     if (_firstRunHasConfiguredInterface !== true) return false;
     if (typeof _anyInterfaceOnline === 'undefined' || _anyInterfaceOnline !== true) return false;
 
-    var bar = document.querySelector('.bottom-bar');
+    var bar = document.getElementById('bottom-bar');
     if (!bar) return false;
     var style = getComputedStyle(bar);
     return style.display !== 'none' &&
@@ -1864,7 +1793,11 @@ document.addEventListener('DOMContentLoaded', function() {
     // Native mobile routes Home to Peers at every width, so wide sidebars (iPad, iPhone Duo) omit it.
     if (isTauriMobile()) document.documentElement.dataset.nativeMobile = 'true';
     var initialView = _resolveInitialView();
-    document.querySelectorAll('.nav-item').forEach(function(item) {
+    // Destinations whose screen is not in this build stay out of the navigation.
+    document.querySelectorAll('#sidebar [data-view], #bottom-sheet [data-view], #bottom-bar [data-view]').forEach(function(item) {
+        if (!document.getElementById('view-' + item.dataset.view)) item.hidden = true;
+    });
+    document.querySelectorAll('#sidebar .ui-nav-item[data-view]').forEach(function(item) {
         item.addEventListener('click', function(e) {
             e.preventDefault();
             switchView(this.dataset.view);
@@ -1872,11 +1805,8 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     initSidebarCollapse();
-    initMobileSidebar();
     initBottomBar();
     initBottomSheet();
-    initSidebarCloseBtn();
-    initSidebarSwipe();
     initKeyboardDetection();
     initTextareaAutoGrow();
     RS.gestures.attachRipple(document, {
@@ -1885,24 +1815,14 @@ document.addEventListener('DOMContentLoaded', function() {
     });
     initDrillDownSwipeBack();
     initSettingsDetailSwipeBack();
-    initEdgeSwipeOpenSidebar();
     initTabSwipe();
 
     [
-        { id: 'bottom-sheet', overlayId: 'bottom-sheet-overlay', closeFn: function() {
-            var s = document.getElementById('bottom-sheet');
-            var o = document.getElementById('bottom-sheet-overlay');
-            if (s) s.classList.remove('open');
-            if (o) o.classList.remove('active');
-        } },
         { id: 'conn-detail-sheet', overlayId: 'conn-detail-sheet-overlay', closeFn: function() {
             if (typeof closeConnectionDetailSheet === 'function') closeConnectionDetailSheet();
         } },
         { id: 'conn-sort-sheet', overlayId: 'conn-sort-sheet-overlay', closeFn: function() {
             if (typeof closeSortSheet === 'function') closeSortSheet();
-        } },
-        { id: 'fab-contact-picker-sheet', overlayId: 'fab-contact-picker-overlay', closeFn: function() {
-            if (typeof closeFabContactPicker === 'function') closeFabContactPicker();
         } },
         { id: 'iface-action-sheet', overlayId: 'iface-action-overlay', closeFn: function() {
             if (typeof closeInterfaceActionSheet === 'function') closeInterfaceActionSheet();

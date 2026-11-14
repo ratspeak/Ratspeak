@@ -109,7 +109,7 @@ function enterSetupMode() {
     setSetupBackupLayout(false);
     setSetupConnectingDotsActive(false);
 
-    var sidebar = document.querySelector('.sidebar');
+    var sidebar = document.getElementById('sidebar');
     if (sidebar) sidebar.style.display = 'none';
 
     document.querySelectorAll('.view').forEach(function(v) {
@@ -119,21 +119,11 @@ function enterSetupMode() {
     var setupView = document.getElementById('view-setup');
     if (setupView) setupView.classList.add('active');
 
-    var headerRight = document.querySelector('.header-right');
-    if (headerRight) headerRight.style.display = 'none';
-
     var bottomBar = document.getElementById('bottom-bar');
     if (bottomBar) bottomBar.style.display = 'none';
 
     var uptimeEl = document.getElementById('uptime');
     if (uptimeEl) uptimeEl.style.display = 'none';
-
-    ['header-mobile-name', 'header-mobile-status'].forEach(function(id) {
-        var el = document.getElementById(id);
-        if (el) el.textContent = '';
-    });
-    var hdrAvatar = document.getElementById('header-mobile-avatar');
-    if (hdrAvatar) hdrAvatar.innerHTML = '';
 }
 
 function startCryptoAnimation() {

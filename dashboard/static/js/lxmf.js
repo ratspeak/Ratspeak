@@ -81,6 +81,10 @@ var _deferredConversationRenderOptions = null;
 var _deferredConversationRenderOwnerHash = null;
 var _deferredConversationRenderGeneration = 0;
 var _deferredConversationRenderRelease = null;
+// The first unread message when the open conversation was opened: { key, count, firstId, placed }.
+var _unreadMarker = null;
+// Inbound messages that arrived below the reader while they read history.
+var _jumpNewIds = [];
 var lxmfLimits = {
     max_attachment_bytes: 128000000,
     max_message_bytes: 134217727,
@@ -1005,16 +1009,14 @@ function renderVoiceUi() {
     var incomingMatches = _voiceIncomingMatchesContact();
 
     if (callBtn) {
+        // A call with this person moves to the call strip; elsewhere it disables Call.
         var canShow = lxstVoiceState.available && !!lxmfActiveContact && !activeMatches && !incomingMatches;
-        var isConnecting = !!(activeMatches && active && active.status !== 'established');
-        callBtn.style.display = canShow ? '' : 'none';
-        callBtn.classList.toggle('is-active', !!activeMatches);
-        callBtn.classList.toggle('is-connecting', isConnecting);
-        callBtn.classList.toggle('is-hangup', !!activeMatches && active && active.status === 'established');
+        callBtn.hidden = !canShow;
         callBtn.disabled = !!active && !activeMatches;
-        callBtn.title = callBtn.disabled ? 'Call in progress' : _voicePrimaryActionLabel();
-        callBtn.setAttribute('aria-label', callBtn.title);
-        callBtn.innerHTML = callBtn.disabled ? _voiceIcon('phone', 18) : _voicePrimaryActionIcon();
+        callBtn.title = callBtn.disabled ? 'Call in progress' : 'Call';
+        var who = lxmfActiveContact ? _conversationNameInfo(lxmfActiveContact, null, false) : null;
+        var first = who && !who.isHash ? String(who.name || '').trim().split(/\s+/)[0] : '';
+        callBtn.setAttribute('aria-label', callBtn.disabled ? 'Call in progress' : (first ? 'Call ' + first : 'Call'));
     }
 
     _voiceRestoreHeaderStatus();
@@ -1298,7 +1300,7 @@ function normalizeContactList(data) {
 }
 
 function _lxmfRenderedImageKey(img) {
-    var bubble = img.closest('.lxmf-msg[data-msg-id]');
+    var bubble = img.closest('.msg-bubble[data-msg-id]');
     if (!bubble) return null;
     return JSON.stringify([bubble.getAttribute('data-msg-id'),
         img.getAttribute('data-stored-name') || img.getAttribute('src')]);
@@ -1306,7 +1308,7 @@ function _lxmfRenderedImageKey(img) {
 
 function _captureLxmfRenderedImages(container) {
     var images = new Map();
-    container.querySelectorAll('img.lxmf-clickable-img').forEach(function(img) {
+    container.querySelectorAll('img.msg-img').forEach(function(img) {
         if (!img.complete || !img.naturalWidth) return;
         var name = img.getAttribute('data-stored-name');
         // Respect cache retirement/memory pressure; do not keep an evicted URL
@@ -1319,7 +1321,7 @@ function _captureLxmfRenderedImages(container) {
 }
 
 function _restoreLxmfRenderedImages(container, images) {
-    container.querySelectorAll('img.lxmf-clickable-img').forEach(function(img) {
+    container.querySelectorAll('img.msg-img').forEach(function(img) {
         var key = _lxmfRenderedImageKey(img);
         var previous = key && images.get(key);
         if (!previous) return;
@@ -1346,51 +1348,36 @@ function _peerInfo(hash) {
     return null;
 }
 
-function _peerActivityLabel(peer) {
-    if (!peer) return 'Never seen';
-    return peer.activity_label || 'Never seen';
+// The chat header's status line: the Contacts sentence, with the route on desktop.
+function _peerHeaderStatusHtml(peer) {
+    if (!peer || !peer.last_seen) return 'Not heard yet';
+    var route = peer.route_state === 'direct' || peer.route_state === 'routed' ? peer.route_label : '';
+    return escapeHtml(RS.kit.time.lastHeard(peer.last_seen)) +
+        (route ? '<span class="ui-desk-only"> · ' + escapeHtml(route) + '</span>' : '');
 }
 
-function _peerPresenceClass(peer) {
-    var status = peer && peer.status ? peer.status : 'unknown';
-    if (status === 'reachable' || status === 'direct') return 'online';
-    if (status === 'stale') return 'stale';
-    return 'offline';
-}
-
-function _peerHeaderStatus(peer) {
-    if (!peer) return '';
-    var status = peer.status || 'unknown';
-    var activity = (status === 'reachable' || status === 'direct') ? 'Seen recently' : _peerActivityLabel(peer);
-    var profileStatus = typeof ratspeakProfileStatusText === 'function'
-        ? ratspeakProfileStatusText(peer)
-        : (ratspeakSupportsFeatures(peer) ? (peer.profile_status || '') : '');
-    return profileStatus ? (activity + ' \u00b7 ' + profileStatus) : activity;
+// Avatar 40 with presence: active or seen recently; nothing for older.
+function _chatHeaderAvatarHtml(hash, peer) {
+    var tier = peer && peer.last_seen ? RS.kit.presenceFor(peer.last_seen) : 'older';
+    var html = RS.kit.avatar(hash, 40, tier === 'older' ? null : tier, peer && peer.last_seen);
+    return html.replace(/^<span class="ui-avatar ui-avatar--40">/, '').replace(/<\/span>$/, '');
 }
 
 function _applyChatHeaderPresence() {
-    var statusEl = document.getElementById('lxmf-chat-header-status');
-    var avatarEl = document.getElementById('lxmf-contact-avatar');
     if (!lxmfActiveContact) return;
-    var peer = (typeof _peerInfo === 'function') ? _peerInfo(lxmfActiveContact) : null;
-    var statusText = (typeof _peerHeaderStatus === 'function') ? _peerHeaderStatus(peer) : '';
-    var presenceClass = _peerPresenceClass(peer);
-    var hasProfileStatus = !!(typeof ratspeakProfileStatusText === 'function'
-        ? ratspeakProfileStatusText(peer)
-        : (peer && ratspeakSupportsFeatures(peer) && peer.profile_status));
-    var title = statusText || 'Never seen';
-    if (peer && peer.route_label) title += ' - ' + peer.route_label;
+    var peer = _peerInfo(lxmfActiveContact);
+    var statusEl = document.getElementById('lxmf-chat-header-status');
     if (statusEl) {
-        statusEl.textContent = statusText;
-        statusEl.style.display = statusText ? '' : 'none';
-        statusEl.className = 'lxmf-chat-header-status' +
-            (!hasProfileStatus && presenceClass === 'online' ? ' is-online' : (!hasProfileStatus && presenceClass === 'stale' ? ' is-stale' : ''));
-        statusEl.title = title;
+        var statusHtml = _peerHeaderStatusHtml(peer);
+        if (statusEl.innerHTML !== statusHtml) statusEl.innerHTML = statusHtml;
     }
+    var avatarEl = document.getElementById('lxmf-contact-avatar');
     if (avatarEl) {
-        avatarEl.className = 'lxmf-chat-header-avatar' +
-            (presenceClass === 'online' || presenceClass === 'stale' ? ' ' + presenceClass : '');
-        avatarEl.title = title;
+        var avatarHtml = _chatHeaderAvatarHtml(lxmfActiveContact, peer);
+        if (avatarEl._rsAvatar !== avatarHtml) {
+            avatarEl._rsAvatar = avatarHtml;
+            avatarEl.innerHTML = avatarHtml;
+        }
     }
 }
 
@@ -1433,39 +1420,35 @@ function _conversationPayloadForHash(hash) {
 }
 
 function _refreshRenderedConversationNames() {
-    document.querySelectorAll('.conv-row[data-hash]').forEach(function(row) {
+    document.querySelectorAll('.msg-conv-row[data-hash]').forEach(function(row) {
         var hash = row.dataset.hash;
-        var nameEl = row.querySelector('.conv-name');
-        if (!hash || !nameEl) return;
+        var titleEl = row.querySelector('.ui-row-title');
+        if (!hash || !titleEl) return;
         var payload = _conversationPayloadForHash(hash);
         var info = _conversationNameInfo(
             hash,
             payload ? payload.display_name : null,
             payload ? payload.is_contact : false
         );
-        nameEl.innerHTML = ratspeakDisplayNameHtml(info.name, hash);
-        nameEl.classList.toggle('is-hash', !!info.isHash);
-        nameEl.title = info.isHash ? hash : '';
+        var html = info.isHash
+            ? '<span class="msg-title-hash" title="' + escapeHtml(RS.kit.hash.text(hash, 'full')) + '">' + escapeHtml(info.name) + '</span>'
+            : ratspeakDisplayNameHtml(info.name, hash);
+        if (titleEl.innerHTML !== html) titleEl.innerHTML = html;
     });
 
-    if (lxmfActiveContact) {
-        var activeInfo = _conversationNameInfo(lxmfActiveContact, null, false);
-        var headerName = document.getElementById('lxmf-chat-header-name');
-        if (headerName) headerName.innerHTML = ratspeakDisplayNameHtml(activeInfo.name, lxmfActiveContact);
-        var emptyName = document.querySelector('.lxmf-empty-conv-name');
-        if (emptyName) emptyName.innerHTML = ratspeakDisplayNameHtml(activeInfo.name, lxmfActiveContact);
-    }
+    if (lxmfActiveContact) _renderChatHeaderName();
 }
 
 function _refreshRenderedConversationPresence() {
-    document.querySelectorAll('.conv-row[data-hash]').forEach(function(row) {
+    document.querySelectorAll('.msg-conv-row[data-hash]').forEach(function(row) {
         var hash = row.dataset.hash;
-        var dot = row.querySelector('.conv-status-dot');
-        if (!hash || !dot) return;
-        var peer = _peerInfo(hash);
-        dot.className = 'conv-status-dot ' + _peerPresenceClass(peer);
-        if (peer) dot.title = (peer.activity_label || 'Never seen') + ' - ' + (peer.route_label || 'No current path');
-        else dot.title = 'Never seen';
+        var avatar = row.querySelector('.ui-avatar');
+        if (!hash || !avatar) return;
+        var presence = _conversationPresence(hash);
+        var key = presence.active ? 'active' : '';
+        if ((row.getAttribute('data-presence') || '') === key) return;
+        row.setAttribute('data-presence', key);
+        avatar.outerHTML = RS.kit.avatar(hash, 'row', presence.active ? 'active' : null, presence.heard);
     });
     _applyChatHeaderPresence();
 }
@@ -1603,42 +1586,51 @@ function _messageBodyHtml(msg, hasRenderedAudio) {
     return { html: text ? linkifyMessageText(text) : '', markdown: false };
 }
 
-// One check is Sent, two are Delivered (the recipient's proof). The envelope
-// is a confirmed Offline Inbox deposit, not recipient delivery.
-function _messageStateIconHtml(msg) {
-    var state = msg.state;
-    var SVG_OPEN = '<svg viewBox="0 0 16 16" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">';
-    var ICON = {
-        double: '<polyline points="11 4 4.5 10.5 1.5 7.5"/><polyline points="15 6.5 9.5 12 8.5 11"/>',
-        check: '<polyline points="3 8 7 12 13 4"/>',
-        clock: '<circle cx="8" cy="8" r="6"/><polyline points="8 4 8 8 11 10"/>',
-        x: '<line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/>',
-        bang: '<line x1="8" y1="2.5" x2="8" y2="9"/><line x1="8" y1="13" x2="8" y2="13.01"/>',
-        rejected: '<circle cx="8" cy="8" r="6"/><line x1="5" y1="5" x2="11" y2="11"/><line x1="11" y1="5" x2="5" y2="11"/>',
-        envelope: '<rect x="2" y="4" width="12" height="9" rx="1.5"/><polyline points="2.5 5 8 10 13.5 5"/>',
-        waiting: '<path d="M3.5 2.5h9M3.5 13.5h9M5 2.5V5l3 3-3 3v2.5M11 2.5V5L8 8l3 3v2.5"/>',
-        paper: '<rect x="2" y="2" width="5" height="5"/><rect x="9" y="2" width="5" height="5"/><rect x="2" y="9" width="5" height="5"/><path d="M9 9h2v2H9zM13 9v1M9 14h5v-2"/>'
-    };
-    function wrap(cls, label, body) {
-        return ' <span class="msg-state-icon ' + cls + '" role="img" aria-label="' + label + '" title="' + label + '">' + SVG_OPEN + body + '</svg></span>';
-    }
+// Delivery marks on a 16 px grid, one colour except Not delivered. One check is Sent,
+// two are Delivered (the recipient's proof); the envelope is an Offline Inbox deposit.
+var MSG_MARKS = {
+    sending: ['Sending', '<circle cx="8" cy="8" r="6"/><polyline points="8 4.5 8 8 10.5 9.5"/>'],
+    sent: ['Sent', '<polyline points="3 8.5 6.5 12 13 4.5"/>'],
+    delivered: ['Delivered', '<polyline points="1.5 8.5 5 12 11.5 4.5"/><polyline points="8.5 11 9.5 12 16 4.5"/>'],
+    propagated: ['In the Offline Inbox', '<rect x="2" y="3.5" width="12" height="9" rx="1.5"/><polyline points="2.5 4.5 8 9 13.5 4.5"/>'],
+    waiting: ['Waiting to send', '<path d="M4 2h8M4 14h8M5 2v2.5L8 8l-3 3.5V14M11 2v2.5L8 8l3 3.5V14"/>'],
+    failed: ['Not delivered', '<line x1="8" y1="2.5" x2="8" y2="9.5"/><line x1="8" y1="13" x2="8" y2="13.01"/>'],
+    cancelled: ['Sending cancelled', '<line x1="4" y1="4" x2="12" y2="12"/><line x1="12" y1="4" x2="4" y2="12"/>'],
+    rejected: ['Rejected', '<circle cx="8" cy="8" r="6"/><line x1="5" y1="5" x2="11" y2="11"/><line x1="11" y1="5" x2="5" y2="11"/>'],
+    paper: ['Paper message', '<rect x="2" y="2" width="5" height="5"/><rect x="9" y="2" width="5" height="5"/><rect x="2" y="9" width="5" height="5"/><path d="M9 9h2v2H9zM13 9v1M9 14h5v-2"/>']
+};
 
-    if (state === 'paper') return wrap('msg-state-paper', 'Paper message', ICON.paper);
-    // "!" as other messengers mark a send that needs you; ✕ is for what you cancelled.
-    if (state === 'failed' || state === 'timeout') return wrap('msg-state-failed', 'Not delivered', ICON.bang);
-    if (state === 'cancelled') return wrap('msg-state-cancelled', 'Sending cancelled', ICON.x);
-    if (state === 'rejected') return wrap('msg-state-rejected', 'Rejected', ICON.rejected) + ' <span class="msg-state-label">Rejected</span>';
-    if (state === 'propagated') return wrap('msg-state-propagated', 'Stored in Offline Inbox', ICON.envelope);
-    if (state === 'delivered') return wrap('msg-state-delivered', 'Delivered', ICON.double);
-    if (state === 'sent') return wrap('msg-state-sent', 'Sent', ICON.check);
+var MSG_WAITING_TITLE = 'Waiting to send. Ratspeak keeps trying for up to 24 hours.';
+
+function _messageMarkSvg(kind) {
+    return '<svg class="msg-mark-ico" viewBox="0 0 16 16" aria-hidden="true">' + MSG_MARKS[kind][1] + '</svg>';
+}
+
+function _messageMarkKind(state) {
+    if (state === 'paper') return 'paper';
+    // "!" as other messengers mark a send that needs you; the cross is for what you cancelled.
+    if (state === 'failed' || state === 'timeout') return 'failed';
     // Parked until it can go; the clock is for an attempt that is running now.
-    if (state === 'waiting') return wrap('msg-state-waiting', 'Waiting to send. Ratspeak keeps trying for up to 24 hours.', ICON.waiting);
+    if (['cancelled', 'rejected', 'propagated', 'delivered', 'sent', 'waiting'].indexOf(state) !== -1) return state;
     // Anything else is on its way: queued, routing, Link setup, or Resource transfer.
-    var progressPercent = _messageProgressPercent(msg);
-    var label = progressPercent !== null
-        ? 'Sending ' + progressPercent + '%'
-        : 'Sending';
-    return wrap('msg-state-sending', label, ICON.clock);
+    return 'sending';
+}
+
+// Not delivered and Waiting are buttons: they open the message menu (Retry, Try now, Activity).
+function _messageStateIconHtml(msg) {
+    var kind = _messageMarkKind(msg.state);
+    var label = MSG_MARKS[kind][0];
+    if (kind === 'failed' || kind === 'waiting') {
+        var title = kind === 'waiting' ? MSG_WAITING_TITLE : label;
+        return '<button type="button" class="msg-mark msg-mark--' + kind + '" data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
+            'aria-haspopup="dialog" aria-expanded="false" aria-label="' + label + '. Options" title="' + title + '">' + _messageMarkSvg(kind) + '</button>';
+    }
+    if (kind === 'sending') {
+        var progressPercent = _messageProgressPercent(msg);
+        if (progressPercent !== null) label += ' ' + progressPercent + '%';
+    }
+    return '<span class="msg-mark msg-mark--' + kind + '" role="img" aria-label="' + label + '" title="' + label + '">' +
+        _messageMarkSvg(kind) + (kind === 'rejected' ? '<span>Rejected</span>' : '') + '</span>';
 }
 
 function _isCanonicalLxmfMsgId(msgId) {
@@ -1658,17 +1650,16 @@ function _messageIsNote(msg) {
     return !!msg && msg.direction === 'note';
 }
 
-// Paper never touches the network, so it replaces the delivery icon.
+// Paper never touches the network, so "Paper" replaces the delivery mark; yours reopens the QR.
 function _messagePaperChipHtml(msg, isOut) {
-    var glyph = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
-        RS_QR_GLYPH_PATHS + '</svg>';
+    var glyph = _messageMarkSvg('paper');
     if (isOut) {
-        return ' <button type="button" class="msg-paper-state" data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
-            'aria-label="Paper message, not sent over the network. Show QR">' + glyph +
-            '<span class="msg-state-label" aria-hidden="true">Paper</span></button>';
+        return '<button type="button" class="msg-mark msg-mark--paper" data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
+            'aria-label="Paper message, not sent over the network. Show QR code" title="Show QR code">' + glyph +
+            '<span aria-hidden="true">Paper</span></button>';
     }
-    return ' <span class="msg-paper-state msg-paper-state-static" role="img" aria-label="Received as a paper message">' +
-        glyph + '<span class="msg-state-label" aria-hidden="true">Paper</span></span>';
+    return '<span class="msg-mark msg-mark--paper" role="img" aria-label="Received as a paper message">' +
+        glyph + '<span aria-hidden="true">Paper</span></span>';
 }
 
 function _messageCanCancelSend(msg) {
@@ -1697,13 +1688,6 @@ function _messageIsWaiting(msg) {
         _isCanonicalLxmfMsgId(msg.id);
 }
 
-var LXMF_SEND_METHOD_ICONS = {
-    auto: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/></svg>',
-    opportunistic: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>',
-    direct: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round"><path d="M8 19V5"/><path d="m4 9 4-4 4 4"/><path d="M16 5v14"/><path d="m12 15 4 4 4-4"/></svg>',
-    propagated: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/></svg>'
-};
-
 function _offlineInboxAvailable() {
     if (typeof propagationStatus === 'undefined' || propagationStatus.mode === 'off') return false;
     return propagationStatus.mode === 'auto'
@@ -1728,20 +1712,23 @@ function _retryLxmfMessage(msg, method) {
     });
 }
 
-function _openRetryMethodPopover(msg) {
+// Retry… : how to send this message again.
+function _openRetryMethodPopover(msg, anchor) {
     var container = document.getElementById('lxmf-messages');
     // The bubble, so the list opens beside the message rather than mid-row.
-    var anchor = container ? container.querySelector('.lxmf-msg[data-msg-id="' + msg.id + '"]') : null;
-    if (!anchor || typeof actionPopover !== 'function') {
+    anchor = anchor && anchor.isConnected ? anchor : _findRenderedMessageBubble(container, msg.id);
+    if (!anchor) {
         _retryLxmfMessage(msg, 'auto');
         return;
     }
-    actionPopover(anchor, [
-        { label: 'Auto', icon: LXMF_SEND_METHOD_ICONS.auto, onSelect: function() { _retryLxmfMessage(msg, 'auto'); } },
-        { label: 'Opportunistic', icon: LXMF_SEND_METHOD_ICONS.opportunistic, onSelect: function() { _retryLxmfMessage(msg, 'opportunistic'); } },
-        { label: 'Direct', icon: LXMF_SEND_METHOD_ICONS.direct, onSelect: function() { _retryLxmfMessage(msg, 'direct'); } },
-        { label: 'Offline Inbox', icon: LXMF_SEND_METHOD_ICONS.propagated, disabled: !_offlineInboxAvailable(), onSelect: function() { _retryLxmfMessage(msg, 'propagated'); } },
-    ]);
+    RS.kit.menu(anchor, { title: 'Send by', caption: 'Send this message by', hints: true, align: msg.direction === 'outbound' ? 'end' : 'start', items: [
+        { label: 'Automatic', icon: 'refresh', onSelect: function() { _retryLxmfMessage(msg, 'auto'); } },
+        { label: 'Opportunistic', icon: 'opportunistic', hint: 'Single packets. Best for short text.', onSelect: function() { _retryLxmfMessage(msg, 'opportunistic'); } },
+        { label: 'Direct', icon: 'direct', hint: 'Opens a link first. Best for long text and files.', onSelect: function() { _retryLxmfMessage(msg, 'direct'); } },
+        { label: 'Offline Inbox', icon: 'envelope', disabled: !_offlineInboxAvailable(),
+            hint: _offlineInboxAvailable() ? 'Held by an Offline Inbox node until they collect it.' : 'Turn on Offline Inbox in Settings to use it.',
+            onSelect: function() { _retryLxmfMessage(msg, 'propagated'); } },
+    ] });
 }
 
 function _messageHasTransferPayload(msg) {
@@ -1788,21 +1775,21 @@ function _messageProgressPercent(msg) {
 
 function _messageProgressMetaHtml(msg) {
     var percent = _messageProgressPercent(msg);
-    return percent === null ? '' : '<span class="msg-send-progress">' + percent + '%</span>';
+    return percent === null ? '' : '<span class="msg-progress">' + percent + '%</span>';
 }
 
+// An image on its way: a spinner, the percent, and cancel on the picture.
 function _messageSendCancelOverlayHtml(msg, percent) {
-    var pct = percent === null ? 0 : percent;
-    return '<button type="button" class="lxmf-send-cancel" ' +
-        'data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
-        'style="--send-progress:' + pct + '%" aria-label="Cancel sending message">' +
-        '<span aria-hidden="true">&times;</span>' +
-    '</button>';
+    return '<span class="msg-image-progress"><span class="ui-spin" aria-hidden="true"></span>' +
+        (percent === null ? '' : '<span>' + percent + '%</span>') +
+        '<button type="button" class="ui-icon-btn ui-icon-btn--sm ui-icon-btn--media msg-cancel" ' +
+        'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Cancel sending message" title="Cancel sending">' +
+        RS.kit.icon('x') + '</button></span>';
 }
 
 function _messageInlineCancelHtml(msg) {
     if (!_messageCanCancelSend(msg)) return '';
-    return '<button type="button" class="msg-send-cancel-inline" ' +
+    return '<button type="button" class="msg-cancel msg-cancel--text" ' +
         'data-msg-id="' + escapeHtml(msg.id || '') + '" aria-label="Cancel sending message">Cancel</button>';
 }
 
@@ -2194,7 +2181,7 @@ function _drainImageHydrationQueue() {
                 if (!img.isConnected || img.getAttribute('data-stored-name') !== activeTask.name) return;
                 if (file.filename) img.setAttribute('data-filename', file.filename);
                 if (file.mime) img.setAttribute('data-mime', file.mime);
-                var btn = img.closest('.lxmf-image-button');
+                var btn = img.closest('.msg-image-btn');
                 if (btn) {
                     if (file.filename) btn.setAttribute('data-filename', file.filename);
                     if (file.mime) btn.setAttribute('data-mime', file.mime);
@@ -2239,49 +2226,6 @@ function _observeImageHydration(img, name) {
     _imageHydrationObserver.observe(img);
 }
 
-function _formatDateLabel(timestamp) {
-    if (!timestamp) return '';
-    var d = new Date(timestamp * 1000);
-    var now = new Date();
-    var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    var msgDay = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-    var diffDays = Math.round((today - msgDay) / 86400000);
-    if (diffDays === 0) return 'Today';
-    if (diffDays === 1) return 'Yesterday';
-    if (diffDays < 7) return d.toLocaleDateString(undefined, { weekday: 'long' });
-    if (d.getFullYear() === now.getFullYear()) return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-function renderMsgProfileStrip() {
-    var avatarEl = document.getElementById('msg-profile-avatar');
-    var nameEl = document.getElementById('msg-profile-name');
-    var statusEl = document.getElementById('msg-profile-status');
-
-    var active = null;
-    if (typeof identityList !== 'undefined') {
-        for (var i = 0; i < identityList.length; i++) {
-            if (identityList[i].is_active) { active = identityList[i]; break; }
-        }
-    }
-    if (active) {
-        var hash = active.lxmf_hash || active.hash || '';
-        var displayName = active.display_name || active.nickname || 'Me';
-        var status = typeof resolveActiveProfileStatus === 'function' ? resolveActiveProfileStatus() : '';
-        if (avatarEl) avatarEl.innerHTML = identityAvatar(hash, 36);
-        if (nameEl) nameEl.textContent = displayName;
-        if (statusEl && typeof updateProfileStatusElement === 'function') updateProfileStatusElement(statusEl, status);
-
-        var hdrAvatar = document.getElementById('header-mobile-avatar');
-        var hdrName = document.getElementById('header-mobile-name');
-        var hdrStatus = document.getElementById('header-mobile-status');
-        var mobileName = active.display_name || active.nickname || 'Account 1';
-        if (hdrAvatar) hdrAvatar.innerHTML = identityAvatar(hash, 36);
-        if (hdrName) hdrName.textContent = mobileName;
-        if (hdrStatus && typeof updateProfileStatusElement === 'function') updateProfileStatusElement(hdrStatus, status);
-    }
-}
-
 // Suppresses the synthetic click after swipe touchend.
 var _convSwipedRecently = false;
 
@@ -2310,8 +2254,8 @@ function _removeGhostRow() {
     if (!_ghostConversationHash) return;
     var container = document.getElementById('lxmf-conversations-list');
     if (container) {
-        var ghost = container.querySelector('.conv-row[data-ghost="true"]');
-        if (ghost) ghost.remove();
+        var ghost = container.querySelector('.msg-conv-row[data-ghost="true"]');
+        if (ghost && ghost.parentNode) ghost.parentNode.remove();
     }
     _ghostConversationHash = null;
 }
@@ -2332,7 +2276,7 @@ function _conversationHasVisibleMessages() {
 function _promoteGhostConversationRow(hash) {
     var container = document.getElementById('lxmf-conversations-list');
     if (!container) return;
-    var row = container.querySelector('.conv-row[data-hash="' + hash + '"]');
+    var row = container.querySelector('.msg-conv-row[data-hash="' + hash + '"]');
     if (row) row.removeAttribute('data-ghost');
     if (_ghostConversationHash === hash) _ghostConversationHash = null;
 }
@@ -2407,6 +2351,15 @@ function switchConversationThread(thread) {
 }
 window.switchConversationThread = switchConversationThread;
 
+function _openingUnreadCount(hash, thread) {
+    var items = lxmfActiveThreads && Array.isArray(lxmfActiveThreads.items) ? lxmfActiveThreads.items : null;
+    var item = items ? items.find(function(t) { return _canonicalConversationThread(t.thread) === thread; }) : null;
+    if (item && hash === _canonicalConversationHash(lxmfActiveContact)) return Math.max(0, Number(item.unread) || 0);
+    var row = (lxmfConversations || []).find(function(c) { return c && _canonicalConversationHash(c.hash) === hash; });
+    if (!row || _canonicalConversationThread(row.thread || '') !== thread) return 0;
+    return Math.max(0, Number(row.unread) || 0);
+}
+
 // Cache-first render of the open conversation with `hash` (activate it first)
 // to avoid an empty-spinner flash; reconciles via fetch.
 function _loadConversation(hash) {
@@ -2418,6 +2371,10 @@ function _loadConversation(hash) {
     // Reactions are keyed per message; drop the previous conversation's
     // entries so the map doesn't accumulate across switches.
     _msgReactions = {};
+    // Read before get_conversation marks it read: where the new messages start.
+    var unread = _openingUnreadCount(hash, thread);
+    _unreadMarker = unread ? { key: key, count: unread, firstId: null, placed: false } : null;
+    _jumpNewIds = [];
     _clearMessageSelection();
     var cached = cacheGet(key);
     if (cached && cached.length > 0) {
@@ -2440,119 +2397,57 @@ function _loadConversation(hash) {
 }
 
 
+// The list the rows live in; the empty, loading, and error states replace it.
+function _conversationListEl(container) {
+    var list = container.querySelector('ul.msg-conv-list');
+    if (list) return list;
+    container.innerHTML = '<ul class="ui-list msg-conv-list" aria-label="Conversations"></ul>';
+    return container.firstChild;
+}
+
+function _markActiveConversationRow(container, hash) {
+    container.querySelectorAll('.msg-conv-row[aria-current]').forEach(function(r) { r.removeAttribute('aria-current'); });
+    var row = hash ? container.querySelector('.msg-conv-row[data-hash="' + hash + '"]') : null;
+    if (row) row.setAttribute('aria-current', 'true');
+}
+
 // Placeholder row shown until the backend confirms the conversation exists.
 function _ensureGhostRow(hash) {
     var container = document.getElementById('lxmf-conversations-list');
     if (!container) return;
 
     if (_ghostConversationHash && _ghostConversationHash !== hash) {
-        var oldGhost = container.querySelector('.conv-row[data-ghost="true"]');
-        if (oldGhost) oldGhost.remove();
+        var oldGhost = container.querySelector('.msg-conv-row[data-ghost="true"]');
+        if (oldGhost && oldGhost.parentNode) oldGhost.parentNode.remove();
     }
 
-    var existing = container.querySelector('.conv-row[data-hash="' + hash + '"]');
-    if (existing) {
-        container.querySelectorAll('.conv-row.active').forEach(function(r) { r.classList.remove('active'); });
-        existing.classList.add('active');
+    if (container.querySelector('.msg-conv-row[data-hash="' + hash + '"]')) {
+        _markActiveConversationRow(container, hash);
         _ghostConversationHash = null;
         return;
     }
 
-    var empty = container.querySelector('.empty-state');
-    if (empty) empty.remove();
-
-    var nameInfo = _conversationNameInfo(hash, null, false);
-
-    var row = document.createElement('div');
-    row.className = 'conv-row active';
-    row.setAttribute('role', 'button');
-    row.tabIndex = 0;
-    if (RS.ui) RS.ui.bindKeyboardActivation(row);
-    row.dataset.hash = hash;
-    row.dataset.ghost = 'true';
-    var avatarHtml = '<span class="conv-avatar">' + identityAvatar(hash, 36) + '</span>';
-    row.innerHTML =
-        avatarHtml +
-        '<div class="conv-row-content">' +
-            '<div class="conv-row-top">' +
-                '<span class="conv-name' + (nameInfo.isHash ? ' is-hash' : '') + '" title="' + (nameInfo.isHash ? escapeHtml(hash) : '') + '">' + ratspeakDisplayNameHtml(nameInfo.name, hash) + '</span>' +
-                '<span class="conv-time"></span>' +
-            '</div>' +
-            '<div class="conv-row-bottom">' +
-                '<span class="conv-preview"></span>' +
-            '</div>' +
-        '</div>';
-
-    container.querySelectorAll('.conv-row.active').forEach(function(r) { r.classList.remove('active'); });
-
-    container.insertBefore(row, container.firstChild);
-
-    row.addEventListener('click', function() {
-        if (_convSwipedRecently) return;
-        var clickHash = this.dataset.hash;
-        clickHash = _activateConversation(clickHash, 'navigation').hash;
-        container.querySelectorAll('.conv-row.active').forEach(function(r) { r.classList.remove('active'); });
-        this.classList.add('active');
-        _loadConversation(clickHash);
-        loadConversations();
-    });
-
+    var list = _conversationListEl(container);
+    list.insertAdjacentHTML('afterbegin', _conversationRowHtml({ hash: hash, last_message: '' }, { ghost: true }));
+    _markActiveConversationRow(container, hash);
     _ghostConversationHash = hash;
 }
 
 function _updateConversationPreview(hash, previewText, timestamp) {
     var container = document.getElementById('lxmf-conversations-list');
     if (!container) return;
-
-    var empty = container.querySelector('.empty-state');
-    if (empty) empty.remove();
-    var loading = container.querySelector('.loading-state');
-    if (loading) loading.remove();
-
-    var row = container.querySelector('.conv-row[data-hash="' + hash + '"]');
-    if (row) {
-        var previewEl = row.querySelector('.conv-preview-text') || row.querySelector('.conv-preview');
-        if (previewEl) previewEl.textContent = (previewText || '').substring(0, 50);
-        var timeEl = row.querySelector('.conv-time');
-        if (timeEl) timeEl.textContent = timestamp ? formatConvTime(timestamp) : '';
-        // Drop the ghost marker so the row survives refreshes.
-        row.removeAttribute('data-ghost');
-        if (row !== container.firstChild) {
-            container.insertBefore(row, container.firstChild);
-        }
-    } else {
-        var nameInfo = _conversationNameInfo(hash, null, false);
-        var newRow = document.createElement('div');
-        newRow.className = 'conv-row active';
-        newRow.setAttribute('role', 'button');
-        newRow.tabIndex = 0;
-        if (RS.ui) RS.ui.bindKeyboardActivation(newRow);
-        newRow.dataset.hash = hash;
-        var newAvatarHtml = '<span class="conv-avatar">' + identityAvatar(hash, 36) + '</span>';
-        newRow.innerHTML =
-            newAvatarHtml +
-            '<div class="conv-row-content">' +
-                '<div class="conv-row-top">' +
-                    '<span class="conv-name' + (nameInfo.isHash ? ' is-hash' : '') + '" title="' + (nameInfo.isHash ? escapeHtml(hash) : '') + '">' + ratspeakDisplayNameHtml(nameInfo.name, hash) + '</span>' +
-                    '<span class="conv-time">' + (timestamp ? formatConvTime(timestamp) : '') + '</span>' +
-                '</div>' +
-                '<div class="conv-row-bottom">' +
-                    '<span class="conv-preview">' + escapeHtml((previewText || '').substring(0, 50)) + '</span>' +
-                '</div>' +
-            '</div>';
-        container.insertBefore(newRow, container.firstChild);
-
-        newRow.addEventListener('click', function() {
-            if (_convSwipedRecently) return;
-            var clickHash = this.dataset.hash;
-            clickHash = _activateConversation(clickHash, 'navigation').hash;
-            container.querySelectorAll('.conv-row.active').forEach(function(r) { r.classList.remove('active'); });
-            this.classList.add('active');
-            _loadConversation(clickHash);
-            loadConversations();
-        });
-    }
-
+    var list = _conversationListEl(container);
+    var row = container.querySelector('.msg-conv-row[data-hash="' + hash + '"]');
+    var payload = Object.assign({}, _conversationPayloadForHash(hash) || { hash: hash }, {
+        last_message: (previewText || '').substring(0, 200),
+        last_direction: 'outbound',
+        timestamp: timestamp,
+        unread: 0
+    });
+    var html = _conversationRowHtml(payload, { current: true });
+    if (row) row.parentNode.remove();
+    list.insertAdjacentHTML('afterbegin', html);
+    _markActiveConversationRow(container, hash);
     if (_ghostConversationHash === hash) {
         _ghostConversationHash = null;
     }
@@ -2616,6 +2511,76 @@ function _mergeOptimisticConversation(convos) {
     return rows;
 }
 
+// Presence on a list avatar marks only people heard in the last two hours.
+function _conversationPresence(hash) {
+    var peer = _peerInfo(hash);
+    if (!peer || !peer.last_seen) return { active: false, heard: 0 };
+    return { active: RS.kit.presenceFor(peer.last_seen) === 'active', heard: peer.last_seen };
+}
+
+// One conversation row (the kit list row), shared by Messages and Home. opts: { current, ghost }.
+function _conversationRowHtml(c, opts) {
+    opts = opts || {};
+    var hash = c.hash;
+    var nameInfo = _conversationNameInfo(hash, c.display_name, c.is_contact);
+    var presence = _conversationPresence(hash);
+    var title = nameInfo.isHash
+        ? '<span class="msg-title-hash" title="' + escapeHtml(RS.kit.hash.text(hash, 'full')) + '">' + escapeHtml(nameInfo.name) + '</span>'
+        : ratspeakDisplayNameHtml(nameInfo.name, hash);
+    var preview = _conversationListPreview(c);
+    var sub = preview || c.thread_label
+        ? (c.thread_label ? '<span class="msg-thread">' + escapeHtml(c.thread_label) + '</span> · ' : '') +
+            (preview && c.last_direction === 'outbound' ? 'You: ' : '') + escapeHtml(preview)
+        : 'No messages yet';
+    var unread = Number(c.unread) || 0;
+    var count = unread > 0
+        ? '<span class="ui-count" aria-label="' + unread + ' unread">' + (unread > 99 ? '99+' : unread) + '</span>'
+        : '';
+    var time = c.timestamp
+        ? '<span class="ui-time" title="' + escapeHtml(RS.kit.time.full(c.timestamp)) + '">' + escapeHtml(RS.kit.time.row(c.timestamp)) + '</span>'
+        : '';
+    return '<li><button type="button" class="ui-row msg-conv-row' + (unread > 0 ? ' is-unread' : '') + '" data-hash="' + escapeHtml(hash) + '" data-presence="' + (presence.active ? 'active' : '') + '"' +
+        (opts.current ? ' aria-current="true"' : '') + (opts.ghost ? ' data-ghost="true"' : '') + '>' +
+        RS.kit.avatar(hash, 'row', presence.active ? 'active' : null, presence.heard) +
+        '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + title + '</span>' + time + '</span>' +
+        '<span class="ui-row-sub"><span class="t">' + sub + '</span>' + count + '</span></span></button></li>';
+}
+
+function _openConversationFromRow(hash) {
+    if (_convSwipedRecently || !hash) return;
+    if (_ghostConversationHash && _ghostConversationHash !== hash) _removeGhostRow();
+    // Per-conversation draft persistence on switch.
+    var input = document.getElementById('lxmf-input');
+    _saveActiveDraft(input);
+    hash = _activateConversation(hash, 'navigation', _latestConversationThread(hash)).hash;
+    _restoreActiveDraft(input);
+    var container = document.getElementById('lxmf-conversations-list');
+    if (container) _markActiveConversationRow(container, hash);
+    _loadConversation(hash);
+    loadConversations();
+    if (isCompactLayout()) {
+        RS.viewStack.push('chat-detail', { meta: { contactHash: hash } });
+        history.pushState({ view: 'message', detail: true }, '', '#message');
+    }
+}
+
+function _conversationListStateHtml(state) {
+    if (state === 'loading') {
+        return '<div class="ui-empty ui-empty--inline" role="status"><span class="ui-spin ui-spin--ring" aria-hidden="true"></span><span>Loading conversations</span></div>';
+    }
+    if (state === 'error') {
+        return '<div class="ui-empty" data-list-state="error"><span class="ui-tile ui-tile--lg ui-tile--error">' + RS.kit.icon('alert') + '</span>' +
+            '<h3 class="ui-empty-title">Couldn’t load your conversations</h3>' +
+            '<p class="ui-empty-body">Ratspeak couldn’t read them from this device.</p>' +
+            '<div class="ui-empty-actions"><button type="button" class="ui-btn" data-list-action="retry">' + RS.kit.icon('refresh') + 'Try again</button></div></div>';
+    }
+    return '<div class="ui-empty" data-list-state="empty"><span class="ui-tile ui-tile--lg">' + RS.kit.icon('message') + '</span>' +
+        '<h3 class="ui-empty-title">No conversations yet</h3>' +
+        '<p class="ui-empty-body">Message a contact, someone you found in Peers, or any LXMF address.</p>' +
+        '<div class="ui-empty-actions"><button type="button" class="ui-btn ui-btn--primary" data-list-action="new">' + RS.kit.icon('compose') + 'New message</button>' +
+        '<button type="button" class="ui-link ui-phone-only" data-list-action="share">Share your contact card</button></div></div>';
+}
+
 function renderCockpitConversations() {
     renderDashboardRecentMessages();
 }
@@ -2626,43 +2591,14 @@ function renderDashboardRecentMessages() {
 
     var convos = lxmfConversations;
     if (!convos || convos.length === 0) {
-        container.innerHTML = '<div class="empty-state" style="padding:24px;">' +
-            '<span class="empty-state-primary">No messages yet</span>' +
-            '<span class="empty-state-hint">Send your first encrypted message</span>' +
-        '</div>';
+        container.innerHTML = '<div class="ui-empty"><h3 class="ui-empty-title">No messages yet</h3>' +
+            '<p class="ui-empty-body">Send your first encrypted message.</p></div>';
         return;
     }
 
-    container.innerHTML = convos.slice(0, 5).map(function(c) {
-        var nameInfo = _conversationNameInfo(c.hash, c.display_name, c.is_contact);
-        var rawPreview = _conversationListPreview(c);
-        var dirPrefix = c.last_direction === 'outbound' ? 'You: ' : '';
-        var preview = dirPrefix + rawPreview;
-        var time = c.timestamp ? formatConvTime(c.timestamp) : '';
-        var unreadClass = c.unread > 0 ? ' unread' : '';
-        var unreadBadge = c.unread > 0 ? '<span class="conv-unread-badge">' + c.unread + '</span>' : '';
-        var nameClass = 'conv-name' + (nameInfo.isHash ? ' is-hash' : '');
-        var avatarHtml = '<div class="conv-avatar-wrap"><span class="conv-avatar">' + identityAvatar(c.hash, 40) + '</span></div>';
-
-        return '<div role="button" tabindex="0" class="conv-row' + unreadClass + '" data-hash="' + escapeHtml(c.hash) + '">' +
-            avatarHtml +
-            '<div class="conv-row-content">' +
-                '<div class="conv-row-top">' +
-                    '<span class="' + nameClass + '" title="' + (nameInfo.isHash ? escapeHtml(c.hash) : '') + '">' + ratspeakDisplayNameHtml(nameInfo.name, c.hash) + '</span>' +
-                    '<span class="conv-time">' + time + '</span>' +
-                '</div>' +
-                '<div class="conv-row-bottom">' +
-                    '<span class="conv-preview">' +
-                        (c.thread_label ? '<span class="conv-thread-pill">' + escapeHtml(c.thread_label) + '</span>' : '') +
-                        '<span class="conv-preview-text">' + escapeHtml(preview) + '</span></span>' +
-                    unreadBadge +
-                '</div>' +
-            '</div>' +
-        '</div>';
-    }).join('');
-
-    container.querySelectorAll('.conv-row').forEach(function(el) {
-        if (RS.ui) RS.ui.bindKeyboardActivation(el);
+    container.innerHTML = '<ul class="ui-list" aria-label="Recent messages">' +
+        convos.slice(0, 5).map(function(c) { return _conversationRowHtml(c); }).join('') + '</ul>';
+    container.querySelectorAll('.msg-conv-row').forEach(function(el) {
         el.addEventListener('click', function() {
             var hash = this.dataset.hash;
             hash = _activateConversation(hash, 'navigation', _latestConversationThread(hash)).hash;
@@ -2774,8 +2710,8 @@ function _loadConversationsReal(retryCount) {
         }
         if (lxmfConversations.length > 0) {
             _renderConversationsFromCache(lxmfConversations);
-        } else if (!container.querySelector('.conv-row')) {
-            container.innerHTML = '<div class="empty-state"><span class="empty-state-primary">Couldn\'t load conversations.</span></div>';
+        } else if (!container.querySelector('.msg-conv-row')) {
+            container.innerHTML = _conversationListStateHtml('error');
         }
     }).finally(function() {
         _convFetchInFlight = false;
@@ -2786,6 +2722,7 @@ function _loadConversationsReal(retryCount) {
 function _renderConversationsFromCache(convos) {
     var container = document.getElementById('lxmf-conversations-list');
     if (!container) return;
+    _bindConversationList(container);
 
     convos = _mergeOptimisticConversation(convos);
     convos = convos.map(function(conversation) {
@@ -2799,119 +2736,80 @@ function _renderConversationsFromCache(convos) {
             container.innerHTML = '';
             _ensureGhostRow(_ghostConversationHash);
         } else {
-            container.innerHTML = '<div class="empty-state">' +
-                '<svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' +
-                '<span class="empty-state-primary">No conversations yet</span>' +
-                '<span class="empty-state-hint">Tap the compose button to start messaging</span>' +
-            '</div>';
+            container.innerHTML = _conversationListStateHtml(_conversationsFirstLoadDone ? 'empty' : 'loading');
         }
+        _renderFirstRunDetail();
         return;
     }
 
-    var html = '';
-    convos.forEach(function(c) {
-            var nameInfo = _conversationNameInfo(c.hash, c.display_name, c.is_contact);
-            var rawPreview = _conversationListPreview(c);
-            var dirPrefix = c.last_direction === 'outbound' ? 'You: ' : '';
-            var preview = dirPrefix + rawPreview;
-            var time = c.timestamp ? formatConvTime(c.timestamp) : '';
-            var activeClass = (lxmfActiveContact === c.hash) ? ' active' : '';
-            var unreadClass = c.unread > 0 ? ' unread' : '';
-            var unreadBadge = c.unread > 0 ? '<span class="conv-unread-badge">' + c.unread + '</span>' : '';
-            var nameClass = 'conv-name' + (nameInfo.isHash ? ' is-hash' : '');
-            var avatarHtml = identityAvatar(c.hash, 40);
+    container.innerHTML = '<ul class="ui-list msg-conv-list" aria-label="Conversations">' + convos.map(function(c) {
+        return _conversationRowHtml(c, { current: lxmfActiveContact === c.hash });
+    }).join('') + '</ul>';
 
-            var statusClass = 'offline';
-            var convPeer = _peerInfo(c.hash);
-            if (convPeer) statusClass = _peerPresenceClass(convPeer);
-
-            html += '<div role="button" tabindex="0" class="conv-row' + activeClass + unreadClass + '" data-hash="' + escapeHtml(c.hash) + '">' +
-                '<div class="conv-avatar-wrap"><span class="conv-avatar">' + avatarHtml + '</span><span class="conv-status-dot ' + statusClass + '"></span></div>' +
-                '<div class="conv-row-content">' +
-                    '<div class="conv-row-top">' +
-                        '<span class="' + nameClass + '" title="' + (nameInfo.isHash ? escapeHtml(c.hash) : '') + '">' + ratspeakDisplayNameHtml(nameInfo.name, c.hash) + '</span>' +
-                        '<span class="conv-time">' + time + '</span>' +
-                    '</div>' +
-                    '<div class="conv-row-bottom">' +
-                        '<span class="conv-preview">' +
-                            (c.thread_label ? '<span class="conv-thread-pill">' + escapeHtml(c.thread_label) + '</span>' : '') +
-                            '<span class="conv-preview-text">' + escapeHtml(preview) + '</span></span>' +
-                        unreadBadge +
-                    '</div>' +
-                '</div>' +
-            '</div>';
-        });
-        container.innerHTML = html;
-        _refreshRenderedConversationPresence();
-
-        container.querySelectorAll('.conv-row').forEach(function(el) {
-            if (RS.ui) RS.ui.bindKeyboardActivation(el);
-            el.addEventListener('click', function() {
-                if (_convSwipedRecently) return;
-                var hash = this.dataset.hash;
-                if (_ghostConversationHash && _ghostConversationHash !== hash) {
-                    _removeGhostRow();
-                }
-                // Per-conversation draft persistence on switch.
-                var input = document.getElementById('lxmf-input');
-                _saveActiveDraft(input);
-                hash = _activateConversation(hash, 'navigation', _latestConversationThread(hash)).hash;
-                _restoreActiveDraft(input);
-                container.querySelectorAll('.conv-row.active').forEach(function(r) { r.classList.remove('active'); });
-                this.classList.add('active');
-                _loadConversation(hash);
-                loadConversations();
-                if (isCompactLayout()) {
-                    RS.viewStack.push('chat-detail', { meta: { contactHash: hash } });
-                    history.pushState({ view: 'message', detail: true }, '', '#message');
-                }
-            });
-        });
-
-        // Re-inject ghost row if the server list doesn't yet include the conversation.
-        if (_ghostConversationHash && _ghostConversationHash === lxmfActiveContact) {
-            if (!container.querySelector('.conv-row[data-hash="' + _ghostConversationHash + '"]')) {
-                _ensureGhostRow(_ghostConversationHash);
-            }
+    // Re-inject ghost row if the server list doesn't yet include the conversation.
+    if (_ghostConversationHash && _ghostConversationHash === lxmfActiveContact) {
+        if (!container.querySelector('.msg-conv-row[data-hash="' + _ghostConversationHash + '"]')) {
+            _ensureGhostRow(_ghostConversationHash);
         }
-
-    if (!container._convSwipeAttached) {
-        container._convSwipeAttached = true;
-        RS.gestures.attachSwipe(container, {
-            delegated: '.conv-row',
-            direction: 'left',
-            distanceThreshold: RS.gestures.SWIPE_DISTANCE_CONV_DELETE_PX,
-            hapticAt: { commit: 'warning' },
-            onProgress: function(dx, _dy, _progress, row) {
-                if (!row) return;
-                var offset = Math.max(0, Math.min(-dx, 120));
-                row.style.transform = 'translateX(-' + offset + 'px)';
-                row.style.transition = 'none';
-                _addConvDeleteIndicator(row);
-                var del = row.querySelector('.conv-swipe-delete');
-                if (del) del.style.opacity = Math.min(1, offset / 80);
-            },
-            onCommit: function(row) {
-                if (!row) return;
-                _suppressNextConvClick();
-                var hash = row.dataset.hash;
-                if (!hash) {
-                    _resetConvRowVisual(row);
-                    return;
-                }
-                var nameEl = row.querySelector('.conv-name');
-                var name = nameEl ? nameEl.textContent : (hash ? (typeof shortHash === 'function' ? shortHash(hash, 8, 4) : hash.substring(0, 12)) : 'this conversation');
-                _resetConvRowVisual(row);
-                showConversationDeleteDialog(hash, name);
-            },
-            onCancel: function(dx, _dy, row) {
-                if (!row) return;
-                // Half-swipe still suppresses synthetic click.
-                if (dx < -10) _suppressNextConvClick();
-                _resetConvRowVisual(row);
-            }
-        });
     }
+    _renderFirstRunDetail();
+}
+
+// One delegated handler: rows open their conversation, the empty and error states act.
+function _bindConversationList(container) {
+    if (container._convListBound) return;
+    container._convListBound = true;
+    container.addEventListener('click', function(e) {
+        var row = e.target.closest && e.target.closest('.msg-conv-row');
+        if (row) {
+            _openConversationFromRow(row.dataset.hash);
+            return;
+        }
+        var action = e.target.closest && e.target.closest('[data-list-action]');
+        if (!action) return;
+        var kind = action.getAttribute('data-list-action');
+        if (kind === 'retry') {
+            container.innerHTML = _conversationListStateHtml('loading');
+            loadConversationsForce();
+        } else if (kind === 'new') {
+            openNewMessageSheet();
+        } else if (kind === 'share' && typeof openActiveIdentityContactCard === 'function') {
+            openActiveIdentityContactCard();
+        }
+    });
+    RS.gestures.attachSwipe(container, {
+        delegated: '.msg-conv-row',
+        direction: 'left',
+        distanceThreshold: RS.gestures.SWIPE_DISTANCE_CONV_DELETE_PX,
+        hapticAt: { commit: 'warning' },
+        onProgress: function(dx, _dy, _progress, row) {
+            if (!row) return;
+            var offset = Math.max(0, Math.min(-dx, 120));
+            row.style.transform = 'translateX(-' + offset + 'px)';
+            row.style.transition = 'none';
+            _addConvDeleteIndicator(row);
+            var del = row.querySelector('.conv-swipe-delete');
+            if (del) del.style.opacity = Math.min(1, offset / 80);
+        },
+        onCommit: function(row) {
+            if (!row) return;
+            _suppressNextConvClick();
+            var hash = row.dataset.hash;
+            if (!hash) {
+                _resetConvRowVisual(row);
+                return;
+            }
+            var name = _conversationNameInfo(hash, null, false).name;
+            _resetConvRowVisual(row);
+            showConversationDeleteDialog(hash, name);
+        },
+        onCancel: function(dx, _dy, row) {
+            if (!row) return;
+            // Half-swipe still suppresses synthetic click.
+            if (dx < -10) _suppressNextConvClick();
+            _resetConvRowVisual(row);
+        }
+    });
 }
 
 // T2-3: per-poll full re-renders are gated. Hidden views skip the rebuild
@@ -3234,6 +3132,502 @@ function _flushDeferredConversationRender(expectedGeneration) {
     return true;
 }
 
+// Hover actions (pointer only): "+" expands in place into React, Reply, and More. It collapses on
+// Escape, a click away, focus leaving, or the pointer leaving the bubble after a short grace;
+// while its reactions or menu are open, leaving keeps it.
+var MSG_HOVER_LEAVE_GRACE_MS = 280;
+var _hoverLeaveTimer = null;
+
+function _hoverButtons(bar) {
+    return Array.prototype.slice.call(bar.querySelectorAll('.msg-hover-set > button'));
+}
+
+function _hoverOwnsMenu(bar) {
+    return !!(_activeContextMenu && _activeContextMenu.hoverBar === bar);
+}
+
+function _cancelHoverLeave() {
+    if (_hoverLeaveTimer) clearTimeout(_hoverLeaveTimer);
+    _hoverLeaveTimer = null;
+}
+
+function _closeHoverBar(bar) {
+    if (!bar) return;
+    _cancelHoverLeave();
+    bar.classList.remove('is-open');
+    bar._pointerIn = false;
+    var plus = bar.querySelector('.msg-hover-plus');
+    if (plus) plus.setAttribute('aria-expanded', 'false');
+    _hoverButtons(bar).forEach(function(btn) {
+        if (btn.hasAttribute('aria-expanded')) btn.setAttribute('aria-expanded', 'false');
+    });
+}
+
+function _openHoverBar(bar, byPointer, focusFirst) {
+    document.querySelectorAll('#lxmf-messages .msg-hover.is-open').forEach(function(other) {
+        if (other !== bar) _closeHoverBar(other);
+    });
+    _cancelHoverLeave();
+    bar.classList.add('is-open');
+    bar._pointerIn = !!byPointer;
+    var plus = bar.querySelector('.msg-hover-plus');
+    if (plus) plus.setAttribute('aria-expanded', 'true');
+    var buttons = _hoverButtons(bar);
+    buttons.forEach(function(btn, i) { btn.tabIndex = i ? -1 : 0; });
+    if (focusFirst !== false && buttons[0]) _focusMessageControl(buttons[0]);
+}
+
+function _openHoverMessageId(container) {
+    var bar = container && container.querySelector('.msg-hover.is-open');
+    if (!bar) return null;
+    var focused = bar.contains(document.activeElement) && document.activeElement.getAttribute('data-hover-act');
+    var bubble = bar.closest('.msg-bubble');
+    return bubble ? { id: bubble.getAttribute('data-msg-id'), act: focused || '', pointer: !!bar._pointerIn } : null;
+}
+
+function _reopenHoverBar(container, open) {
+    var bubble = _findRenderedMessageBubble(container, open.id);
+    var bar = bubble && bubble.querySelector('.msg-hover');
+    if (!bar) return;
+    _openHoverBar(bar, open.pointer, false);
+    if (open.act) _focusMessageControl(bar.querySelector('[data-hover-act="' + open.act + '"]'));
+}
+
+function _messageForElement(el) {
+    var bubble = el && el.closest ? el.closest('.msg-bubble[data-msg-id]') : null;
+    var msg = bubble ? _conversationMessageById(bubble.getAttribute('data-msg-id')) : null;
+    return { bubble: bubble, msg: msg };
+}
+
+function _runHoverAction(btn, event) {
+    var bar = btn.closest('.msg-hover');
+    var found = _messageForElement(btn);
+    if (!found.msg) return;
+    var act = btn.getAttribute('data-hover-act');
+    var wasOpen = btn.getAttribute('aria-expanded') === 'true';
+    if (_hoverOwnsMenu(bar)) _dismissContextMenu({ restoreFocus: false });
+    if (wasOpen) return;
+    if (act === 'reply') {
+        _closeHoverBar(bar);
+        setReplyTarget(found.msg);
+        return;
+    }
+    var rect = btn.getBoundingClientRect();
+    _showMsgContextMenu(found.msg, rect.left, rect.bottom, found.bubble, btn, {
+        focusDialog: _messageActivationExpectsFocus(event),
+        anchor: act === 'more' ? btn : null,
+        reactOnly: act === 'react',
+    });
+}
+
+// The jump button: shown away from the latest, counting new messages still below the view.
+function _syncJumpButton(container) {
+    var btn = document.getElementById('lxmf-jump-btn');
+    if (!btn || !container) return;
+    var away = !!lxmfActiveContact && lxmfConversation.length > 0 && container.clientHeight > 0 &&
+        !RS.chatScroll.nearBottom(container);
+    if (!away) {
+        btn.hidden = true;
+        _jumpNewIds = [];
+        return;
+    }
+    var ids = _jumpNewIds.slice();
+    var marker = _unreadMarker && _unreadMarker.key === _activeConversationKey() ? _unreadMarker.firstId : null;
+    if (marker) {
+        var seen = false;
+        lxmfConversation.forEach(function(m) {
+            if (m.id === marker) seen = true;
+            if (seen && m.direction === 'inbound' && ids.indexOf(m.id) === -1) ids.push(m.id);
+        });
+    }
+    var bottom = container.getBoundingClientRect().bottom;
+    var below = ids.filter(function(id) {
+        var bubble = _findRenderedMessageBubble(container, id);
+        return bubble && bubble.getBoundingClientRect().top > bottom - 24;
+    }).length;
+    var badge = btn.querySelector('.ui-count');
+    if (badge) {
+        badge.hidden = !below;
+        badge.textContent = below > 99 ? '99+' : String(below);
+    }
+    btn.setAttribute('aria-label', 'Jump to latest' + (below ? ', ' + below + (below === 1 ? ' new message' : ' new messages') : ''));
+    btn.hidden = false;
+}
+
+// One set of delegated listeners for everything inside the transcript.
+function _wireTranscript(container) {
+    if (container._rsTranscriptWired) return;
+    container._rsTranscriptWired = true;
+
+    container.addEventListener('click', function(e) {
+        var t = e.target;
+        if (!t || !t.closest) return;
+        var plus = t.closest('.msg-hover-plus');
+        if (plus) {
+            _openHoverBar(plus.closest('.msg-hover'), e.detail > 0, true);
+            return;
+        }
+        var act = t.closest('.msg-hover-set > button');
+        if (act) {
+            _runHoverAction(act, e);
+            return;
+        }
+        var quote = t.closest('.msg-quote');
+        if (quote) {
+            if (_consumePendingMessageHoldActivation(e, quote)) return;
+            var targetId = quote.getAttribute('data-reply-id');
+            var targetEl = targetId ? _findRenderedMessageBubble(container, targetId) : null;
+            if (targetEl) {
+                var scrollBlock = isCompactLayout() ? 'nearest' : 'center';
+                setTimeout(function() {
+                    targetEl.scrollIntoView({ behavior: 'smooth', block: scrollBlock });
+                }, 100);
+                targetEl.classList.add('msg-highlight');
+                setTimeout(function() { targetEl.classList.remove('msg-highlight'); }, 1500);
+            }
+            return;
+        }
+        var save = t.closest('.msg-file-save[data-stored-name]');
+        if (save) {
+            e.preventDefault();
+            if (_consumePendingMessageHoldActivation(e, save)) return;
+            var name = save.getAttribute('data-stored-name');
+            RS.saveFile(name).then(function(saved) {
+                if (saved !== false && typeof showToast === 'function') showToast('Saved', 'toast-success', 2200);
+            }).catch(function(err) {
+                if (typeof showToast === 'function') {
+                    showToast('Could not download: ' + (err.message || err.code || 'unknown error'), 'toast-error', 4000);
+                } else {
+                    window.RS.diag('error', '[lxmf] file download failed:', name, err);
+                }
+            });
+            return;
+        }
+        var image = t.closest('.msg-image-btn');
+        if (image) {
+            var img = image.querySelector('img.msg-img');
+            if (!img || _consumePendingMessageHoldActivation(e, img)) return;
+            e.stopPropagation();
+            if (typeof openImageViewer === 'function') openImageViewer(img);
+            return;
+        }
+        var chatAction = t.closest('[data-chat-action]');
+        if (chatAction) {
+            var kind = chatAction.getAttribute('data-chat-action');
+            if (kind === 'show-qr' && typeof openActiveIdentityContactCard === 'function') openActiveIdentityContactCard();
+            if (kind === 'add-contact' && lxmfActiveContact) _promptContactName(lxmfActiveContact, null);
+        }
+    });
+
+    container.addEventListener('keydown', function(e) {
+        var t = e.target;
+        if (!t || !t.closest) return;
+        var bar = t.closest('.msg-hover');
+        if (e.key === 'Escape') {
+            var open = bar && bar.classList.contains('is-open') ? bar : container.querySelector('.msg-hover.is-open');
+            if (open && !_hoverOwnsMenu(open)) {
+                e.preventDefault();
+                e.stopPropagation();
+                _closeHoverBar(open);
+                _focusMessageControl(open.querySelector('.msg-hover-plus'));
+            }
+            return;
+        }
+        if (bar) {
+            var buttons = _hoverButtons(bar);
+            var at = buttons.indexOf(t);
+            var to = { ArrowRight: at + 1, ArrowDown: at + 1, ArrowLeft: at - 1, ArrowUp: at - 1, Home: 0, End: buttons.length - 1 }[e.key];
+            if (at === -1 || to == null) return;
+            e.preventDefault();
+            to = (to + buttons.length) % buttons.length;
+            buttons.forEach(function(btn, k) { btn.tabIndex = k === to ? 0 : -1; });
+            buttons[to].focus();
+            return;
+        }
+        if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
+        var found = _messageForElement(t);
+        if (!found.msg) return;
+        e.preventDefault();
+        var rect = found.bubble.getBoundingClientRect();
+        _showMsgContextMenu(found.msg, rect.left, rect.bottom, found.bubble, found.bubble, {
+            focusDialog: true,
+            anchor: found.bubble,
+        });
+    });
+
+    container.addEventListener('focusout', function(e) {
+        var bar = e.target && e.target.closest && e.target.closest('.msg-hover.is-open');
+        if (!bar || _hoverOwnsMenu(bar)) return;
+        if (e.relatedTarget && !bar.contains(e.relatedTarget)) _closeHoverBar(bar);
+    });
+
+    // The pointer zone is the bubble, which holds the bar.
+    document.addEventListener('pointerover', function(e) {
+        var bar = container.querySelector('.msg-hover.is-open');
+        if (!bar) return;
+        var bubble = bar.closest('.msg-bubble');
+        if (bubble && bubble.contains(e.target)) {
+            bar._pointerIn = true;
+            _cancelHoverLeave();
+            return;
+        }
+        if (!bar._pointerIn || _hoverOwnsMenu(bar)) return;
+        _cancelHoverLeave();
+        _hoverLeaveTimer = setTimeout(function() {
+            _hoverLeaveTimer = null;
+            if (bar.classList.contains('is-open') && !_hoverOwnsMenu(bar)) _closeHoverBar(bar);
+        }, MSG_HOVER_LEAVE_GRACE_MS);
+    });
+    document.addEventListener('click', function(e) {
+        var bar = container.querySelector('.msg-hover.is-open');
+        if (!bar || bar.contains(e.target) || _hoverOwnsMenu(bar)) return;
+        if (_activeContextMenu && _activeContextMenu.menu.contains(e.target)) return;
+        _closeHoverBar(bar);
+    });
+
+    var jumpFrame = 0;
+    container.addEventListener('scroll', function() {
+        if (jumpFrame) return;
+        jumpFrame = requestAnimationFrame(function() {
+            jumpFrame = 0;
+            _syncJumpButton(container);
+        });
+    }, { passive: true });
+    var jump = document.getElementById('lxmf-jump-btn');
+    if (jump) jump.addEventListener('click', function() {
+        _jumpNewIds = [];
+        RS.chatScroll.pinToBottom(container);
+        _syncJumpButton(container);
+    });
+}
+
+// The person, in the chat header: name or short address, and the details label.
+function _renderChatHeaderName() {
+    if (!lxmfActiveContact) return;
+    var info = _conversationNameInfo(lxmfActiveContact, null, false);
+    var nameEl = document.getElementById('lxmf-chat-header-name');
+    if (nameEl) {
+        var html = info.isHash
+            ? '<span class="msg-title-hash" title="' + escapeHtml(RS.kit.hash.text(lxmfActiveContact, 'full')) + '">' + escapeHtml(info.name) + '</span>'
+            : ratspeakDisplayNameHtml(info.name, lxmfActiveContact);
+        if (nameEl.innerHTML !== html) nameEl.innerHTML = html;
+    }
+    var who = document.getElementById('lxmf-chat-who');
+    if (who) who.setAttribute('aria-label', info.name + ', details');
+    var input = document.getElementById('lxmf-input');
+    if (input) {
+        var first = info.isHash ? '' : String(info.name || '').trim().split(/\s+/)[0];
+        var placeholder = first ? 'Message ' + first : 'Message';
+        if (input.placeholder !== placeholder) input.placeholder = placeholder;
+    }
+    var intro = document.querySelector('#lxmf-messages .msg-intro-name');
+    if (intro) intro.innerHTML = nameEl ? nameEl.innerHTML : escapeHtml(info.name);
+}
+
+// Nothing open: a quiet prompt, or on first run what people need to message you.
+function _noConversationHtml() {
+    var none = _conversationsFirstLoadDone && (!lxmfConversations || lxmfConversations.length === 0);
+    var own = lxmfIdentity ? (lxmfIdentity.hash || lxmfIdentity.lxmf_hash || '') : '';
+    if (none && own) {
+        return '<div class="msg-first"><div class="ui-card"><div class="ui-card-head"><h3 class="ui-card-title">Your LXMF address</h3></div>' +
+            '<div class="msg-first-addr">' + RS.kit.hash.copy(own, { form: 'full', noun: 'LXMF address' }) + '</div>' +
+            '<p class="ui-help">Give it to people so they can message you, or show them your QR code.</p>' +
+            '<button type="button" class="ui-btn" data-chat-action="show-qr">' + RS.kit.icon('qr') + 'Show QR code</button></div></div>';
+    }
+    return '<div class="ui-empty ui-empty--quiet ui-empty--center"><h3 class="ui-empty-title">Select a conversation</h3>' +
+        '<p class="ui-empty-body">Or start a new one with the compose button.</p></div>';
+}
+
+function _renderFirstRunDetail() {
+    if (lxmfActiveContact) return;
+    var container = document.getElementById('lxmf-messages');
+    if (!container) return;
+    var html = _noConversationHtml();
+    if (container._rsNoConversationHtml !== html) {
+        container._rsNoConversationHtml = html;
+        container.innerHTML = html;
+    }
+}
+
+// A conversation with no messages yet: the person, one line on encryption, and Add contact.
+function _conversationIntroHtml(hash) {
+    var info = _conversationNameInfo(hash, null, false);
+    var notContact = !_lookupContactRecord(hash);
+    var name = info.isHash
+        ? '<span class="msg-title-hash">' + escapeHtml(info.name) + '</span>'
+        : ratspeakDisplayNameHtml(info.name, hash);
+    return '<div class="msg-intro">' + RS.kit.avatar(hash, 64) +
+        '<h3 class="msg-intro-name">' + name + '</h3>' +
+        '<span class="msg-intro-sub">' + RS.kit.hash.copy(hash, { form: 'fit', noun: 'LXMF address' }) + '</span>' +
+        '<p class="msg-intro-body">' + (notContact ? 'They aren’t in your contacts yet. ' : '') +
+            'This is the start of your conversation. Messages are end-to-end encrypted.</p>' +
+        (notContact ? '<button type="button" class="ui-btn" data-chat-action="add-contact">' + RS.kit.icon('user-plus') + 'Add contact</button>' : '') +
+    '</div>';
+}
+
+// The open conversation's first unread message, counted back from the newest inbound ones.
+function _unreadMarkerFor(msgs) {
+    if (!_unreadMarker || _unreadMarker.key !== _activeConversationKey() || !_unreadMarker.count) return null;
+    if (_unreadMarker.firstId) return _unreadMarker.firstId;
+    var left = _unreadMarker.count;
+    for (var i = msgs.length - 1; i >= 0 && left > 0; i--) {
+        if (msgs[i].direction === 'inbound') {
+            left -= 1;
+            if (left === 0 && msgs[i].id) _unreadMarker.firstId = msgs[i].id;
+        }
+    }
+    return _unreadMarker.firstId || null;
+}
+
+var MSG_GROUP_SECONDS = 180;
+var MSG_EMOJI_ONLY = /^(?:\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic}|\p{Emoji_Modifier})*\s*){1,3}$/u;
+
+function _messageSameGroup(a, b) {
+    return !!(a && b && a.direction === b.direction && !_messageIsNote(a) && !_messageIsNote(b) &&
+        Math.abs(b.timestamp - a.timestamp) < MSG_GROUP_SECONDS &&
+        RS.kit.time.date(a.timestamp) === RS.kit.time.date(b.timestamp));
+}
+
+// The name a reply quote shows: You, or the first name of who wrote the quoted message.
+function _replyQuoteName(msg) {
+    var quoted = msg.reply_to_id ? _conversationMessageById(msg.reply_to_id) : null;
+    if (!quoted) return '';
+    if (quoted.direction === 'outbound') return 'You';
+    var info = _conversationNameInfo(lxmfActiveContact, null, false);
+    return info.isHash ? info.name : String(info.name || '').trim().split(/\s+/)[0];
+}
+
+function _messageReactionsHtml(msg, ourHash) {
+    var reactions = _msgReactions[msg.id] || [];
+    if (!reactions.length) return '';
+    var grouped = {};
+    var order = [];
+    reactions.forEach(function(r) {
+        if (!grouped[r.emoji]) { grouped[r.emoji] = []; order.push(r.emoji); }
+        grouped[r.emoji].push(r.sender);
+    });
+    return '<div class="msg-reacts">' + order.map(function(emoji) {
+        var count = grouped[emoji].length;
+        var isMine = grouped[emoji].indexOf(ourHash) !== -1;
+        var label = (isMine ? 'Remove' : 'Add') + ' ' + emoji + ' reaction' + (count > 1 ? ', ' + count + ' reactions' : '');
+        return '<button type="button" class="msg-react" data-emoji="' + escapeHtml(emoji) + '" data-msg-id="' + escapeHtml(msg.id) + '" ' +
+            'aria-pressed="' + (isMine ? 'true' : 'false') + '" aria-label="' + escapeHtml(label) + '">' +
+            '<span aria-hidden="true">' + escapeHtml(emoji) + '</span>' + (count > 1 ? '<span class="n" aria-hidden="true">' + count + '</span>' : '') + '</button>';
+    }).join('') + '</div>';
+}
+
+// Pointer only: one "+" on the bubble's outer side that expands into React, Reply, and More.
+function _messageHoverBarHtml(id) {
+    var b = function(act, glyph, label, title, extra) {
+        return '<button type="button" class="ui-icon-btn ui-icon-btn--sm" data-hover-act="' + act + '" aria-label="' + label + '" title="' + title + '"' + (extra || '') + '>' + RS.kit.icon(glyph) + '</button>';
+    };
+    return '<div class="msg-hover" role="group" aria-label="Message actions">' +
+        '<button type="button" class="ui-icon-btn ui-icon-btn--sm msg-hover-plus" data-msg-id="' + id + '" aria-label="Message actions" title="Actions" aria-expanded="false">' + RS.kit.icon('plus') + '</button>' +
+        '<div class="msg-hover-set" role="toolbar" aria-label="Message actions">' +
+            b('react', 'smile-plus', 'Add a reaction', 'React', ' aria-haspopup="dialog" aria-expanded="false"') +
+            b('reply', 'reply', 'Reply', 'Reply', ' tabindex="-1"') +
+            b('more', 'more', 'More actions', 'More', ' tabindex="-1" aria-haspopup="dialog" aria-expanded="false"') +
+        '</div></div>';
+}
+
+function _messageImageHtml(msg, overlay, mediaMeta) {
+    var image = msg.image;
+    var filename = image.filename || 'image';
+    var mime = image.mime_type || image.mime || '';
+    var sending = !!overlay;
+    if (image.unavailable) {
+        return '<div class="msg-file"><span class="ui-tile">' + RS.kit.icon('image') + '</span>' +
+            '<span class="msg-file-text"><span class="msg-file-name">Attachment unavailable</span></span></div>';
+    }
+    var data = 'data-filename="' + escapeHtml(filename) + '" data-mime="' + escapeHtml(mime) + '"';
+    var img;
+    var stored = '';
+    // stored_name -> async fetch; object_url/data_url -> local optimistic preview.
+    if (image.stored_name) {
+        stored = ' data-stored-name="' + escapeHtml(image.stored_name) + '"';
+        img = '<img' + stored + ' alt="Photo" ' + data + ' class="msg-img rs-lazy-image">';
+    } else if (image.object_url || image.data_url) {
+        img = '<img src="' + escapeHtml(image.object_url || image.data_url) + '" alt="Photo" class="msg-img" ' + data + '>';
+    } else {
+        return '';
+    }
+    return '<div class="msg-image' + (sending ? ' is-sending' : '') + '">' +
+        '<button type="button" class="msg-image-btn" aria-label="Open image"' + stored + ' ' + data + '>' + img + '</button>' +
+        (overlay || '') + (mediaMeta || '') + '</div>';
+}
+
+function _messageFilesHtml(msg, sending) {
+    return (msg.attachments || []).map(function(att) {
+        var name = att.unavailable ? 'Attachment unavailable' : (att.filename || 'file');
+        var save = !att.unavailable && att.stored_name && !sending
+            ? '<button type="button" class="ui-icon-btn ui-icon-btn--sm msg-file-save" data-stored-name="' + escapeHtml(att.stored_name) + '" ' +
+                'aria-label="Save ' + escapeHtml(name) + '" title="Save">' + RS.kit.icon('download') + '</button>'
+            : '';
+        return '<div class="msg-file"><span class="ui-tile">' + RS.kit.icon('file') + '</span>' +
+            '<span class="msg-file-text"><span class="msg-file-name">' + escapeHtml(name) + '</span>' +
+            (att.size ? '<span class="msg-file-size">' + escapeHtml(prettySize(att.size)) + '</span>' : '') + '</span>' + save + '</div>';
+    }).join('');
+}
+
+// One message: bubble (tinted when yours), time and mark on the last line, reactions under it.
+function _messageRowHtml(msg, prev, next, ctx) {
+    var isOut = msg.direction === 'outbound';
+    var id = escapeHtml(msg.id || '');
+    var gPrev = _messageSameGroup(prev, msg) && !(ctx.newlineId && msg.id === ctx.newlineId);
+    var gNext = _messageSameGroup(msg, next) && !(ctx.newlineId && next && next.id === ctx.newlineId);
+    var pos = gPrev && gNext ? ' msg-g-mid' : gPrev ? ' msg-g-last' : gNext ? ' msg-g-first' : '';
+    var paper = _messageIsPaper(msg);
+    var mark = paper ? _messagePaperChipHtml(msg, isOut) : (isOut ? _messageStateIconHtml(msg) : '');
+    var progressPercent = isOut ? _messageProgressPercent(msg) : null;
+    var canCancelSend = isOut && _messageCanCancelSend(msg);
+    var canCancelTransfer = isOut && _messageCanCancelTransfer(msg);
+    var kind = isOut && !paper ? _messageMarkKind(msg.state) : '';
+    // Earlier messages in a group keep a mark that needs you; settled ones show only on the last.
+    var exceptional = paper || kind === 'waiting' || kind === 'failed' || kind === 'sending' || kind === 'cancelled' || kind === 'rejected';
+
+    var audioHtml = msg.audio && window.RS && RS.voiceMemos ? RS.voiceMemos.renderAudio(msg.audio, msg) : '';
+    var body = _messageBodyHtml(msg, !!audioHtml);
+    var plain = _messageDisplayContent(msg, !!audioHtml);
+    var hasText = !!body.html;
+    var hasFiles = !!(msg.attachments && msg.attachments.length);
+    var imageOnly = !!msg.image && !hasText && !hasFiles && !audioHtml;
+    var emoji = hasText && !body.markdown && !msg.image && !hasFiles && !audioHtml && MSG_EMOJI_ONLY.test(String(plain).trim());
+    var showMeta = !gNext || exceptional || !!msg.image || !!audioHtml;
+    var imageCancels = canCancelTransfer && !!msg.image;
+    var meta = showMeta
+        ? '<span class="msg-meta">' +
+            (canCancelSend && !imageCancels ? '' : '<time class="msg-clock" title="' + escapeHtml(RS.kit.time.full(msg.timestamp)) + '">' + escapeHtml(RS.kit.time.clock(msg.timestamp)) + '</time>') +
+            _messageProgressMetaHtml(msg) + (canCancelSend && !imageCancels ? _messageInlineCancelHtml(msg) : '') + mark + '</span>'
+        : '';
+
+    var parts = '';
+    if (msg.reply_to_id || msg.reply_to_preview) {
+        var quoteName = _replyQuoteName(msg);
+        parts += '<button type="button" class="msg-quote" data-reply-id="' + escapeHtml(msg.reply_to_id || '') + '" ' +
+            'aria-label="' + escapeHtml(quoteName ? 'Go to the message from ' + quoteName : 'Go to the quoted message') + '">' +
+            (quoteName ? '<b>' + escapeHtml(quoteName) + '</b>' : '') + '<span>' + escapeHtml(msg.reply_to_preview || '') + '</span></button>';
+    }
+    if (msg.image) {
+        var overlay = imageCancels ? _messageSendCancelOverlayHtml(msg, progressPercent) : '';
+        var mediaMeta = imageOnly && !imageCancels && meta ? meta.replace('class="msg-meta"', 'class="msg-meta msg-meta--media"') : '';
+        parts += _messageImageHtml(msg, overlay, mediaMeta);
+    }
+    if (hasFiles) parts += _messageFilesHtml(msg, canCancelTransfer);
+    if (audioHtml) parts += audioHtml;
+    var textMeta = hasText && !audioHtml && !body.markdown ? meta : '';
+    if (hasText) {
+        parts += '<div class="msg-text' + (body.markdown ? ' md' : '') + (emoji ? ' msg-text--emoji' : '') + '">' + body.html + textMeta + '</div>';
+    }
+    if (!imageOnly && !textMeta && meta) parts += '<div class="msg-meta-row">' + meta + '</div>';
+
+    var bubbleClass = 'msg-bubble' + (imageOnly ? ' msg-bubble--media' : '') + (msg.image && !imageOnly ? ' msg-bubble--image' : '') +
+        (emoji ? ' msg-bubble--emoji' : '') + (audioHtml ? ' msg-bubble--voice' : '');
+    return '<div class="msg-row msg-row--' + (isOut ? 'out' : 'in') + pos + '">' +
+        '<div class="msg-col"><div class="' + bubbleClass + '" data-msg-id="' + id + '"' + (ctx.pointer ? ' tabindex="0"' : '') + '>' +
+            parts + (ctx.pointer ? _messageHoverBarHtml(id) : '') + '</div>' +
+            _messageReactionsHtml(msg, ctx.ourHash) + '</div></div>';
+}
+
 function renderConversation(options) {
     options = options || {};
     var container = document.getElementById('lxmf-messages');
@@ -3245,57 +3639,42 @@ function renderConversation(options) {
         _clearDeferredConversationRender();
     }
     options = _takeDeferredConversationRenderOptions(options);
+    var hoverOpen = _openHoverMessageId(container);
     _dismissContextMenu({ restoreFocus: false, flushDeferredRender: false });
     _detachMessageLongPressHandlers();
     RS.chatScroll.wire(container);
+    _wireTranscript(container);
     var scrollState = RS.chatScroll.capture(container);
     var renderedImages = _captureLxmfRenderedImages(container);
 
-    var composeBar = document.getElementById('lxmf-compose-bar');
-    if (composeBar) composeBar.style.display = lxmfActiveContact ? '' : 'none';
-
-    var header = document.getElementById('lxmf-chat-header');
-    if (header) {
-        if (lxmfActiveContact) {
-            header.style.display = 'flex';
-            var contact = _lookupContactRecord(lxmfActiveContact);
-            var nameInfo = _conversationNameInfo(lxmfActiveContact, null, false);
-            document.getElementById('lxmf-chat-header-name').innerHTML = ratspeakDisplayNameHtml(nameInfo.name, lxmfActiveContact);
-
-            var avatarEl = document.getElementById('lxmf-contact-avatar');
-            if (avatarEl) {
-                avatarEl.innerHTML = identityAvatar(lxmfActiveContact, 40);
-            }
-            _applyChatHeaderPresence();
-            var addBtn = document.getElementById('lxmf-chat-add-contact-btn');
-            if (addBtn) {
-                addBtn.style.display = contact ? 'none' : '';
-            }
-        } else {
-            header.style.display = 'none';
-        }
+    var open = !!lxmfActiveContact;
+    var composer = document.getElementById('lxmf-composer');
+    if (composer) composer.hidden = !open;
+    var top = document.getElementById('lxmf-chat-top');
+    if (top) top.hidden = !open;
+    var chatArea = document.getElementById('lxmf-chat-area');
+    if (chatArea) chatArea.classList.toggle('has-conversation', open);
+    if (open) {
+        var header = document.getElementById('lxmf-chat-header');
+        if (header) header.style.display = '';
+        _renderChatHeaderName();
+        _applyChatHeaderPresence();
     }
     if (RS.threads) RS.threads.render();
     if (RS.rsnode) RS.rsnode.render();
     renderVoiceUi();
 
-    if (!lxmfActiveContact) {
-        container.innerHTML = '<div class="lxmf-empty">' +
-            '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round" style="opacity:0.15;"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>' +
-            '<span class="empty-state-primary">Your messages</span>' +
-            '<span class="empty-state-hint">Select a conversation or start a new one</span>' +
-        '</div>';
+    if (!open) {
+        container._rsNoConversationHtml = null;
+        _renderFirstRunDetail();
+        _syncJumpButton(container);
         return;
     }
+    container._rsNoConversationHtml = null;
 
     if (lxmfConversation.length === 0) {
-        var emptyNameInfo = _conversationNameInfo(lxmfActiveContact, null, false);
-        var emptyAvatar = (typeof identityAvatar === 'function') ? identityAvatar(lxmfActiveContact, 48) : '';
-        container.innerHTML = '<div class="lxmf-empty-conv">' +
-            '<div style="opacity:0.6;">' + emptyAvatar + '</div>' +
-            '<span class="lxmf-empty-conv-name">' + ratspeakDisplayNameHtml(emptyNameInfo.name, lxmfActiveContact) + '</span>' +
-            '<span class="lxmf-empty-conv-hint">This is the beginning of your encrypted conversation.</span>' +
-        '</div>';
+        container.innerHTML = _conversationIntroHtml(lxmfActiveContact);
+        _syncJumpButton(container);
         return;
     }
 
@@ -3303,167 +3682,30 @@ function renderConversation(options) {
         if (msg.reactions) _msgReactions[msg.id] = msg.reactions;
     });
 
-    var ourHash = lxmfIdentity ? (lxmfIdentity.hash || '') : '';
-
     var msgs = lxmfConversation;
+    var ctx = {
+        ourHash: lxmfIdentity ? (lxmfIdentity.hash || '') : '',
+        pointer: !_mobileMessageActionsUseLongPress(),
+        newlineId: _unreadMarkerFor(msgs)
+    };
     var htmlParts = [];
-    var lastDateLabel = '';
-
+    var lastDate = '';
     for (var mi = 0; mi < msgs.length; mi++) {
         var msg = msgs[mi];
-
-        var dateLabel = _formatDateLabel(msg.timestamp);
-        if (dateLabel !== lastDateLabel) {
-            htmlParts.push('<div class="msg-date-separator"><span>' + escapeHtml(dateLabel) + '</span></div>');
-            lastDateLabel = dateLabel;
+        var date = RS.kit.time.date(msg.timestamp);
+        if (date !== lastDate) {
+            htmlParts.push('<p class="ui-caption msg-day"><time title="' + escapeHtml(RS.kit.time.full(msg.timestamp)) + '">' + escapeHtml(date) + '</time></p>');
+            lastDate = date;
         }
-
-        // Group same-sender msgs <3 min apart for bubble-corner rounding.
-        var sameSenderAsPrev = (mi > 0) && msgs[mi - 1].direction === msg.direction &&
-            (msg.timestamp - msgs[mi - 1].timestamp < 180) && dateLabel === _formatDateLabel(msgs[mi - 1].timestamp);
-        var sameSenderAsNext = (mi < msgs.length - 1) && msgs[mi + 1].direction === msg.direction &&
-            (msgs[mi + 1].timestamp - msg.timestamp < 180) && _formatDateLabel(msgs[mi + 1].timestamp) === dateLabel;
+        if (ctx.newlineId && msg.id === ctx.newlineId) {
+            htmlParts.push('<div class="msg-newline" role="separator"><span>New messages</span></div>');
+        }
         if (_messageIsNote(msg)) {
             htmlParts.push('<div class="msg-note" data-msg-id="' + escapeHtml(msg.id || '') + '"><span>' +
-                escapeHtml(msg.content || '') + '</span><time>' + escapeHtml(formatTime(msg.timestamp)) + '</time></div>');
+                escapeHtml(msg.content || '') + '</span><time>' + escapeHtml(RS.kit.time.clock(msg.timestamp)) + '</time></div>');
             continue;
         }
-        var groupClass = '';
-        if (sameSenderAsPrev && sameSenderAsNext) groupClass = ' msg-group-middle';
-        else if (sameSenderAsPrev) groupClass = ' msg-group-last';
-        else if (sameSenderAsNext) groupClass = ' msg-group-first';
-
-        var isOut = msg.direction === 'outbound';
-        var bubbleClassBase = isOut ? 'lxmf-msg outbound' : 'lxmf-msg inbound';
-        var time = formatTime(msg.timestamp);
-        var stateIcon = _messageIsPaper(msg)
-            ? _messagePaperChipHtml(msg, isOut)
-            : (isOut ? _messageStateIconHtml(msg) : '');
-        var progressPercent = isOut ? _messageProgressPercent(msg) : null;
-        var canCancelSend = isOut && _messageCanCancelSend(msg);
-        var canCancelTransfer = isOut && _messageCanCancelTransfer(msg);
-
-        var replyHtml = '';
-        if (msg.reply_to_id || msg.reply_to_preview) {
-            replyHtml = '<div class="msg-reply-quote" data-reply-id="' + escapeHtml(msg.reply_to_id || '') + '">' +
-                '<span class="reply-quote-bar"></span>' +
-                '<span class="reply-quote-text">' + escapeHtml(msg.reply_to_preview || '') + '</span>' +
-            '</div>';
-        }
-
-        var audioHtml = '';
-        if (msg.audio && window.RS && RS.voiceMemos) {
-            audioHtml = RS.voiceMemos.renderAudio(msg.audio, msg);
-        }
-
-        var attachHtml = '';
-        if (msg.attachments && msg.attachments.length > 0) {
-            attachHtml = msg.attachments.map(function(att) {
-                var sizeStr = att.size ? prettySize(att.size) : '';
-                var nameHtml = att.unavailable
-                    ? '<span class="file-name">Attachment unavailable</span>'
-                    : att.stored_name
-                    ? '<a href="#" class="file-name rs-file-download" data-stored-name="' + escapeHtml(att.stored_name) + '">' + escapeHtml(att.filename || 'file') + '</a>'
-                    : '<span class="file-name">' + escapeHtml(att.filename || 'file') + '</span>';
-                return '<div class="file-transfer-info">' +
-                    '<span class="file-icon">\ud83d\udcce</span>' + nameHtml +
-                    '<span class="file-size">' + sizeStr + '</span>' +
-                '</div>';
-            }).join('');
-        }
-
-        var imageHtml = '';
-        var imageSendOverlay = '';
-        if (msg.image) {
-            var imageFilename = msg.image.filename || 'image';
-            var imageMime = msg.image.mime_type || msg.image.mime || '';
-            var imageSendingClass = canCancelTransfer ? ' is-sending' : '';
-            imageSendOverlay = canCancelTransfer ? _messageSendCancelOverlayHtml(msg, progressPercent) : '';
-            // stored_name \u2192 async fetch; object_url/data_url \u2192 local optimistic preview.
-            if (msg.image.unavailable) {
-                imageHtml = '<div class="file-transfer-info"><span class="file-icon">\ud83d\udcce</span>' +
-                    '<span class="file-name">Attachment unavailable</span></div>';
-            } else if (msg.image.stored_name) {
-                imageHtml = '<div class="lxmf-msg-image' + imageSendingClass + '">' +
-                    '<button type="button" class="lxmf-image-button" aria-label="Open image" ' +
-                    'data-stored-name="' + escapeHtml(msg.image.stored_name) + '" ' +
-                    'data-filename="' + escapeHtml(imageFilename) + '" ' +
-                    'data-mime="' + escapeHtml(imageMime) + '">' +
-                    '<img data-stored-name="' + escapeHtml(msg.image.stored_name) + '" alt="Image" ' +
-                    'data-filename="' + escapeHtml(imageFilename) + '" ' +
-                    'data-mime="' + escapeHtml(imageMime) + '" ' +
-                    'class="lxmf-clickable-img rs-lazy-image">' +
-                    '</button>' +
-                    imageSendOverlay +
-                '</div>';
-            } else if (msg.image.object_url || msg.image.data_url) {
-                var localImageUrl = msg.image.object_url || msg.image.data_url;
-                imageHtml = '<div class="lxmf-msg-image' + imageSendingClass + '">' +
-                    '<button type="button" class="lxmf-image-button" aria-label="Open image" ' +
-                    'data-filename="' + escapeHtml(imageFilename) + '" ' +
-                    'data-mime="' + escapeHtml(imageMime) + '">' +
-                    '<img src="' + escapeHtml(localImageUrl) + '" alt="Image" class="lxmf-clickable-img" ' +
-                    'data-filename="' + escapeHtml(imageFilename) + '" ' +
-                    'data-mime="' + escapeHtml(imageMime) + '">' +
-                    '</button>' +
-                    imageSendOverlay +
-                '</div>';
-            }
-        }
-
-        var reactionHtml = '';
-        var reactions = _msgReactions[msg.id] || [];
-        if (reactions.length > 0) {
-            var grouped = {};
-            reactions.forEach(function(r) {
-                if (!grouped[r.emoji]) grouped[r.emoji] = [];
-                grouped[r.emoji].push(r.sender);
-            });
-            reactionHtml = '<div class="msg-reactions">';
-            Object.keys(grouped).forEach(function(emoji) {
-                var count = grouped[emoji].length;
-                var isMine = grouped[emoji].indexOf(ourHash) !== -1;
-                var reactionLabel = (isMine ? 'Remove' : 'Add') + ' ' + emoji +
-                    ' reaction' + (count > 1 ? ', ' + count + ' reactions' : '');
-                reactionHtml += '<button type="button" class="reaction-pill' + (isMine ? ' mine' : '') + '" ' +
-                    'data-emoji="' + escapeHtml(emoji) + '" data-msg-id="' + escapeHtml(msg.id) + '" ' +
-                    'aria-pressed="' + (isMine ? 'true' : 'false') + '" aria-label="' + escapeHtml(reactionLabel) + '">' +
-                    '<span aria-hidden="true">' + escapeHtml(emoji) + (count > 1 ? ' ' + count : '') + '</span></button>';
-            });
-            reactionHtml += '</div>';
-        }
-
-        // Strip the `[File: ...]` fallback suffix when we have structured payload.
-        var displayContent = _messageDisplayContent(msg, !!audioHtml);
-        var body = _messageBodyHtml(msg, !!audioHtml);
-
-        var hasReactions = reactionHtml ? ' has-reactions' : '';
-        var hasImage = !!imageHtml;
-        var hasAttachment = !!attachHtml;
-        var mobileMessageActions = _mobileMessageActionsUseLongPress();
-        var messageActionsClass = 'msg-actions-trigger' +
-            (mobileMessageActions ? ' msg-actions-trigger-mobile-hidden' : '');
-        var metaHtml = _messageProgressMetaHtml(msg) +
-            '<button type="button" class="' + messageActionsClass + '" data-msg-id="' + escapeHtml(msg.id || '') + '" ' +
-                'aria-label="More actions for this message" aria-haspopup="dialog" aria-expanded="false">' +
-                _messageActionIcon('more') +
-            '</button>' +
-            (canCancelSend ? _messageInlineCancelHtml(msg) : '<span class="msg-time">' + time + '</span>') +
-            stateIcon;
-        var bubbleClass = bubbleClassBase +
-            (hasImage ? ' msg-has-image' : '') +
-            (hasImage && !displayContent && !hasAttachment ? ' msg-image-only' : '');
-        htmlParts.push('<div class="msg-row' + (isOut ? ' outbound' : ' inbound') + hasReactions + groupClass + '">' +
-            '<div class="' + bubbleClass + '" data-msg-id="' + escapeHtml(msg.id || '') + '">' +
-                replyHtml +
-                imageHtml +
-                (body.html ? '<div class="lxmf-msg-content' + (body.markdown ? ' md' : '') + '">' + body.html + '</div>' : '') +
-                audioHtml +
-                attachHtml +
-                '<div class="lxmf-msg-meta">' + metaHtml + '</div>' +
-            '</div>' +
-            reactionHtml +
-        '</div>');
+        htmlParts.push(_messageRowHtml(msg, msgs[mi - 1], msgs[mi + 1], ctx));
     }
     container.innerHTML = htmlParts.join('');
     // Preserve decoded images before restoring scroll. Replacing them with
@@ -3473,8 +3715,20 @@ function renderConversation(options) {
     if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.hydratePlayers === 'function') {
         RS.voiceMemos.hydratePlayers(container);
     }
-    var shouldPinMessages = RS.chatScroll.applyAfterRender(container, scrollState, options);
+    var shouldPinMessages;
+    var line = container.querySelector('.msg-newline');
+    if (line && _unreadMarker && !_unreadMarker.placed && options.forceScrollBottom) {
+        // The chat opens at the first unread message when the new ones fill more than the view.
+        _unreadMarker.placed = true;
+        var target = Math.max(0, line.offsetTop - 16);
+        if (target + container.clientHeight < container.scrollHeight - 1) {
+            RS.chatScroll.restore(container, { scrollTop: target, followLatest: false });
+            shouldPinMessages = false;
+        }
+    }
+    if (shouldPinMessages === undefined) shouldPinMessages = RS.chatScroll.applyAfterRender(container, scrollState, options);
     RS.chatScroll.watchImages(container, shouldPinMessages);
+    if (shouldPinMessages) _jumpNewIds = [];
 
     // Swap cached images immediately; hydrate uncached media only when it is
     // near the viewport. Fetches are single-flight and globally bounded.
@@ -3494,49 +3748,14 @@ function renderConversation(options) {
         _observeImageHydration(img, name);
     });
 
-    // Attachment click → save via IPC (no HTTP endpoint to download from).
-    container.querySelectorAll('a.rs-file-download[data-stored-name]').forEach(function(link) {
-        link.addEventListener('click', function(e) {
-            e.preventDefault();
-            if (_consumePendingMessageHoldActivation(e, this)) return;
-            var name = this.getAttribute('data-stored-name');
-            if (!name) return;
-            RS.saveFile(name).then(function(saved) {
-                if (saved !== false && typeof showToast === 'function') showToast('Saved', 'toast-success', 2200);
-            }).catch(function(err) {
-                if (typeof showToast === 'function') {
-                    showToast('Could not download: ' + (err.message || err.code || 'unknown error'), 'toast-error', 4000);
-                } else {
-                    window.RS.diag('error', '[lxmf] file download failed:', name, err);
-                }
-            });
-        });
-    });
-
-    container.querySelectorAll('.lxmf-send-cancel, .msg-send-cancel-inline').forEach(function(btn) {
-        _bindMessageFocusPreservingActivation(btn, function() {
-            _cancelLxmfSend(btn.getAttribute('data-msg-id'));
-        });
-    });
-
-    container.querySelectorAll('.lxmf-clickable-img').forEach(function(img) {
-        if (img._lxmfImageClickAttached) return;
-        img._lxmfImageClickAttached = true;
-        img.addEventListener('click', function(e) {
-            if (_consumePendingMessageHoldActivation(e, this)) return;
-            e.stopPropagation();
-            if (typeof openImageViewer === 'function') openImageViewer(this);
-        });
-    });
-
     _bindMessageSpoilers(container);
     _bindMessageCodeBlocks(container);
     var pointer = document.documentElement.dataset.inputModality !== 'touch';
     container.querySelectorAll('.rs-message-link.md-link[data-url]').forEach(function(link) {
         if (!pointer) return;
-        var target = rsLinkTarget(link.getAttribute('data-url'));
-        if (target) {
-            var p = target.parts;
+        var linkTarget = rsLinkTarget(link.getAttribute('data-url'));
+        if (linkTarget) {
+            var p = linkTarget.parts;
             link.title = p.scheme + p.www + p.host + p.port + p.rest;
         }
     });
@@ -3569,19 +3788,13 @@ function renderConversation(options) {
         });
     });
 
-    container.querySelectorAll('.msg-retry-btn').forEach(function(btn) {
-        btn.addEventListener('click', function() {
-            var dest = this.getAttribute('data-dest');
-            var content = this.getAttribute('data-content');
-            if (dest && content) {
-                RS.invoke('send_lxmf_message', { args: { dest_hash: dest, content: content, delivery_method: 'auto' } }).catch(function() {});
-                this.disabled = true;
-                this.textContent = 'Retrying...';
-            }
+    container.querySelectorAll('.msg-cancel').forEach(function(btn) {
+        _bindMessageFocusPreservingActivation(btn, function() {
+            _cancelLxmfSend(btn.getAttribute('data-msg-id'));
         });
     });
 
-    container.querySelectorAll('.reaction-pill').forEach(function(pill) {
+    container.querySelectorAll('.msg-react').forEach(function(pill) {
         _bindMessageFocusPreservingActivation(pill, function(e) {
             var emoji = this.getAttribute('data-emoji');
             var msgId = this.getAttribute('data-msg-id');
@@ -3594,61 +3807,33 @@ function renderConversation(options) {
         }.bind(pill));
     });
 
-    container.querySelectorAll('button.msg-paper-state').forEach(function(chip) {
-        _bindMessageFocusPreservingActivation(chip, function(event) {
-            if (_consumePendingMessageHoldActivation(event, chip)) return;
-            var msgId = chip.getAttribute('data-msg-id');
+    container.querySelectorAll('button.msg-mark').forEach(function(markBtn) {
+        _bindMessageFocusPreservingActivation(markBtn, function(event) {
+            if (_consumePendingMessageHoldActivation(event, markBtn)) return;
+            var msgId = markBtn.getAttribute('data-msg-id');
             var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
-            if (msgData) _openPaperMessageShare(msgData);
-        });
-    });
-
-    container.querySelectorAll('.msg-actions-trigger').forEach(function(trigger) {
-        _bindMessageFocusPreservingActivation(trigger, function(event) {
-            var msgId = trigger.getAttribute('data-msg-id');
-            var bubble = trigger.closest('.lxmf-msg');
-            var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
-            if (!bubble || !msgData) return;
-            var rect = trigger.getBoundingClientRect();
-            _showMsgContextMenu(msgData, rect.left + (rect.width / 2), rect.bottom, bubble, trigger, {
+            if (!msgData) return;
+            if (markBtn.classList.contains('msg-mark--paper')) {
+                _openPaperMessageShare(msgData);
+                return;
+            }
+            if (_activeContextMenu && _activeContextMenu.trigger === markBtn) {
+                _dismissContextMenu();
+                return;
+            }
+            var bubble = markBtn.closest('.msg-bubble');
+            var rect = markBtn.getBoundingClientRect();
+            _showMsgContextMenu(msgData, rect.left + (rect.width / 2), rect.bottom, bubble, markBtn, {
                 focusDialog: _messageActivationExpectsFocus(event),
+                anchor: markBtn,
             });
         });
     });
 
-    container.querySelectorAll('.msg-reply-quote').forEach(function(quote) {
-        quote.addEventListener('click', function(e) {
-            if (_consumePendingMessageHoldActivation(e, this)) return;
-            var targetId = this.getAttribute('data-reply-id');
-            if (!targetId) return;
-            var targetEl = container.querySelector('[data-msg-id="' + targetId + '"]');
-            if (targetEl) {
-                var scrollBlock = isCompactLayout() ? 'nearest' : 'center';
-                setTimeout(function() {
-                    targetEl.scrollIntoView({ behavior: 'smooth', block: scrollBlock });
-                }, 100);
-                targetEl.classList.add('msg-highlight');
-                setTimeout(function() { targetEl.classList.remove('msg-highlight'); }, 1500);
-            }
-        });
-    });
-
-    container.querySelectorAll('.lxmf-msg').forEach(function(bubble) {
+    container.querySelectorAll('.msg-bubble').forEach(function(bubble) {
         bubble.addEventListener('mousedown', function(e) {
             if (e.button !== 2) return;
             _rememberMessagePointerContextSelection(e, this);
-        });
-        bubble.addEventListener('keydown', function(e) {
-            if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
-            e.preventDefault();
-            var msgId = this.getAttribute('data-msg-id');
-            var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
-            if (!msgData) return;
-            var trigger = this.querySelector('.msg-actions-trigger');
-            var rect = (trigger || this).getBoundingClientRect();
-            _showMsgContextMenu(msgData, rect.left + (rect.width / 2), rect.bottom, this, trigger, {
-                focusDialog: true,
-            });
         });
         if (window.RS && RS.gestures && typeof RS.gestures.attachLongPress === 'function') {
             var detachLongPress = RS.gestures.attachLongPress(bubble, {
@@ -3672,6 +3857,7 @@ function renderConversation(options) {
                     _armPendingMessageHoldActivation(bubble, msgId, touch);
                     _showMsgContextMenu(msgData, touch.clientX, touch.clientY, bubble, null, {
                         linkUrl: _messageLinkUrlAt(touch.target),
+                        sheet: true,
                     });
                 }
             });
@@ -3703,8 +3889,7 @@ function renderConversation(options) {
             var msgData = lxmfConversation.find(function(m) { return m.id === msgId; });
             if (msgData) {
                 var focusDialog = document.documentElement.dataset.inputModality !== 'touch';
-                var trigger = focusDialog ? this.querySelector('.msg-actions-trigger') : null;
-                _showMsgContextMenu(msgData, e.clientX, e.clientY, this, trigger, {
+                _showMsgContextMenu(msgData, e.clientX, e.clientY, this, focusDialog ? this : null, {
                     focusDialog: focusDialog,
                     linkUrl: _messageLinkUrlAt(target),
                 });
@@ -3713,6 +3898,8 @@ function renderConversation(options) {
     });
 
     _applyMessageSelection();
+    if (hoverOpen) _reopenHoverBar(container, hoverOpen);
+    _syncJumpButton(container);
 }
 
 // Must match backend out_<uuid> format so the round-trip preserves msg_id.
@@ -3775,7 +3962,7 @@ function _finishLxmfComposerSend(input, shouldRestoreFocus, targetHash) {
         input.blur();
     }
     var counter = document.getElementById('lxmf-char-count');
-    if (counter) { counter.textContent = ''; counter.className = 'lxmf-char-count'; counter.style.display = 'none'; }
+    if (counter) { counter.textContent = ''; counter.classList.remove('is-over'); counter.hidden = true; }
     if (window.RS && RS.voiceMemos) RS.voiceMemos.syncComposer();
 }
 
@@ -4575,38 +4762,37 @@ function handleFileSelected(inputEl) {
     inputEl.value = '';
 }
 
+// The pending attachment sits inside the composer pill, above the text.
 function renderPendingFile() {
     var container = document.getElementById('lxmf-pending-file');
     if (!container) return;
 
     if (!lxmfPendingFile) {
         container.innerHTML = '';
-        container.style.display = 'none';
+        container.hidden = true;
+        if (RS.composer.syncExtras) RS.composer.syncExtras(container);
         if (window.RS && RS.voiceMemos) RS.voiceMemos.syncComposer();
         return;
     }
 
-    container.style.display = 'flex';
     var isImage = lxmfPendingFile.inline_image === true;
-    container.classList.toggle('pending-file-has-image', isImage);
-    var previewHtml = isImage
-        ? '<span class="pending-file-thumbnail"><img src="' + escapeHtml(lxmfPendingFile.preview_url || '') + '" alt=""></span>'
-        : '<span class="pending-file-thumbnail pending-file-thumbnail-file">' +
-            (lxmfPendingFile.preparing
-                ? '<span class="loading-spinner" aria-hidden="true"></span>'
-                : '<span class="file-icon">\ud83d\udcce</span>') +
-          '</span>';
-    var sizeLine = lxmfPendingFile.status_text
-        ? escapeHtml(lxmfPendingFile.status_text)
-        : ((lxmfPendingFile.profile_label ? escapeHtml(lxmfPendingFile.profile_label) + ' · ' : '') + prettySize(lxmfPendingFile.size));
-    container.innerHTML =
-        previewHtml +
-        '<span class="pending-file-copy">' +
-            '<span class="file-name">' + escapeHtml(lxmfPendingFile.name) + '</span>' +
-            '<span class="file-size">' + sizeLine + '</span>' +
-        '</span>' +
-        '<button class="pending-file-clear" aria-label="Remove attachment">&times;</button>';
-    container.querySelector('.pending-file-clear').addEventListener('click', clearPendingFile);
+    var meta = lxmfPendingFile.status_text
+        ? lxmfPendingFile.status_text
+        : ((lxmfPendingFile.profile_label ? lxmfPendingFile.profile_label + ' · ' : '') + prettySize(lxmfPendingFile.size));
+    container.innerHTML = RS.composer.preview({
+        thumb: isImage ? lxmfPendingFile.preview_url || '' : '',
+        tile: isImage ? '' : 'file',
+        text: lxmfPendingFile.name,
+        meta: meta,
+        closeLabel: 'Remove attachment'
+    });
+    if (lxmfPendingFile.preparing && !isImage) {
+        var tile = container.querySelector('.ui-tile');
+        if (tile) tile.innerHTML = '<span class="ui-spin" aria-hidden="true"></span>';
+    }
+    container.hidden = false;
+    container.querySelector('[data-cmp-close]').addEventListener('click', clearPendingFile);
+    RS.composer.syncExtras(container);
     if (window.RS && RS.voiceMemos) RS.voiceMemos.syncComposer();
 }
 
@@ -4638,8 +4824,8 @@ function clearPendingFile() {
     var container = document.getElementById('lxmf-pending-file');
     if (container) {
         container.innerHTML = '';
-        container.style.display = 'none';
-        container.classList.remove('pending-file-has-image');
+        container.hidden = true;
+        RS.composer.syncExtras(container);
     }
     if (window.RS && RS.voiceMemos) RS.voiceMemos.syncComposer();
     return _attachmentRetirement;
@@ -4658,9 +4844,13 @@ function setReplyTarget(msgData) {
     };
     var bar = document.getElementById('lxmf-reply-preview');
     if (bar) {
-        bar.querySelector('.reply-preview-sender').textContent = _replyTarget.senderName;
+        var replyName = String(_replyTarget.senderName || '');
+        if (msgData.direction === 'inbound' && !_conversationNameInfo(msgData.source, null, false).isHash) replyName = replyName.trim().split(/\s+/)[0];
+        bar.querySelector('.reply-preview-sender').textContent = msgData.direction === 'inbound'
+            ? 'Replying to ' + replyName : 'Replying to yourself';
         bar.querySelector('.reply-preview-text').textContent = _replyTarget.content;
-        bar.style.display = 'flex';
+        bar.hidden = false;
+        RS.composer.syncExtras(bar);
     }
     var input = document.getElementById('lxmf-input');
     if (input) _focusLxmfComposerInput(input);
@@ -4669,7 +4859,10 @@ function setReplyTarget(msgData) {
 function clearReplyTarget() {
     _replyTarget = null;
     var bar = document.getElementById('lxmf-reply-preview');
-    if (bar) bar.style.display = 'none';
+    if (bar) {
+        bar.hidden = true;
+        RS.composer.syncExtras(bar);
+    }
 }
 
 function _lookupAnnounceName(hash) {
@@ -4700,8 +4893,8 @@ var _messagePointerContextSelection = null;
 
 function _messageHoldActivationSurface(target, bubble) {
     if (!target || !target.closest || !bubble || !bubble.contains(target)) return null;
-    return target.closest('.lxmf-clickable-img, .rs-message-link, .rs-file-download, .msg-reply-quote, ' +
-        '.md-spoiler:not(.is-revealed), .md-code-copy, .msg-paper-state');
+    return target.closest('.msg-img, .rs-message-link, .msg-file-save, .msg-quote, ' +
+        '.md-spoiler:not(.is-revealed), .md-code-copy, .msg-mark--paper');
 }
 
 function _clearPendingMessageHoldActivation(expectedSequence) {
@@ -4769,7 +4962,7 @@ function _consumePendingMessageHoldContext(target, bubble, now) {
 function _consumePendingMessageHoldActivation(event, surface, now) {
     var pending = _pendingMessageHoldActivation;
     var timestamp = typeof now === 'number' ? now : Date.now();
-    var bubble = surface && surface.closest ? surface.closest('.lxmf-msg') : null;
+    var bubble = surface && surface.closest ? surface.closest('.msg-bubble') : null;
     if (!pending || !pending.released || pending.activationConsumed || !surface ||
             pending.surface !== surface || bubble !== pending.bubble) {
         return false;
@@ -4786,7 +4979,7 @@ function _consumePendingMessageHoldActivation(event, surface, now) {
 
 function _findRenderedMessageBubble(container, msgId) {
     if (!container || !msgId) return null;
-    return Array.from(container.querySelectorAll('.lxmf-msg[data-msg-id]')).find(function(candidate) {
+    return Array.from(container.querySelectorAll('.msg-bubble[data-msg-id]')).find(function(candidate) {
         return candidate.getAttribute('data-msg-id') === msgId;
     }) || null;
 }
@@ -4852,35 +5045,46 @@ function _focusMessageControl(control) {
 function _dismissContextMenu(opts) {
     opts = opts || {};
     if (!_activeContextMenu) return false;
-    var trigger = _activeContextMenu.trigger;
-    var msgId = _activeContextMenu.msgId;
-    var restoreFocusExpected = _activeContextMenu.restoreFocusExpected;
-    if (_activeContextMenu.menu && _activeContextMenu.menu.parentNode) {
-        _activeContextMenu.menu.parentNode.removeChild(_activeContextMenu.menu);
+    var state = _activeContextMenu;
+    var trigger = state.trigger;
+    var msgId = state.msgId;
+    var restoreFocusExpected = state.restoreFocusExpected;
+    if (state.menu && state.menu.parentNode) {
+        state.menu.parentNode.removeChild(state.menu);
     }
-    if (_activeContextMenu.reposition) {
-        window.removeEventListener('resize', _activeContextMenu.reposition);
-        if (_activeContextMenu.container) _activeContextMenu.container.removeEventListener('scroll', _activeContextMenu.reposition);
+    if (state.reposition) {
+        window.removeEventListener('resize', state.reposition);
+        if (state.container) state.container.removeEventListener('scroll', state.reposition);
         if (window.visualViewport) {
-            window.visualViewport.removeEventListener('resize', _activeContextMenu.reposition);
-            window.visualViewport.removeEventListener('scroll', _activeContextMenu.reposition);
+            window.visualViewport.removeEventListener('resize', state.reposition);
+            window.visualViewport.removeEventListener('scroll', state.reposition);
         }
     }
-    if (_activeContextMenu.row) {
-        _activeContextMenu.row.classList.remove('msg-action-selected');
+    if (state.row) state.row.classList.remove('is-pressed');
+    if (state.container) {
+        state.container.classList.remove('is-acting');
+        if (state.sheet) state.container.style.paddingBottom = '';
     }
-    if (_activeContextMenu.container) {
-        _activeContextMenu.container.classList.remove('msg-action-mode');
-    }
-    if (trigger) trigger.setAttribute('aria-expanded', 'false');
+    if (trigger && trigger.hasAttribute('aria-expanded')) trigger.setAttribute('aria-expanded', 'false');
     _activeContextMenu = null;
+    // A choice collapses the hover actions; Escape or a click away leaves them as they were.
+    if (state.hoverBar && opts.collapseHover) _closeHoverBar(state.hoverBar);
     var flushedRender = opts.flushDeferredRender !== false && _flushDeferredConversationRender();
     if (opts.restoreFocus !== false && restoreFocusExpected) {
         var focusTarget = trigger;
         if (flushedRender && trigger && msgId) {
             var container = document.getElementById('lxmf-messages');
             var bubble = _findRenderedMessageBubble(container, msgId);
-            focusTarget = bubble && bubble.querySelector('.msg-actions-trigger');
+            focusTarget = bubble;
+            if (bubble && state.hoverAct && !opts.collapseHover) {
+                var bar = bubble.querySelector('.msg-hover');
+                if (bar) {
+                    _openHoverBar(bar, false, false);
+                    focusTarget = bar.querySelector('[data-hover-act="' + state.hoverAct + '"]') || bubble;
+                }
+            } else if (bubble && trigger.classList && trigger.classList.contains('msg-mark')) {
+                focusTarget = bubble.querySelector('.msg-mark') || bubble;
+            }
         }
         _focusMessageControl(focusTarget);
     }
@@ -4958,82 +5162,81 @@ function _applyMessageSelection() {
     var ids = active ? _msgSelection.ids : [];
     var container = document.getElementById('lxmf-messages');
     if (container) {
-        container.classList.toggle('msg-select-mode', active);
+        container.classList.toggle('is-selecting', active);
         container.querySelectorAll('.msg-row').forEach(function(row) {
-            var bubble = row.querySelector('.lxmf-msg[data-msg-id]');
-            var check = row.querySelector('.msg-select-check');
+            var bubble = row.querySelector('.msg-bubble[data-msg-id]');
+            var check = row.querySelector('.msg-check');
             var msg = bubble ? _conversationMessageById(bubble.getAttribute('data-msg-id')) : null;
-            // In-flight sends get no circle at all: they cannot be selected.
+            // In-flight sends get no box at all: they cannot be selected.
             if (!active || !msg || !_messageSelectable(msg)) {
                 if (check) check.remove();
-                row.classList.remove('msg-selected');
+                row.classList.remove('is-selected');
+                row.removeAttribute('aria-selected');
                 return;
             }
             var selected = ids.indexOf(msg.id) !== -1;
             if (!check) {
-                check = document.createElement('button');
-                check.type = 'button';
-                check.className = 'msg-select-check';
-                check.setAttribute('role', 'checkbox');
-                check.setAttribute('aria-label', _messageSelectLabel(msg));
-                bubble.appendChild(check);
+                row.insertAdjacentHTML('afterbegin', '<label class="ui-check-row msg-check"><input type="checkbox">' +
+                    '<span class="ui-check">' + RS.kit.icon('check') + '</span></label>');
+                check = row.firstChild;
+                check.querySelector('input').setAttribute('aria-label', _messageSelectLabel(msg));
             }
-            check.setAttribute('aria-checked', selected ? 'true' : 'false');
-            row.classList.toggle('msg-selected', selected);
+            check.querySelector('input').checked = selected;
+            row.classList.toggle('is-selected', selected);
+            if (selected) row.setAttribute('aria-selected', 'true');
+            else row.removeAttribute('aria-selected');
         });
     }
     _applyMessageSelectBar(active, ids.length, container);
 }
 
+// While selecting, the header becomes Cancel, "2 selected", and Delete; the composer steps away.
 function _applyMessageSelectBar(active, count, container) {
     var bar = document.getElementById('lxmf-select-bar');
     if (!bar) return;
     var wasShown = !bar.hidden;
     if (active !== wasShown) {
-        // Keep the transcript visually still while the bar takes its height.
-        var before = bar.offsetHeight;
         bar.hidden = !active;
-        var delta = active ? bar.offsetHeight : -before;
-        if (container && delta) container.scrollTop += delta;
+        var header = document.getElementById('lxmf-chat-header');
+        if (header) header.hidden = active;
+        var threads = document.getElementById('lxmf-chat-top');
+        if (threads) threads.classList.toggle('is-selecting', active);
+        var composer = document.getElementById('lxmf-composer');
+        if (composer) composer.classList.toggle('is-selecting', active);
         if (active) {
             var input = document.getElementById('lxmf-input');
             if (input && document.activeElement === input) input.blur();
         } else if (bar.contains(document.activeElement)) {
-            var composer = document.getElementById('lxmf-input');
-            if (composer && !isCompactLayout()) _focusMessageControl(composer);
+            var composerInput = document.getElementById('lxmf-input');
+            if (composerInput && !isCompactLayout()) _focusMessageControl(composerInput);
         }
     }
     var deleteBtn = document.getElementById('lxmf-select-delete-btn');
     if (deleteBtn) {
-        deleteBtn.textContent = count > 1 ? 'Delete (' + count + ')' : 'Delete';
         deleteBtn.setAttribute('aria-label', 'Delete ' + count + (count === 1 ? ' selected message' : ' selected messages'));
     }
     var status = document.getElementById('lxmf-select-status');
     if (status && (active || wasShown)) {
-        clearTimeout(_msgSelectAnnounceTimer);
-        _msgSelectAnnounceTimer = setTimeout(function() {
-            status.textContent = active ? count + ' selected' : 'Selection cleared';
-        }, 250);
+        status.textContent = active ? count + ' selected' : '';
     }
 }
 
-// Clicks that leave the conversation end selection: the chat header, the
-// conversation list, or app navigation. Cancel, Esc and Back do too.
-var MSG_SELECTION_EXIT_SURFACES = '#lxmf-chat-header, .lxmf-sidebar, #sidebar, #bottom-bar';
+// Clicks that leave the conversation end selection: the conversation list or app navigation.
+// Cancel, Esc, and Back do too.
+var MSG_SELECTION_EXIT_SURFACES = '.lxmf-sidebar, #sidebar, #bottom-bar';
 
 function _handleMessageSelectionClick(e) {
     if (!_messageSelectionActive()) return;
     var target = e.target;
     var container = document.getElementById('lxmf-messages');
     if (!container || !target || !container.contains(target)) {
-        // The back arrow ends selection itself and must not also leave the chat.
         if (!_msgSelection.pending && target && target.closest &&
-                target.closest(MSG_SELECTION_EXIT_SURFACES) && !target.closest('#lxmf-back-btn')) {
+                target.closest(MSG_SELECTION_EXIT_SURFACES)) {
             _clearMessageSelection();
         }
         return;
     }
-    // Anywhere on a message's row toggles it, including the space beside
+    // Anywhere on a message's row toggles it, including its box and the space beside
     // the bubble; the gaps between messages do nothing.
     var row = target.closest ? target.closest('.msg-row') : null;
     if (!row) return;
@@ -5041,7 +5244,7 @@ function _handleMessageSelectionClick(e) {
     if (_consumePendingMessageHoldActivation(e, e.target)) return;
     e.preventDefault();
     e.stopPropagation();
-    var bubble = row.querySelector('.lxmf-msg[data-msg-id]');
+    var bubble = row.querySelector('.msg-bubble[data-msg-id]');
     var msg = bubble ? _conversationMessageById(bubble.getAttribute('data-msg-id')) : null;
     _dismissContextMenu({ restoreFocus: false });
     if (msg) _toggleMessageSelection(msg);
@@ -5125,7 +5328,7 @@ function _deleteSelectedMessages() {
 function _messageActionOwnsText(bubble, target) {
     if (!_activeContextMenu || !bubble || _activeContextMenu.bubble !== bubble) return false;
     if (_activeContextMenu.ownerHash !== _canonicalConversationHash(lxmfActiveContact)) return false;
-    var content = target && target.closest ? target.closest('.lxmf-msg-content') : null;
+    var content = target && target.closest ? target.closest('.msg-text') : null;
     return !!(content && bubble.contains(content));
 }
 
@@ -5141,37 +5344,6 @@ function _clearNativeMessageSelection() {
     if (!window.getSelection) return;
     var selection = window.getSelection();
     if (selection && typeof selection.removeAllRanges === 'function') selection.removeAllRanges();
-}
-
-function _messageActionIcon(name) {
-    if (name === 'reply') {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>';
-    }
-    if (name === 'copy') {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
-    }
-    if (name === 'save') {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>';
-    }
-    if (name === 'more') {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>';
-    }
-    if (name === 'select') {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><polyline points="8 12.5 11 15.5 16 9.5"/></svg>';
-    }
-    if (name === 'retry') {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0 1 15.5-6.2L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15.5 6.2L3 16"/><path d="M3 21v-5h5"/></svg>';
-    }
-    if (name === 'stop') {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
-    }
-    if (name === 'activity') {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>';
-    }
-    if (name === 'qr') {
-        return '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg>';
-    }
-    return '';
 }
 
 function _messageSelectionIntersectsBubble(bubble) {
@@ -5191,7 +5363,7 @@ function _messageTouchStartsDirectControl(touch, bubble) {
     var target = touch && touch.target;
     if (!target || !target.closest || !bubble || !bubble.contains(target)) return false;
     return !!target.closest(
-        '.msg-actions-trigger, .lxmf-send-cancel, .msg-send-cancel-inline, .msg-retry-btn, ' +
+        '.msg-hover, .msg-cancel, .msg-mark, .msg-react, ' +
         '.voice-memo-player-play, .voice-memo-player-waveform, .voice-memo-player-download, .md-code-copy'
     );
 }
@@ -5315,7 +5487,7 @@ function _bindMessageCodeBlocks(container) {
 var _revealedSpoilers = { hash: null, keys: {} };
 
 function _spoilerKey(spoiler) {
-    var bubble = spoiler.closest('.lxmf-msg[data-msg-id]');
+    var bubble = spoiler.closest('.msg-bubble[data-msg-id]');
     if (!bubble) return null;
     var all = bubble.querySelectorAll('.md-spoiler');
     return bubble.getAttribute('data-msg-id') + ':' + Array.prototype.indexOf.call(all, spoiler);
@@ -5368,7 +5540,7 @@ function _bindMessageSpoilers(container) {
 }
 
 function _messageLinkActivationAllowed(link) {
-    var bubble = link && link.closest ? link.closest('.lxmf-msg') : null;
+    var bubble = link && link.closest ? link.closest('.msg-bubble') : null;
     return !_messageActionOwnsText(bubble, link) && !_messageSelectionIntersectsBubble(bubble);
 }
 
@@ -5394,7 +5566,7 @@ function _messageContextMenuDisposition(target, bubble, now, selectionExistedBef
     // bubble; a real second hold has already cleared this pending record.
     if (_consumePendingMessageHoldContext(target, bubble, now)) return 'suppress';
     if (_messageLinkUrlAt(target) && document.documentElement.dataset.inputModality !== 'touch') return 'actions';
-    var selectableText = target && target.closest && target.closest('.lxmf-msg-content');
+    var selectableText = target && target.closest && target.closest('.msg-text');
     var preserveSelection = selectionExistedBeforePointer === null ||
         typeof selectionExistedBeforePointer === 'undefined'
         ? _messageSelectionIntersectsBubble(bubble)
@@ -5450,17 +5622,17 @@ function _restoreRenderedMessageActionFocus(msgId, emoji, focusExpected) {
     if (!(focusExpected || _prefersKeyboardMessageFocus()) || !msgId) return;
     var container = document.getElementById('lxmf-messages');
     if (!container) return;
-    var bubble = Array.from(container.querySelectorAll('.lxmf-msg[data-msg-id]')).find(function(candidate) {
+    var bubble = Array.from(container.querySelectorAll('.msg-bubble[data-msg-id]')).find(function(candidate) {
         return candidate.getAttribute('data-msg-id') === msgId;
     });
     var target = null;
     if (emoji) {
-        target = Array.from(container.querySelectorAll('.reaction-pill[data-msg-id]')).find(function(candidate) {
+        target = Array.from(container.querySelectorAll('.msg-react[data-msg-id]')).find(function(candidate) {
             return candidate.getAttribute('data-msg-id') === msgId &&
                 candidate.getAttribute('data-emoji') === emoji;
         }) || null;
     }
-    if (!target && bubble) target = bubble.querySelector('.msg-actions-trigger');
+    if (!target) target = bubble;
     _focusMessageControl(target);
 }
 
@@ -5558,7 +5730,7 @@ function _messageMediaContextAction(msgData) {
         var image = msgData.image;
         var canCopyImage = _canCopyDownloadedImages();
         return {
-            label: canCopyImage ? 'Copy Image' : 'Save Image',
+            label: canCopyImage ? 'Copy image' : 'Save image',
             icon: canCopyImage ? 'copy' : 'save',
             run: function() {
                 if (!canCopyImage && image.stored_name && typeof isTauriMobile === 'function' && isTauriMobile()) {
@@ -5579,7 +5751,7 @@ function _messageMediaContextAction(msgData) {
     var attachment = _messageFirstAttachment(msgData);
     if (attachment) {
         return {
-            label: 'Save File',
+            label: 'Save file',
             icon: 'save',
             run: function() {
                 if (attachment.stored_name &&
@@ -5598,6 +5770,7 @@ function _messageMediaContextAction(msgData) {
 
 var MSG_ACTION_GAP = 8;
 var MSG_ACTION_EDGE = 12;
+var MSG_QUICK_REACTIONS = ['❤️', '👍', '😂', '😮', '😢', '🔥'];
 
 // Visible transcript band in layout-viewport coordinates: below the header
 // (and call strip), above the composer and the on-screen keyboard.
@@ -5605,38 +5778,31 @@ function _messageActionBand() {
     var vv = window.visualViewport;
     var top = vv ? vv.offsetTop : 0;
     var bottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
-    ['lxmf-chat-header', 'lxst-call-strip', 'lxmf-select-bar'].forEach(function(id) {
+    ['lxmf-chat-top', 'lxst-call-strip'].forEach(function(id) {
         var el = document.getElementById(id);
         if (!el || el.hidden) return;
         var r = el.getBoundingClientRect();
         if (r.height > 0) top = Math.max(top, r.bottom);
     });
-    ['lxmf-compose-bar', 'lxmf-voice-recorder'].forEach(function(id) {
-        var el = document.getElementById(id);
-        if (!el || el.hidden) return;
-        var r = el.getBoundingClientRect();
-        if (r.height > 0) bottom = Math.min(bottom, r.top);
-    });
+    var composer = document.getElementById('lxmf-composer');
+    if (composer && !composer.hidden) {
+        var cr = composer.getBoundingClientRect();
+        if (cr.height > 0) bottom = Math.min(bottom, cr.top);
+    }
     return { top: top + MSG_ACTION_GAP, bottom: bottom - MSG_ACTION_GAP };
 }
 
-// Smallest upward (+) or downward (-) transcript shift that lets the
-// message and its panels fit, preferring the split layout.
-function _messageActionScrollDelta(top, bottom, reactH, actionsH, band) {
-    var g = MSG_ACTION_GAP;
-    var ranges = [
-        [bottom + g + actionsH - band.bottom, top - g - reactH - band.top],
-        [bottom + g + reactH + g + actionsH - band.bottom, top - band.top],
-    ];
-    for (var i = 0; i < ranges.length; i++) {
-        var lo = ranges[i][0];
-        var hi = ranges[i][1];
-        if (lo <= hi) return lo > 0 ? lo : (hi < 0 ? hi : 0);
-    }
-    return null;
+// Smallest transcript shift (+ scrolls down) that brings a message of the
+// given top and bottom between the band's top and `limit`, preferring its top.
+function _messageActionScrollDelta(top, bottom, band, limit) {
+    var lower = Math.min(band.bottom, limit);
+    if (bottom - top > lower - band.top) return top - band.top;
+    if (bottom > lower) return bottom - lower;
+    if (top < band.top) return top - band.top;
+    return 0;
 }
 
-// Arrow-key target within the tray. Groups are in on-screen order; the
+// Arrow-key target within the menu. Groups are in on-screen order; the
 // reactions row moves with Left/Right (wrapping), the action rows with
 // Up/Down, and Up/Down at an edge crosses to the neighbouring group.
 function _messageActionKeyTarget(groups, current, key) {
@@ -5668,76 +5834,58 @@ function _messageActionKeyTarget(groups, current, key) {
     return items[ii + step] || enter(step);
 }
 
+// Desktop: one kit menu under its anchor (above it when there is no room), docked inside
+// the transcript band when neither fits. Phone: a sheet, with the pressed message kept in view.
 function _layoutMessageActionPanels(state, allowScroll) {
     var bubble = state.bubble;
     if (!bubble || !bubble.isConnected) return null;
-    var react = state.reactPanel;
-    var actions = state.actionsPanel;
-    var g = MSG_ACTION_GAP;
+    var menu = state.menu;
     var band = _messageActionBand();
     var b = bubble.getBoundingClientRect();
     var rowRect = state.row && state.row.isConnected ? state.row.getBoundingClientRect() : b;
     var top = b.top;
     var bottom = Math.max(b.bottom, rowRect.bottom);
-    var reactH = react.offsetHeight;
-    var actionsH = actions.offsetHeight;
-    var fits = function(t, h) { return t >= band.top && t + h <= band.bottom; };
-    var placement = null;
-    var reactTop;
-    var actionsTop;
 
-    if (fits(top - g - reactH, reactH) && fits(bottom + g, actionsH)) {
-        placement = 'split';
-        reactTop = top - g - reactH;
-        actionsTop = bottom + g;
-    } else if (fits(bottom + g, reactH + g + actionsH)) {
-        placement = 'below';
-        reactTop = bottom + g;
-        actionsTop = reactTop + reactH + g;
-    } else if (fits(top - g - reactH - g - actionsH, reactH + g + actionsH)) {
-        // Above: the reactions stay nearest the message.
-        placement = 'above';
-        actionsTop = top - g - reactH - g - actionsH;
-        reactTop = actionsTop + actionsH + g;
-    }
-
-    // Also reveal a message that is partly under the header or composer.
-    if (allowScroll && (!placement || top < band.top || bottom > band.bottom)) {
+    if (state.sheet) {
+        var sheetTop = menu.getBoundingClientRect().top - MSG_ACTION_GAP;
         var scroller = document.getElementById('lxmf-messages');
-        var delta = _messageActionScrollDelta(top, bottom, reactH, actionsH, band);
-        if (scroller && delta) {
+        var delta = _messageActionScrollDelta(top, bottom, band, sheetTop);
+        if (allowScroll && scroller && delta) {
             var before = scroller.scrollTop;
+            // Room under the last message so the newest can rise above the sheet too.
+            var room = Math.max(0, bottom - sheetTop);
+            if (room) scroller.style.paddingBottom = (room + MSG_ACTION_GAP) + 'px';
             scroller.scrollTop = before + delta;
-            if (scroller.scrollTop !== before) return _layoutMessageActionPanels(state, false);
         }
+        menu.setAttribute('data-placement', 'sheet');
+        return 'sheet';
     }
 
-    if (!placement) {
-        // Taller than the band: dock over the message, never over the chrome.
+    var a = state.anchorRect || b;
+    var h = menu.offsetHeight;
+    var w = menu.offsetWidth;
+    var g = 4;
+    var placement;
+    var menuTop;
+    // A message partly under the header (a keyboard opened it) keeps its menu inside the band.
+    if (a.bottom + g + h <= band.bottom) {
+        placement = 'below';
+        menuTop = Math.max(band.top, a.bottom + g);
+    } else if (a.top - g - h >= band.top) {
+        placement = 'above';
+        menuTop = a.top - g - h;
+    } else {
+        // Taller than the room around it: dock over the transcript, never over the chrome.
         placement = 'dock';
-        actionsTop = band.bottom - actionsH;
-        reactTop = actionsTop - g - reactH;
-        if (reactTop < band.top) {
-            reactTop = band.top;
-            actionsTop = reactTop + reactH + g;
-        }
+        menuTop = Math.max(band.top, Math.min(a.top, band.bottom - h));
     }
-
     var insets = safeAreaInsets();
-    var place = function(panel, panelTop, below) {
-        var w = panel.offsetWidth;
-        var left = state.outbound ? b.right - w : b.left;
-        left = Math.max(MSG_ACTION_EDGE + insets.left,
-            Math.min(left, window.innerWidth - w - MSG_ACTION_EDGE - insets.right));
-        panel.style.left = Math.round(left) + 'px';
-        panel.style.top = Math.round(panelTop) + 'px';
-        panel.style.setProperty('--msg-panel-origin',
-            (below ? 'top ' : 'bottom ') + (state.outbound ? 'right' : 'left'));
-        panel.style.setProperty('--msg-panel-shift', (below ? -4 : 4) + 'px');
-    };
-    place(react, reactTop, placement === 'below');
-    place(actions, actionsTop, placement === 'split' || placement === 'below');
-    state.menu.setAttribute('data-placement', placement);
+    var left = state.outbound ? a.right - w : a.left;
+    left = Math.max(MSG_ACTION_EDGE + insets.left,
+        Math.min(left, window.innerWidth - w - MSG_ACTION_EDGE - insets.right));
+    menu.style.left = Math.round(left) + 'px';
+    menu.style.top = Math.round(menuTop) + 'px';
+    menu.setAttribute('data-placement', placement);
     return placement;
 }
 
@@ -5745,6 +5893,17 @@ function _prepareMessageActionTarget(msgData, bubble, trigger, x, y) {
     return { bubble: bubble, trigger: trigger, x: x, y: y };
 }
 
+function _messageMenuButton(cls, action, glyph, label) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = cls;
+    btn.setAttribute('data-message-action', action);
+    btn.innerHTML = RS.kit.icon(glyph) + '<span class="lbl">' + escapeHtml(label) + '</span>';
+    return btn;
+}
+
+// The message menu: a reactions row on top, then the actions. opts: { focusDialog, linkUrl,
+// sheet (a long press), anchor (element), reactOnly (the hover bar's React) }.
 function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     opts = opts || {};
     var preparedTarget = _prepareMessageActionTarget(msgData, bubble, trigger, x, y);
@@ -5760,29 +5919,31 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     var container = document.getElementById('lxmf-messages');
     var row = bubble && bubble.closest ? bubble.closest('.msg-row') : null;
     if (!row && container && msgData.id) {
-        var target = container.querySelector('[data-msg-id="' + msgData.id + '"]');
+        var target = _findRenderedMessageBubble(container, msgData.id);
         row = target && target.closest ? target.closest('.msg-row') : null;
     }
-    if (container) container.classList.add('msg-action-mode');
-    if (row) row.classList.add('msg-action-selected');
+    var useSheet = isCompactLayout() && !opts.reactOnly;
+    if (container) container.classList.add('is-acting');
+    if (row) row.classList.add('is-pressed');
+    var hoverBar = trigger && trigger.closest ? trigger.closest('.msg-hover') : null;
 
     var menu = document.createElement('div');
-    menu.className = 'msg-context-menu msg-action-menu';
+    menu.className = useSheet ? 'ui-dialog msg-sheet' : 'ui-menu ui-pop msg-menu' + (opts.reactOnly ? ' msg-react-pop' : '');
     menu.setAttribute('role', 'dialog');
     menu.setAttribute('aria-modal', 'false');
-    menu.setAttribute('aria-label', 'Message actions');
+    menu.setAttribute('aria-label', opts.reactOnly ? 'Reactions' : 'Message actions');
     menu.addEventListener('mousedown', _preventMessageActionFocusSteal);
     menu.addEventListener('touchstart', _preventMessageActionFocusSteal, { passive: false });
+    if (useSheet) menu.innerHTML = '<div class="ui-dialog-handle" aria-hidden="true"></div>';
 
     var reactBar = document.createElement('div');
-    reactBar.className = 'msg-action-panel msg-quick-react';
+    reactBar.className = 'msg-quick';
     reactBar.setAttribute('role', 'group');
     reactBar.setAttribute('aria-label', 'Reactions');
-    var quickEmojis = ['\u2764\uFE0F', '\uD83D\uDC4D', '\uD83D\uDE02', '\uD83D\uDE2E', '\uD83D\uDE22', '\uD83D\uDD25'];
-    quickEmojis.forEach(function(em) {
+    MSG_QUICK_REACTIONS.forEach(function(em) {
         var btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'quick-react-emoji';
+        btn.className = 'msg-quick-btn';
         btn.textContent = em;
         btn.setAttribute('data-message-action', 'reaction:' + em);
         var hasOwnReaction = _hasOwnReaction(msgData.id, em);
@@ -5798,8 +5959,8 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
 
     var plusBtn = document.createElement('button');
     plusBtn.type = 'button';
-    plusBtn.className = 'quick-react-plus';
-    plusBtn.innerHTML = _messageActionIcon('more');
+    plusBtn.className = 'ui-icon-btn ui-icon-btn--sm msg-quick-more';
+    plusBtn.innerHTML = RS.kit.icon('smile-plus');
     plusBtn.title = 'More reactions';
     plusBtn.setAttribute('aria-label', 'More reactions');
     plusBtn.setAttribute('data-message-action', 'reaction-more');
@@ -5807,7 +5968,7 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         var shouldRestoreComposer = _messageActionShouldPreserveComposer();
         // Capture before dismiss removes plusBtn from the DOM.
         var btnRect = plusBtn.getBoundingClientRect();
-        _dismissContextMenu();
+        _dismissContextMenu({ collapseHover: true });
         _restoreLxmfComposerKeyboard(shouldRestoreComposer);
         var tempAnchor = document.createElement('div');
         tempAnchor.style.cssText = 'position:fixed;left:' + btnRect.left + 'px;top:' + btnRect.top + 'px;width:' + btnRect.width + 'px;height:' + btnRect.height + 'px;pointer-events:none;';
@@ -5837,106 +5998,71 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     menu.appendChild(reactBar);
 
     var actions = document.createElement('div');
-    actions.className = 'msg-action-panel msg-context-actions';
+    actions.className = useSheet ? 'ui-menu ui-menu--sheet msg-menu-items' : 'msg-menu-items';
+    var itemClass = 'ui-menu-item';
+    function add(btn, handler) {
+        _bindMessageFocusPreservingActivation(btn, handler);
+        actions.appendChild(btn);
+    }
+    var hasTop = false;
 
     if (_messageIsWaiting(msgData)) {
-        var tryNowBtn = document.createElement('button');
-        tryNowBtn.className = 'msg-ctx-btn msg-ctx-try-now';
-        tryNowBtn.type = 'button';
-        tryNowBtn.setAttribute('data-message-action', 'try-now');
-        tryNowBtn.innerHTML = _messageActionIcon('retry') + '<span>Try now</span>';
-        _bindMessageFocusPreservingActivation(tryNowBtn, function() {
+        hasTop = true;
+        add(_messageMenuButton(itemClass + ' msg-ctx-try-now', 'try-now', 'refresh', 'Try now'), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-            _dismissContextMenu();
+            _dismissContextMenu({ collapseHover: true });
             _tryWaitingLxmfMessage(msgData);
             _restoreLxmfComposerKeyboard(shouldRestoreComposer);
         });
-        actions.appendChild(tryNowBtn);
-
-        var stopTryingBtn = document.createElement('button');
-        stopTryingBtn.className = 'msg-ctx-btn msg-ctx-stop-trying';
-        stopTryingBtn.type = 'button';
-        stopTryingBtn.setAttribute('data-message-action', 'stop-trying');
-        stopTryingBtn.innerHTML = _messageActionIcon('stop') + '<span>Stop trying</span>';
-        _bindMessageFocusPreservingActivation(stopTryingBtn, function() {
+        add(_messageMenuButton(itemClass + ' msg-ctx-stop-trying', 'stop-trying', 'x', 'Stop trying'), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-            _dismissContextMenu();
+            _dismissContextMenu({ collapseHover: true });
             _stopWaitingLxmfMessage(msgData);
             _restoreLxmfComposerKeyboard(shouldRestoreComposer);
         });
-        actions.appendChild(stopTryingBtn);
     }
 
     if (_messageCanRetry(msgData)) {
-        var retryBtn = document.createElement('button');
-        retryBtn.className = 'msg-ctx-btn msg-ctx-retry';
-        retryBtn.type = 'button';
-        retryBtn.setAttribute('data-message-action', 'retry');
-        retryBtn.innerHTML = _messageActionIcon('retry') + '<span>Retry</span>';
-        _bindMessageFocusPreservingActivation(retryBtn, function() {
-            _dismissContextMenu({ restoreFocus: false });
-            _openRetryMethodPopover(msgData);
+        hasTop = true;
+        add(_messageMenuButton(itemClass + ' msg-ctx-retry', 'retry', 'refresh', 'Retry…'), function() {
+            var anchorBubble = state.bubble;
+            _dismissContextMenu({ restoreFocus: false, collapseHover: true });
+            _openRetryMethodPopover(msgData, anchorBubble);
         });
-        actions.appendChild(retryBtn);
     }
 
     if (_messageCanShowInActivity(msgData) && typeof showMessageInActivity === 'function') {
-        var activityBtn = document.createElement('button');
-        activityBtn.className = 'msg-ctx-btn msg-ctx-activity';
-        activityBtn.type = 'button';
-        activityBtn.setAttribute('data-message-action', 'show-activity');
-        activityBtn.innerHTML = _messageActionIcon('activity') + '<span>Show in Activity</span>';
-        _bindMessageFocusPreservingActivation(activityBtn, function(e) {
+        hasTop = true;
+        add(_messageMenuButton(itemClass + ' msg-ctx-activity', 'show-activity', 'activity', 'Show in Activity'), function(e) {
             var focusChip = _messageActivationExpectsFocus(e);
-            _dismissContextMenu({ restoreFocus: false });
+            _dismissContextMenu({ restoreFocus: false, collapseHover: true });
             showMessageInActivity(msgData.id, {
                 retryable: _messageCanRetry(msgData),
                 focusChip: focusChip
             });
         });
-        actions.appendChild(activityBtn);
     }
 
-    var replyBtn = document.createElement('button');
-    replyBtn.className = 'msg-ctx-btn msg-ctx-reply';
-    replyBtn.type = 'button';
-    replyBtn.setAttribute('data-message-action', 'reply');
-    replyBtn.innerHTML = _messageActionIcon('reply') + '<span>Reply</span>';
-    _bindMessageFocusPreservingActivation(replyBtn, function() {
-        _dismissContextMenu();
+    if (hasTop) {
+        var topSep = document.createElement('div');
+        topSep.className = 'ui-menu-sep';
+        topSep.setAttribute('role', 'separator');
+        actions.appendChild(topSep);
+    }
+
+    add(_messageMenuButton(itemClass + ' msg-ctx-reply', 'reply', 'reply', 'Reply'), function() {
+        _dismissContextMenu({ collapseHover: true });
         setReplyTarget(msgData);
         if (typeof haptic === 'function') haptic('light');
     });
-    actions.appendChild(replyBtn);
 
-    if (_messageSelectable(msgData)) {
-        var isSelected = _messageSelectionActive() && _msgSelection.ids.indexOf(msgData.id) !== -1;
-        var selectBtn = document.createElement('button');
-        selectBtn.className = 'msg-ctx-btn msg-ctx-select';
-        selectBtn.type = 'button';
-        selectBtn.setAttribute('data-message-action', 'select');
-        selectBtn.innerHTML = _messageActionIcon('select') + '<span>' + (isSelected ? 'Deselect' : 'Select') + '</span>';
-        _bindMessageFocusPreservingActivation(selectBtn, function() {
-            _dismissContextMenu({ restoreFocus: false });
-            if (isSelected) _toggleMessageSelection(msgData);
-            else _selectMessage(msgData);
-            if (typeof haptic === 'function') haptic('light');
-        });
-        actions.appendChild(selectBtn);
-    }
-
-    var content = bubble && bubble.querySelector ? bubble.querySelector('.lxmf-msg-content') : null;
+    var content = bubble && bubble.querySelector ? bubble.querySelector('.msg-text') : null;
     var messageText = _messageCopyText(msgData, content);
     var hasText = !!(content && String(messageText || '').trim());
     if (hasText) {
-        var copyBtn = document.createElement('button');
-        copyBtn.className = 'msg-ctx-btn msg-ctx-copy';
-        copyBtn.type = 'button';
-        copyBtn.setAttribute('data-message-action', 'copy-message');
-        copyBtn.innerHTML = _messageActionIcon('copy') + '<span>Copy</span>';
-        _bindMessageFocusPreservingActivation(copyBtn, function() {
+        add(_messageMenuButton(itemClass + ' msg-ctx-copy', 'copy-message', 'copy', 'Copy'), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-            _dismissContextMenu();
+            _dismissContextMenu({ collapseHover: true });
             _copyToClipboard(messageText).then(function(ok) {
                 if (typeof showToast === 'function') {
                     showToast(ok ? 'Message copied' : 'Could not copy', ok ? 'toast-success' : 'toast-error', 1600);
@@ -5951,29 +6077,26 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
                 _restoreLxmfComposerKeyboard(shouldRestoreComposer);
             });
         });
-        actions.appendChild(copyBtn);
+    }
+
+    if (_messageSelectable(msgData)) {
+        var isSelected = _messageSelectionActive() && _msgSelection.ids.indexOf(msgData.id) !== -1;
+        add(_messageMenuButton(itemClass + ' msg-ctx-select', 'select', 'square-check', isSelected ? 'Deselect' : 'Select'), function() {
+            _dismissContextMenu({ restoreFocus: false, collapseHover: true });
+            if (isSelected) _toggleMessageSelection(msgData);
+            else _selectMessage(msgData);
+            if (typeof haptic === 'function') haptic('light');
+        });
     }
 
     if (msgData.direction === 'outbound' && _messageIsPaper(msgData)) {
-        var showQrBtn = document.createElement('button');
-        showQrBtn.className = 'msg-ctx-btn msg-ctx-paper-qr';
-        showQrBtn.type = 'button';
-        showQrBtn.setAttribute('data-message-action', 'paper-qr');
-        showQrBtn.innerHTML = _messageActionIcon('qr') + '<span>Show QR</span>';
-        _bindMessageFocusPreservingActivation(showQrBtn, function() {
-            _dismissContextMenu({ restoreFocus: false });
+        add(_messageMenuButton(itemClass + ' msg-ctx-paper-qr', 'paper-qr', 'qr', 'Show QR code'), function() {
+            _dismissContextMenu({ restoreFocus: false, collapseHover: true });
             _openPaperMessageShare(msgData);
         });
-        actions.appendChild(showQrBtn);
-
-        var copyPaperBtn = document.createElement('button');
-        copyPaperBtn.className = 'msg-ctx-btn msg-ctx-paper-link';
-        copyPaperBtn.type = 'button';
-        copyPaperBtn.setAttribute('data-message-action', 'copy-paper-link');
-        copyPaperBtn.innerHTML = _messageActionIcon('copy') + '<span>Copy paper link</span>';
-        _bindMessageFocusPreservingActivation(copyPaperBtn, function() {
+        add(_messageMenuButton(itemClass + ' msg-ctx-paper-link', 'copy-paper-link', 'copy', 'Copy paper link'), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-            _dismissContextMenu();
+            _dismissContextMenu({ collapseHover: true });
             _paperUriForMessage(msgData).then(function(uri) {
                 return _copyToClipboard(uri);
             }).then(function(ok) {
@@ -5984,19 +6107,13 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
                 _restoreLxmfComposerKeyboard(shouldRestoreComposer);
             });
         });
-        actions.appendChild(copyPaperBtn);
     }
 
     if (opts.linkUrl) {
         var linkUrl = opts.linkUrl;
-        var copyLinkBtn = document.createElement('button');
-        copyLinkBtn.className = 'msg-ctx-btn msg-ctx-copy-link';
-        copyLinkBtn.type = 'button';
-        copyLinkBtn.setAttribute('data-message-action', 'copy-link');
-        copyLinkBtn.innerHTML = _messageActionIcon('copy') + '<span>Copy Link</span>';
-        _bindMessageFocusPreservingActivation(copyLinkBtn, function() {
+        add(_messageMenuButton(itemClass + ' msg-ctx-copy-link', 'copy-link', 'copy', 'Copy link'), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-            _dismissContextMenu();
+            _dismissContextMenu({ collapseHover: true });
             _copyToClipboard(linkUrl).then(function(ok) {
                 showToast(ok ? 'Link copied' : 'Could not copy', ok ? 'toast-success' : 'toast-error', 1600);
                 if (typeof haptic === 'function') haptic(ok ? 'success' : 'warning');
@@ -6006,19 +6123,13 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
                 _restoreLxmfComposerKeyboard(shouldRestoreComposer);
             });
         });
-        actions.appendChild(copyLinkBtn);
     }
 
     var mediaAction = _messageMediaContextAction(msgData);
     if (mediaAction) {
-        var mediaBtn = document.createElement('button');
-        mediaBtn.className = 'msg-ctx-btn msg-ctx-media';
-        mediaBtn.type = 'button';
-        mediaBtn.setAttribute('data-message-action', 'media');
-        mediaBtn.innerHTML = _messageActionIcon(mediaAction.icon) + '<span>' + mediaAction.label + '</span>';
-        _bindMessageFocusPreservingActivation(mediaBtn, function() {
+        add(_messageMenuButton(itemClass + ' msg-ctx-media', 'media', mediaAction.icon === 'save' ? 'download' : 'copy', mediaAction.label), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-            _dismissContextMenu();
+            _dismissContextMenu({ collapseHover: true });
             mediaAction.run().then(function(ok) {
                 if (typeof haptic === 'function') haptic(ok ? 'success' : 'warning');
                 _restoreLxmfComposerKeyboard(shouldRestoreComposer);
@@ -6031,19 +6142,24 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
                 _restoreLxmfComposerKeyboard(shouldRestoreComposer);
             });
         });
-        actions.appendChild(mediaBtn);
     }
 
-    menu.appendChild(actions);
+    if (!opts.reactOnly) {
+        if (!useSheet) {
+            var sep = document.createElement('div');
+            sep.className = 'ui-menu-sep';
+            sep.setAttribute('role', 'separator');
+            menu.appendChild(sep);
+        }
+        menu.appendChild(actions);
+    }
     menu.addEventListener('keydown', function(e) {
         if (/^(Arrow(Up|Down|Left|Right)|Home|End|Tab)$/.test(e.key)) menu.classList.add('msg-action-keyboard');
         if (!/^(Arrow(Up|Down|Left|Right)|Home|End)$/.test(e.key)) return;
         var groups = [
             { panel: reactBar, items: Array.from(reactBar.querySelectorAll('button')), horizontal: true },
             { panel: actions, items: Array.from(actions.querySelectorAll('button')), horizontal: false },
-        ].sort(function(a, b) {
-            return a.panel.getBoundingClientRect().top - b.panel.getBoundingClientRect().top;
-        });
+        ].filter(function(group) { return group.panel.isConnected; });
         var target = _messageActionKeyTarget(groups, document.activeElement, e.key);
         if (!target) return;
         e.preventDefault();
@@ -6051,8 +6167,11 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     });
 
     document.body.appendChild(menu);
-    if (trigger) trigger.setAttribute('aria-expanded', 'true');
-    var active = {
+    if (trigger && trigger.hasAttribute && trigger.hasAttribute('aria-expanded')) trigger.setAttribute('aria-expanded', 'true');
+    var anchorEl = opts.anchor || (opts.reactOnly ? trigger : null);
+    var anchorRect = anchorEl ? anchorEl.getBoundingClientRect()
+        : (typeof x === 'number' && typeof y === 'number' && !opts.focusDialog ? { left: x, right: x, top: y, bottom: y } : null);
+    var state = {
         menu: menu,
         reactPanel: reactBar,
         actionsPanel: actions,
@@ -6060,6 +6179,10 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         row: row,
         container: container,
         trigger: trigger,
+        hoverBar: hoverBar,
+        hoverAct: hoverBar && trigger ? trigger.getAttribute('data-hover-act') : '',
+        anchorRect: anchorRect,
+        sheet: useSheet,
         msgId: msgData.id,
         outbound: msgData.direction === 'outbound',
         ownerHash: _canonicalConversationHash(lxmfActiveContact),
@@ -6067,28 +6190,30 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         preserveComposerKeyboard: preserveComposerKeyboard,
     };
     var repositionFrame = 0;
-    active.reposition = function() {
+    state.reposition = function() {
         if (repositionFrame) return;
         repositionFrame = requestAnimationFrame(function() {
             repositionFrame = 0;
-            if (_activeContextMenu !== active) return;
+            if (_activeContextMenu !== state) return;
             var band = _messageActionBand();
-            var r = active.bubble && active.bubble.isConnected ? active.bubble.getBoundingClientRect() : null;
+            var r = state.bubble && state.bubble.isConnected ? state.bubble.getBoundingClientRect() : null;
             if (!r || r.bottom < band.top || r.top > band.bottom) {
                 _dismissContextMenu({ restoreFocus: false });
                 return;
             }
-            _layoutMessageActionPanels(active, false);
+            if (state.anchorEl && state.anchorEl.isConnected) state.anchorRect = state.anchorEl.getBoundingClientRect();
+            _layoutMessageActionPanels(state, false);
         });
     };
-    _activeContextMenu = active;
-    window.addEventListener('resize', active.reposition);
-    if (container) container.addEventListener('scroll', active.reposition, { passive: true });
+    state.anchorEl = anchorEl;
+    _activeContextMenu = state;
+    window.addEventListener('resize', state.reposition);
+    if (container) container.addEventListener('scroll', state.reposition, { passive: true });
     if (window.visualViewport) {
-        window.visualViewport.addEventListener('resize', active.reposition);
-        window.visualViewport.addEventListener('scroll', active.reposition);
+        window.visualViewport.addEventListener('resize', state.reposition);
+        window.visualViewport.addEventListener('scroll', state.reposition);
     }
-    _layoutMessageActionPanels(active, true);
+    _layoutMessageActionPanels(state, true);
     if (opts.focusDialog) {
         _focusMessageControl(menu.querySelector('button'));
     }
@@ -6098,6 +6223,9 @@ function _handleMessageActionPointer(e) {
     if (_activeContextMenu) {
         var menu = _activeContextMenu.menu;
         if (menu && menu.contains(e.target)) return;
+        // Its own trigger toggles the menu on click.
+        var trigger = _activeContextMenu.trigger;
+        if (trigger && trigger !== _activeContextMenu.bubble && trigger.contains && trigger.contains(e.target)) return;
         // The elevated bubble is the mobile native-selection surface. Keep
         // both it and the transcript DOM alive while a second hold begins.
         if (_messageActionOwnsText(_activeContextMenu.bubble, e.target)) return;
@@ -6223,24 +6351,7 @@ RS.listen('lxmf_identity', function(data) {
     }
     _imageCacheIdentityHash = nextIdentityHash;
     lxmfIdentity = data;
-    var el = document.getElementById('lxmf-own-hash');
-    if (el && data.hash) {
-        el.innerHTML = copyableHash(data.hash, 16);
-    }
-    var avatarEl = document.getElementById('msg-profile-avatar');
-    var nameEl = document.getElementById('msg-profile-name');
-    var statusEl = document.getElementById('msg-profile-status');
-    if (avatarEl && data.hash) {
-        avatarEl.innerHTML = identityAvatar(data.hash, 36);
-    }
-    if (nameEl && data.display_name) {
-        nameEl.textContent = data.display_name;
-    }
-    if (typeof syncActiveProfileStatusFromPayload === 'function') {
-        syncActiveProfileStatusFromPayload(data);
-    } else if (statusEl && data.status) {
-        statusEl.textContent = data.status;
-    }
+    if (typeof syncActiveProfileStatusFromPayload === 'function') syncActiveProfileStatusFromPayload(data);
     // Re-render so we exclude self from the peer list.
     if (typeof renderConnectionsTable === 'function' && typeof PeersCache !== 'undefined' && PeersCache) {
         renderConnectionsTable(PeersCache.enriched());
@@ -6310,6 +6421,10 @@ RS.listen('lxmf_message', function(msg) {
         // Dedupe reconnect replays.
         var isDupe = msg.id && lxmfConversation.some(function(m) { return m.id === msg.id; });
         if (isDupe) return;
+        var transcript = document.getElementById('lxmf-messages');
+        if (msg.direction === 'inbound' && msg.id && transcript && !RS.chatScroll.isFollowing(transcript)) {
+            _jumpNewIds.push(msg.id);
+        }
         lxmfConversation.push(msg);
         _cacheActiveConversation();
         renderConversation({ stickToBottom: true });
@@ -6637,118 +6752,160 @@ function openConversationAtMessage(hash, messageId, timestamp, thread) {
 }
 window.openConversationAtMessage = openConversationAtMessage;
 
-function initFabSpeedDial() {
-    var mainFab = document.getElementById('lxmf-send-fab');
-    var dialActions = document.getElementById('fab-dial-actions');
-    if (!mainFab || !dialActions) return;
+// New message: one sheet that takes a contact's name or a pasted LXMF address.
+var _newMessageSheet = null;
+var LXMF_ADDRESS_HEX = /^[0-9a-f]{32}$/;
 
-    var scrim = document.createElement('div');
-    scrim.className = 'fab-dial-scrim';
-    document.body.appendChild(scrim);
-
-    var _dialOpen = false;
-
-    function openDial() {
-        _dialOpen = true;
-        mainFab.classList.add('dial-open');
-        mainFab.setAttribute('aria-expanded', 'true');
-        dialActions.classList.add('open');
-        scrim.classList.add('active');
-    }
-
-    function closeDial() {
-        _dialOpen = false;
-        mainFab.classList.remove('dial-open');
-        mainFab.setAttribute('aria-expanded', 'false');
-        dialActions.classList.remove('open');
-        scrim.classList.remove('active');
-    }
-
-    // Exposed so nav.js can close the dial on view switch.
-    window._closeFabDial = closeDial;
-
-    RS.gestures.bindViewFabClick(mainFab, function(e) {
-        e.stopPropagation();
-        _dialOpen ? closeDial() : openDial();
-    });
-
-    scrim.addEventListener('click', closeDial);
-    window.addEventListener('resize', function() {
-        if (!isCompactLayout()) closeDial();
-    });
-
-    var dialNew = document.getElementById('fab-dial-new');
-    if (dialNew) {
-        dialNew.addEventListener('click', function() {
-            if (typeof haptic === 'function') haptic('selection');
-            closeDial();
-            var btn = document.getElementById('lxmf-send-message-btn');
-            if (btn) btn.click();
-        });
-    }
-
-    var dialContacts = document.getElementById('fab-dial-contacts');
-    if (dialContacts) {
-        dialContacts.addEventListener('click', function() {
-            if (typeof haptic === 'function') haptic('selection');
-            closeDial();
-            openFabContactPicker();
-        });
-    }
-
-    var dialPaper = document.getElementById('fab-dial-paper');
-    if (dialPaper) {
-        dialPaper.addEventListener('click', function() {
-            if (typeof haptic === 'function') haptic('selection');
-            closeDial();
-            if (typeof openPaperDecoder === 'function') openPaperDecoder();
-        });
-    }
+function _newMessageAddress(value) {
+    var hex = String(value || '').replace(/^lxma?:\/\//i, '').replace(/[\s<>:]/g, '').toLowerCase();
+    return LXMF_ADDRESS_HEX.test(hex) ? hex : '';
 }
 
-function openFabContactPicker() {
-    var sheet = document.getElementById('fab-contact-picker-sheet');
-    var overlay = document.getElementById('fab-contact-picker-overlay');
-    var listEl = document.getElementById('fab-contact-picker-list');
-    if (!sheet || !overlay || !listEl) return;
+function _newMessagePersonRow(hash, name, sub) {
+    var presence = _conversationPresence(hash);
+    var nameInfo = name ? { name: name, isHash: false } : _conversationNameInfo(hash, null, false);
+    var title = nameInfo.isHash
+        ? '<span class="msg-title-hash">' + escapeHtml(nameInfo.name) + '</span>'
+        : ratspeakDisplayNameHtml(nameInfo.name, hash);
+    return '<li><button type="button" class="ui-row" data-hash="' + escapeHtml(hash) + '">' +
+        RS.kit.avatar(hash, 'row', presence.active ? 'active' : null, presence.heard) +
+        '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + title + '</span></span>' +
+        '<span class="ui-row-sub"><span class="t' + (sub ? '' : ' ui-hash') + '">' + escapeHtml(sub || RS.kit.hash.short(hash)) + '</span></span></span></button></li>';
+}
 
-    if (!lxmfContacts || lxmfContacts.length === 0) {
-        listEl.innerHTML = '<div class="fab-picker-empty">No contacts yet.<br>Add a contact first to message them here.</div>';
-    } else {
-        var sorted = lxmfContacts.slice().sort(function(a, b) {
-            var na = (a.display_name || '').toLowerCase();
-            var nb = (b.display_name || '').toLowerCase();
-            return na < nb ? -1 : na > nb ? 1 : 0;
-        });
-        var html = '';
-        sorted.forEach(function(c) {
-            var name = c.display_name || 'Anonymous';
-            var avatarHtml = '<span style="width:32px;height:32px;flex-shrink:0;display:flex;">' + identityAvatar(c.hash, 32) + '</span>';
-            html += '<button class="fab-picker-row" type="button" data-hash="' + escapeHtml(c.hash) + '">' +
-                avatarHtml +
-                '<div>' +
-                    '<div class="fab-picker-name">' + ratspeakDisplayNameHtml(name, c) + '</div>' +
-                    '<div class="fab-picker-hash">' + escapeHtml(typeof shortHash === 'function' ? shortHash(c.hash, 8, 4) : c.hash.substring(0, 12) + '…') + '</div>' +
-                '</div>' +
-            '</button>';
-        });
-        listEl.innerHTML = html;
-        listEl.querySelectorAll('.fab-picker-row').forEach(function(row) {
-            row.addEventListener('click', function() {
-                closeFabContactPicker();
-                openConversationWith(this.dataset.hash);
-            });
-        });
+function _newMessageListHtml(query) {
+    var q = String(query || '').trim().toLowerCase();
+    var address = _newMessageAddress(query);
+    var matches = function(hash, name) {
+        return !q || String(name || '').toLowerCase().indexOf(q) !== -1 || String(hash || '').indexOf(q.replace(/\s+/g, '')) !== -1;
+    };
+    var html = '';
+    if (!q) {
+        html += '<ul class="ui-list ui-phone-only"><li><button type="button" class="ui-row ui-row--one" data-new-action="scan">' +
+            '<span class="ui-tile">' + RS.kit.icon('qr') + '</span><span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">Scan a contact card</span></span></span>' +
+            RS.kit.icon('chevron-right') + '</button></li></ul>';
     }
+    if (address) {
+        html += '<ul class="ui-list" aria-label="LXMF address">' + _newMessagePersonRow(address, '', 'LXMF address') + '</ul>';
+    }
+    var recent = (lxmfConversations || []).slice().sort(function(a, b) {
+        return (b.timestamp || 0) - (a.timestamp || 0);
+    }).filter(function(c) {
+        return matches(c.hash, _conversationNameInfo(c.hash, c.display_name, c.is_contact).name);
+    }).slice(0, 3);
+    if (recent.length) {
+        html += '<ul class="ui-list" aria-label="Recent"><li class="ui-caption">Recent</li>' + recent.map(function(c) {
+            var info = _conversationNameInfo(c.hash, c.display_name, c.is_contact);
+            return _newMessagePersonRow(c.hash, info.isHash ? '' : info.name);
+        }).join('') + '</ul>';
+    }
+    var contacts = (lxmfContacts || []).filter(function(c) {
+        return c && c.hash && matches(c.hash, c.display_name);
+    }).sort(function(a, b) {
+        return (a.display_name || '').localeCompare(b.display_name || '');
+    });
+    if (contacts.length) {
+        html += '<ul class="ui-list" aria-label="Contacts"><li class="ui-caption">Contacts</li>' + contacts.map(function(c) {
+            return _newMessagePersonRow(c.hash, c.display_name || 'Anonymous');
+        }).join('') + '</ul>';
+    }
+    if (q && !address && !recent.length && !contacts.length) {
+        var partial = /^[0-9a-f\s]+$/i.test(q) && q.replace(/\s+/g, '').length >= 8;
+        html += '<div class="ui-empty"><h3 class="ui-empty-title">No contacts match “' + escapeHtml(query.trim()) + '”</h3>' +
+            '<p class="ui-empty-body">' + (partial ? 'An LXMF address has 32 characters.' : 'Search checks names and addresses, or paste an LXMF address.') + '</p></div>';
+    } else if (!q && !recent.length && !contacts.length) {
+        html += '<div class="ui-empty"><p class="ui-empty-body">Paste an LXMF address to message anyone.</p></div>';
+    }
+    return html;
+}
 
-    RS.ui.openExistingSheet(sheet, overlay);
-    history.pushState({ view: currentView, fabPicker: true }, '', '#' + currentView);
+function openNewMessageSheet() {
+    if (_newMessageSheet) return;
+    var built = RS.kit.dialog({
+        title: 'New message',
+        className: 'msg-picker',
+        focus: false,
+        sheet: '<div class="msg-picker-search"><div class="ui-search" role="search">' + RS.kit.icon('search') +
+            '<input type="search" placeholder="Name or LXMF address" aria-label="Search contacts, or paste an LXMF address" autocorrect="off" autocapitalize="none" spellcheck="false"></div></div>' +
+            '<div class="msg-picker-list ui-scroll">' + _newMessageListHtml('') + '</div>',
+        onClose: function() { _newMessageSheet = null; }
+    });
+    _newMessageSheet = built;
+    var input = built.dialog.querySelector('input[type="search"]');
+    var list = built.dialog.querySelector('.msg-picker-list');
+    if (RS.composer && RS.composer.bindTypingPolicy) RS.composer.applyTypingPolicy(input);
+    input.addEventListener('input', function() { list.innerHTML = _newMessageListHtml(input.value); });
+    input.addEventListener('keydown', function(e) {
+        if (e.key !== 'Enter' || e.isComposing) return;
+        e.preventDefault();
+        var first = list.querySelector('.ui-row[data-hash]');
+        if (first) first.click();
+    });
+    list.addEventListener('click', function(e) {
+        var row = e.target.closest && e.target.closest('.ui-row');
+        if (!row) return;
+        built.close();
+        if (row.getAttribute('data-new-action') === 'scan') {
+            if (typeof openContactQrScanner === 'function') openContactQrScanner();
+            return;
+        }
+        openConversationWith(row.getAttribute('data-hash'));
+    });
+    // A phone opens on the list; the keyboard comes with the first tap in the field.
+    if (!isCompactLayout()) _focusMessageControl(input);
+    history.pushState({ view: currentView, newMessage: true }, '', '#' + currentView);
 }
 
 function closeFabContactPicker() {
-    var sheet = document.getElementById('fab-contact-picker-sheet');
-    var overlay = document.getElementById('fab-contact-picker-overlay');
-    if (sheet) RS.ui.closeExistingSheet(sheet, overlay);
+    if (_newMessageSheet) _newMessageSheet.close();
+}
+
+// Compose: New message, and with Paper messages on, Open a paper message.
+function _composeItems() {
+    return [
+        { label: 'New message', icon: 'message-plus', onSelect: openNewMessageSheet },
+        { label: 'Open a paper message', icon: 'qr', onSelect: function() { if (typeof openPaperDecoder === 'function') openPaperDecoder(); } }
+    ];
+}
+
+function _paperMessagesOn() {
+    return document.documentElement.dataset.paperMessages === 'on' && typeof openPaperDecoder === 'function';
+}
+
+function openComposeMenu(trigger) {
+    trigger.setAttribute('aria-haspopup', _paperMessagesOn() ? 'menu' : 'dialog');
+    if (!_paperMessagesOn()) {
+        openNewMessageSheet();
+        return;
+    }
+    RS.kit.menu(trigger, { title: 'New', items: _composeItems() });
+}
+
+// Phone: the floating compose button opens its menu above a scrim, and turns into Close.
+function initComposeFab() {
+    var fab = document.getElementById('lxmf-send-fab');
+    var wrap = document.getElementById('lxmf-fab-dial');
+    if (!fab || !wrap) return;
+    function setOpen(open) {
+        wrap.classList.toggle('is-open', open);
+        fab.setAttribute('aria-expanded', open ? 'true' : 'false');
+        fab.setAttribute('aria-label', open ? 'Close' : 'New message');
+        fab.title = open ? 'Close' : 'New message';
+        fab.innerHTML = RS.kit.icon(open ? 'x' : 'compose');
+    }
+    window._closeFabDial = function() { RS.kit.closeMenu(); };
+    RS.gestures.bindViewFabClick(fab, function(e) {
+        e.stopPropagation();
+        if (!_paperMessagesOn()) {
+            openNewMessageSheet();
+            return;
+        }
+        var handle = RS.kit.menu(fab, {
+            label: 'New', items: _composeItems(), placement: 'top', sheet: false, cls: 'msg-fab-menu',
+            onClose: function() { setOpen(false); }
+        });
+        setOpen(!!handle);
+    });
 }
 
 (function() {
@@ -6827,94 +6984,60 @@ function closeFabContactPicker() {
     });
 })();
 
+// Add or rename a contact from the conversation.
+function _promptContactName(hash, contact) {
+    rsPrompt({
+        message: contact ? 'New name:' : 'Contact name:',
+        defaultValue: contact ? contact.display_name || '' : '',
+        placeholder: 'Display name',
+        inputClass: 'rs-dialog-input--text'
+    }).then(function(newName) {
+        if (newName !== null) {
+            RS.invokeOrToast('add_contact', { args: { hash: hash, display_name: newName.trim() || null } }, contact ? 'Could not rename contact' : 'Could not add contact');
+        }
+    });
+}
+
+function _startGameWith(hash) {
+    if (typeof window.openNewGame === 'function') window.openNewGame({ contactHash: hash });
+}
+
+// The conversation's Options: a menu on desktop, a sheet on a phone.
 function openChatHeaderDropdown(triggerEl) {
     if (!lxmfActiveContact) return;
-
-    var chatHeader = document.getElementById('lxmf-chat-header');
-    if (!chatHeader) return;
-
-    var contact = lxmfContacts.find(function(c) { return c.hash === lxmfActiveContact; });
-    var menuTrigger = triggerEl || document.getElementById('chat-header-menu-btn') || chatHeader;
-    var currentName = contact ? contact.display_name : '';
-    var items = [];
-
-    if (lxstVoiceState.available) {
-        var callInOtherConversation = !!(lxstVoiceState.active && !_voiceActiveMatchesContact());
-        items.push({
-            label: callInOtherConversation ? 'Call in Progress' : _voicePrimaryActionLabel(),
-            icon: callInOtherConversation ? _voiceIcon('phone', 18) : _voicePrimaryActionIcon(),
-            danger: _voiceActiveMatchesContact(),
-            disabled: callInOtherConversation,
-            onSelect: function() {
-                _voiceBlockMobileNavigation(280);
-                _voiceRunPrimaryAction(lxmfActiveContact);
-            }
-        });
-    }
-
+    var hash = lxmfActiveContact;
+    var contact = _lookupContactRecord(hash);
+    var info = _conversationNameInfo(hash, null, false);
+    var first = info.isHash ? '' : String(info.name || '').trim().split(/\s+/)[0];
     var thread = RS.threads ? RS.threads.current() : null;
-    items.push({
-        label: 'New conversation',
-        icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 7v6"/><path d="M9 10h6"/></svg>',
-        onSelect: function() { if (RS.threads) RS.threads.startNew(); }
-    });
+    var items = [];
+    if (isCompactLayout() && typeof window.openNewGame === 'function') {
+        items.push({ label: 'Challenge to a game', icon: 'games', onSelect: function() { _startGameWith(hash); } });
+    }
+    items.push({ label: 'New conversation', icon: 'message-plus', onSelect: function() { if (RS.threads) RS.threads.startNew(); } });
     if (thread && thread.thread) {
-        items.push({
-            label: 'Rename conversation',
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r="1"/></svg>',
-            onSelect: function() { RS.threads.rename(thread); }
-        });
+        items.push({ label: 'Rename conversation', icon: 'tag', onSelect: function() { RS.threads.rename(thread); } });
     }
-
     items.push(
-        {
-            label: contact ? 'Rename contact' : 'Add contact',
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
-            onSelect: function() {
-                rsPrompt({ message: contact ? 'New name:' : 'Contact name:', defaultValue: currentName || '', placeholder: 'Display name', inputClass: 'rs-dialog-input--text' }).then(function(newName) {
-                    if (newName !== null) {
-                        RS.invokeOrToast('add_contact', { args: { hash: lxmfActiveContact, display_name: newName.trim() || null } }, 'Could not rename contact');
-                    }
-                });
+        { label: contact ? 'Rename contact' : 'Add contact', icon: contact ? 'edit' : 'user-plus', onSelect: function() { _promptContactName(hash, contact); } },
+        { label: first ? 'About ' + first : 'About this person', icon: 'info', onSelect: function() { showContactAbout(hash); } },
+        { label: 'Copy LXMF address', icon: 'copy', onSelect: function() {
+            RS.copyText(hash).then(function(ok) {
+                if (ok) showCopyConfirmationToast('LXMF address');
+                else showToast('Could not copy', 'toast-error', 1500);
+            });
+        } },
+        { separator: true },
+        { label: 'Delete conversation', icon: 'trash', danger: true, onSelect: function() {
+            // With several conversations this deletes only the open one.
+            if (thread && RS.threads.hasExtra()) {
+                RS.threads.remove(thread);
+                return;
             }
-        },
-        {
-            label: 'About',
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>',
-            onSelect: function() { showContactAbout(lxmfActiveContact); }
-        },
-        {
-            label: 'Copy LXMF hash',
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
-            onSelect: function() {
-                if (!lxmfActiveContact) return;
-                RS.copyText(lxmfActiveContact).then(function(ok) {
-                    if (ok) showCopyConfirmationToast('Hash');
-                    else showToast('Could not copy', 'toast-error', 1500);
-                });
-            }
-        },
-        {
-            label: 'Delete conversation',
-            danger: true,
-            icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 14H6L5 6"/></svg>',
-            onSelect: function() {
-                // With several conversations this deletes only the open one.
-                if (thread && RS.threads.hasExtra()) {
-                    RS.threads.remove(thread);
-                    return;
-                }
-                var name = _conversationNameInfo(lxmfActiveContact, null, false).name;
-                showConversationDeleteDialog(lxmfActiveContact, name);
-            }
-        }
+            showConversationDeleteDialog(hash, info.name);
+        } }
     );
-
-    if (RS.ui && typeof RS.ui.openActionMenu === 'function') {
-        RS.ui.openActionMenu(menuTrigger, items, { title: 'Conversation' });
-    } else if (typeof actionPopover === 'function') {
-        actionPopover(menuTrigger, items);
-    }
+    RS.kit.menu(triggerEl || document.getElementById('chat-header-menu-btn'), { title: info.name, label: 'Conversation options', items: items });
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -6990,9 +7113,9 @@ document.addEventListener('DOMContentLoaded', function() {
             // Don't blur for taps on the compose bar or interactive controls — only
             // for taps on message body / list whitespace.
             if (t && t.closest && (
-                t.closest('.lxmf-compose') ||
+                t.closest('.cmp') ||
                 t.closest('button, a, input, textarea, select, [role="button"], [role="menuitem"]') ||
-                (t.closest('.lxmf-msg') && _shouldPreserveLxmfComposerKeyboard())
+                (t.closest('.msg-bubble') && _shouldPreserveLxmfComposerKeyboard())
             )) return;
             var active = document.activeElement;
             if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
@@ -7024,34 +7147,24 @@ document.addEventListener('DOMContentLoaded', function() {
         picker.open();
     }
 
-    var ICON_EMOJI = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>';
-    var ICON_FILE = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>';
-    var ICON_CAMERA = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>';
-    var ICON_VIDEO = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 8-6 4 6 4V8Z"/><rect x="2" y="6" width="14" height="12" rx="2"/></svg>';
-    var ICON_PHOTOS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>';
-    var ICON_CONTACTS = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>';
-    var ICON_NEW = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
-    var ICON_PAPER = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><path d="M14 14h3v3h-3z"/><path d="M19 14h2"/><path d="M14 21h7v-2"/><path d="M19 17h2"/></svg>';
-
+    // Hold Send: choose how this one message goes. A tap always sends Automatic.
     function openSendMethodPopover() {
-        if (!sendBtn || typeof actionPopover !== 'function' || !lxmfActiveContact) return;
+        if (!sendBtn || !lxmfActiveContact) return;
         var hasRelay = _offlineInboxAvailable();
         var input = document.getElementById('lxmf-input');
         var wasFocused = !!(input && document.activeElement === input);
         var hasText = !!(input && input.value.trim());
-        actionPopover(sendBtn, [
-            { label: 'Opportunistic', icon: LXMF_SEND_METHOD_ICONS.opportunistic, onSelect: function() { sendLxmfMessage('opportunistic'); } },
-            { label: 'Direct', icon: LXMF_SEND_METHOD_ICONS.direct, onSelect: function() { sendLxmfMessage('direct'); } },
-            { label: 'Offline Inbox', icon: LXMF_SEND_METHOD_ICONS.propagated, disabled: !hasRelay, onSelect: function() { sendLxmfMessage('propagated'); } },
+        RS.kit.menu(sendBtn, { title: 'Send by', caption: 'Send this message by', hints: true, placement: 'top', keepFocus: wasFocused, items: [
+            { label: 'Opportunistic', icon: 'opportunistic', hint: 'Single packets. Best for short text.', onSelect: function() { sendLxmfMessage('opportunistic'); } },
+            { label: 'Direct', icon: 'direct', hint: 'Opens a link first. Best for long text and files.', onSelect: function() { sendLxmfMessage('direct'); } },
+            { label: 'Offline Inbox', icon: 'envelope', disabled: !hasRelay,
+                hint: hasRelay ? 'Held by an Offline Inbox node until they collect it.' : 'Turn on Offline Inbox in Settings to use it.',
+                onSelect: function() { sendLxmfMessage('propagated'); } },
             { separator: true },
-            { label: 'Paper', icon: ICON_PAPER, disabled: !hasText, onSelect: sendLxmfPaperMessage },
-        ], {
-            onClose: function() {
-                if (wasFocused && input && document.activeElement !== input) {
-                    _focusLxmfComposerInput(input);
-                }
-            }
-        });
+            { label: 'Paper', icon: 'qr', hint: 'A QR code or link you hand over yourself.', disabled: !hasText, onSelect: sendLxmfPaperMessage },
+        ], onClose: function() {
+            if (wasFocused && input && document.activeElement !== input) _focusLxmfComposerInput(input);
+        } });
     }
 
     if (sendBtn) {
@@ -7164,69 +7277,39 @@ document.addEventListener('DOMContentLoaded', function() {
     if (attachBtn) {
         attachBtn.addEventListener('click', function(e) {
             e.stopPropagation();
-            // iOS gets the native action sheet for bare <input type="file">.
-            // Android adds a Camera/Photos/File popover (WebChromeClient lacks camera).
-            // Desktop adds an Emoji entry since the OS keyboard doesn't help there.
-            if (typeof actionPopover !== 'function') {
-                triggerFileAttachment();
-                return;
-            }
+            // iOS gets the native action sheet for a bare <input type="file">.
+            // Android adds Camera, Video, Photos, and File (WebChromeClient lacks a camera).
+            // Desktop adds Emoji, since the OS keyboard doesn't help there.
             if (isIOS()) {
                 triggerFileAttachment();
                 return;
             }
-            if (isAndroid()) {
-                actionPopover(attachBtn, [
-                    { label: 'Camera', icon: ICON_CAMERA, onSelect: triggerCameraAttachment },
-                    { label: 'Video', icon: ICON_VIDEO, onSelect: triggerVideoAttachment },
-                    { label: 'Photos', icon: ICON_PHOTOS, onSelect: triggerPhotosAttachment },
-                    { label: 'File', icon: ICON_FILE, onSelect: triggerFileAttachment },
-                ]);
-                return;
-            }
-            actionPopover(attachBtn, [
-                { label: 'Emoji', icon: ICON_EMOJI, onSelect: openComposeEmojiPicker },
-                { label: 'File / Image', icon: ICON_FILE, onSelect: triggerFileAttachment },
-            ]);
+            var input = document.getElementById('lxmf-input');
+            var items = isAndroid() ? [
+                { label: 'Camera', icon: 'camera', onSelect: triggerCameraAttachment },
+                { label: 'Video', icon: 'video', onSelect: triggerVideoAttachment },
+                { label: 'Photos', icon: 'image', onSelect: triggerPhotosAttachment },
+                { label: 'File', icon: 'file', onSelect: triggerFileAttachment },
+            ] : [
+                { label: 'Emoji', icon: 'smile', onSelect: openComposeEmojiPicker },
+                { label: 'File or image', icon: 'file', onSelect: triggerFileAttachment },
+            ];
+            RS.kit.menu(attachBtn, {
+                title: 'Attach', items: items, align: 'start', placement: 'top',
+                keepFocus: !!(input && document.activeElement === input)
+            });
         });
     }
 
-    function promptNewConversationHash() {
-        rsPrompt({ title: 'New Conversation', message: 'Enter identity hash:', placeholder: '16+ hex characters' }).then(function(hash) {
-            if (hash === null) return;
-            hash = hash.trim();
-            if (hash.length >= 16 && /^[0-9a-fA-F]+$/.test(hash)) {
-                openConversationWith(hash);
-            } else {
-                showPreConditionToast('Enter a valid identity hash (at least 16 hex chars)');
-            }
-        });
-    }
-
-    // Mobile FAB speed-dial calls .click() here for direct hash-prompt;
-    // desktop gets a Contacts/New popover instead.
     var sendMsgBtn = document.getElementById('lxmf-send-message-btn');
     if (sendMsgBtn) {
         sendMsgBtn.addEventListener('click', function(e) {
-            if (isCompactLayout() || typeof actionPopover !== 'function') {
-                promptNewConversationHash();
-                return;
-            }
             e.stopPropagation();
-            var composeItems = [
-                { label: 'Contacts', icon: ICON_CONTACTS, onSelect: function() {
-                    if (typeof openFabContactPicker === 'function') openFabContactPicker();
-                } },
-                { label: 'New',      icon: ICON_NEW,      onSelect: promptNewConversationHash }
-            ];
-            if (document.documentElement.dataset.paperMessages === 'on' && typeof openPaperDecoder === 'function') {
-                composeItems.push({ label: 'Paper', icon: ICON_PAPER, onSelect: openPaperDecoder });
-            }
-            actionPopover(sendMsgBtn, composeItems);
+            openComposeMenu(sendMsgBtn);
         });
     }
 
-    initFabSpeedDial();
+    initComposeFab();
 
     // Mobile: Enter always inserts newline (avoid OSK return-key accidental sends).
     // Desktop: Enter sends, Shift+Enter inserts newline.
@@ -7252,20 +7335,16 @@ document.addEventListener('DOMContentLoaded', function() {
                 var byteLen = _utf8ByteLength(this.value);
                 var efficientBytes = lxmfLimits.efficient_resource_bytes || 1048575;
                 var maxBytes = lxmfLimits.max_message_bytes || 134217727;
+                counter.hidden = byteLen <= efficientBytes;
                 if (byteLen > efficientBytes) {
-                    counter.style.display = '';
                     counter.textContent = prettySize(byteLen) + ' / ' + prettySize(maxBytes);
-                    counter.className = 'lxmf-char-count' +
-                        (byteLen > maxBytes ? ' char-limit' : ' char-warn');
-                } else {
-                    counter.style.display = 'none';
+                    counter.classList.toggle('is-over', byteLen > maxBytes);
                 }
             }
         });
     }
 
     var chatHeaderMenuBtn = document.getElementById('chat-header-menu-btn');
-    var chatHeader = document.getElementById('lxmf-chat-header');
     if (chatHeaderMenuBtn) {
         chatHeaderMenuBtn.addEventListener('click', function(e) {
             e.stopPropagation();
@@ -7273,19 +7352,20 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    // Identity area is tappable, not just the kebab.
-    var contactAvatar = document.getElementById('lxmf-contact-avatar');
-    if (contactAvatar) {
-        contactAvatar.addEventListener('click', function(e) {
+    // The whole identity is one button for details.
+    var chatWho = document.getElementById('lxmf-chat-who');
+    if (chatWho) {
+        chatWho.addEventListener('click', function(e) {
             e.stopPropagation();
-            openChatHeaderDropdown(e.currentTarget);
+            if (lxmfActiveContact) showContactAbout(lxmfActiveContact);
         });
     }
-    var headerInfo = chatHeader ? chatHeader.querySelector('.lxmf-chat-header-info') : null;
-    if (headerInfo) {
-        headerInfo.addEventListener('click', function(e) {
-            e.stopPropagation();
-            openChatHeaderDropdown(e.currentTarget);
+
+    var gameBtn = document.getElementById('game-challenge-btn');
+    if (gameBtn) {
+        gameBtn.hidden = typeof window.openNewGame !== 'function';
+        gameBtn.addEventListener('click', function() {
+            if (lxmfActiveContact) _startGameWith(lxmfActiveContact);
         });
     }
 
@@ -7465,7 +7545,7 @@ function _fileFromDataUrl(src, filename, mime) {
 function _fileFromImageElement(img) {
     if (!img) return Promise.reject(new Error('No image selected'));
     var stored = img.getAttribute('data-stored-name') ||
-        (img.closest('.lxmf-image-button') && img.closest('.lxmf-image-button').getAttribute('data-stored-name'));
+        (img.closest('.msg-image-btn') && img.closest('.msg-image-btn').getAttribute('data-stored-name'));
     if (stored) {
         var cached = _getImageDownloadFile(stored);
         if (cached) return Promise.resolve(cached);
@@ -7565,7 +7645,7 @@ function _ensureImageViewer() {
         e.stopPropagation();
         var source = viewer._sourceImage;
         var stored = source && (source.getAttribute('data-stored-name') ||
-            (source.closest('.lxmf-image-button') && source.closest('.lxmf-image-button').getAttribute('data-stored-name')));
+            (source.closest('.msg-image-btn') && source.closest('.msg-image-btn').getAttribute('data-stored-name')));
         if (stored) {
             RS.saveFile(stored, { preferPhotos: true }).then(function(saved) {
                 if (saved !== false) showToast('Saved', 'toast-success', 2500);

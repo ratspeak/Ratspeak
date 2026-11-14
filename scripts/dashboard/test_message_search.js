@@ -10,14 +10,14 @@ const source = fs.readFileSync(path.join(root, 'static/js/message_search.js'), '
 
 function element() {
     return {
-        value: '', innerHTML: '', style: {}, handlers: {}, rows: [], blurred: 0,
+        value: '', innerHTML: '', hidden: false, handlers: {}, blurred: 0, focused: 0,
         addEventListener(name, handler) { this.handlers[name] = handler; },
-        querySelectorAll() { return this.rows; },
-        blur() { this.blurred++; }
+        blur() { this.blurred++; },
+        focus() { this.focused++; }
     };
 }
-const input = element(), results = element(), conversations = element();
-const nodes = { 'msg-search-input': input, 'msg-search-results': results, 'lxmf-conversations-list': conversations };
+const input = element(), results = element(), conversations = element(), clear = element();
+const nodes = { 'msg-search-input': input, 'msg-search-results': results, 'lxmf-conversations-list': conversations, 'msg-search-clear': clear };
 const timers = new Map(), pending = [], opened = [];
 let sequence = 0, identity = 0;
 const context = {
@@ -25,13 +25,22 @@ const context = {
     setTimeout(fn) { timers.set(++sequence, fn); return sequence; },
     clearTimeout(id) { timers.delete(id); },
     escapeHtml: value => String(value).replace(/</g, '&lt;'),
-    _conversationNameInfo: hash => ({ name: hash, isHash: true }),
+    _conversationNameInfo: hash => ({ name: hash === 'cc' ? 'Cara Lane' : hash, isHash: hash !== 'cc' }),
+    _canonicalConversationHash: hash => String(hash || '').toLowerCase(),
+    _conversationPresence: () => ({ active: false, heard: null }),
+    lxmfContacts: [{ hash: 'cc', display_name: 'Cara Lane' }],
+    lxmfConversations: [],
     ratspeakDisplayNameHtml: name => name,
-    formatConvTime: () => 'now',
     openConversationWith: hash => opened.push(hash),
+    openConversationAtMessage: (hash, id, ts, thread) => opened.push(hash + '#' + id + '@' + thread),
     RS: {
         config: { DEBOUNCE_MESSAGE_SEARCH: 300 },
-        diag() {}, ui: { bindKeyboardActivation(row) { row.keyboard = true; } },
+        diag() {},
+        kit: {
+            avatar: () => '<span class="ui-avatar"></span>',
+            hash: { short: h => h },
+            time: { row: () => 'now', full: () => 'now' },
+        },
         conversationOwner: {
             snapshot: () => ({ identity }),
             isIdentityCurrent: owner => owner.identity === identity
@@ -67,8 +76,8 @@ function message(content) { return { source: 'aa', destination: 'bb', direction:
     type('fourth'); fire(); type('f');
     pending[2].reject(new Error('late error')); await settle();
     assert.equal(results.innerHTML, '', 'clearing must purge result content, including stale errors');
-    assert.equal(results.style.display, 'none');
-    assert.equal(conversations.style.display, '');
+    assert.equal(results.hidden, true);
+    assert.equal(conversations.hidden, false);
 
     type('first'); fire(); type('other'); type('first'); fire();
     pending[3].resolve([message('old ABA result')]); await settle();
@@ -78,7 +87,7 @@ function message(content) { return { source: 'aa', destination: 'bb', direction:
 
     type('important title'); fire();
     pending.pop().resolve([{ ...message(''), title: '<Important title>' }]); await settle();
-    assert(results.innerHTML.includes('&lt;Important title>'), 'title-only search results are visible and escaped');
+    assert(results.innerHTML.includes('&lt;<b class="msg-hit">Important title</b>>'), 'title-only search results are visible, escaped and highlighted');
 
     type('private'); fire();
     identity++; context.RS.messageSearch.reset();
@@ -87,18 +96,31 @@ function message(content) { return { source: 'aa', destination: 'bb', direction:
     type('queued'); context.RS.messageSearch.reset(); fire();
     assert.equal(pending.length, 6, 'reset must retire a debounce before IPC dispatch');
 
-    const row = element(); row.getAttribute = () => 'aa'; results.rows = [row];
-    type('select'); fire(); pending[6].resolve([message('<script>')]); await settle();
+    type('select'); fire(); pending[6].resolve([{ ...message('<script>'), id: 'm1', thread: 't1' }]); await settle();
     assert(results.innerHTML.includes('&lt;script>'), 'message previews must escape markup');
-    assert(results.innerHTML.includes('class="conv-row" role="button" tabindex="0"'));
-    assert(row.keyboard, 'search rows must use the shared keyboard activation helper');
-    row.handlers.click();
-    assert.deepEqual(opened, ['aa']); assert.equal(input.value, ''); assert.equal(results.innerHTML, '');
-    row.handlers.click(); assert.equal(opened.length, 1, 'a detached retired result cannot navigate again');
+    assert(results.innerHTML.includes('aria-label="Messages"') && results.innerHTML.includes('<button type="button" class="ui-row"'),
+        'results are kit rows that are real buttons');
+    assert(!results.innerHTML.includes('aria-label="People"'), 'no People group when no name matches');
+    const row = { getAttribute: name => ({ 'data-hash': 'aa', 'data-id': 'm1', 'data-thread': 't1' })[name] };
+    results.handlers.click({ target: { closest: sel => sel.indexOf('data-search-action') !== -1 ? null : row } });
+    assert.deepEqual(opened, ['aa#m1@t1'], 'a message result opens its conversation at that message, in its thread');
+    assert.equal(input.value, ''); assert.equal(results.innerHTML, '');
+    assert.equal(clear.hidden, true, 'the clear button goes with the text');
+
+    type('cara'); fire(); pending[7].resolve([]); await settle();
+    assert(results.innerHTML.includes('aria-label="People"'), 'a name match is grouped under People');
+    assert(results.innerHTML.includes('<b class="msg-hit">Cara</b>'), 'the match is in bold');
+    assert(!results.innerHTML.includes('aria-label="Messages"'));
+
+    type('nothing'); fire(); pending[8].resolve([]); await settle();
+    assert(results.innerHTML.includes('No messages match'), 'no results says so and offers to clear');
+    results.handlers.click({ target: { closest: sel => sel.indexOf('data-search-action') !== -1 ? {} : null } });
+    assert.equal(input.value, ''); assert(input.focused > 0, 'Clear search returns to the field');
 
     input.handlers.keydown({ key: 'Enter', isComposing: true });
     assert.equal(input.blurred, 0, 'IME confirmation must not dismiss the keyboard');
     type('escape'); input.handlers.keydown({ key: 'Escape', preventDefault() {} }); fire();
+    assert.equal(clear.hidden, true);
     assert.equal(input.value, ''); assert.equal(timers.size, 0);
 
     const nav = fs.readFileSync(path.join(root, 'static/js/nav.js'), 'utf8');

@@ -191,15 +191,23 @@ async function main() {
         'accepted events must drain to SQLite before advancing the cursor');
 
     var elements = {
-        'nav-unread-dot': { style: {} },
-        'nav-channels-unread': { style: {} },
-        'bb-unread': { style: {} },
-        'bb-channels-unread': { style: {} }
+        'nav-unread-dot': {},
+        'nav-channels-unread': {},
+        'bb-unread': {},
+        'bb-channels-unread': {}
+    };
+    function tab() {
+        return { label: '', setAttribute: function(name, value) { if (name === 'aria-label') this.label = value; } };
+    }
+    var tabs = {
+        '#bottom-bar .ui-tab[data-view="message"]': tab(),
+        '#bottom-bar .ui-tab[data-view="channels"]': tab()
     };
     var navContext = {
         _messageUnreadSources: { direct: 0, channels: 0 },
         document: {
             getElementById: function(id) { return elements[id] || null; },
+            querySelector: function(selector) { return tabs[selector] || null; },
             querySelectorAll: function() { return []; }
         },
         window: {}
@@ -215,13 +223,16 @@ async function main() {
     );
     navContext.setMessageUnreadSource('direct', 3);
     navContext.setMessageUnreadSource('channels', 2);
+    assert.strictEqual(tabs['#bottom-bar .ui-tab[data-view="message"]'].label, 'Messages, 3 unread');
     navContext.setMessageUnreadSource('direct', 0);
-    assert.strictEqual(elements['nav-unread-dot'].style.display, 'none');
-    assert.strictEqual(elements['nav-channels-unread'].style.display, '');
-    assert.strictEqual(elements['bb-unread'].style.display, 'none',
-        'clearing Direct attention must clear only the mobile Messages badge');
-    assert.strictEqual(elements['bb-channels-unread'].style.display, '',
+    assert.strictEqual(elements['nav-unread-dot'].hidden, true);
+    assert.strictEqual(elements['nav-channels-unread'].hidden, false);
+    assert.strictEqual(elements['bb-unread'].hidden, true,
+        'clearing Direct attention must clear only the mobile Messages dot');
+    assert.strictEqual(elements['bb-channels-unread'].hidden, false,
         'the dedicated mobile Channels badge must retain Channels attention');
+    assert.strictEqual(tabs['#bottom-bar .ui-tab[data-view="message"]'].label, 'Messages');
+    assert.strictEqual(tabs['#bottom-bar .ui-tab[data-view="channels"]'].label, 'Channels, 2 unread');
 
     console.log('channel unread and read-state tests passed');
 }

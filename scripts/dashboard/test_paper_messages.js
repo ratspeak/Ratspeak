@@ -99,7 +99,6 @@ function paperContext(platform, clipboardText) {
         shortHash: hash => String(hash).slice(0, 8) + '…' + String(hash).slice(-4),
         _lookupContactRecord: () => null,
         _conversationNameInfo: hash => ({ name: 'Announced ' + String(hash).slice(0, 4) }),
-        _formatDateLabel: () => 'Today',
         formatTime: () => '09:41',
         showToast: (message, kind) => toasts.push([message, kind]),
         openConversationAtMessage: (...args) => reveals.push(args),
@@ -125,6 +124,7 @@ function paperContext(platform, clipboardText) {
     };
     context.window = context;
     context.RS = {
+        kit: { time: { date: () => 'Today' } },
         qr: { openScanner: () => invokes.push(['scanner']) },
         ui: { focusAfterUpdate: el => { context.focused = el; } },
         invoke(command, args) {

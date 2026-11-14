@@ -1,7 +1,7 @@
-// Bulk message selection: only the tray's Select row selects; taps anywhere on
-// a message's row toggle; Cancel or leaving the conversation ends it; the bar
-// reads "Delete" then "Delete (N)"; in-flight sends are never selectable; and
-// confirmed deletes go through delete_messages.
+// Bulk message selection: only the menu's Select item selects; taps anywhere on
+// a message's row toggle; Cancel or leaving the conversation ends it; the header
+// becomes Cancel, "N selected", and Delete; in-flight sends are never selectable;
+// and confirmed deletes go through delete_messages.
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
@@ -26,7 +26,7 @@ function classList() {
 
 function harness(messages) {
     const bar = { hidden: true, offsetHeight: 44, contains: () => false };
-    const deleteBtn = { textContent: 'Delete', attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } };
+    const deleteBtn = { attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } };
     const status = { textContent: '' };
     const container = { classList: classList(), querySelectorAll: () => [], contains: () => true, scrollTop: 100 };
     const calls = [];
@@ -80,19 +80,19 @@ const settle = () => new Promise((r) => setImmediate(r));
     c._selectMessage(messages[0]);
     assert.strictEqual(c._messageSelectionActive(), true);
     assert.strictEqual(h.bar.hidden, false, 'the selection bar appears');
-    assert.strictEqual(h.container.scrollTop, 144, 'the transcript stays still while the bar takes its height');
-    assert.strictEqual(h.deleteBtn.textContent, 'Delete', 'one selected reads plain Delete');
+    assert.strictEqual(h.container.scrollTop, 100, 'the bar takes the header\'s place, so the transcript stays still');
+    assert.strictEqual(h.deleteBtn.attrs['aria-label'], 'Delete 1 selected message');
     assert.strictEqual(h.status.textContent, '1 selected');
-    assert(h.container.classList.has('msg-select-mode'));
+    assert(h.container.classList.has('is-selecting'));
 
     c._toggleMessageSelection(messages[1]);
     c._toggleMessageSelection(messages[2]);
-    assert.strictEqual(h.deleteBtn.textContent, 'Delete (3)');
+    assert.strictEqual(h.deleteBtn.attrs['aria-label'], 'Delete 3 selected messages');
     assert.strictEqual(h.status.textContent, '3 selected');
     c._toggleMessageSelection(messages[3]);
-    assert.strictEqual(h.deleteBtn.textContent, 'Delete (3)', 'an in-flight send is never selectable');
+    assert.strictEqual(h.status.textContent, '3 selected', 'an in-flight send is never selectable');
     c._selectMessage(messages[3]);
-    assert.strictEqual(h.deleteBtn.textContent, 'Delete (3)');
+    assert.strictEqual(h.status.textContent, '3 selected');
 
     c._toggleMessageSelection(messages[1]);
     c._toggleMessageSelection(messages[2]);
@@ -100,7 +100,7 @@ const settle = () => new Promise((r) => setImmediate(r));
     assert.strictEqual(c._messageSelectionActive(), false, 'deselecting the last message exits');
     assert.strictEqual(h.bar.hidden, true);
     assert.strictEqual(h.container.scrollTop, 100);
-    assert.strictEqual(h.status.textContent, 'Selection cleared');
+    assert.strictEqual(h.status.textContent, '');
 
     // The gaps between messages do nothing; leaving the conversation (header,
     // conversation list, navigation) ends selection, except the back arrow,
@@ -132,7 +132,7 @@ const settle = () => new Promise((r) => setImmediate(r));
         preventDefault() {}, stopPropagation() { stopped = true; },
     });
     assert(stopped);
-    assert.strictEqual(h.deleteBtn.textContent, 'Delete (2)');
+    assert.strictEqual(h.status.textContent, '2 selected');
     assert.strictEqual(c._clearMessageSelection(), true);
     assert.strictEqual(c._clearMessageSelection(), false);
 
@@ -181,23 +181,25 @@ const settle = () => new Promise((r) => setImmediate(r));
     assert.strictEqual(h.calls.length, 0);
     assert.strictEqual(h.context._messageSelectionActive(), true);
 
-    // Wiring: opening actions never selects or draws a circle; Select sits
-    // between Reply and Copy; Esc, Back, the back arrow and Cancel exit.
+    // Wiring: opening actions never selects or draws a circle; the menu reads
+    // Reply, Copy, Select; Esc, Back, the back arrow and Cancel exit.
     const open = source.slice(source.indexOf('function _showMsgContextMenu('), source.indexOf('function _handleMessageActionPointer('));
     assert(!open.includes('_selectMessage(msgData);\n    window') && !source.includes('is-preview'));
-    const tray = source.slice(source.indexOf("replyBtn.setAttribute('data-message-action', 'reply')"),
-        source.indexOf("copyBtn.setAttribute('data-message-action', 'copy-message')"));
-    assert(tray.includes("selectBtn.setAttribute('data-message-action', 'select')") &&
-        tray.includes("(isSelected ? 'Deselect' : 'Select')"), 'Select must sit between Reply and Copy');
+    const reply = source.indexOf("' msg-ctx-reply', 'reply'");
+    const copy = source.indexOf("' msg-ctx-copy', 'copy-message'");
+    const select = source.indexOf("' msg-ctx-select', 'select'");
+    assert(reply > 0 && reply < copy && copy < select, 'the menu reads Reply, Copy, Select');
+    assert(source.slice(select, select + 200).includes("isSelected ? 'Deselect' : 'Select'"));
     assert(source.includes("document.addEventListener('click', _handleMessageSelectionClick, true);"));
     assert(/_dismissContextMenu\(\) \|\|\s*\(!\(_msgSelection && _msgSelection\.pending\) && _clearMessageSelection\(\)\)/.test(source));
     assert(source.includes('return _clearMessageSelection();\n};'), 'native Back exits selection');
     assert(source.includes('if (_clearMessageSelection()) return;\n            RS.viewStack.pop();'));
     assert(source.includes("selectCancelBtn.addEventListener('click', _clearMessageSelection);"));
-    assert(html.includes('<button class="lxmf-select-bar-btn" id="lxmf-select-cancel-btn" type="button">Cancel</button>'));
-    assert(html.includes('id="lxmf-select-delete-btn" type="button">Delete</button>'));
+    assert(html.includes('id="lxmf-select-cancel-btn">Cancel</button>'));
+    assert(/id="lxmf-select-delete-btn">[\s\S]*?<span>Delete<\/span><\/button>/.test(html));
     assert(html.indexOf('id="lxmf-select-bar"') > html.indexOf('id="chat-header-menu-btn"'),
-        'the bar sits under the header; Call and More stay in place');
+        'the bar is the header\'s select state, right after it');
+    assert(source.includes("if (header) header.hidden = active;"), 'the bar replaces the header while selecting');
 
     // A waiting send is stopped, not deleted: it gets no circle and never joins a selection.
     const waiting = msg('w', { direction: 'outbound', state: 'waiting' });
