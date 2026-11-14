@@ -9,8 +9,13 @@ changes that materially affect how an artifact is reproduced.
 
 ### Added
 
+- **A refreshed design**: buttons, lists, search, switches, and dialogs look and work the same everywhere, on desktop and phone, in every theme. Any address in the app can be copied in full with one tap.
+- **Network at a glance**: the Network tab maps your connections, with every way to connect in one Connectivity panel. Pause all stops them at once, and Resume all brings the same ones back.
+- **Activity**: a new tab shows what Ratspeak is doing on the network and explains problems in plain words.
+- **Contacts and Identity**: on desktop, a contact opens beside the list. Your identities have their own page, with your recovery phrase, PIN, and export in one place.
+- **Games home**: see the games waiting on your move, start a new game, or play again with someone you've played before.
 - **Keep trying to send**: a message that can't be sent now waits, marked with an hourglass, and Ratspeak tries again for up to 24 hours. It goes when the recipient is heard, when your network or Offline Inbox is back, or when you choose Try now from its menu. Stop trying ends it. On by default; turn it off in Settings › General.
-- **Discovered connections**: turn on Discover Connections in Settings › Network › Discovery to see the servers and radios others publish under Network › Discovered, and connect to one or use its radio settings. Join Automatically keeps a number of them connected, and Accept From can limit both to publishers you trust.
+- **Discovered connections**: turn on Discover servers in Network to see the servers and radios others publish, and connect to one or use its radio settings. Join Automatically keeps a number of them connected, and Accept From can limit both to publishers you trust.
 - **Auto-connect to unknown implementations**: in Settings › Network › Discovery, let Join Automatically also join servers running other software. It's off by default, so only servers running Python Reticulum 1.5.7 or later or rsReticulum 1.5.0 or later are joined.
 - **Network stamps**: in Settings › Network › Network Stamps, stamp your announces and path requests so nodes that require stamps pass them on, and require stamps from others. Both are off by default, and requiring stamps means nodes on older software aren't heard.
 - **Link MTU discovery**: transfers over fast links use larger packets and finish sooner. On by default; turn it off in Settings › Network › Links.
