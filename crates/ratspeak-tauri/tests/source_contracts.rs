@@ -317,7 +317,10 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
         .skip(1)
         .filter_map(|rest| rest.split('"').next())
         .collect::<Vec<_>>();
-    assert_eq!(more, ["contacts", "games", "network", "activity", "settings"]);
+    assert_eq!(
+        more,
+        ["contacts", "games", "network", "activity", "settings"]
+    );
     assert!(!index.contains("data-message-mode="));
     assert!(nav_js.contains("item.setAttribute('aria-current', 'page')"));
     assert!(nav_js.contains("'Channels' + (channels > 0 ? ', ' + channels + ' unread' : '')"));
@@ -653,7 +656,9 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
         channels_js.contains("if (typeof openConnectModal === 'function') openConnectModal();")
     );
     // Desktop explains in the room pane and keeps the list a list; a phone explains in the list.
-    assert!(channels_js.contains("_channelsOnly('phone', _channelsEmptyState(_channelsFirstView()))"));
+    assert!(
+        channels_js.contains("_channelsOnly('phone', _channelsEmptyState(_channelsFirstView()))")
+    );
     assert!(channels_css.contains(".channels-list > .ui-phone-only"));
     assert!(!channels_js.contains("pane-offers-list-action"));
     assert!(channels_css.contains(".channel-sheet-field-label-row"));
@@ -2615,7 +2620,9 @@ fn frontend_shared_helpers_are_adopted() {
 
     // Every local optimistic image URL is escaped at the image render site.
     let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
-    assert!(lxmf_js.contains("'<img src=\"' + escapeHtml(image.object_url || image.data_url) + '\""));
+    assert!(
+        lxmf_js.contains("'<img src=\"' + escapeHtml(image.object_url || image.data_url) + '\"")
+    );
 }
 
 #[test]
@@ -2647,8 +2654,13 @@ fn reaction_emoji_is_escaped_and_validated() {
     let root = repo_root();
     // Render site escapes the peer-controlled emoji text (T0-5).
     let lxmf_js = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
-    assert!(lxmf_js.contains("'<span aria-hidden=\"true\">' + escapeHtml(emoji) + '</span>' + (count > 1"));
-    assert!(lxmf_js.contains("'<button type=\"button\" class=\"msg-react\" data-emoji=\"' + escapeHtml(emoji)"));
+    assert!(
+        lxmf_js
+            .contains("'<span aria-hidden=\"true\">' + escapeHtml(emoji) + '</span>' + (count > 1")
+    );
+    assert!(lxmf_js.contains(
+        "'<button type=\"button\" class=\"msg-react\" data-emoji=\"' + escapeHtml(emoji)"
+    ));
 
     // Runtime rejects markup/control characters at ingest.
     let runtime_rs = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime");
@@ -5941,7 +5953,9 @@ fn empty_ghost_conversations_are_removed_when_leaving_chat_detail() {
 
     assert!(lxmf.contains("function _ensureGhostRow(hash)"));
     assert!(lxmf.contains("(opts.ghost ? ' data-ghost=\"true\"' : '')"));
-    assert!(lxmf.contains("_conversationRowHtml({ hash: hash, last_message: '' }, { ghost: true })"));
+    assert!(
+        lxmf.contains("_conversationRowHtml({ hash: hash, last_message: '' }, { ghost: true })")
+    );
     assert!(lxmf.contains("function _onChatDetailExit()"));
     assert!(lxmf.contains("function _conversationHasVisibleMessages()"));
     assert!(lxmf.contains("function _mergeOptimisticConversation(convos)"));
@@ -6119,7 +6133,9 @@ fn message_camera_and_photo_attachment_flow_is_native_and_previewed() {
     assert!(lxmf.contains("function triggerVideoAttachment()"));
     assert!(lxmf.contains("var input = document.getElementById('lxmf-camera-input');"));
     assert!(lxmf.contains("var input = document.getElementById('lxmf-video-input');"));
-    assert!(lxmf.contains("{ label: 'Camera', icon: 'camera', onSelect: triggerCameraAttachment }"));
+    assert!(
+        lxmf.contains("{ label: 'Camera', icon: 'camera', onSelect: triggerCameraAttachment }")
+    );
     assert!(lxmf.contains("{ label: 'Video', icon: 'video', onSelect: triggerVideoAttachment }"));
     assert!(lxmf.contains("function _pendingAttachmentName(file)"));
     assert!(lxmf.contains("function _chooseImageSize(file, inspection)"));
@@ -6239,7 +6255,10 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
 
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
-    assert!(messaging_css.contains(".msg-row .msg-bubble--media { padding: 0; background: transparent; }"));
+    assert!(
+        messaging_css
+            .contains(".msg-row .msg-bubble--media { padding: 0; background: transparent; }")
+    );
     assert!(messaging_css.contains("max-width: min(72%, 520px);"));
     assert!(messaging_css.contains(".msg-bubble { --msg-img: 300px; }"));
     assert!(messaging_css.contains(".image-viewer-img.is-dragging"));
@@ -7873,7 +7892,10 @@ fn mobile_primary_lists_share_readable_row_scale() {
     assert!(responsive_css.contains(".relay-card-header,"));
     assert!(responsive_css.contains(".relay-card-details,"));
     assert!(responsive_css.contains(".propagation-section-desc,"));
-    assert!(!responsive_css.contains("#bottom-sheet .bottom-sheet-item"), "More is a kit menu sheet");
+    assert!(
+        !responsive_css.contains("#bottom-sheet .bottom-sheet-item"),
+        "More is a kit menu sheet"
+    );
     assert!(responsive_css.contains("--mobile-list-avatar-size: 42px;"));
 }
 
@@ -7947,7 +7969,9 @@ fn mobile_peers_toolbar_uses_search_plus_icon_sort_only() {
     assert!(responsive_css.contains("padding-bottom: calc(62px + var(--sab));"));
 
     // No phone header: each view names itself; you are at the top of More.
-    assert!(!index.contains("id=\"header-mobile-hash\"") && !index.contains("header-mobile-avatar"));
+    assert!(
+        !index.contains("id=\"header-mobile-hash\"") && !index.contains("header-mobile-avatar")
+    );
     assert!(!responsive_css.contains(".header-mobile-avatar"));
     assert!(!lxmf_js.contains("header-mobile") && !settings_js.contains("header-mobile"));
 }
@@ -8084,7 +8108,9 @@ fn lxmf_conversation_rows_use_peer_display_names_when_available() {
     assert!(lxmf.contains("_conversationNameInfo(lxmfActiveContact, null, false);"));
     assert!(lxmf.contains("function _refreshRenderedConversationNames()"));
     assert!(lxmf.contains("if (titleEl.innerHTML !== html) titleEl.innerHTML = html;"));
-    assert!(lxmf.contains("'<span class=\"msg-title-hash\" title=\"' + escapeHtml(RS.kit.hash.text(hash, 'full'))"));
+    assert!(lxmf.contains(
+        "'<span class=\"msg-title-hash\" title=\"' + escapeHtml(RS.kit.hash.text(hash, 'full'))"
+    ));
 
     let render_start = lxmf
         .find("function _renderConversationsFromCache(convos)")
@@ -8391,11 +8417,9 @@ fn mobile_contacts_tab_keeps_desktop_header_out_of_search_flow() {
 fn mobile_tab_swipe_uses_bottom_bar_slots_without_view_slide_animation() {
     let nav = read_source(repo_root().join("dashboard/static/js/nav.js")).expect("nav js");
     assert!(nav.contains("var MOBILE_TAB_SLOTS = ['peers', 'message', 'channels', 'more'];"));
-    assert!(
-        nav.contains(
-            "var MORE_VIEWS = ['contacts', 'identity', 'network', 'activity', 'games', 'settings'];"
-        )
-    );
+    assert!(nav.contains(
+        "var MORE_VIEWS = ['contacts', 'identity', 'network', 'activity', 'games', 'settings'];"
+    ));
     assert!(nav.contains("function _mobileTabSlot(viewId)"));
     assert!(nav.contains("function _viewForMobileTabSlot(slot)"));
     assert!(nav.contains("function blockMobileNavigation(ms)"));
@@ -8602,10 +8626,14 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(lxmf.contains("label: 'Save file'"));
     assert!(lxmf.contains("menu.setAttribute('role', 'dialog')"));
     assert!(lxmf.contains("menu.setAttribute('aria-modal', 'false')"));
-    assert!(lxmf.contains("menu.setAttribute('aria-label', opts.reactOnly ? 'Reactions' : 'Message actions')"));
+    assert!(lxmf.contains(
+        "menu.setAttribute('aria-label', opts.reactOnly ? 'Reactions' : 'Message actions')"
+    ));
     assert!(!lxmf.contains("menu.setAttribute('role', 'menu')"));
     // Pointer only: "+" beside the bubble expands into React, Reply, and More.
-    assert!(lxmf.contains("'<div class=\"msg-hover\" role=\"group\" aria-label=\"Message actions\">'"));
+    assert!(
+        lxmf.contains("'<div class=\"msg-hover\" role=\"group\" aria-label=\"Message actions\">'")
+    );
     assert!(lxmf.contains("msg-hover-plus\" data-msg-id=\"' + id + '\" aria-label=\"Message actions\" title=\"Actions\" aria-expanded=\"false\">' + RS.kit.icon('plus')"));
     assert!(
         lxmf.contains(
@@ -8652,14 +8680,14 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(messaging_css.contains(".msg-text { display: flow-root;"));
     assert!(messaging_css.contains("-webkit-touch-callout: default;"));
     assert!(messaging_css.contains("html[data-input-modality=\"touch\"] .msg-text {"));
-    assert!(
-        messaging_css.contains(
-            "html[data-input-modality=\"touch\"] .lxmf-messages.is-acting .msg-row.is-pressed .msg-text"
-        )
-    );
+    assert!(messaging_css.contains(
+        "html[data-input-modality=\"touch\"] .lxmf-messages.is-acting .msg-row.is-pressed .msg-text"
+    ));
     assert!(messaging_css.contains("touch-action: auto;"));
     assert!(messaging_css.contains(".msg-row:hover .msg-hover, .msg-col:focus-within .msg-hover, .msg-hover.is-open { visibility: visible; }"));
-    assert!(messaging_css.contains("html[data-input-modality=\"touch\"] .msg-hover:not(.is-open) { visibility: hidden; }"));
+    assert!(messaging_css.contains(
+        "html[data-input-modality=\"touch\"] .msg-hover:not(.is-open) { visibility: hidden; }"
+    ));
     assert!(messaging_css.contains("@media (hover: none), (pointer: coarse), (max-width: 768px) { .msg-hover { display: none; } }"));
     assert!(!messaging_css.contains(".msg-text-selection-guide"));
     assert!(messaging_css.contains(".msg-menu { min-width: 248px; }"));
@@ -10360,7 +10388,9 @@ fn voice_memos_share_lxst_capture_and_use_first_class_lxmf_audio() {
     assert!(!messaging_commands.contains(".lxvm"));
     assert!(!messaging.contains(".lxvm"));
     assert!(!voice_memos.contains(".lxvm"));
-    assert!(messaging.contains("msg.audio && window.RS && RS.voiceMemos ? RS.voiceMemos.renderAudio(msg.audio, msg)"));
+    assert!(messaging.contains(
+        "msg.audio && window.RS && RS.voiceMemos ? RS.voiceMemos.renderAudio(msg.audio, msg)"
+    ));
     assert!(voice_memos.contains("Number(audio && audio.mode) === 0x10"));
     assert!(voice_memos.contains("var unsupported = !isAudio(audio) || audio.supported === false"));
     assert!(voice_memos.contains("data-audio-supported"));
@@ -11486,7 +11516,8 @@ fn a_waiting_message_is_marked_and_stoppable_and_the_list_shows_no_mark() {
     let try_now = position("' msg-ctx-try-now', 'try-now', 'refresh', 'Try now'");
     let stop_trying = position("' msg-ctx-stop-trying', 'stop-trying', 'x', 'Stop trying'");
     let retry = position("' msg-ctx-retry', 'retry', 'refresh', 'Retry…'");
-    let show_in_activity = position("' msg-ctx-activity', 'show-activity', 'activity', 'Show in Activity'");
+    let show_in_activity =
+        position("' msg-ctx-activity', 'show-activity', 'activity', 'Show in Activity'");
     assert!(try_now < stop_trying && stop_trying < retry && retry < show_in_activity);
     assert!(lxmf.contains(
         "return RS.invoke('try_waiting_now', {\n        args: { msg_id: msg.id }\n    })"
