@@ -1371,7 +1371,10 @@ z`,
                     if (typeof retry === 'function') retry();
                 });
             }
-            return RS.invoke(previewCommand, { payload: payload }).then(function(preview) {
+            var previewing = typeof options.preview === 'function'
+                ? Promise.resolve().then(function() { return options.preview(payload); })
+                : RS.invoke(previewCommand, { payload: payload });
+            return previewing.then(function(preview) {
                 if (stopped || accepted) return;
                 stopStream();
                 if (typeof options.onPreview === 'function') {

@@ -111,7 +111,10 @@
     .settings-field-pair { grid-template-columns: 1fr; }
 }
 /* Another app's Reticulum owns discovery. */
-.network-external #discovery-settings-body { display: none; }
+.network-external #discovery-settings-body, .network-external #settings-private-network { display: none; }
+.settings-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.ui-prop .settings-btns { flex: 0 0 auto; }
+.netid-share-dialog .ui-qr { align-self: center; }
 
 /* ---------------------------------------------------------------- Activity */
 #view-activity { padding: 0; overflow: hidden; }

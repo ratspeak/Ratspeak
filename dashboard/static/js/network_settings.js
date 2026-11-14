@@ -57,7 +57,7 @@
             setBusy(opts, true);
             return Promise.resolve().then(opts.run).then(function(result) {
                 setBusy(opts, false);
-                toast('Network restarted', 'toast-success', 3000);
+                toast(opts.done || 'Network restarted', 'toast-success', 3000);
                 return result || true;
             }, function(err) {
                 setBusy(opts, false);
@@ -161,6 +161,7 @@
             NS.settings = reply || Object.assign({}, DEFAULTS);
             render();
             refreshDiscovered();
+            if (RS.networkIdentity) RS.networkIdentity.refresh();
         }).catch(function() { render(); });
     }
 
