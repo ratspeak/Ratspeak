@@ -1,0 +1,106 @@
+/*
+ * Semantic layer for the ui-* components (07-ui-components.css). Every value
+ * references the palette, so all six families inherit it. Desktop sizes here;
+ * touch sizes below.
+ */
+:root {
+    --control-h-sm: 32px;
+    --control-h: 36px;
+    --control-h-lg: 44px;
+
+    --radius-tag: 4px;
+    --radius-control: 8px;
+    --radius-card: 12px;
+    --radius-overlay: 16px;
+
+    /* Selected is this fill and nothing else: no bar, border, or label change. */
+    --selection-bg: rgba(var(--accent-rgb), 0.16);
+    /* The one secondary button, icon tiles, and the accent tag. */
+    --tint-bg: rgba(var(--accent-rgb), 0.14);
+    --tint-bg-hover: rgba(var(--accent-rgb), 0.18);
+    --tint-bg-active: rgba(var(--accent-rgb), 0.22);
+
+    /* Rows take the subtle hover step, controls the light one. */
+    --row-hover: var(--surface-row-hover);
+    --row-press: var(--surface-row-active);
+    --control-hover: var(--surface-control-hover);
+    --control-press: var(--surface-control-active);
+    /* An ink alpha, so the segmented track and chips show on panel and workspace alike. */
+    --fill-control: var(--hover-light);
+
+    --ui-btn-fs: var(--text-sm);
+    --ui-icon-btn: 36px;
+    --ui-icon-btn-sm: 32px;
+    --ui-row-1: 44px;
+    --ui-row-2: 56px;
+    --ui-avatar-row: 40px;
+    --ui-tile: 32px;
+    --ui-tile-glyph: 18px;
+    --ui-menu-item: 36px;
+    --ui-menu-fs: var(--text-sm);
+    --ui-switch-w: 36px;
+    --ui-switch-h: 20px;
+    --ui-check: 18px;
+    --ui-chip-fs: var(--text-xs);
+    --ui-row-title-w: 500;
+    --ui-pane-title: var(--text-xl);
+    --ui-tag-h: 20px;
+    --ui-count: 18px;
+    --ui-prop-h: 52px;
+    --ui-gutter: 12px;
+}
+
+/* Touch: phone width or a coarse pointer. */
+@media (max-width: 768px), (pointer: coarse) {
+    :root {
+        --control-h-sm: 36px;
+        --control-h: 44px;
+        --control-h-lg: 50px;
+        --ui-btn-fs: var(--text-base);
+        --ui-icon-btn: 44px;
+        --ui-icon-btn-sm: 36px;
+        --ui-row-1: 48px;
+        --ui-row-2: 64px;
+        --ui-avatar-row: 48px;
+        --ui-tile: 40px;
+        --ui-tile-glyph: 20px;
+        --ui-menu-item: 48px;
+        --ui-menu-fs: var(--text-base);
+        --ui-switch-w: 48px;
+        --ui-switch-h: 28px;
+        --ui-check: 22px;
+        --ui-chip-fs: var(--text-sm);
+        --ui-pane-title: var(--text-2xl);
+        --ui-tag-h: 22px;
+        --ui-count: 20px;
+        --ui-prop-h: 56px;
+        --ui-gutter: 16px;
+    }
+}
+
+/* Forces touch sizes inside a desktop window (specimens and previews). */
+.ui-touch {
+    --text-base: 1.0625rem;
+    --control-h-sm: 36px;
+    --control-h: 44px;
+    --control-h-lg: 50px;
+    --ui-btn-fs: var(--text-base);
+    --ui-icon-btn: 44px;
+    --ui-icon-btn-sm: 36px;
+    --ui-row-1: 48px;
+    --ui-row-2: 64px;
+    --ui-avatar-row: 48px;
+    --ui-tile: 40px;
+    --ui-tile-glyph: 20px;
+    --ui-menu-item: 48px;
+    --ui-menu-fs: var(--text-base);
+    --ui-switch-w: 48px;
+    --ui-switch-h: 28px;
+    --ui-check: 22px;
+    --ui-chip-fs: var(--text-sm);
+    --ui-pane-title: var(--text-2xl);
+    --ui-tag-h: 22px;
+    --ui-count: 20px;
+    --ui-prop-h: 56px;
+    --ui-gutter: 16px;
+}

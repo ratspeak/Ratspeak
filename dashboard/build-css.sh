@@ -8,6 +8,7 @@ OUT="$SCRIPT_DIR/static/style.css"
 MODULES=(
     00-tokens.css
     00-palettes.css
+    00-ui-tokens.css
     01-reset.css
     02-typography.css
     03-scrollbar.css
@@ -15,6 +16,7 @@ MODULES=(
     05-panels.css
     06-forms.css
     07-components.css
+    07-ui-components.css
     08-modals.css
     09-messaging.css
     09-channels.css

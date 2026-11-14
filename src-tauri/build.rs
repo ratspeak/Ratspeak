@@ -42,6 +42,7 @@ fn build_dashboard_css() {
     let modules = [
         "00-tokens.css",
         "00-palettes.css",
+        "00-ui-tokens.css",
         "01-reset.css",
         "02-typography.css",
         "03-scrollbar.css",
@@ -49,6 +50,7 @@ fn build_dashboard_css() {
         "05-panels.css",
         "06-forms.css",
         "07-components.css",
+        "07-ui-components.css",
         "08-modals.css",
         "09-messaging.css",
         "09-channels.css",

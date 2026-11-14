@@ -8163,18 +8163,19 @@ fn peers_avatars_are_circle_cropped_like_contacts() {
 #[test]
 fn identity_avatars_are_circle_cropped_everywhere() {
     let root = repo_root();
-    let identity_js =
-        read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
+    // The identicon lives with the shared ui-* helpers.
+    let identicon_js = read_source(root.join("dashboard/static/js/ui_kit.js")).expect("ui kit js");
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
 
+    assert!(identicon_js.contains("function identityAvatar(hashValue, size)"));
     assert!(
-        !identity_js.contains("<clipPath id="),
+        !identicon_js.contains("<clipPath id="),
         "cached avatar SVGs must not reuse DOM clip-path ids"
     );
-    assert!(identity_js.contains("clip-path:circle(50% at 50% 50%)"));
-    assert!(identity_js.contains("<circle cx=\""));
+    assert!(identicon_js.contains("clip-path:circle(50% at 50% 50%)"));
+    assert!(identicon_js.contains("<circle cx=\""));
     assert!(views_css.contains(
         ".identity-avatar {\n    flex-shrink: 0;\n    border-radius: var(--radius-full);"
     ));
