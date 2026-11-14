@@ -37,11 +37,13 @@ a.ui-sidebar-me:focus-visible { outline: 2px solid var(--focus-ring); outline-of
 .ui-pane { --row-surface: var(--surface-workspace); display: flex; flex-direction: column; flex: 0 0 340px; width: 340px; min-height: 0; background: var(--surface-workspace); border-right: 1px solid var(--border-row); }
 .ui-pane-search { padding: 0 var(--ui-gutter) 8px; }
 .ui-pane-scroll { flex: 1; min-height: 0; overflow-y: auto; padding-bottom: 8px; }
-/* Desktop: the list keeps the app's thin scrollbar in a reserved gutter, and the rows above it
-   inset by the same width, so a pane's header, search, and list share one right edge. */
+/* Desktop: the list keeps the app's thin scrollbar in a reserved gutter, and the header and search
+   reserve the same gutter, so all three share one right edge whatever the scrollbar's width. */
 @media (min-width: 769px) {
-    .ui-pane-scroll { scrollbar-gutter: stable; }
-    .ui-pane > :is(.ui-pane-head, .ui-pane-search) { padding-right: calc(var(--ui-gutter) + var(--ui-scrollbar)); }
+    .ui-pane > :is(.ui-pane-head, .ui-pane-search, .ui-pane-scroll) { scrollbar-gutter: stable; }
+    .ui-pane > :is(.ui-pane-head, .ui-pane-search) { overflow: hidden; }
+    /* Room for the search field's focus ring inside the clip, with the layout unchanged. */
+    .ui-pane > .ui-pane-search { padding-top: 2px; margin-top: -2px; }
 }
 /* Phone: scroll areas scroll with no drawn scrollbar and none taking width. */
 @media (max-width: 768px) {

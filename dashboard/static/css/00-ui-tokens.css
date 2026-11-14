@@ -48,8 +48,6 @@
     --ui-count: 18px;
     --ui-prop-h: 52px;
     --ui-gutter: 12px;
-    /* The app's scrollbar width (03-scrollbar.css), for insets that match a scroller's gutter. */
-    --ui-scrollbar: 5px;
 }
 
 /* Touch: phone width or a coarse pointer. */
