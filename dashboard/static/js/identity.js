@@ -1759,7 +1759,6 @@ RS.listen('identity_switched', function(data) {
 
     if (typeof _resetConversationList === 'function') _resetConversationList();
     if (typeof renderStandaloneContactList === 'function') renderStandaloneContactList();
-    if (typeof renderNetworkContactList === 'function') renderNetworkContactList();
     if (typeof closeFabContactPicker === 'function') closeFabContactPicker();
     if (typeof loadConversations === 'function') loadConversations();
 
