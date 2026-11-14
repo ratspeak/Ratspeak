@@ -90,7 +90,7 @@ function renderDashboardPeersList() {
         var meta = [
             typeof ratspeakProfileStatusText === 'function' ? ratspeakProfileStatusText(p) : '',
             p.in_path ? p.route_label : '',
-            p.iface && typeof ifaceShortLabel === 'function' ? ifaceShortLabel(p.iface) : ''
+            p.iface && typeof personConnectionKind === 'function' ? personConnectionKind(p.iface) : ''
         ].filter(Boolean).join(' · ');
         var heard = p.last_seen ? '<span class="ui-time" title="' + escapeHtml(RS.kit.time.lastHeard(p.last_seen)) + '">' +
             RS.kit.time.row(p.last_seen) + '</span>' : '';
@@ -128,7 +128,7 @@ function renderHomeStatus(data) {
             '</div>';
         var ways = (ifaces || []).map(function(iface) {
             var label = friendlyInterfaceName(iface.name || '', iface.type || '', iface.role || '');
-            var kind = typeof ifaceShortLabel === 'function' ? ifaceShortLabel(iface.name || '') : '';
+            var kind = typeof personConnectionKind === 'function' ? personConnectionKind(iface.name || '') : '';
             var words = escapeHtml(label) + (kind && kind !== label ? ' · ' + escapeHtml(kind) : '') + (iface.online ? '' : ', offline');
             return '<span class="ui-status"><span class="ui-dot' + (iface.online ? ' ui-dot--online' : '') + '"></span>' + words + '</span>';
         });
