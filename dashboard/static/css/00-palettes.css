@@ -714,10 +714,11 @@
     --surface-game-gradient: #493447;
 }
 
-/* Labels on an accent or error tint: at least 4.5:1 at rest and on hover in every family. */
+/* Labels on an accent, success, or error tint: at least 4.5:1 at rest and on hover in every family. */
 :root {
     --accent-ink: var(--accent-dark);
     --danger-ink: color-mix(in srgb, var(--status-error-fg) 75%, var(--text-primary));
+    --success-ink: color-mix(in srgb, var(--status-online-fg) 70%, var(--text-primary));
 }
 
 [data-theme="dark"] {

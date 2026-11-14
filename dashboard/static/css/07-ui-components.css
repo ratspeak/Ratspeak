@@ -81,7 +81,7 @@ a.ui-sidebar-me:focus-visible { outline: 2px solid var(--focus-ring); outline-of
 .ui-btn--quiet:is(:hover, .is-hover, :active, .is-press) { color: var(--text-primary); }
 .ui-btn--danger { --b-bg: var(--status-error-bg); --b-bg-h: rgba(var(--status-error-rgb), .16); --b-bg-a: rgba(var(--status-error-rgb), .22); --b-fg: var(--danger-ink); }
 .ui-btn--danger.ui-btn--primary { --b-bg: var(--status-error-fg); --b-bg-h: color-mix(in srgb, var(--status-error-fg) 88%, var(--text-primary)); --b-bg-a: color-mix(in srgb, var(--status-error-fg) 78%, var(--text-primary)); --b-fg: var(--on-accent); }
-.ui-btn.is-success { --b-bg: var(--status-online-bg-strong); --b-bg-h: var(--status-online-bg-strong); --b-fg: var(--status-online-fg); }
+.ui-btn.is-success { --b-bg: var(--status-online-bg-strong); --b-bg-h: var(--status-online-bg-strong); --b-fg: var(--success-ink); }
 .ui-btn--sm { height: var(--control-h-sm); padding: 0 12px; font-size: var(--text-sm); }
 .ui-btn--lg { height: var(--control-h-lg); padding: 0 20px; font-size: var(--text-base); }
 .ui-btn--block { display: flex; width: 100%; }
@@ -113,6 +113,8 @@ a.ui-sidebar-me:focus-visible { outline: 2px solid var(--focus-ring); outline-of
 .ui-icon-btn:is(:hover, .is-hover) { background: var(--control-hover); color: var(--text-primary); }
 .ui-icon-btn:is(:active, .is-press, [aria-expanded="true"]) { background: var(--control-press); color: var(--text-primary); }
 .ui-icon-btn[aria-pressed="true"] { background: var(--selection-bg); color: var(--text-primary); }
+/* Disclosure: the chevron shows the state, so expanded takes no pressed fill. */
+.ui-icon-btn--disclosure[aria-expanded="true"]:not(:hover):not(:active):not(.is-hover):not(.is-press) { background: transparent; color: var(--text-secondary); }
 .ui-icon-btn:is(:focus-visible, .is-focus) { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .ui-icon-btn:disabled { opacity: var(--opacity-disabled); pointer-events: none; }
 .ui-icon-btn.is-done { color: var(--status-online-fg); }
@@ -183,7 +185,7 @@ textarea.ui-input { height: auto; min-height: calc(var(--control-h) * 2); paddin
 
 /* Switch: the only on/off control. */
 .ui-switch { position: relative; display: inline-block; flex: 0 0 auto; width: var(--ui-switch-w); height: var(--ui-switch-h); vertical-align: middle; }
-.ui-switch input { position: absolute; inset: -12px -4px; width: auto; height: auto; margin: 0; opacity: 0; cursor: pointer; z-index: 1; }
+.ui-switch input { position: absolute; top: -12px; left: -4px; width: calc(100% + 8px); height: calc(100% + 24px); margin: 0; -webkit-appearance: none; appearance: none; opacity: 0; cursor: pointer; z-index: 1; }
 .ui-switch .track { position: absolute; inset: 0; border-radius: 999px; background: var(--surface-control); box-shadow: inset 0 0 0 1.5px var(--border-control); transition: background-color .2s ease, box-shadow .2s ease; }
 .ui-switch .track::before { content: ''; position: absolute; top: 2px; left: 2px; width: calc(var(--ui-switch-h) - 4px); height: calc(var(--ui-switch-h) - 4px); box-sizing: border-box; border-radius: 50%; background: var(--border-control); transition: transform .2s ease, background-color .2s ease; }
 .ui-switch input:checked + .track { background: var(--accent-border); box-shadow: inset 0 0 0 1.5px transparent; }
