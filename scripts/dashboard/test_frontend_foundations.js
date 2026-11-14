@@ -228,8 +228,7 @@ assert(channelsSource.includes('RS.legal.open(documentId)') &&
     'public-channel policies must open the versioned offline reader');
 assert(legalDocumentsSource.includes('View current version online') &&
     legalDocumentsSource.includes('Promise.resolve(RS.openExternalUrl(current.url))') &&
-    legalDocumentsSource.includes("handleSelector: '.ui-dialog-head'") &&
-    legalDocumentsSource.includes('blockIfScrolled: false'),
+    legalDocumentsSource.includes("size: 'lg'"),
     'the offline reader must retain an explicit, failure-aware path to the current online copy');
 assert(channelsSource.includes('RS.ui.focusAfterUpdate(initialFocus)'),
     'compact channel sheets must not force keyboard focus during touch navigation');

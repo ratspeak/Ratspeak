@@ -25,10 +25,6 @@ function rsAlert(opts) {
             resolve();
         });
 
-        built.overlay.addEventListener('click', function(e) {
-            if (e.target === built.overlay) built.dismiss(null);
-        });
-
         built.body.appendChild(_rsText('p', '', opts.message || ''));
 
         var closeBtn = _rsButton(opts.closeText || 'Close', 'primary');
@@ -38,20 +34,12 @@ function rsAlert(opts) {
         built.footer.appendChild(closeBtn);
 
         built.sheet.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') {
-                e.stopPropagation();
-                built.dismiss(null);
-            }
             if (e.key === 'Enter') {
                 e.preventDefault();
                 built.dismiss(null);
             }
-            if (e.key === 'Tab') _rsTrapTab(e, built.sheet, 'button');
         });
 
-        _rsAttachDrag(built, function() { built.dismiss(null); });
-
-        built.present();
         closeBtn.focus();
     });
 }
@@ -169,150 +157,88 @@ function _rsCheckRow(labelText, checked) {
     return { row: row, input: input };
 }
 
-function _rsTrapTab(e, sheet, selector) {
-    var focusable = Array.prototype.filter.call(sheet.querySelectorAll(selector), function(el) {
-        return !el.disabled && el.offsetParent !== null;
-    });
-    if (!focusable.length) return;
-    var first = focusable[0];
-    var last = focusable[focusable.length - 1];
-    if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault();
-        last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault();
-        first.focus();
-    }
-}
-
-function _rsAttachDrag(built, onCommit, skip) {
-    RS.gestures.attachDragDismiss(built.sheet, {
-        axis: 'y',
-        blockIfScrolled: true,
-        skipIf: function(e) {
-            if (skip && skip(e)) return true;
-            return !!(e.target.closest('button') || e.target.tagName === 'INPUT');
-        },
-        parallaxOverlay: built.overlay,
-        onCommit: onCommit
-    });
-}
-
-var RS_DIALOG_SIZES = { md: ' ui-dialog--md', lg: ' ui-dialog--lg' };
 // Connection sheets keep their type's tone on the title tile.
 var RS_DIALOG_TILE_TONES = { tcp: 'info', backbone: 'info', host: 'neutral', lora: 'online', local: 'warning', ble: 'purple' };
-var _rsDialogSeq = 0;
 
-// Builds the kit dialog: .ui-modal (the scrim) > .ui-dialog.rs-sheet-shell. Callers wire their own
-// scrim click so dismiss-on-tap can use live state. opts: title, size ('md' | 'lg'), sheetClass,
-// titleIcon (markup) and titleIconType, showTitle, ariaLabel, role, nativeBackValue, nativeBackDismissible.
+// The runtime dialogs' shell: RS.kit.dialog (centred on desktop, a sheet on a phone) with the
+// sheet API these helpers and their callers use. opts: title, size ('md' | 'lg'), sheetClass,
+// titleIcon (markup) and titleIconType, showTitle, ariaLabel, role, nativeBackValue, and
+// nativeBackDismissible. Close, Escape, the scrim, and native Back all go through
+// sheet._ratspeakDismiss, which callers may replace.
 function _rsBuildSheet(opts, onClose) {
     opts = opts || {};
     var resolved = false;
-    var previousFocus = document.activeElement;
+    var locked = opts.nativeBackDismissible === false;
+    var titled = !!opts.title && opts.showTitle !== false;
+    var tone = RS_DIALOG_TILE_TONES[opts.titleIconType];
+    var head = (titled && opts.titleIcon
+            ? '<span class="ui-tile' + (tone ? ' ui-tile--' + tone : '') + '" aria-hidden="true">' + opts.titleIcon + '</span>' : '') +
+        '<h2 class="ui-dialog-title' + (titled ? '' : ' ui-sr') + '">' + RS.kit.esc(opts.title || opts.ariaLabel || 'Dialog') + '</h2>';
 
-    var overlay = document.createElement('div');
-    overlay.className = 'ui-modal';
+    function nativeValue() {
+        if (typeof opts.nativeBackValue === 'function') return opts.nativeBackValue();
+        return Object.prototype.hasOwnProperty.call(opts, 'nativeBackValue') ? opts.nativeBackValue : null;
+    }
+
+    var explicit = false;
+    var shell = RS.kit.dialog({
+        head: head,
+        size: opts.size,
+        className: opts.sheetClass || '',
+        foot: ' ',
+        locked: locked,
+        onClose: function(value) {
+            if (resolved) return;
+            resolved = true;
+            if (onClose) onClose(explicit ? value : nativeValue());
+        }
+    });
+    var overlay = shell.modal;
+    var sheet = shell.dialog;
+    if (opts.role) sheet.setAttribute('role', opts.role);
+    if (!titled && opts.ariaLabel) sheet.setAttribute('aria-label', opts.ariaLabel);
+    var glyph = sheet.querySelector('.ui-dialog-head .ui-tile svg');
+    if (glyph) glyph.classList.add('ui-ico');
     // Above any open sheet and the unlock screen (iOS mid-animation sheets bury confirmations otherwise).
     overlay.style.zIndex = 'var(--z-overlay)';
-
-    var sheet = document.createElement('div');
-    sheet.className = 'ui-dialog rs-sheet-shell' + (RS_DIALOG_SIZES[opts.size] || '') +
-        (opts.sheetClass ? ' ' + opts.sheetClass : '');
-    sheet.setAttribute('role', opts.role || 'dialog');
-    sheet.setAttribute('aria-modal', 'true');
-    overlay.appendChild(sheet);
-
-    var handle = document.createElement('div');
-    handle.className = 'ui-dialog-handle';
-    handle.setAttribute('aria-hidden', 'true');
-    sheet.appendChild(handle);
-
-    var head = document.createElement('div');
-    head.className = 'ui-dialog-head';
-    var title = null;
-    if (opts.title && opts.showTitle !== false) {
-        if (opts.titleIcon) {
-            var tile = document.createElement('span');
-            tile.className = 'ui-tile';
-            if (RS_DIALOG_TILE_TONES[opts.titleIconType]) tile.classList.add('ui-tile--' + RS_DIALOG_TILE_TONES[opts.titleIconType]);
-            tile.setAttribute('aria-hidden', 'true');
-            tile.innerHTML = opts.titleIcon;
-            var glyph = tile.querySelector('svg');
-            if (glyph) glyph.classList.add('ui-ico');
-            head.appendChild(tile);
-        }
-        title = _rsText('h2', 'ui-dialog-title', opts.title);
-        title.id = 'rs-dialog-title-' + (++_rsDialogSeq);
-        head.appendChild(title);
-        sheet.setAttribute('aria-labelledby', title.id);
-    } else {
-        sheet.setAttribute('aria-label', opts.ariaLabel || opts.title || 'Dialog');
-    }
-    if (opts.nativeBackDismissible !== false) {
-        var close = document.createElement('button');
-        close.type = 'button';
-        close.className = 'ui-icon-btn';
-        close.setAttribute('aria-label', 'Close');
-        close.title = 'Close';
-        close.innerHTML = RS.kit.icon('x');
-        close.addEventListener('click', function() {
-            if (typeof sheet._ratspeakDismiss === 'function') sheet._ratspeakDismiss();
-        });
-        if (!title) close.classList.add('rs-dialog-close');
-        head.appendChild(close);
-    }
-    if (head.firstChild) sheet.appendChild(head);
-
-    var body = document.createElement('div');
-    body.className = 'ui-dialog-body';
-    body.setAttribute('data-sheet-scroll', '');
-    sheet.appendChild(body);
-
-    var footer = document.createElement('div');
-    footer.className = 'ui-dialog-foot';
-    sheet.appendChild(footer);
+    shell.body.setAttribute('data-sheet-scroll', '');
+    shell.foot.textContent = '';
 
     function dismiss(value) {
         if (resolved) return;
-        resolved = true;
-        sheet.classList.remove('open');
-        overlay.classList.add('is-closing');
-        setTimeout(function() {
-            if (overlay.parentNode) overlay.remove();
-            var restoreFocus = RS.ui && typeof RS.ui.prefersKeyboardFocus === 'function'
-                ? RS.ui.prefersKeyboardFocus()
-                : true;
-            if (restoreFocus && previousFocus && previousFocus.focus) previousFocus.focus();
-        }, 200);
-
-        if (onClose) onClose(value);
+        explicit = true;
+        shell.close(value);
     }
 
-    // Close, Escape, and native Back share one state-aware close; non-dismissible progress
-    // dialogs still consume Back. Callers may replace it.
     sheet._ratspeakDismiss = function() {
         return _rsHandleNativeBack(opts, dismiss);
     };
+    overlay._ratspeakDismiss = function() {
+        if (!resolved) sheet._ratspeakDismiss();
+        return true;
+    };
+    overlay.addEventListener('click', function(e) {
+        var closer = e.target.closest && e.target.closest('[data-ui-close]');
+        if (!closer && e.target !== overlay) return;
+        e.stopImmediatePropagation();
+        if (!locked) sheet._ratspeakDismiss();
+    }, true);
     overlay.addEventListener('keydown', function(e) {
-        if (e.key !== 'Escape' || e.defaultPrevented) return;
+        if (e.key !== 'Escape') return;
         e.preventDefault();
-        sheet._ratspeakDismiss();
-    });
-
-    function present() {
-        document.body.appendChild(overlay);
-        sheet.classList.add('open');
-    }
+        e.stopImmediatePropagation();
+        if (!locked) sheet._ratspeakDismiss();
+    }, true);
 
     return {
         overlay: overlay,
         sheet: sheet,
-        head: head,
-        title: title,
-        body: body,
-        footer: footer,
-        present: present,
+        head: sheet.querySelector('.ui-dialog-head'),
+        title: titled ? sheet.querySelector('.ui-dialog-title') : null,
+        body: shell.body,
+        footer: shell.foot,
+        // RS.kit.dialog shows itself at once; the helpers fill it in the same task.
+        present: function() {},
         dismiss: dismiss
     };
 }
@@ -338,10 +264,6 @@ function _rsShowDialog(cfg, callback) {
         role: cfg.danger ? 'alertdialog' : 'dialog',
         nativeBackValue: function() { return resolveValue(false); }
     }, callback);
-
-    built.overlay.addEventListener('click', function(e) {
-        if (e.target === built.overlay) built.dismiss(resolveValue(false));
-    });
 
     if (cfg.message) {
         var message = _rsText('p', '', cfg.message);
@@ -391,10 +313,6 @@ function _rsShowDialog(cfg, callback) {
     built.footer.appendChild(confirmBtn);
 
     built.sheet.addEventListener('keydown', function(e) {
-        if (e.key === 'Escape') {
-            e.stopPropagation();
-            built.dismiss(resolveValue(false));
-        }
         if (e.key === 'Enter') {
             var active = document.activeElement;
             // A focused button activates natively; Enter must not override Cancel.
@@ -404,14 +322,7 @@ function _rsShowDialog(cfg, callback) {
                 built.dismiss(resolveValue(true));
             }
         }
-        if (e.key === 'Tab') _rsTrapTab(e, built.sheet, 'input, button');
     });
-
-    _rsAttachDrag(built, function() { built.dismiss(resolveValue(false)); }, function() {
-        return !!(cfg.hasInput && document.activeElement === input);
-    });
-
-    built.present();
 
     if (input) {
         if (!isMobile()) { input.focus(); input.select(); }
@@ -531,8 +442,8 @@ function rsLinkConfirm(href, opts) {
     });
 }
 
-// Resolves the chosen value or null on cancel. Choices are kit menu items: a bare glyph, the label
-// with an optional hint, a trailing check on the value in effect, and a danger tone.
+// Resolves the chosen value or null on cancel. Choices are the kit's choice list: menu items with a
+// bare glyph, the label and an optional hint, a trailing check on the value in effect, and a danger tone.
 function rsChoice(opts) {
     opts = opts || {};
     return new Promise(function(resolve) {
@@ -546,10 +457,6 @@ function rsChoice(opts) {
             sheetClass: opts.sheetClass || ''
         }, resolve);
 
-        built.overlay.addEventListener('click', function(e) {
-            if (e.target === built.overlay) built.dismiss(null);
-        });
-
         if (opts.message) built.body.appendChild(_rsText('p', '', opts.message));
 
         if (opts.summary) {
@@ -562,7 +469,7 @@ function rsChoice(opts) {
         }
 
         var choicesWrap = document.createElement('div');
-        choicesWrap.className = 'ui-menu ui-menu--sheet rs-dialog-choices';
+        choicesWrap.className = 'ui-choices';
         choicesWrap.setAttribute('role', 'menu');
         choicesWrap.setAttribute('aria-label', opts.title || 'Choices');
         (opts.choices || []).forEach(function(choice) {
@@ -594,7 +501,6 @@ function rsChoice(opts) {
             var text = document.createElement('span');
             text.className = 'lbl';
             var labelLine = document.createElement('span');
-            labelLine.className = 'rs-dialog-choice-line';
             labelLine.appendChild(_rsText('span', '', choice.label));
             if (choice.recommended) labelLine.appendChild(_rsText('span', 'ui-tag ui-tag--accent', 'Recommended'));
             text.appendChild(labelLine);
@@ -612,15 +518,6 @@ function rsChoice(opts) {
             cancelBtn.addEventListener('click', function() { built.dismiss(null); });
             built.footer.appendChild(cancelBtn);
         }
-
-        built.sheet.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') { e.stopPropagation(); built.dismiss(null); }
-            if (e.key === 'Tab') _rsTrapTab(e, built.sheet, 'button');
-        });
-
-        _rsAttachDrag(built, function() { built.dismiss(null); });
-
-        built.present();
 
         var firstBtn = choicesWrap.querySelector('.is-selected:not(:disabled)') ||
             choicesWrap.querySelector('.is-recommended:not(:disabled)') ||
@@ -710,8 +607,6 @@ function rsProgress(opts) {
             }
         }, opts.timeout);
     }
-
-    built.present();
 
     return {
         update: function(text) { statusText.textContent = text; },

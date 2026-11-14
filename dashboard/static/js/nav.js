@@ -624,9 +624,6 @@ function _initHistoryNavigation() {
 // About Ratspeak: the kit's Small dialog. Settings › About opens it.
 function showAboutModal() {
     var built = _rsBuildSheet({ title: 'About Ratspeak', sheetClass: 'about-dialog' });
-    built.overlay.addEventListener('click', function(e) {
-        if (e.target === built.overlay) built.dismiss(null);
-    });
 
     // The brand mark is drawn once in the shell; reuse it rather than repeat its path.
     var brand = document.querySelector('.sidebar-brand-logo, .header-logo-icon');
@@ -687,14 +684,6 @@ function showAboutModal() {
         if (rows) facts.insertAdjacentHTML('afterbegin', rows);
     }).catch(function() {});
 
-    RS.gestures.attachDragDismiss(built.sheet, {
-        axis: 'y',
-        blockIfScrolled: true,
-        skipIf: function(e) { return !!e.target.closest('button, a'); },
-        parallaxOverlay: built.overlay,
-        onCommit: function() { built.dismiss(null); }
-    });
-    built.present();
     var first = built.sheet.querySelector('.ui-dialog-head .ui-icon-btn');
     if (first && (!RS.ui || typeof RS.ui.prefersKeyboardFocus !== 'function' || RS.ui.prefersKeyboardFocus())) first.focus();
 }

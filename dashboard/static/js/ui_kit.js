@@ -500,7 +500,10 @@ function identityAvatar(hashValue, size) {
             if (closed) return;
             closed = true;
             modal.removeEventListener('keydown', onKey);
-            if (modal.parentNode) modal.parentNode.removeChild(modal);
+            // It fades out (.is-closing) and then leaves the page; native Back no longer sees it.
+            modal.classList.remove('open');
+            modal.classList.add('is-closing');
+            setTimeout(function() { if (modal.parentNode) modal.parentNode.removeChild(modal); }, 200);
             if (previous && typeof previous.focus === 'function' && document.contains(previous)) {
                 try { previous.focus({ preventScroll: true }); } catch (_) {}
             }

@@ -1181,9 +1181,6 @@
 .rs-link-text { flex: 1; min-width: 0; font: 400 var(--text-sm)/1.4 var(--font-mono); overflow-wrap: anywhere; }
 .rs-link-quiet { color: var(--text-secondary); }
 .rs-link-host { color: var(--text-primary); font-weight: 600; }
-/* Choice lists bleed to the dialog edge so each label lines up with the title. */
-.rs-dialog-choices { margin: 0 -20px; padding: 0; }
-.rs-dialog-choice-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
 .rs-dialog-summary { display: flex; flex-direction: column; gap: 2px; font-size: var(--text-sm); color: var(--text-secondary); }
 .rs-dialog-summary b { min-width: 0; font-weight: 600; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rs-dialog-summary .ui-help { margin-top: 4px; overflow-wrap: anywhere; }

@@ -2586,7 +2586,7 @@ fn frontend_shared_helpers_are_adopted() {
 
     let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
     assert!(
-        dialogs_js.contains("overlay.className = 'ui-modal';"),
+        dialogs_js.contains("var shell = RS.kit.dialog({"),
         "runtime dialogs must use the kit dialog shell"
     );
     for file in [
@@ -8887,7 +8887,7 @@ fn identity_management_is_first_class_tab() {
     let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
     assert!(dialogs_js.contains("built.sheet.addEventListener('keydown'"));
     assert!(!dialogs_js.contains("built.overlay.addEventListener('keydown'"));
-    assert!(dialogs_js.contains("tile.className = 'ui-tile';"));
+    assert!(dialogs_js.contains("'<span class=\"ui-tile' + (tone ? ' ui-tile--' + tone : '')"));
     assert!(dialogs_js.contains("glyph.classList.add('ui-ico');"));
     assert!(dialogs_js.contains("text.appendChild(_rsText('small', '', choice.hint));"));
 
@@ -8938,8 +8938,6 @@ fn identity_management_is_first_class_tab() {
         read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
     assert!(modals_css.contains(".bottom-sheet-title-with-icon"));
     assert!(modals_css.contains(".bottom-sheet-title-icon"));
-    assert!(modals_css.contains(".rs-dialog-choices"));
-    assert!(modals_css.contains(".rs-dialog-choice-line"));
     assert!(modals_css.contains("flex-direction: column;"));
 
     let android_activity = read_source(

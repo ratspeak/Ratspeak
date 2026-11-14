@@ -130,9 +130,7 @@ assert.strictEqual(builtSheet.options.size, 'lg');
 assert.strictEqual(builtSheet.options.sheetClass, 'rs-legal-sheet');
 assert.strictEqual(builtSheet.title.textContent, 'Privacy Policy');
 assert.strictEqual(builtSheet.body.children.length, 1);
-assert.strictEqual(dragDismiss.element, builtSheet.sheet);
-assert.strictEqual(dragDismiss.options.handleSelector, '.ui-dialog-head');
-assert.strictEqual(dragDismiss.options.blockIfScrolled, false);
+assert.strictEqual(dragDismiss, null, 'the kit dialog owns swipe-to-close; the reader adds no second drag');
 assert(builtSheet.body.children[0].innerHTML.includes('Available offline'));
 assert(builtSheet.body.children[0].innerHTML.includes('Ratspeak does not currently operate a public channel hub.'));
 assert(builtSheet.body.children[0].innerHTML.includes('Vercel Web Analytics'));
@@ -172,7 +170,7 @@ article.listeners.click({
         }
     }
 });
-dragDismiss.options.onCommit();
+builtSheet.footer.children[1].listeners.click();
 assert.strictEqual(builtSheet.wasDismissed, true);
 setImmediate(() => {
     assert.strictEqual(openedUrl, 'https://ratspeak.org/community-guidelines.html');

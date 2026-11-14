@@ -193,18 +193,7 @@
             });
         });
 
-        built.overlay.addEventListener('click', function(event) {
-            if (event.target === built.overlay) built.dismiss(true);
-        });
-        if (RS.gestures && typeof RS.gestures.attachDragDismiss === 'function') {
-            RS.gestures.attachDragDismiss(built.sheet, {
-                axis: 'y',
-                handleSelector: '.ui-dialog-head',
-                blockIfScrolled: false,
-                parallaxOverlay: built.overlay,
-                onCommit: function() { built.dismiss(true); }
-            });
-        }
+        // The kit dialog closes on its scrim, Escape, a swipe down on a phone, and native Back.
         render(documentId);
         built.present();
         return true;
