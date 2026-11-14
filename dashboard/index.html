@@ -503,41 +503,26 @@
         </div>
 
         <div class="view" id="view-games">
-            <div class="games-layout">
-                <div class="games-sidebar">
-                    <div class="games-sidebar-header">
-                        <h2 class="games-sidebar-title">Games</h2>
-                        <button class="nr-btn nr-btn-sm games-new-btn" id="games-new-btn">
-                            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
-                                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-                            </svg>
-                            New
-                        </button>
+            <div class="ui-split games-layout">
+                <section class="ui-pane games-pane" aria-labelledby="games-title">
+                    <header class="ui-pane-head">
+                        <h2 class="ui-pane-title" id="games-title">Games</h2>
+                        <div class="ui-pane-actions">
+                            <button type="button" class="ui-btn ui-btn--sm" id="games-new-btn"><svg class="ui-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>New game</button>
+                        </div>
+                    </header>
+                    <div class="games-filter" id="games-filter">
+                        <div class="ui-seg ui-seg--block" role="radiogroup" aria-label="Show games">
+                            <button type="button" role="radio" aria-checked="true" data-filter="all">All</button>
+                            <button type="button" role="radio" aria-checked="false" tabindex="-1" data-filter="active">Active</button>
+                            <button type="button" role="radio" aria-checked="false" tabindex="-1" data-filter="pending">Pending</button>
+                            <button type="button" role="radio" aria-checked="false" tabindex="-1" data-filter="done">Done</button>
+                        </div>
                     </div>
-                    <div class="games-sidebar-tabs section-subtabs" aria-label="Filter games">
-                        <button class="games-tab section-subtab-btn active" type="button" data-filter="all" aria-pressed="true">All</button>
-                        <button class="games-tab section-subtab-btn" type="button" data-filter="active" aria-pressed="false">Active</button>
-                        <button class="games-tab section-subtab-btn" type="button" data-filter="pending" aria-pressed="false">Pending</button>
-                        <button class="games-tab section-subtab-btn" type="button" data-filter="completed" aria-pressed="false">Completed</button>
-                    </div>
-                    <div class="games-session-list" id="games-session-list">
-                        <div class="games-empty-sidebar">No games yet</div>
-                    </div>
-                </div>
-
-                <div class="games-detail" id="games-detail">
-                    <div class="empty-state">
-                        <svg class="empty-state-svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M8 12h2M12 12h2M8 8h.01M12 16h.01"/></svg>
-                        <span class="empty-state-primary">Select a game to play</span>
-                        <span class="empty-state-hint">or start a new game with a contact</span>
-                    </div>
-                </div>
+                    <div class="ui-pane-scroll games-session-list" id="games-session-list"></div>
+                </section>
+                <section class="ui-detail games-detail" id="games-detail" aria-label="Game"></section>
             </div>
-            <button class="view-fab" id="games-fab-btn" title="New Game">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
-                    <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-                </svg>
-            </button>
         </div>
 
         <div class="view" id="view-peers">
@@ -1948,6 +1933,7 @@
 <script src="/static/js/confetti.js?v=ui-20260924-4"></script>
 <script src="/static/js/game_registry.js?v=ui-20260924-4"></script>
 <script src="/static/js/four_in_a_row_view.js?v=ui-20260924-4"></script>
+<script src="/static/js/game_art.js?v=ui-20260924-4"></script>
 <script src="/static/js/games_tab.js?v=ui-20260924-4"></script>
 <script src="/static/js/native_channel_share.js?v=ui-20260924-4"></script>
 <script src="/static/js/native_paper_link.js?v=ui-20260924-4"></script>

@@ -365,7 +365,7 @@
        without breaking pinch-zoom (WCAG). */
     button, a, input, select, textarea,
     .nr-btn, .danger-btn, .ui-tab, .conn-row,
-    .contacts-row, .bottom-sheet-item, .fab-picker-row, .games-session-row,
+    .contacts-row, .bottom-sheet-item, .fab-picker-row,
     .log-filter, .panel-header-btn, .modal-close, .mobile-back-btn,
     .toolbar-dropdown-btn, .toolbar-dropdown-item,
     .theme-toggle-btn, .theme-toggle, .selector-badge, .settings-row,
@@ -508,8 +508,7 @@
     .contacts-list-scroll,
     .activity-feed,
     .settings-page,
-    .home-page,
-    .games-session-list {
+    .home-page {
         padding-bottom: var(--space-4);
     }
     .view-grid-network,
@@ -594,38 +593,6 @@
     .sub-panel-header {
         min-height: 48px;
         padding: var(--space-6) var(--space-7);
-    }
-
-    .games-layout {
-        flex-direction: column;
-        position: relative;
-        height: 100%;
-    }
-    .games-sidebar {
-        width: 100%;
-        min-width: 0;
-        max-width: none;
-        max-height: none;
-        height: 100%;
-        border-right: none;
-        border-bottom: none;
-        flex: 1;
-        min-height: 0;
-    }
-    .games-detail {
-        display: none;
-        position: absolute;
-        inset: 0;
-        z-index: 5;
-        background: var(--surface-elevation-1);
-        overflow-y: auto;
-    }
-
-    .games-layout.view-game-detail .games-sidebar { display: none; }
-    .games-layout.view-game-detail .games-detail {
-        display: flex;
-        flex-direction: column;
-        position: relative;
     }
 
     /* A game takes the whole screen, as a conversation does. */
@@ -893,8 +860,7 @@
     .keyboard-open .view-grid-identity,
     .keyboard-open .activity-feed,
     .keyboard-open .settings-page,
-    .keyboard-open .home-page,
-    .keyboard-open .games-session-list {
+    .keyboard-open .home-page {
         padding-bottom: 0;
     }
 
@@ -1108,7 +1074,6 @@
 
     .contacts-list-scroll,
     .eventlog-full,
-    .games-session-list,
     .log-container { -webkit-overflow-scrolling: touch; }
 
     /* Contain overscroll so iOS rubber-band doesn't shift header on keyboard open. */
@@ -1419,8 +1384,6 @@
 
     .conn-cards-grid { gap: 6px; }
 
-    .games-session-row { flex-wrap: wrap; }
-    .games-session-meta { flex-basis: 100%; margin-top: 4px; }
 
     
 
@@ -1555,20 +1518,6 @@
 
     
 
-    .games-detail-controls {
-        position: sticky;
-        bottom: 0;
-        background: var(--surface-elevation-1);
-        padding: var(--space-6);
-        padding-bottom: calc(12px + var(--sab));
-        z-index: 3;
-    }
-
-    .games-session-turn {
-        font-weight: 700;
-        animation: turnPulseSubtle 2s ease-in-out infinite;
-    }
-
     .settings-danger-zone {
         border: 1px solid rgba(var(--status-error-rgb), 0.2);
         border-radius: var(--radius-lg-plus);
@@ -1696,9 +1645,6 @@
         font-size: var(--text-2xs);
     }
 
-    .games-layout .games-detail {
-        transition: transform 0.28s cubic-bezier(0.2, 0, 0, 1);
-    }
 
     .conn-card { border: none; }
     .panel { border: none; box-shadow: none; }
@@ -1851,15 +1797,8 @@
     }
 
     #view-message:not(.active) .view-fab,
-    #view-contacts:not(.active) .view-fab,
-    #view-games:not(.active) .view-fab { display: none; }
+    #view-contacts:not(.active) .view-fab { display: none; }
 
-    .games-layout.view-game-detail ~ .view-fab { display: none; }
-
-    #games-new-btn { display: none; }
-    .games-sidebar-header { display: none; }
-    .games-sidebar-tabs { padding: 8px var(--space-8) 0; }
-    .games-session-list { padding: var(--space-2) var(--space-6); }
     .eventlog-header { border-bottom: 1px solid var(--border-row); }
     .log-filter { min-height: 40px; display: flex; align-items: center; }
 
@@ -1871,14 +1810,13 @@
     #conn-table-body,
     .contacts-list-scroll,
     #peers-list-body,
-    #games-session-list,
     .eventlog-full {
         display: flex;
         flex-direction: column;
         flex: 1;
         min-height: 0;
     }
-    .empty-state, .lxmf-empty, .log-empty-state, .games-empty-sidebar {
+    .empty-state, .lxmf-empty, .log-empty-state {
         flex: 1;
         max-height: 600px;
         display: flex;
@@ -1982,89 +1920,6 @@
     }
     .fab-dial-scrim.active { display: block; }
 
-    .games-new-dialog .bottom-sheet-body {
-        padding: var(--space-5) var(--space-5);
-        gap: var(--space-5);
-        min-width: 0;
-        overflow-x: hidden;
-    }
-    .bottom-sheet.open.games-new-dialog {
-        width: 100%;
-        max-width: 100vw;
-        min-width: 0;
-        overflow-x: hidden;
-        overflow-y: hidden;
-    }
-    .games-new-dialog .bottom-sheet-header,
-    .games-new-dialog .bottom-sheet-footer,
-    .games-sheet-section {
-        min-width: 0;
-        box-sizing: border-box;
-    }
-    .games-new-dialog .bottom-sheet-title {
-        color: var(--text-primary);
-        font-size: var(--mobile-list-title-size);
-        font-weight: var(--type-weight-semibold);
-    }
-    .games-sheet-subtitle,
-    .games-sheet-header {
-        font-size: var(--mobile-list-detail-size);
-    }
-    .games-sheet-game-grid {
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: var(--space-2);
-        padding: 2px;
-        margin: -2px;
-    }
-    .games-sheet-game-card {
-        min-height: 96px;
-        padding: var(--space-4);
-        gap: var(--space-3);
-        min-width: 0;
-    }
-    .games-sheet-game-card .game-card-icon {
-        width: 34px;
-        height: 34px;
-    }
-    .games-sheet-game-check {
-        top: var(--space-3);
-        right: var(--space-3);
-    }
-    .games-sheet-contact-list {
-        max-height: 32vh;
-    }
-    .games-sheet-contact-row,
-    .games-sheet-game-card,
-    .games-sheet-send-btn,
-    .games-sheet-cancel-btn {
-        -webkit-tap-highlight-color: transparent;
-    }
-    .games-sheet-contact-row:active,
-    .games-sheet-game-card:active {
-        background: var(--surface-row-active);
-    }
-    .games-sheet-footer {
-        width: 100%;
-        flex-wrap: nowrap;
-        padding: var(--space-4) var(--space-5) calc(var(--space-5) + var(--sab));
-    }
-    .games-sheet-send-btn,
-    .games-sheet-cancel-btn {
-        flex: 1;
-        min-width: 0;
-        min-height: 44px;
-        padding-inline: var(--space-3);
-    }
-    .games-sheet-empty {
-        flex-wrap: wrap;
-        row-gap: var(--space-3);
-        min-height: 0;
-        padding: var(--space-4);
-    }
-    .games-sheet-open-contacts {
-        width: 100%;
-        min-height: 44px;
-    }
 }
 
 @media (max-width: 768px) {
@@ -2091,11 +1946,6 @@
 
     .view-grid-dashboard {
         padding: 0 var(--space-3) var(--space-2);
-    }
-
-    .chess-board-grid, .ttt-grid {
-        width: min(240px, 60vw);
-        height: min(240px, 60vw);
     }
 
     .bottom-sheet {
@@ -2214,13 +2064,6 @@
         -webkit-overflow-scrolling: touch;
     }
 
-    .games-session-list {
-        overflow-y: auto;
-        -webkit-overflow-scrolling: touch;
-        flex: 1;
-        min-height: 0;
-    }
-
     .propagation-standalone {
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
@@ -2246,7 +2089,6 @@
     .contacts-list-scroll,
     .conn-table-scroll,
     .eventlog-full,
-    .games-session-list,
     .propagation-standalone,
     .settings-page,
     .view-grid-identity,
@@ -2257,7 +2099,6 @@
     .contacts-list-scroll::-webkit-scrollbar,
     .conn-table-scroll::-webkit-scrollbar,
     .eventlog-full::-webkit-scrollbar,
-    .games-session-list::-webkit-scrollbar,
     .propagation-standalone::-webkit-scrollbar,
     .settings-page::-webkit-scrollbar,
     .view-grid-identity::-webkit-scrollbar,
@@ -2279,8 +2120,7 @@
         font-size: var(--text-sm);
     }
 
-    .contacts-row,
-    .games-session-row {
+    .contacts-row {
         min-height: var(--mobile-list-min-height);
     }
 
@@ -2300,14 +2140,11 @@
     }
 
     .contacts-row-content,
-    .games-session-info,
-    .games-session-meta,
     .conn-iface-main {
         min-width: 0;
     }
 
     .contacts-row-name,
-    .games-session-name,
     .conn-section-label,
     .conn-iface-name,
     .system-subsection-title,
@@ -2319,8 +2156,6 @@
     }
 
     .contacts-row-hash,
-    .games-session-status,
-    .games-session-game,
     .conn-iface-stats,
     .conn-iface-empty,
     .activity-empty,
@@ -2333,8 +2168,6 @@
         line-height: 1.35;
     }
 
-    .games-session-status,
-    .games-session-game,
     .conn-iface-stats {
         overflow: hidden;
         text-overflow: ellipsis;
@@ -2343,7 +2176,6 @@
 
     
 
-    .games-session-time,
     .activity-event-time,
     .activity-event-meta {
         font-size: var(--mobile-list-meta-size);
@@ -2355,43 +2187,6 @@
 
     
 
-    .games-sidebar-header {
-        min-height: 56px;
-        padding: var(--space-5) var(--space-6);
-    }
-    .games-sidebar-title {
-        font-size: var(--text-xl);
-    }
-    .games-sidebar-tabs {
-        padding: var(--space-3) var(--space-4);
-        gap: var(--space-2);
-    }
-    .games-tab {
-        min-height: 40px;
-        font-size: var(--mobile-list-detail-size);
-        font-weight: var(--type-weight-semibold);
-    }
-    .games-session-row {
-        min-height: 60px;
-        padding: var(--space-3) var(--space-6);
-        gap: var(--space-5);
-        flex-wrap: nowrap;
-    }
-    .games-session-icon {
-        width: var(--mobile-list-icon-size);
-        height: var(--mobile-list-icon-size);
-        font-size: var(--text-xl);
-    }
-    .games-session-meta {
-        flex-basis: auto;
-        margin-top: var(--space-2);
-        overflow: hidden;
-        white-space: nowrap;
-    }
-    .games-session-time {
-        width: 44px;
-        text-align: right;
-    }
     .conn-card {
         min-height: 56px;
         padding: var(--space-4) var(--space-7);
@@ -2608,20 +2403,13 @@
         --mobile-list-min-height: 56px;
     }
 
-    .contacts-row,
-    .games-session-row {
+    .contacts-row {
         padding-left: var(--space-6);
         padding-right: var(--space-6);
     }
 
     .conn-iface-row {
         padding-left: 52px;
-    }
-
-    
-
-    .games-session-game {
-        display: none;
     }
 }
 
@@ -3399,11 +3187,6 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
         padding-left: calc(var(--chat-inset) + var(--sal));
         padding-right: calc(var(--chat-inset) + var(--sar));
     }
-    body.view-game-detail .games-detail-board,
-    body.view-game-detail .games-detail-controls {
-        margin-left: var(--sal);
-        margin-right: var(--sar);
-    }
 }
 
 @media (min-width: 769px) {
@@ -3427,7 +3210,7 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
     .channel-transcript:has(+ .channel-compose[hidden]),
     .channel-compose,
     .channel-members-pane,
-    .games-sidebar,
+    .games-pane,
     .games-detail,
     .people-split > .ui-pane,
     .people-split > .ui-detail,

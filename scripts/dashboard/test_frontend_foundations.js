@@ -118,8 +118,8 @@ assert(html.includes('<div class="cmp" id="lxmf-composer" hidden>'), 'Messages u
 assert(html.includes('channel-compose message-composer'));
 assert(html.includes('message-composer-input'));
 assert(html.includes('message-send-btn'));
-assert(html.includes('games-sidebar-tabs section-subtabs'));
-assert(html.includes('games-tab section-subtab-btn'));
+assert(/id="games-filter"[\s\S]*?class="ui-seg ui-seg--block" role="radiogroup" aria-label="Show games"/.test(html),
+    'the Games filter is the kit segmented control');
 assert(html.includes('network-subtabs section-subtabs'));
 assert(html.includes('network-subtab-btn section-subtab-btn'));
 assert(!/<a class="(?:bottom-sheet-item|ui-menu-item|ui-row)"[^>]*data-view/.test(html), 'mobile navigation rows must be buttons');

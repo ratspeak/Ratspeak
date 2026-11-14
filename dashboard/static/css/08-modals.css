@@ -1409,13 +1409,6 @@
 }
 
 
-.games-ctrl-separator {
-    width: 1px;
-    height: 24px;
-    background: var(--divider);
-    margin: 0 var(--space-2);
-}
-
 .rs-confirm-card {
     border-radius: var(--radius-xl);
 }

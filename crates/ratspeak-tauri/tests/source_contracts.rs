@@ -2591,7 +2591,6 @@ fn frontend_shared_helpers_are_adopted() {
     );
     for file in [
         "dashboard/static/js/contact_card.js",
-        "dashboard/static/js/games_tab.js",
     ] {
         let source = read_source(root.join(file)).expect(file);
         assert!(
@@ -3285,33 +3284,21 @@ fn notification_attention_uses_visibility_not_transport_settlement_or_selected_s
 }
 
 #[test]
-fn games_new_sheet_uses_shared_mobile_bottom_sheet_width() {
+fn games_new_game_uses_the_kit_large_dialog() {
     let root = repo_root();
     let games_js = read_source(root.join("dashboard/static/js/games_tab.js")).expect("games js");
-    assert!(games_js.contains("sheetClass: 'bottom-sheet games-new-dialog'"));
-    assert!(games_js.contains("rs-dialog-cancel games-sheet-cancel-btn"));
-    assert!(games_js.contains("rs-dialog-confirm games-sheet-send-btn"));
+    assert!(games_js.contains("ui-dialog ui-dialog--lg ng-dialog"));
+    assert!(games_js.contains("modal.className = 'ui-modal rs-sheet-shell open games-modal'"));
+    assert!(games_js.contains("modal._ratspeakDismiss = function()"));
+    assert!(!games_js.contains("RS.sheetShell."));
 
     let games_css = read_source(root.join("dashboard/static/css/11-games.css")).expect("games css");
-    assert!(games_css.contains(
-        "@media (min-width: 769px) {\n    .bottom-sheet.open.games-new-dialog {\n        width: min(640px, calc(100vw - 48px));\n    }\n}"
-    ));
-    assert!(!games_css.contains(".games-sheet-send-btn {\n    border: 1px solid var(--accent);"));
-    assert!(
-        !games_css
-            .contains(".games-sheet-cancel-btn {\n    border: 1px solid var(--border-control);")
-    );
-    assert!(
-        !games_css
-            .contains("\n.bottom-sheet.open.games-new-dialog {\n    width: min(520px, 92vw);\n}"),
-        "games new sheet width must not override the shared mobile bottom-sheet left/right layout"
-    );
-
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("css");
-    assert!(responsive_css.contains(
-        ".bottom-sheet {\n        position: fixed;\n        bottom: 0;\n        left: 0;\n        right: 0;"
-    ));
+    for css in [&games_css, &responsive_css] {
+        assert!(!css.contains("games-new-dialog"));
+        assert!(!css.contains(".games-sheet-"));
+    }
 }
 
 #[test]
@@ -3327,12 +3314,12 @@ fn games_ui_uses_runtime_manifests_and_accessible_atomic_actions() {
     assert!(games_js.contains("var _manifestsById = {};"));
     assert!(games_js.contains("RS.games.views.register('ttt'"));
     assert!(games_js.contains("RS.games.views.register('chess'"));
-    assert!(games_js.contains("gameView.renderBoard(session, _gameViewContext(session, panel))"));
+    assert!(games_js.contains("var context = _gameViewContext(session, panel);"));
+    assert!(games_js.contains("gameView.renderBoard(session, context)"));
     assert!(games_js.contains("gameView.bindBoard(session, _gameViewContext(session, panel))"));
     assert!(games_js.contains("RS.games.views.supportedManifests("));
     assert!(games_js.contains("app_id: 'four_in_a_row', display_name: 'Four in a Row'"));
-    assert!(games_js.contains("view.activeStatusText(session, _gameViewContext(session))"));
-    assert!(games_js.contains("view.detailChips(session, _gameViewContext(session))"));
+    assert!(games_js.contains("gameView.playerMeta(session, context)"));
     assert!(games_js.contains("view.renderActiveControls(session)"));
     assert!(games_js.contains("view.bindControls(session, {"));
     assert!(!games_js.contains("if (appId === 'ttt') {\n            html += _renderTTTBoard"));
@@ -3349,8 +3336,8 @@ fn games_ui_uses_runtime_manifests_and_accessible_atomic_actions() {
     assert!(games_js.contains("function _canDeleteSession(session)"));
     assert!(games_js.contains("function _handleGameActionFailure(data)"));
     assert!(games_js.contains("function _activeMoveDeliveryText(state)"));
-    assert!(games_js.contains("escapeHtml(_statusText(s))"));
-    assert!(games_js.contains("escapeHtml(RS.relativeTime(s.updated_at || s.last_action_at))"));
+    assert!(games_js.contains("escapeHtml(_gameName(appId) + ' \u{b7} ' + _statusText(s))"));
+    assert!(games_js.contains("_timeHtml(_sessionTime(s))"));
     assert!(games_js.contains("finishPromotion(null);"));
     assert!(games_js.contains("_isMe(session, _drawOfferOwner(session))"));
     assert!(games_js.contains("if (!_beginSessionAction(session.game_id)) return;"));
@@ -3362,11 +3349,10 @@ fn games_ui_uses_runtime_manifests_and_accessible_atomic_actions() {
     assert!(games_css.contains(".ttt-cell:focus-visible"));
     assert!(games_css.contains(".chess-square:focus-visible"));
     assert!(games_css.contains(".four-lane-action:focus-visible"));
-    assert!(games_css.contains("background: rgba(var(--theme-page-rgb), 0.85);"));
     assert!(!games_css.contains("var(--surface-overlay)"));
     assert!(
-        !games_css.contains(".game-modal"),
-        "Games must use the shared bottom sheet instead of a parallel legacy modal"
+        !games_css.contains(".game-modal") && !games_css.contains("-overlay {"),
+        "Games use the kit dialog and result card instead of parallel legacy overlays"
     );
 }
 
@@ -3399,7 +3385,7 @@ fn four_in_a_row_view_is_accessible_theme_native_and_protocol_thin() {
     assert!(four.contains("event.key === 'End'"));
     assert!(games_js.contains("function _sendGameViewMove(session, payload, optimistic)"));
     assert!(games_js.contains("function _sessionValue(session, key, fallback)"));
-    assert!(games_js.contains("_sessionValue(session, 'move_count', '')"));
+    assert!(games_js.contains("_sessionValue(session, 'move_count', 0)"));
     assert!(games_js.contains("_sessionValue(record, 'move_count', null)"));
     assert!(games_js.contains("_sessionValue(session, 'winner', '')"));
     assert!(games_js.contains("RS.games.optimistic.restoreFields(session, backup.adapter_fields)"));
@@ -3463,19 +3449,25 @@ fn games_transport_uses_native_lxmf_fields_and_a_durable_outbox() {
 }
 
 #[test]
-fn games_view_uses_standard_dark_mode_surfaces() {
+fn games_view_uses_the_kit_surfaces() {
+    let index = read_source(repo_root().join("dashboard/index.html")).expect("dashboard index");
     let games_css =
         read_source(repo_root().join("dashboard/static/css/11-games.css")).expect("games css");
 
-    assert!(games_css.contains(
-        "[data-theme=\"dark\"] .games-layout {\n    background: var(--surface-workspace);\n}"
-    ));
-    assert!(games_css.contains(
-        "[data-theme=\"dark\"] .games-sidebar,\n[data-theme=\"dark\"] .games-detail {\n    background: var(--surface-panel);\n}"
-    ));
-    assert!(games_css.contains(
-        "[data-theme=\"dark\"] .games-detail-header {\n    background: var(--surface-panel);\n}"
-    ));
+    assert!(index.contains("<div class=\"ui-split games-layout\">"));
+    assert!(index.contains("<section class=\"ui-pane games-pane\""));
+    assert!(index.contains("<section class=\"ui-detail games-detail\" id=\"games-detail\""));
+    for selector in [".games-layout {", ".games-pane {", ".games-detail {"] {
+        let rule = games_css
+            .split(selector)
+            .nth(1)
+            .map(|rest| rest.split('}').next().unwrap_or(""))
+            .unwrap_or("");
+        assert!(
+            !rule.contains("background"),
+            "{selector} must take the kit pane and detail surfaces"
+        );
+    }
 }
 
 #[test]
@@ -7871,15 +7863,10 @@ fn mobile_primary_lists_share_readable_row_scale() {
     assert!(responsive_css.contains("--mobile-list-detail-size: var(--text-sm);"));
     assert!(responsive_css.contains("--mobile-list-meta-size: var(--text-xs);"));
     // Conversation rows are kit rows (ui-row), which carry their own touch scale.
-    assert!(responsive_css.contains(".games-session-row"));
     assert!(!responsive_css.contains(".conv-row,"));
     assert!(responsive_css.contains(".conn-section-label,\n    .conn-iface-name"));
     assert!(responsive_css.contains(".conn-iface-empty,"));
     assert!(responsive_css.contains(".activity-empty,"));
-    assert!(
-        responsive_css
-            .contains(".games-session-icon {\n        width: var(--mobile-list-icon-size);")
-    );
     assert!(
         responsive_css
             .contains(".conn-card-label {\n        font-size: var(--mobile-list-title-size);")
@@ -7893,7 +7880,10 @@ fn mobile_primary_lists_share_readable_row_scale() {
     );
     assert!(responsive_css.contains(".pulse-announce-btn {\n        min-height: 38px;"));
     assert!(responsive_css.contains(".pulse-announce-btn svg {\n        width: 16px;"));
-    assert!(responsive_css.contains(".games-session-game {\n        display: none;"));
+    assert!(
+        !responsive_css.contains(".games-session-"),
+        "Games rows are kit rows with their own touch sizes"
+    );
     // Messages scrolls on the kit's rule: no drawn scrollbar on a phone.
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     assert!(index.contains("class=\"lxmf-messages ui-scroll\" id=\"lxmf-messages\""));
@@ -8500,7 +8490,10 @@ fn mobile_haptics_use_tauri_plugin_commands_and_semantic_feedback() {
     assert!(lxmf.contains("_voiceHaptic('success')"));
     assert!(lxmf.contains("_voiceHaptic('warning')"));
     assert!(lxmf.contains("RS.gestures.bindViewFabClick(fab, function(e) {"));
-    assert!(games.contains("RS.gestures.bindViewFabClick('games-fab-btn'"));
+    assert!(
+        !games.contains("games-fab-btn"),
+        "Games starts a game from its header button, not a floating button"
+    );
 
     for path in js_files
         .iter()
