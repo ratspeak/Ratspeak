@@ -57,7 +57,7 @@ function _measureConnectionRowHeight(scrollContainer) {
     return _rowHeight;
 }
 
-function _invalidateConnectionRowMetric() {
+function _resetConnectionRowMetric() {
     if (!_connectionPendingScrollAnchor && _rowHeight > 0) {
         _connectionPendingScrollAnchor = {
             index: Math.floor(_scrollTop / _rowHeight),
@@ -65,6 +65,10 @@ function _invalidateConnectionRowMetric() {
         };
     }
     _connectionRowMetricKey = '';
+}
+
+function _invalidateConnectionRowMetric() {
+    _resetConnectionRowMetric();
     if (_connectionMetricFrame !== null) return;
     var render = function() {
         _connectionMetricFrame = null;
@@ -137,10 +141,12 @@ function initConnections() {
 
     if (!_connectionMetricsBound) {
         _connectionMetricsBound = true;
-        window.addEventListener('ratspeak-text-scale-changed', _invalidateConnectionRowMetric);
-        window.addEventListener('resize', _invalidateConnectionRowMetric, { passive: true });
+        var relayoutConnections = watchViewLayout('dashboard', _invalidateConnectionRowMetric, function() {
+            renderConnectionsTable(_connsView(), true);
+        });
+        window.addEventListener('ratspeak-text-scale-changed', relayoutConnections);
         if (document.fonts && document.fonts.ready) {
-            document.fonts.ready.then(_invalidateConnectionRowMetric).catch(function() {});
+            document.fonts.ready.then(relayoutConnections).catch(function() {});
         }
     }
 }

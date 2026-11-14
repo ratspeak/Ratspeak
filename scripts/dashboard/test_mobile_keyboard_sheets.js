@@ -150,9 +150,10 @@ assert(!navSource.includes('scheduleViewportSettle'),
     'composer focus must not wait for delayed viewport resampling');
 assert(navSource.includes("active.closest('.bottom-sheet.open')"),
     'iOS visual viewport changes must re-reveal the focused sheet field');
-assert(navSource.includes("// Preserve the Android pipeline used through v1.0.29:"));
-assert(navSource.includes("style.setProperty('--app-height', currentHeight + 'px')"),
+assert(navSource.includes("_setRootStyleProperty('--app-height', currentHeight + 'px')"),
     'Android conversations must receive live visualViewport height again');
+assert(navSource.includes("style.setProperty('--app-height', currentHeight + 'px')"),
+    'iOS conversations keep their visual viewport height');
 assert(navSource.includes("if (isIOS()) onResize();"),
     'Android keeps the historical visualViewport event owner');
 assert(responsiveCss.includes('html[data-keyboard-platform="ios"].keyboard-open .bottom-sheet.open:focus-within'));
@@ -166,8 +167,10 @@ assert(responsiveCss.includes('top: var(--visual-viewport-top, 0px);'));
 assert(androidActivity.includes('view.setPadding(bars.left, 0, bars.right, ime.bottom)'));
 assert(!androidActivity.includes('appOwnsVisibleIme'));
 assert(!androidActivity.includes('inputMethod.isActive(webView)'));
-assert(!androidActivity.includes('WindowInsetsCompat.Builder(insets)'));
-assert(!androidActivity.includes('.setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)'));
+assert(androidActivity.includes('.setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)'),
+    'WebView M139+ must not shrink its visual viewport by an IME the padding already handles');
+assert(androidActivity.includes('pendingBottom = if (imeVisible) 0 else'),
+    'the navigation-bar inset must not stack under an open keyboard');
 assert(!androidActivity.includes('WindowInsetsAnimationCompat.Callback'));
 
 console.log('Mobile keyboard-safe sheet behavior tests passed');

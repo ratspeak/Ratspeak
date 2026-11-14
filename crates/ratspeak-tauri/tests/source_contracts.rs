@@ -367,13 +367,13 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(!nav_js.contains("function _androidImeViewportMetrics"));
     assert!(!nav_js.contains("window.ratspeakApplyNativeImeGeometry"));
     assert!(nav_js.contains("if (isIOS()) window.addEventListener('resize', onResize)"));
-    assert!(nav_js.contains("// Preserve the Android pipeline used through v1.0.29:"));
+    assert!(nav_js.contains("_setRootStyleProperty('--app-height', currentHeight + 'px')"));
     assert!(nav_js.contains("style.setProperty('--app-height', currentHeight + 'px')"));
     assert!(nav_js.contains("if (isIOS()) onResize();"));
     assert!(android_activity.contains("view.setPadding(bars.left, 0, bars.right, ime.bottom)"));
     assert!(!android_activity.contains("appOwnsVisibleIme"));
     assert!(!android_activity.contains("inputMethod.isActive(webView)"));
-    assert!(!android_activity.contains("WindowInsetsCompat.Builder(insets)"));
+    assert!(android_activity.contains(".setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)"));
     assert!(responsive_css.contains(
         "html[data-keyboard-platform=\"ios\"].keyboard-open body.view-chat-detail .app-layout"
     ));
@@ -3112,7 +3112,7 @@ fn android_service_is_not_sticky_without_runtime_ownership() {
 }
 
 #[test]
-fn android_ime_pipeline_matches_the_proven_v1_0_29_contract() {
+fn android_ime_pipeline_resizes_the_webview_once_per_keyboard_change() {
     let root = repo_root();
     let manifest = read_source(root.join("src-tauri/gen/android/app/src/main/AndroidManifest.xml"))
         .expect("Android manifest");
@@ -3124,17 +3124,21 @@ fn android_ime_pipeline_matches_the_proven_v1_0_29_contract() {
 
     assert!(manifest.contains(r#"android:windowSoftInputMode="adjustResize""#));
     assert!(activity.contains("WindowInsetsCompat.Type.ime()"));
+    // Padding owns IME geometry; an IME inset reaching WebView M139+ shrinks it twice.
     assert!(activity.contains("view.setPadding(bars.left, 0, bars.right, ime.bottom)"));
+    assert!(activity.contains(
+        "WindowInsetsCompat.Builder(insets)\n                .setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)"
+    ));
+    assert!(!activity.contains("WindowInsetsCompat.CONSUMED"));
+    assert!(activity.contains("pendingBottom = if (imeVisible) 0 else"));
     assert!(!activity.contains("appOwnsVisibleIme"));
     assert!(!activity.contains("inputMethod.isActive(webView)"));
-    assert!(!activity.contains("WindowInsetsCompat.Builder(insets)"));
-    assert!(!activity.contains(".setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)"));
     assert!(!activity.contains("WindowInsetsAnimationCompat.Callback"));
     assert!(!activity.contains("window.ratspeakApplyNativeImeGeometry"));
     assert!(!nav.contains("function _androidImeViewportMetrics"));
     assert!(!nav.contains("window.ratspeakApplyNativeImeGeometry"));
-    assert!(nav.contains("// Preserve the Android pipeline used through v1.0.29:"));
-    assert!(nav.contains("style.setProperty('--app-height', currentHeight + 'px')"));
+    assert!(nav.contains("_setRootStyleProperty('--app-height', currentHeight + 'px')"));
+    assert!(nav.contains("function _keyboardOpenAfterResize("));
 }
 
 #[test]

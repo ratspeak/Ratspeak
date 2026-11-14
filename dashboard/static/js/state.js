@@ -919,6 +919,25 @@ function isViewActive(viewId) {
     return el && el.classList.contains('active');
 }
 
+// Row metrics follow width and text scale, not height; hidden views mark dirty. Returns the gated relayout.
+function watchViewLayout(viewId, onLayout, onHeight) {
+    var width = window.innerWidth;
+    function relayout() {
+        if (isViewActive(viewId)) onLayout();
+        else markViewDirty(viewId);
+    }
+    window.addEventListener('resize', function() {
+        var next = window.innerWidth;
+        if (next !== width) {
+            width = next;
+            relayout();
+        } else if (onHeight && isViewActive(viewId)) {
+            onHeight();
+        }
+    }, { passive: true });
+    return relayout;
+}
+
 var nodeNames = {};
 
 var lxmfIdentityHash = null;

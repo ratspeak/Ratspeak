@@ -1085,8 +1085,9 @@ function initSettingsSectionNav() {
         }
     }
 
+    // Only width selects the section layout; entering Settings re-syncs it.
     if (!_settingsSectionResizeBound) {
-        window.addEventListener('resize', function() {
+        watchViewLayout('settings', function() {
             var active = document.querySelector('.settings-nav-item.active[data-settings-panel]');
             selectSettingsSection(active ? active.dataset.settingsPanel : _settingsFirstAvailablePanelId(), { skipStore: true });
         });

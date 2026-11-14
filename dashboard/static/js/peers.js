@@ -326,10 +326,12 @@ function initPeersView() {
             });
         }
 
-        window.addEventListener('ratspeak-text-scale-changed', _invalidatePeerRowMetrics);
-        window.addEventListener('resize', _invalidatePeerRowMetrics, { passive: true });
+        var relayoutPeers = watchViewLayout('peers', _invalidatePeerRowMetrics, function() {
+            scheduleRenderPeersList(true);
+        });
+        window.addEventListener('ratspeak-text-scale-changed', relayoutPeers);
         if (document.fonts && document.fonts.ready) {
-            document.fonts.ready.then(_invalidatePeerRowMetrics).catch(function() {});
+            document.fonts.ready.then(relayoutPeers).catch(function() {});
         }
 
         resetPeersAutoRefresh();

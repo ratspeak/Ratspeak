@@ -41,6 +41,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
+import androidx.core.graphics.Insets
 import androidx.core.graphics.toColorInt
 import androidx.core.net.toUri
 import androidx.core.view.ViewCompat
@@ -126,6 +127,8 @@ class MainActivity : TauriActivity() {
     private val handler = Handler(Looper.getMainLooper())
     private var pendingTop = 0
     private var pendingBottom = 0
+    private var injectedTop = -1
+    private var injectedBottom = -1
     private var pendingNavigate: String? = null
     private var pendingNotificationRoute: String? = null
     private var shareIntakeId: String? = null
@@ -180,13 +183,13 @@ class MainActivity : TauriActivity() {
         // Expose BLE permission bridge to JavaScript
         webView.addJavascriptInterface(BlePermissionBridge(), "RatspeakAndroid")
         // Inject any insets that arrived before WebView was ready
-        injectInsets()
+        injectInsets(force = true)
         // Re-inject periodically to survive page navigation (loading -> dashboard)
         var count = 0
         handler.postDelayed(object : Runnable {
             override fun run() {
                 if (count < 5) {
-                    injectInsets()
+                    injectInsets(force = true)
                     count++
                     handler.postDelayed(this, 2000)
                 }
@@ -305,20 +308,21 @@ class MainActivity : TauriActivity() {
         ViewCompat.setOnApplyWindowInsetsListener(findViewById(android.R.id.content)) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             val ime = insets.getInsets(WindowInsetsCompat.Type.ime())
+            val imeVisible = insets.isVisible(WindowInsetsCompat.Type.ime()) && ime.bottom > 0
 
-            // Keep the established Android keyboard pipeline used through
-            // v1.0.29: native padding moves the WebView immediately, while the
-            // original IME inset continues downstream so WebView can update
-            // its visual viewport during the same transition.
+            // Padding alone resizes WebView; a passed-on IME inset makes M139+ shrink it twice.
             view.setPadding(bars.left, 0, bars.right, ime.bottom)
 
             // Convert physical pixels to CSS pixels (dp)
             val density = view.resources.displayMetrics.density
             pendingTop = Math.round(bars.top / density)
-            pendingBottom = Math.round(bars.bottom / density)
+            // The keyboard covers the navigation bar, so its inset no longer applies.
+            pendingBottom = if (imeVisible) 0 else Math.round(bars.bottom / density)
             injectInsets()
 
-            insets
+            WindowInsetsCompat.Builder(insets)
+                .setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE)
+                .build()
         }
 
         // Start foreground service, unless the core already failed to start.
@@ -500,8 +504,13 @@ class MainActivity : TauriActivity() {
         webViewRef?.evaluateJavascript(js, null)
     }
 
-    private fun injectInsets() {
-        webViewRef?.evaluateJavascript(
+    // Root --sat/--sab writes restyle the page; setPadding re-dispatches identical insets.
+    private fun injectInsets(force: Boolean = false) {
+        val webView = webViewRef ?: return
+        if (!force && pendingTop == injectedTop && pendingBottom == injectedBottom) return
+        injectedTop = pendingTop
+        injectedBottom = pendingBottom
+        webView.evaluateJavascript(
             "document.documentElement.style.setProperty('--sat','${pendingTop}px');" +
             "document.documentElement.style.setProperty('--sab','${pendingBottom}px');",
             null
