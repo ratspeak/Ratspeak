@@ -1117,113 +1117,14 @@ function loadSettingsInterfaces() {
     loadSettingsInterfacesWithRetry(1);
 }
 
+// Settings › Network › Relay for other devices reads the transport payload.
 function loadSettingsInterfacesWithRetry(retries) {
-    var container = document.getElementById('settings-interfaces-container');
-    if (!container) return;
-
-    container.innerHTML = '<div class="inline-hint">Loading interfaces...</div>';
-
     RS.invoke('api_hub_interfaces').then(function(ifaces) {
         if (ifaces && ifaces.transport) applyTransportModePayload(ifaces.transport);
-
-        var hasAny = (ifaces.rnode && ifaces.rnode.length) ||
-                     (ifaces.auto && ifaces.auto.length) ||
-                     (ifaces.tcp_client && ifaces.tcp_client.length) ||
-                     (ifaces.tcp_server && ifaces.tcp_server.length) ||
-                     (ifaces.backbone_client && ifaces.backbone_client.length) ||
-                     (ifaces.backbone_server && ifaces.backbone_server.length);
-
-        var headerEl = document.getElementById('conn-active-header');
-        var countEl = document.getElementById('conn-active-count');
-        var total = (ifaces.rnode||[]).length + (ifaces.auto||[]).length +
-                    (ifaces.tcp_client||[]).length + (ifaces.tcp_server||[]).length +
-                    (ifaces.backbone_client||[]).length + (ifaces.backbone_server||[]).length;
-
-        if (!hasAny) {
-            container.innerHTML = '';
-            if (headerEl) headerEl.style.display = 'none';
-            return;
-        }
-
-        if (headerEl) headerEl.style.display = '';
-        if (countEl) countEl.textContent = total;
-
-        container.innerHTML = '';
-        var allRnodes = ifaces.rnode || [];
-        var bleIfaces = allRnodes.filter(function(i) { return (i.port || '').indexOf('ble://') === 0; });
-        var serialIfaces = allRnodes.filter(function(i) { return (i.port || '').indexOf('ble://') !== 0; });
-        renderSettingsIfaceSection(container, 'LoRa Radios', serialIfaces, 'rnode');
-        renderSettingsIfaceSection(container, 'BLE Radios', bleIfaces, 'rnode');
-        renderSettingsIfaceSection(container, 'Local Network', ifaces.auto || [], 'auto');
-        renderSettingsIfaceSection(container, 'TCP Connections', ifaces.tcp_client || [], 'tcp_client');
-        renderSettingsIfaceSection(container, 'TCP Servers', ifaces.tcp_server || [], 'tcp_server');
-        renderSettingsIfaceSection(container, 'Backbone Connections', ifaces.backbone_client || [], 'backbone_client');
-        renderSettingsIfaceSection(container, 'Backbone Servers', ifaces.backbone_server || [], 'backbone_server');
     }).catch(function() {
-        if (retries > 0) {
-            setTimeout(function() { loadSettingsInterfacesWithRetry(retries - 1); }, 2000);
-        } else {
-            container.innerHTML = '<div class="inline-error">Failed to load interfaces.</div>';
-        }
+        if (retries > 0) setTimeout(function() { loadSettingsInterfacesWithRetry(retries - 1); }, 2000);
     });
 }
-
-function renderSettingsIfaceSection(parent, title, interfaces, ifaceType) {
-    if (interfaces.length === 0) return;
-
-    var section = document.createElement('div');
-    section.className = 'settings-iface-section';
-
-    var titleEl = document.createElement('div');
-    titleEl.className = 'settings-iface-section-title';
-    titleEl.textContent = title;
-    section.appendChild(titleEl);
-
-    interfaces.forEach(function(iface) {
-        if (RS.ui && typeof RS.ui.createInterfaceRow === 'function') {
-            section.appendChild(RS.ui.createInterfaceRow(iface, ifaceType, {
-                editable: true,
-                disconnectBle: true
-            }));
-        }
-    });
-
-    parent.appendChild(section);
-}
-
-var connAddLora = document.getElementById('conn-add-lora');
-if (connAddLora) connAddLora.addEventListener('click', function() { openRnodeModal('ble'); });
-
-var connAddTcp = document.getElementById('conn-add-tcp');
-if (connAddTcp) connAddTcp.addEventListener('click', function() { openConnectModal(); });
-
-function _isDesktopBackbone() {
-    return typeof window !== 'undefined' && !!window.__RATSPEAK_DESKTOP__;
-}
-
-var connAddHost = document.getElementById('conn-add-host');
-if (connAddHost) connAddHost.addEventListener('click', function() {
-    if (!_isDesktopBackbone() || typeof rsChoice !== 'function') {
-        openHostModal();
-        return;
-    }
-    rsChoice({
-        title: 'Host Server',
-        choices: [
-            { label: 'TCP Server', value: 'tcp', hint: 'Standard TCP listener for incoming nodes.' },
-            { label: 'Backbone Server', value: 'backbone', hint: 'High-throughput Backbone listener for transport-node trunks.' },
-        ]
-    }).then(function(kind) {
-        if (kind === 'tcp') openHostModal();
-        else if (kind === 'backbone') openBackboneHostModal();
-    });
-});
-
-var connToggleLocal = document.getElementById('conn-toggle-local');
-if (connToggleLocal) connToggleLocal.addEventListener('click', toggleLocalNetwork);
-
-var connToggleBle = document.getElementById('conn-toggle-ble');
-if (connToggleBle) connToggleBle.addEventListener('click', toggleBlePeer);
 
 // Reusable so it can re-run after enabling (to surface a
 // permission-needed / adapter-unavailable probe result instead of a stuck
@@ -1233,6 +1134,9 @@ window.refreshBlePeerStatus = function() {
     return RS.invoke('api_ble_peer_status').then(function(data) {
         window._blePeerAvailable = !!data.available;
         window._blePeerEnabled = !!data.enabled;
+        window._blePeerPaused = !!data.paused;
+        if (data.expires_at !== undefined) window._blePeerExpiresAt = data.expires_at;
+        if (data.duration !== undefined) window._blePeerDuration = data.duration;
         if (data.state) window._blePeerState = data.state;
         if (typeof data.peer_count === 'number') window._blePeerCount = data.peer_count;
         // Rehydrate connected-peer rows from the snapshot.

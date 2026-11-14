@@ -21,7 +21,6 @@
     var NS = {
         settings: null,
         discovered: { enabled: false, entries: [] },
-        showOlder: false,
         timer: null,
         busy: false,
     };
@@ -394,9 +393,6 @@
     }
     NS.refreshDiscovered = refreshDiscovered;
 
-    function kindLabel(kind) {
-        return { backbone: 'Backbone', tcp: 'TCP', radio: 'Radio', i2p: 'I2P' }[kind] || 'Other';
-    }
     function mhz(hz) {
         var v = (hz || 0) / 1e6;
         return (Math.round(v * 1000) / 1000).toString();
@@ -407,186 +403,12 @@
         if (e.spreading_factor) parts.push('SF' + e.spreading_factor);
         return parts.join(' · ');
     }
-    function detail(e) {
-        if (e.kind === 'radio') return radioDetail(e) || 'Radio';
-        return e.hops === 1 ? '1 hop away' : e.hops + ' hops away';
-    }
-    function heard(e) {
-        if (!e.last_heard) return '';
-        var secs = Math.max(0, Math.floor(Date.now() / 1000) - e.last_heard);
-        if (secs < 60) return 'heard just now';
-        if (secs < 3600) return 'heard ' + Math.floor(secs / 60) + ' min ago';
-        if (secs < 86400) return 'heard ' + Math.floor(secs / 3600) + ' h ago';
-        return 'heard ' + Math.floor(secs / 86400) + ' d ago';
-    }
-    function statusWord(e) {
-        if (e.joined) return 'Joined';
-        if (e.added) return 'Saved';
-        return '';
-    }
 
-    function discoveredRow(e) {
-        var row = document.createElement('div');
-        row.className = 'conn-iface-row conn-discovered-row';
-        row.setAttribute('data-discovered-id', e.id);
-        row.setAttribute('role', 'button');
-        row.setAttribute('tabindex', '0');
-        row.setAttribute('aria-haspopup', 'dialog');
-        var dot = document.createElement('span');
-        dot.setAttribute('aria-hidden', 'true');
-        var main = document.createElement('span');
-        main.className = 'conn-iface-main';
-        var titleline = document.createElement('span');
-        titleline.className = 'conn-iface-titleline';
-        var name = document.createElement('span');
-        name.className = 'conn-iface-name';
-        var status = document.createElement('span');
-        status.className = 'conn-iface-status-text';
-        titleline.appendChild(name);
-        titleline.appendChild(status);
-        var meta = document.createElement('span');
-        meta.className = 'conn-iface-meta';
-        main.appendChild(titleline);
-        main.appendChild(meta);
-        row.appendChild(dot);
-        row.appendChild(main);
-        row.addEventListener('click', function() {
-            if (typeof haptic === 'function') haptic('selection');
-            openDiscovered(row.getAttribute('data-discovered-id'));
-        });
-        return row;
-    }
-
-    function paintDiscoveredRow(row, e) {
-        var dot = row.firstChild;
-        // Freshness reads in neutral tones; green means this device is joined to it.
-        dot.className = 'conn-iface-dot discovered-' + e.status + (e.joined ? ' up' : '');
-        row.querySelector('.conn-iface-name').textContent = e.name || 'Unnamed';
-        row.querySelector('.conn-iface-status-text').textContent = statusWord(e);
-        var meta = row.querySelector('.conn-iface-meta');
-        meta.textContent = kindLabel(e.kind) + ' · ' + detail(e);
-        var when = heard(e);
-        if (when) {
-            // On a phone the time takes its own line and the separator goes.
-            var sep = document.createElement('span');
-            sep.className = 'conn-iface-sep';
-            sep.textContent = ' · ';
-            var span = document.createElement('span');
-            span.className = 'conn-iface-heard';
-            span.textContent = when;
-            meta.appendChild(sep);
-            meta.appendChild(span);
-        }
-        var spoken = { available: 'Heard recently', unknown: 'Heard in the last 3 days', stale: 'Not heard lately' }[e.status] || '';
-        row.setAttribute('aria-label', (e.name || 'Unnamed') + ', ' + kindLabel(e.kind) + ', ' + spoken +
-            (statusWord(e) ? ', ' + statusWord(e) : ''));
-    }
-
-    // Rows keep their elements across refreshes, so hover and focus survive.
-    function syncRows(list, entries) {
-        var active = document.activeElement;
-        var kept = {};
-        Array.prototype.slice.call(list.children).forEach(function(row) {
-            var key = row.getAttribute('data-discovered-id');
-            var wanted = key !== null && !kept[key] && entries.some(function(e) { return e.id === key; });
-            if (wanted) kept[key] = row;
-            else list.removeChild(row);
-        });
-        entries.forEach(function(e, index) {
-            var row = kept[e.id] || discoveredRow(e);
-            if (list.children[index] !== row) list.insertBefore(row, list.children[index] || null);
-            paintDiscoveredRow(row, e);
-        });
-        if (active && active !== document.activeElement && active.isConnected && list.contains(active)) {
-            active.focus({ preventScroll: true });
-        }
-    }
-
+    // The Network view draws Discovered from NS.discovered.
     function renderDiscovered() {
-        var section = $('conn-section-discovered');
-        if (!section) return;
-        var on = current().discover;
-        section.hidden = !on;
-        if (!on) return;
-        var entries = NS.discovered.entries || [];
-        // Older entries wait behind Show older; a joined or saved one never does.
-        var fresh = entries.filter(function(e) { return e.status !== 'stale' || e.joined || e.added; });
-        var older = entries.length - fresh.length;
-        var shown = NS.showOlder ? entries : fresh;
-        var count = $('conn-count-discovered');
-        if (count) {
-            count.textContent = shown.length;
-            count.classList.toggle('has-active', shown.length > 0);
-        }
-        // Open unless the person closed it: empty, it says what will appear.
-        var collapsed = typeof shouldSectionBeCollapsed === 'function'
-            ? shouldSectionBeCollapsed('discovered', true)
-            : false;
-        section.classList.remove('inactive');
-        section.classList.toggle('collapsed', collapsed);
-        var header = section.querySelector('.conn-section-header');
-        if (header) header.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-        var list = $('conn-list-discovered');
-        if (!list) return;
-        if (!shown.length) {
-            list.textContent = '';
-            var none = document.createElement('div');
-            none.className = 'conn-iface-empty';
-            var strong = document.createElement('strong');
-            strong.textContent = 'Nothing discovered yet';
-            none.appendChild(strong);
-            none.appendChild(document.createElement('br'));
-            none.appendChild(document.createTextNode('Published servers and radios appear here as they’re heard.'));
-            list.appendChild(none);
-        } else {
-            syncRows(list, shown);
-        }
-        var olderBtn = $('conn-discovered-older');
-        if (olderBtn) {
-            olderBtn.hidden = !older;
-            olderBtn.textContent = NS.showOlder ? 'Hide older' : 'Show older (' + older + ')';
-        }
+        if (RS.networkView && typeof RS.networkView.render === 'function') RS.networkView.render();
     }
 
-    function entryById(id) {
-        return (NS.discovered.entries || []).filter(function(e) { return e.id === id; })[0] || null;
-    }
-
-    function openDiscovered(id) {
-        var e = entryById(id);
-        if (!e || typeof rsChoice !== 'function') return;
-        var facts = [];
-        if (e.address) facts.push(e.address + (e.port ? ':' + e.port : ''));
-        if (typeof e.latitude === 'number' && typeof e.longitude === 'number') {
-            facts.push('Near ' + e.latitude.toFixed(2) + ', ' + e.longitude.toFixed(2));
-        }
-        var trusted = current().trusted_publishers.indexOf(e.publisher) !== -1;
-        var note = ['Published by ' + e.publisher.slice(0, 8) + '…' + e.publisher.slice(-4)];
-        if (trusted) note.push('Trusted publisher');
-        if (heard(e)) note.push(heard(e).charAt(0).toUpperCase() + heard(e).slice(1));
-        if (e.private_network) note.push('Private network');
-        var choices = [];
-        // Join automatically already holds a joined server; keeping it saves that connection.
-        if (e.connectable && e.joined_interface) choices.push({ label: 'Keep', value: 'keep', hint: 'Make it a saved connection.' });
-        else if (e.connectable) choices.push({ label: 'Connect', value: 'connect', hint: 'Add it to your connections.' });
-        if (hasRadioSettings(e)) choices.push({ label: 'Use these radio settings', value: 'radio', hint: 'Start adding a radio with its frequency and modulation.' });
-        if (!trusted) choices.push({ label: 'Trust this publisher', value: 'trust', hint: 'Add it to your trusted publishers.' });
-        if (!choices.length) choices.push({ label: 'Close', value: 'close' });
-        rsChoice({
-            title: e.name || 'Discovered connection',
-            summary: {
-                primary: kindLabel(e.kind) + ' · ' + detail(e) + (statusWord(e) ? ' · ' + statusWord(e) : ''),
-                secondary: facts.join(' · '),
-                note: note.join(' · '),
-            },
-            choices: choices,
-        }).then(function(choice) {
-            if (choice === 'connect') connect(e);
-            else if (choice === 'keep') keep(e.joined_interface);
-            else if (choice === 'radio') useRadioSettings(e);
-            else if (choice === 'trust') trust(e);
-        });
-    }
 
     // A radio that publishes all four, so the form opens complete.
     function hasRadioSettings(e) {
@@ -633,6 +455,9 @@
 
     RS.discovery = {
         keep: keep,
+        connect: connect,
+        useRadio: useRadioSettings,
+        trust: trust,
         // A live interface Join automatically made, by its name.
         isJoined: function(name) {
             return !!name && (NS.discovered.entries || []).some(function(e) { return e.joined_interface === name; });
@@ -640,11 +465,6 @@
     };
 
     function wireDiscovered() {
-        var older = $('conn-discovered-older');
-        if (older) older.addEventListener('click', function() {
-            NS.showOlder = !NS.showOlder;
-            renderDiscovered();
-        });
         // Poll only while the Network view is on screen.
         NS.timer = setInterval(function() {
             if (document.hidden || external()) return;

@@ -2979,32 +2979,6 @@ function updateBlePeerToggle() {
     if (typeof _refreshBlePeerSectionState === 'function') _refreshBlePeerSectionState();
 }
 
-// Cache clears on ble_peer_disconnected echo, not eagerly on click.
-function showBlePeerActions(evt, btn) {
-    if (evt) { evt.stopPropagation(); evt.preventDefault(); }
-    var addressAttr = btn && (btn.getAttribute('data-peer-addresses') || btn.getAttribute('data-peer-address'));
-    var addresses = String(addressAttr || '').split(',').map(function(a) { return a.trim(); }).filter(Boolean);
-    if (!addresses.length) return;
-    function disconnectVisiblePeer() {
-        addresses.forEach(function(address) {
-            RS.invoke('disconnect_ble_peer', { address: address }).catch(function(err) {
-                showToast((err && err.message) || 'Could not disconnect Bluetooth Peer', 'toast-error', 8000);
-            });
-        });
-    }
-    if (typeof rsConfirm === 'function') {
-        rsConfirm({
-            message: 'Disconnect this peer?\nThe peer can reconnect on the next scan cycle.',
-            danger: true,
-            confirmText: 'Disconnect',
-        }).then(function(ok) {
-            if (ok) disconnectVisiblePeer();
-        });
-    } else {
-        disconnectVisiblePeer();
-    }
-}
-window.showBlePeerActions = showBlePeerActions;
 
 document.getElementById('rnode-modal-close').addEventListener('click', closeRnodeModal);
 document.getElementById('rnode-refresh-btn').addEventListener('click', refreshRnodeSerialPorts);

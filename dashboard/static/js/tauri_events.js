@@ -698,6 +698,9 @@ RS.listen('hub_interfaces_update', function(data) {
 
 RS.listen('ble_peer_status_update', function(data) {
     window._blePeerEnabled = !!(data && data.enabled);
+    if (data && data.paused !== undefined) window._blePeerPaused = !!data.paused;
+    if (data && data.expires_at !== undefined) window._blePeerExpiresAt = data.expires_at;
+    if (data && data.duration !== undefined) window._blePeerDuration = data.duration;
     // After enabling, re-poll the probe-backed status so an adapter-off /
     // permission-denied condition surfaces as a clear state instead of the UI
     // sitting on "Scanning…". The per-peer event stream only carries on/starting.
@@ -779,74 +782,11 @@ function _deriveBlePeerState() {
     return peerCount > 0 ? 'on' : 'starting';
 }
 
+// The Bluetooth Peer card reads its state from these caches; redraw Network.
 function _refreshBlePeerSectionState() {
-    var section = document.querySelector('.conn-section-ble');
-    if (!section) return;
-    var state = _deriveBlePeerState();
-    var peerCount = _bleConnectedPeerCount();
-    if (peerCount === 0 && typeof window._blePeerCount === 'number' && window._blePeerCount > peerCount) {
-        peerCount = window._blePeerCount;
-    }
-    section.setAttribute('data-ble-state', state);
-
-    var label = section.querySelector('.conn-section-label');
-    if (label) {
-        var labelText = ({
-            'off': 'Bluetooth Peer',
-            'starting': 'Bluetooth Peer \u2014 Scanning\u2026',
-            'on': 'Bluetooth Peer',
-            'permission_needed': 'Bluetooth Peer \u2014 Permission needed',
-            'bluetooth_off': 'Bluetooth Peer \u2014 Off',
-            'unavailable': 'Bluetooth Peer \u2014 Unavailable',
-            'central_only': 'Bluetooth Peer \u2014 Central only',
-        })[state] || 'Bluetooth Peer';
-        label.textContent = labelText;
-    }
-
-    // Persistent status keeps the BlueZ rejection visible across re-renders (toast is ephemeral).
-    var existingStatus = section.querySelector('[data-ble-status="peripheral-unavailable"]');
-    if (state === 'central_only' && label) {
-        var reason = window._blePeerPeripheralUnavailable || 'Peripheral mode unavailable';
-        if (!existingStatus) {
-            var statusText = document.createElement('span');
-            statusText.className = 'conn-iface-status-text is-warning';
-            statusText.setAttribute('data-ble-status', 'peripheral-unavailable');
-            statusText.textContent = 'Peripheral unavailable';
-            label.parentNode.insertBefore(statusText, label.nextSibling);
-            existingStatus = statusText;
-        }
-        existingStatus.setAttribute('title', reason);
-    } else if (existingStatus) {
-        existingStatus.remove();
-    }
-
-    var countBadge = section.querySelector('#conn-count-ble');
-    if (countBadge) {
-        if ((state === 'on' || state === 'central_only') && peerCount > 0) {
-            countBadge.textContent = peerCount;
-            countBadge.classList.add('has-active');
-            countBadge.style.display = '';
-        } else {
-            countBadge.textContent = '0';
-            countBadge.classList.remove('has-active');
-            countBadge.style.display = (state === 'off' ? '' : 'none');
-        }
-    }
-
-    var btn = section.querySelector('#conn-toggle-ble');
-    if (btn) {
-        // '+' to enable, kebab when the section is running (with or without
-        // peers, including the central-only degraded state).
-        if (state === 'on' || state === 'starting' || state === 'central_only') {
-            btn.textContent = '\u22ee';
-            btn.setAttribute('aria-label', 'Bluetooth Peer actions');
-        } else {
-            btn.textContent = '+';
-            btn.setAttribute('aria-label', 'Enable Bluetooth Peer');
-        }
-        var unusable = (state === 'unavailable' || state === 'bluetooth_off');
-        btn.disabled = unusable;
-        btn.classList.toggle('disabled', unusable);
+    if (RS.networkView) {
+        if (window._blePeerEnabled) RS.networkView.bleStarting = false;
+        RS.networkView.render();
     }
 }
 window._refreshBlePeerSectionState = _refreshBlePeerSectionState;
