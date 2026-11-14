@@ -6169,6 +6169,7 @@ async fn push_stats_once(state: &AppState) {
     let stats = json!({
         "timestamp": now,
         "connected": connected,
+        "last_announce_at": last_announce_at_secs(state),
         "network_ownership": network_ownership::snapshot(state),
         "interface_stats": iface_stats,
         "path_table": path_table,
@@ -6181,6 +6182,17 @@ async fn push_stats_once(state: &AppState) {
 
     state.set_last_stats(stats.clone());
     state.emit_to_all("stats_update", stats);
+}
+
+/// Unix seconds of this identity's last LXMF delivery announce, or null before the first.
+fn last_announce_at_secs(state: &AppState) -> Value {
+    match state
+        .last_lxmf_delivery_announce_at_ms
+        .load(Ordering::Relaxed)
+    {
+        0 => Value::Null,
+        ms => json!(ms as f64 / 1000.0),
+    }
 }
 
 // Ownership can change without changing identity. Fence observations by the
@@ -6953,6 +6965,7 @@ async fn poll_stats_loop(
             json!({
                 "timestamp": now,
                 "connected": connected,
+                "last_announce_at": last_announce_at_secs(&state),
                 "network_ownership": network_ownership::snapshot(&state),
                 "interface_stats": iface_stats,
                 "path_table": path_table,
@@ -12053,6 +12066,16 @@ mod notification_tests {
             std::time::Instant::now() - OPPORTUNISTIC_ANNOUNCE_COOLDOWN - Duration::from_secs(1),
         );
         assert!(claim_opportunistic_announce(&state, "bob"));
+    }
+
+    #[test]
+    fn stats_report_the_last_announce_in_seconds_and_null_before_one() {
+        let state = make_state(Arc::new(RecordingNotifier::default()));
+        assert_eq!(last_announce_at_secs(&state), Value::Null);
+        state
+            .last_lxmf_delivery_announce_at_ms
+            .store(1_700_000_000_500, Ordering::Relaxed);
+        assert_eq!(last_announce_at_secs(&state), json!(1_700_000_000.5));
     }
 
     #[test]
