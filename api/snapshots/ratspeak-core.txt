@@ -230,6 +230,7 @@ pub ratspeak_core::types::DiscoveredEntry::last_heard: u64
 pub ratspeak_core::types::DiscoveredEntry::latitude: core::option::Option<f64>
 pub ratspeak_core::types::DiscoveredEntry::longitude: core::option::Option<f64>
 pub ratspeak_core::types::DiscoveredEntry::name: alloc::string::String
+pub ratspeak_core::types::DiscoveredEntry::own_network: bool
 pub ratspeak_core::types::DiscoveredEntry::port: core::option::Option<u16>
 pub ratspeak_core::types::DiscoveredEntry::private_network: bool
 pub ratspeak_core::types::DiscoveredEntry::publisher: alloc::string::String

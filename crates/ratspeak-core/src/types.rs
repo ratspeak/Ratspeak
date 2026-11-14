@@ -105,6 +105,10 @@ pub struct DiscoveredEntry {
     pub coding_rate: Option<u8>,
     /// It publishes a private network name and passphrase.
     pub private_network: bool,
+    /// Announced under this device's network identity, so by a member of its
+    /// private network.
+    #[serde(default)]
+    pub own_network: bool,
     /// The publisher relays traffic.
     pub transport: bool,
     /// Join automatically is connected to it now.

@@ -11939,3 +11939,100 @@ fn a_paused_bluetooth_peer_keeps_its_timer() {
     assert!(duration.contains("schedule_ble_peer_expiry("));
     assert!(!duration.contains("spawn_enable_ble_peer_task"));
 }
+
+/// Private networks: the network identity commands belong to the active
+/// identity's network, each change is one restart, and removing it never turns
+/// a private announce public. Servers' discovery keys go through the host
+/// commands, and every start keeps the key on the profile's identity file.
+#[test]
+fn private_networks_use_the_network_identity_commands() {
+    let root = repo_root();
+    let read = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+    let commands = read("crates/ratspeak-tauri/src/commands/network_identity.rs");
+    let interfaces = read("crates/ratspeak-tauri/src/commands/interfaces.rs");
+    let discovery = read("crates/ratspeak-tauri/src/commands/network_settings.rs");
+    let shell = read("src-tauri/src/lib.rs");
+    let gate = read("crates/ratspeak-tauri/src/invoke_gate.rs");
+    let runtime = read("crates/ratspeak-runtime/src/lib.rs");
+    let config = read("crates/ratspeak-runtime/src/rns_config.rs");
+
+    for command in [
+        "api_network_identity",
+        "create_network_identity",
+        "import_network_identity",
+        "export_network_identity",
+        "remove_network_identity",
+    ] {
+        assert!(
+            commands.contains(&format!("pub async fn {command}(")),
+            "{command}"
+        );
+        assert!(
+            shell.contains(&format!(
+                "ratspeak_tauri::commands::network_identity::{command},"
+            )),
+            "{command} is not registered"
+        );
+        for list in ["IDENTITY_FREE", "LOCK_FREE"] {
+            assert!(
+                !gate_list(&gate, list).contains(&command),
+                "{list}: {command}"
+            );
+        }
+    }
+    for command in [
+        "create_network_identity",
+        "import_network_identity",
+        "remove_network_identity",
+    ] {
+        assert!(
+            rust_function_block(&commands, command)
+                .contains("network_ownership::require_local_interfaces(&state)"),
+            "{command} must enforce ownership in the backend"
+        );
+    }
+    let change = rust_function_block(&commands, "change");
+    assert!(change.contains("restart(state).await"));
+    assert!(change.contains("snapshot.restore(config_dir)"));
+    let remove = rust_function_block(&commands, "remove_network_identity");
+    let refused = remove
+        .find("private_discovery_interfaces(")
+        .expect("remove checks private interfaces");
+    assert!(refused < remove.find("change(&state").expect("remove changes"));
+
+    for command in [
+        "add_tcp_server",
+        "update_tcp_server",
+        "add_backbone_server",
+        "update_backbone_server",
+    ] {
+        let block = rust_function_block(&interfaces, command);
+        assert!(block.contains("host_discovery_from_args("), "{command}");
+        assert!(block.contains("discovery.config_args()"), "{command}");
+        assert!(block.contains("restart_for_server_discovery("), "{command}");
+    }
+    let validate = rust_function_block(&interfaces, "host_discovery_from_args");
+    assert!(validate.contains("\"Create or import a network identity first.\""));
+    for writer in [
+        "update_tcp_server_with_ifac",
+        "update_backbone_server_with_ifac",
+    ] {
+        assert!(
+            rust_function_block(&config, writer).contains("HOST_DISCOVERY_OWNED_KEYS"),
+            "{writer}"
+        );
+    }
+
+    let start = rust_function_block(&runtime, "init_rns_lxmf_inner");
+    let settings = start
+        .find("rns_config::apply_network_settings(&config_dir")
+        .expect("start writes network settings");
+    let identity = start
+        .find("rns_config::apply_network_identity(&config_dir)")
+        .expect("start writes the network identity");
+    assert!(settings < identity);
+    assert!(
+        rust_function_block(&discovery, "api_discovered_interfaces")
+            .contains("network: handle.network_identity.as_ref().map(|identity| identity.hash)")
+    );
+}

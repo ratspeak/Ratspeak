@@ -24,7 +24,7 @@ pub const DISCOVERED_LIST_LIMIT: usize = 100;
 /// Join automatically keeps at most this many servers.
 const AUTOJOIN_MAX: u8 = 16;
 
-fn rns_handle(state: &AppState) -> Option<rns_runtime::reticulum::ReticulumHandle> {
+pub(crate) fn rns_handle(state: &AppState) -> Option<rns_runtime::reticulum::ReticulumHandle> {
     state
         .rns
         .read()
@@ -48,7 +48,7 @@ fn hashes(values: &[String], what: &str) -> AppResult<Vec<String>> {
     Ok(out)
 }
 
-async fn restart(state: &Arc<AppState>) -> AppResult<()> {
+pub(crate) async fn restart(state: &Arc<AppState>) -> AppResult<()> {
     ratspeak_runtime::restart_rns_lxmf(Arc::clone(state))
         .await
         .map_err(|_| AppError::internal("The network could not restart safely"))
@@ -160,12 +160,13 @@ fn kind_of(interface_type: &str) -> &'static str {
 }
 
 /// What this device keeps: every interface name, each client's `host:port`,
-/// and the publishers it trusts.
+/// the publishers it trusts, and the network identity it runs with.
 #[derive(Default)]
 struct Saved {
     names: Vec<String>,
     targets: Vec<(String, u16)>,
     trusted: Vec<String>,
+    network: Option<[u8; 16]>,
 }
 
 impl Saved {
@@ -267,6 +268,7 @@ fn entry(
         spreading_factor: info.spreading_factor,
         coding_rate: info.coding_rate,
         private_network: info.ifac_netname.is_some() || info.ifac_netkey.is_some(),
+        own_network: saved.network == Some(record.network_id),
         transport: info.transport_enabled,
         joined: joined_interface.is_some(),
         joined_interface,
@@ -385,6 +387,10 @@ pub async fn api_discovered_interfaces(
     let live = live_interfaces(&handle).await;
     let saved = Saved {
         trusted: state.network_settings().trusted_publishers,
+        network: handle
+            .network_identity
+            .as_ref()
+            .map(|identity| identity.hash),
         ..saved_connections(&active_rns_config_dir(&state))
     };
     Ok(DiscoveredInterfaces {
@@ -811,6 +817,40 @@ mod tests {
             (entries[0].last_heard, entries[0].status.as_str()),
             (10, "available")
         );
+    }
+
+    #[test]
+    fn entries_from_this_devices_network_say_so() {
+        let mut record = server("Relay", "relay.example.org", 10);
+        let none = Saved::default();
+        assert!(!entry(&record, &[], &none).own_network);
+        let ours = Saved {
+            network: Some([9; 16]),
+            ..Saved::default()
+        };
+        assert!(entry(&record, &[], &ours).own_network);
+        record.network_id = [8; 16];
+        assert!(!entry(&record, &[], &ours).own_network);
+        // Publishing an IFAC is a separate flag.
+        assert!(!entry(&record, &[], &ours).private_network);
+    }
+
+    #[test]
+    fn joining_fills_in_the_published_ifac() {
+        let mut record = server("Relay", "relay.example.org", 10);
+        let open = ifac_of(&record);
+        assert_eq!(open.ifac_enabled, Some(false));
+        assert!(open.ifac_network_name.is_none() && open.ifac_passphrase.is_none());
+        record.info.ifac_netname = Some("mesh".to_string());
+        record.info.ifac_netkey = Some("secret words".to_string());
+        let private = ifac_of(&record);
+        assert_eq!(private.ifac_enabled, Some(true));
+        assert_eq!(private.ifac_network_name.as_deref(), Some("mesh"));
+        assert_eq!(
+            private.ifac_passphrase.as_deref().map(String::as_str),
+            Some("secret words")
+        );
+        assert!(entry(&record, &[], &Saved::default()).private_network);
     }
 
     #[test]

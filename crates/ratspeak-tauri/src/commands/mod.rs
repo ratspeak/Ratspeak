@@ -16,6 +16,7 @@ pub(crate) mod interface_activity;
 pub mod interfaces;
 pub mod messaging;
 pub mod network;
+pub mod network_identity;
 pub mod network_ownership;
 pub mod network_settings;
 pub mod paper;

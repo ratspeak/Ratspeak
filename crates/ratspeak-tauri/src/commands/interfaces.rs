@@ -2921,6 +2921,390 @@ fn ifac_settings_from_args(
     })
 }
 
+/// A server's interface discovery; each field left out keeps the saved value.
+#[derive(Deserialize, Default)]
+pub(crate) struct HostDiscoveryCommandFields {
+    /// Announce this server for discovery (`discoverable`).
+    #[serde(default)]
+    pub(crate) discoverable: Option<bool>,
+    /// The public address or domain others connect to (`reachable_on`).
+    #[serde(default)]
+    pub(crate) reachable_on: Option<String>,
+    /// Share access in discovery: announce the IFAC name and passphrase (`publish_ifac`).
+    #[serde(default)]
+    pub(crate) publish_ifac: Option<bool>,
+    /// Private network: encrypt the announce for the network identity (`discovery_encrypt`).
+    #[serde(default)]
+    pub(crate) discovery_encrypt: Option<bool>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct HostDiscoverySettings {
+    discoverable: bool,
+    reachable_on: Option<String>,
+    publish_ifac: bool,
+    discovery_encrypt: bool,
+}
+
+impl HostDiscoverySettings {
+    fn config_args(&self) -> crate::rns_config::HostDiscoveryArgs<'_> {
+        crate::rns_config::HostDiscoveryArgs {
+            discoverable: self.discoverable,
+            reachable_on: self.reachable_on.as_deref(),
+            publish_ifac: self.publish_ifac,
+            discovery_encrypt: self.discovery_encrypt,
+        }
+    }
+}
+
+fn host_discovery_from_entry(entry: &Value) -> HostDiscoverySettings {
+    // Reticulum prefers the `discovery_publish_ifac` spelling when both are set.
+    let publish_ifac_key = if entry.get("discovery_publish_ifac").is_some() {
+        "discovery_publish_ifac"
+    } else {
+        "publish_ifac"
+    };
+    HostDiscoverySettings {
+        discoverable: cfg_bool(entry, "discoverable"),
+        reachable_on: cfg_non_empty_str(entry, "reachable_on"),
+        publish_ifac: cfg_bool(entry, publish_ifac_key),
+        discovery_encrypt: cfg_bool(entry, "discovery_encrypt"),
+    }
+}
+
+fn host_discovery_from_args(
+    fields: &HostDiscoveryCommandFields,
+    existing: Option<&HostDiscoverySettings>,
+    ifac: &InterfaceIfacSettings,
+    has_network_identity: bool,
+) -> AppResult<HostDiscoverySettings> {
+    let existing = existing.cloned().unwrap_or_default();
+    let reachable_on = match fields.reachable_on.as_deref() {
+        Some(value) => Some(sanitize_text(value, 256)).filter(|s| !s.is_empty()),
+        None => existing.reachable_on.clone(),
+    };
+    // A saved value stays as written; Reticulum also runs a script path there.
+    if reachable_on != existing.reachable_on
+        && reachable_on
+            .as_deref()
+            .is_some_and(|host| !reachable_address(host))
+    {
+        return Err(AppError::bad_request("Use an address others can reach."));
+    }
+    let discoverable = fields.discoverable.unwrap_or(existing.discoverable);
+    if discoverable && reachable_on.is_none() {
+        return Err(AppError::bad_request("Add the address others connect to."));
+    }
+    if fields.publish_ifac == Some(true) && !ifac.is_enabled() {
+        return Err(AppError::bad_request(
+            "Add a network name or passphrase to share.",
+        ));
+    }
+    let publish_ifac = fields.publish_ifac.unwrap_or(existing.publish_ifac) && ifac.is_enabled();
+    let discovery_encrypt = fields
+        .discovery_encrypt
+        .unwrap_or(existing.discovery_encrypt);
+    // Reticulum skips an encrypted announce it has no network identity for.
+    if discovery_encrypt
+        && (discoverable || fields.discovery_encrypt == Some(true))
+        && !has_network_identity
+    {
+        return Err(AppError::bad_request(
+            "Create or import a network identity first.",
+        ));
+    }
+    Ok(HostDiscoverySettings {
+        discoverable,
+        reachable_on,
+        publish_ifac,
+        discovery_encrypt,
+    })
+}
+
+/// An address Reticulum announces (an IP address or hostname) that reaches
+/// more than this device.
+fn reachable_address(host: &str) -> bool {
+    rns_transport::discovery::address::is_valid_address(host) == Some(true)
+        && !host.eq_ignore_ascii_case("localhost")
+        && !host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback() || ip.is_unspecified())
+}
+
+/// Interfaces whose discovery announce is encrypted for the network identity.
+pub(crate) fn private_discovery_interfaces(ifaces: &Value) -> Vec<String> {
+    ifaces
+        .as_object()
+        .into_iter()
+        .flat_map(|groups| groups.values())
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter(|entry| cfg_bool(entry, "discoverable") && cfg_bool(entry, "discovery_encrypt"))
+        .filter_map(|entry| cfg_str(entry, "name"))
+        .collect()
+}
+
+fn has_network_identity(config_dir: &std::path::Path) -> bool {
+    crate::rns_config::load_network_identity(config_dir).is_some()
+}
+
+#[cfg(test)]
+mod host_discovery_tests {
+    use super::*;
+
+    fn fields(value: Value) -> HostDiscoveryCommandFields {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn with_ifac() -> InterfaceIfacSettings {
+        InterfaceIfacSettings {
+            network_name: Some("mesh".to_string()),
+            ..InterfaceIfacSettings::default()
+        }
+    }
+
+    fn message(result: AppResult<HostDiscoverySettings>) -> String {
+        let error = result.unwrap_err();
+        assert_eq!(error.code, "bad_request");
+        error.message
+    }
+
+    #[test]
+    fn a_published_server_needs_an_address_others_reach() {
+        let none = InterfaceIfacSettings::default();
+        assert_eq!(
+            message(host_discovery_from_args(
+                &fields(json!({ "discoverable": true })),
+                None,
+                &none,
+                false
+            )),
+            "Add the address others connect to."
+        );
+        for host in [
+            "127.0.0.1",
+            "localhost",
+            "0.0.0.0",
+            "::1",
+            "[::]",
+            "bad host!",
+        ] {
+            assert_eq!(
+                message(host_discovery_from_args(
+                    &fields(json!({ "discoverable": true, "reachable_on": host })),
+                    None,
+                    &none,
+                    false
+                )),
+                "Use an address others can reach.",
+                "{host}"
+            );
+        }
+        for host in ["relay.example.org", " 203.0.113.7 ", "2001:db8::1"] {
+            let published = host_discovery_from_args(
+                &fields(json!({ "discoverable": true, "reachable_on": host })),
+                None,
+                &none,
+                false,
+            )
+            .unwrap();
+            assert!(published.discoverable);
+            assert_eq!(published.reachable_on.as_deref(), Some(host.trim()));
+        }
+        // A saved value Reticulum accepts, such as a script path, is not checked again.
+        let saved = HostDiscoverySettings {
+            discoverable: true,
+            reachable_on: Some("/usr/local/bin/my-address".to_string()),
+            ..HostDiscoverySettings::default()
+        };
+        let kept = host_discovery_from_args(&fields(json!({})), Some(&saved), &none, false);
+        assert_eq!(kept.unwrap(), saved);
+    }
+
+    #[test]
+    fn a_private_network_needs_a_network_identity() {
+        let ifac = with_ifac();
+        let private = fields(json!({
+            "discoverable": true,
+            "reachable_on": "relay.example.org",
+            "discovery_encrypt": true,
+        }));
+        assert_eq!(
+            message(host_discovery_from_args(&private, None, &ifac, false)),
+            "Create or import a network identity first."
+        );
+        assert!(
+            host_discovery_from_args(&private, None, &ifac, true)
+                .unwrap()
+                .discovery_encrypt
+        );
+        // Asked for on an unpublished server too.
+        assert!(
+            host_discovery_from_args(
+                &fields(json!({ "discovery_encrypt": true })),
+                None,
+                &ifac,
+                false
+            )
+            .is_err()
+        );
+        // A saved one counts only once the server is published.
+        let saved = HostDiscoverySettings {
+            reachable_on: Some("relay.example.org".to_string()),
+            discovery_encrypt: true,
+            ..HostDiscoverySettings::default()
+        };
+        assert!(host_discovery_from_args(&fields(json!({})), Some(&saved), &ifac, false).is_ok());
+        assert!(
+            host_discovery_from_args(
+                &fields(json!({ "discoverable": true })),
+                Some(&saved),
+                &ifac,
+                false
+            )
+            .is_err()
+        );
+        let off = host_discovery_from_args(
+            &fields(json!({ "discoverable": true, "discovery_encrypt": false })),
+            Some(&saved),
+            &ifac,
+            false,
+        )
+        .unwrap();
+        assert!(off.discoverable && !off.discovery_encrypt);
+    }
+
+    #[test]
+    fn sharing_access_needs_a_network_name_or_passphrase() {
+        let none = InterfaceIfacSettings::default();
+        let share = fields(json!({ "publish_ifac": true }));
+        assert_eq!(
+            message(host_discovery_from_args(&share, None, &none, false)),
+            "Add a network name or passphrase to share."
+        );
+        assert!(
+            host_discovery_from_args(&share, None, &with_ifac(), false)
+                .unwrap()
+                .publish_ifac
+        );
+        // Turning the IFAC off stops sharing it.
+        let saved = HostDiscoverySettings {
+            publish_ifac: true,
+            ..HostDiscoverySettings::default()
+        };
+        assert!(
+            !host_discovery_from_args(&fields(json!({})), Some(&saved), &none, false)
+                .unwrap()
+                .publish_ifac
+        );
+    }
+
+    #[test]
+    fn saved_discovery_reads_back_as_reticulum_reads_it() {
+        let entry = json!({
+            "name": "Home",
+            "discoverable": "Yes",
+            "reachable_on": "relay.example.org",
+            "publish_ifac": "yes",
+            "discovery_publish_ifac": "no",
+            "discovery_encrypt": "true",
+        });
+        assert_eq!(
+            host_discovery_from_entry(&entry),
+            HostDiscoverySettings {
+                discoverable: true,
+                reachable_on: Some("relay.example.org".to_string()),
+                publish_ifac: false,
+                discovery_encrypt: true,
+            }
+        );
+        assert_eq!(
+            host_discovery_from_entry(&json!({ "name": "Home" })),
+            HostDiscoverySettings::default()
+        );
+        let ifaces = json!({
+            "tcp_server": [entry, { "name": "Open", "discoverable": "yes" }],
+            "backbone_server": [{ "name": "Quiet", "discovery_encrypt": "yes" }],
+            "rnode": [{ "name": "Ridge", "discoverable": "yes", "discovery_encrypt": "yes" }],
+            "config_error": "x",
+        });
+        let mut private = private_discovery_interfaces(&ifaces);
+        private.sort();
+        assert_eq!(private, ["Home", "Ridge"]);
+    }
+
+    /// What `connect_discovered_interface` passes for a published IFAC reaches the written client.
+    #[test]
+    fn a_joined_servers_published_ifac_is_written_to_its_client() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::rns_config::write_config(dir.path(), "[reticulum]\n\n[interfaces]\n");
+        let published = InterfaceIfacCommandFields {
+            ifac_enabled: Some(true),
+            ifac_network_name: Some("mesh".to_string()),
+            ifac_passphrase: Some(Zeroizing::new("secret words".to_string())),
+            ifac_size: None,
+        };
+        let ifac = ifac_settings_from_args(&published, None).unwrap();
+        assert!(crate::rns_config::add_backbone_client(
+            dir.path(),
+            crate::rns_config::BackboneClientArgs {
+                name: "Relay",
+                host: "relay.example.org",
+                port: 4242,
+                prefer_ipv6: false,
+                connect_timeout: None,
+                max_reconnect_tries: None,
+                i2p_tunneled: false,
+                ifac: ifac.config_args(),
+            },
+        ));
+        assert!(crate::rns_config::add_tcp_client_with_ifac(
+            dir.path(),
+            "Relay TCP",
+            "relay.example.org",
+            4243,
+            ifac.config_args(),
+        ));
+        let listing = crate::rns_config::get_all_interfaces(dir.path());
+        for group in ["backbone_client", "tcp_client"] {
+            let entry = &listing[group][0];
+            assert_eq!(entry["network_name"], "mesh", "{group}");
+            assert_eq!(entry["passphrase"], "secret words", "{group}");
+        }
+    }
+}
+
+/// Reticulum binds a server's discovery at network start, so saving a
+/// published server restarts the network; a failed restart puts the config back.
+async fn restart_for_server_discovery(
+    state: &Arc<AppState>,
+    config_dir: &std::path::Path,
+    operation: &'static str,
+    rollback: impl FnOnce() -> bool,
+) -> AppResult<()> {
+    let result = crate::commands::network_settings::restart(state).await;
+    if result.is_err() {
+        let _ = with_rns_config_lock(state, rollback);
+    }
+    emit_op_status_broadcast(
+        state,
+        operation,
+        "hub",
+        if result.is_ok() {
+            "Network restarted"
+        } else {
+            "Failed to restart"
+        },
+        true,
+        result
+            .as_ref()
+            .err()
+            .map(|_| "The network could not restart safely"),
+    );
+    emit_hub_interfaces(state, crate::rns_config::get_all_interfaces(config_dir));
+    result
+}
+
 fn cfg_rnode_mode(entry: &Value) -> String {
     let raw = cfg_str(entry, "mode").or_else(|| cfg_str(entry, "interface_mode"));
     let raw = raw
@@ -8224,6 +8608,8 @@ pub struct TcpServerArgs {
     pub listen_ip: String,
     #[serde(flatten)]
     ifac: InterfaceIfacCommandFields,
+    #[serde(flatten)]
+    discovery: HostDiscoveryCommandFields,
 }
 
 fn default_tcp_server_name() -> String {
@@ -8251,6 +8637,12 @@ pub async fn add_tcp_server(
     let ifac = ifac_settings_from_args(&args.ifac, None)?;
 
     let config_dir = active_rns_config_dir(&state_arc);
+    let discovery = host_discovery_from_args(
+        &args.discovery,
+        None,
+        &ifac,
+        has_network_identity(&config_dir),
+    )?;
     if !with_rns_config_lock(&state_arc, || {
         crate::rns_config::add_tcp_server_with_ifac(
             &config_dir,
@@ -8258,6 +8650,7 @@ pub async fn add_tcp_server(
             listen_port,
             &listen_ip,
             ifac.config_args(),
+            discovery.config_args(),
         )
     }) {
         emit_op_status_broadcast(
@@ -8273,6 +8666,13 @@ pub async fn add_tcp_server(
 
     let ifaces_now = crate::rns_config::get_all_interfaces(&config_dir);
     emit_hub_interfaces(&state_arc, ifaces_now);
+    if discovery.discoverable && runtime_handle(&state_arc).is_some() {
+        restart_for_server_discovery(&state_arc, &config_dir, "add_server", || {
+            crate::rns_config::remove_interface(&config_dir, &name)
+        })
+        .await?;
+        return Ok(json!({ "queued": true, "iface_name": name, "restarted": true }));
+    }
 
     let st = Arc::clone(&state_arc);
     let name_clone = name.clone();
@@ -8363,6 +8763,8 @@ pub struct UpdateTcpServerArgs {
     pub listen_ip: String,
     #[serde(flatten)]
     ifac: InterfaceIfacCommandFields,
+    #[serde(flatten)]
+    discovery: HostDiscoveryCommandFields,
 }
 
 #[tauri::command]
@@ -8390,7 +8792,7 @@ pub async fn update_tcp_server(
     }
 
     let config_dir = active_rns_config_dir(&state_arc);
-    let (old_runtime, old_config_content, config_written, ifac) =
+    let (old_runtime, old_config_content, config_written, ifac, published) =
         with_rns_config_lock(&state_arc, || {
             let old_entry = find_config_interface(&config_dir, "tcp_server", &old_name)
                 .ok_or_else(|| AppError::bad_request("Interface not found"))?;
@@ -8398,6 +8800,13 @@ pub async fn update_tcp_server(
                 .ok_or_else(|| AppError::bad_request("Invalid TCP server config"))?;
             let existing_ifac = ifac_settings_from_entry(&old_entry);
             let ifac = ifac_settings_from_args(&args.ifac, Some(&existing_ifac))?;
+            let old_discovery = host_discovery_from_entry(&old_entry);
+            let discovery = host_discovery_from_args(
+                &args.discovery,
+                Some(&old_discovery),
+                &ifac,
+                has_network_identity(&config_dir),
+            )?;
             let old_config_content =
                 crate::rns_config::read_config(&config_dir).unwrap_or_default();
             let config_written = crate::rns_config::update_tcp_server_with_ifac(
@@ -8407,8 +8816,16 @@ pub async fn update_tcp_server(
                 args.listen_port,
                 &listen_ip,
                 ifac.config_args(),
+                discovery.config_args(),
             );
-            Ok::<_, AppError>((old_runtime, old_config_content, config_written, ifac))
+            let published = old_discovery.discoverable || discovery.discoverable;
+            Ok::<_, AppError>((
+                old_runtime,
+                old_config_content,
+                config_written,
+                ifac,
+                published,
+            ))
         })?;
 
     if !config_written {
@@ -8433,6 +8850,13 @@ pub async fn update_tcp_server(
         &state_arc,
         crate::rns_config::get_all_interfaces(&config_dir),
     );
+    if published && runtime_handle(&state_arc).is_some() {
+        restart_for_server_discovery(&state_arc, &config_dir, "update_server", || {
+            crate::rns_config::write_config(&config_dir, &old_config_content)
+        })
+        .await?;
+        return Ok(json!({ "queued": true, "iface_name": name, "restarted": true }));
+    }
     tokio::spawn(finish_interface_replace(
         Arc::clone(&state_arc),
         activity_fence,
@@ -8916,6 +9340,8 @@ pub struct BackboneServerArgs {
     pub device: Option<String>,
     #[serde(flatten)]
     ifac: InterfaceIfacCommandFields,
+    #[serde(flatten)]
+    discovery: HostDiscoveryCommandFields,
 }
 
 #[tauri::command]
@@ -8938,6 +9364,12 @@ pub async fn add_backbone_server(
 
     let ifac = ifac_settings_from_args(&args.ifac, None)?;
     let config_dir = active_rns_config_dir(&state_arc);
+    let discovery = host_discovery_from_args(
+        &args.discovery,
+        None,
+        &ifac,
+        has_network_identity(&config_dir),
+    )?;
     if !with_rns_config_lock(&state_arc, || {
         crate::rns_config::add_backbone_server_with_ifac(
             &config_dir,
@@ -8947,6 +9379,7 @@ pub async fn add_backbone_server(
             args.prefer_ipv6,
             device.as_deref(),
             ifac.config_args(),
+            discovery.config_args(),
         )
     }) {
         emit_op_status_broadcast(
@@ -8962,6 +9395,13 @@ pub async fn add_backbone_server(
 
     let ifaces_now = crate::rns_config::get_all_interfaces(&config_dir);
     emit_hub_interfaces(&state_arc, ifaces_now);
+    if discovery.discoverable && runtime_handle(&state_arc).is_some() {
+        restart_for_server_discovery(&state_arc, &config_dir, "add_backbone_server", || {
+            crate::rns_config::remove_interface(&config_dir, &name)
+        })
+        .await?;
+        return Ok(json!({ "queued": true, "iface_name": name, "restarted": true }));
+    }
 
     let st = Arc::clone(&state_arc);
     let name_clone = name.clone();
@@ -9066,6 +9506,8 @@ pub struct UpdateBackboneServerArgs {
     pub device: Option<String>,
     #[serde(flatten)]
     ifac: InterfaceIfacCommandFields,
+    #[serde(flatten)]
+    discovery: HostDiscoveryCommandFields,
 }
 
 #[tauri::command]
@@ -9098,7 +9540,7 @@ pub async fn update_backbone_server(
     }
 
     let config_dir = active_rns_config_dir(&state_arc);
-    let (old_runtime, old_config_content, config_written, ifac) =
+    let (old_runtime, old_config_content, config_written, ifac, published) =
         with_rns_config_lock(&state_arc, || {
             let old_entry = find_config_interface(&config_dir, "backbone_server", &old_name)
                 .ok_or_else(|| AppError::bad_request("Interface not found"))?;
@@ -9106,6 +9548,13 @@ pub async fn update_backbone_server(
                 .ok_or_else(|| AppError::bad_request("Invalid Backbone server config"))?;
             let existing_ifac = ifac_settings_from_entry(&old_entry);
             let ifac = ifac_settings_from_args(&args.ifac, Some(&existing_ifac))?;
+            let old_discovery = host_discovery_from_entry(&old_entry);
+            let discovery = host_discovery_from_args(
+                &args.discovery,
+                Some(&old_discovery),
+                &ifac,
+                has_network_identity(&config_dir),
+            )?;
             let old_config_content =
                 crate::rns_config::read_config(&config_dir).unwrap_or_default();
             let config_written = crate::rns_config::update_backbone_server_with_ifac(
@@ -9117,8 +9566,16 @@ pub async fn update_backbone_server(
                 args.prefer_ipv6,
                 device.as_deref(),
                 ifac.config_args(),
+                discovery.config_args(),
             );
-            Ok::<_, AppError>((old_runtime, old_config_content, config_written, ifac))
+            let published = old_discovery.discoverable || discovery.discoverable;
+            Ok::<_, AppError>((
+                old_runtime,
+                old_config_content,
+                config_written,
+                ifac,
+                published,
+            ))
         })?;
 
     if !config_written {
@@ -9145,6 +9602,13 @@ pub async fn update_backbone_server(
         &state_arc,
         crate::rns_config::get_all_interfaces(&config_dir),
     );
+    if published && runtime_handle(&state_arc).is_some() {
+        restart_for_server_discovery(&state_arc, &config_dir, "update_backbone_server", || {
+            crate::rns_config::write_config(&config_dir, &old_config_content)
+        })
+        .await?;
+        return Ok(json!({ "queued": true, "iface_name": name, "restarted": true }));
+    }
     tokio::spawn(finish_interface_replace(
         Arc::clone(&state_arc),
         activity_fence,

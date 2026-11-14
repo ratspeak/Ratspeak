@@ -2150,6 +2150,12 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                 "failed to write network settings into the Reticulum config"
             );
         }
+        if rns_config::apply_network_identity(&config_dir).is_err() {
+            tracing::warn!(
+                reason = "network_identity",
+                "failed to write the network identity into the Reticulum config"
+            );
+        }
     }
     let policy = match network_ownership::startup_policy(&state, &config_dir).await {
         Ok(policy) => policy,

@@ -667,6 +667,18 @@ pub async fn ratspeak_tauri::commands::network::set_propagation_node(tauri::stat
 pub async fn ratspeak_tauri::commands::network::set_stamp_settings(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::network::StampSettingsArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::network::sync_propagation(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::network::trigger_announce(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub mod ratspeak_tauri::commands::network_identity
+pub struct ratspeak_tauri::commands::network_identity::ImportNetworkIdentityArgs
+pub ratspeak_tauri::commands::network_identity::ImportNetworkIdentityArgs::data_base64: core::option::Option<zeroize::Zeroizing<alloc::string::String>>
+pub ratspeak_tauri::commands::network_identity::ImportNetworkIdentityArgs::text: core::option::Option<zeroize::Zeroizing<alloc::string::String>>
+pub struct ratspeak_tauri::commands::network_identity::NetworkIdentity
+pub ratspeak_tauri::commands::network_identity::NetworkIdentity::exists: bool
+pub ratspeak_tauri::commands::network_identity::NetworkIdentity::hash: core::option::Option<alloc::string::String>
+pub async fn ratspeak_tauri::commands::network_identity::api_network_identity(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<ratspeak_tauri::commands::network_identity::NetworkIdentity>
+pub async fn ratspeak_tauri::commands::network_identity::create_network_identity(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<ratspeak_tauri::commands::network_identity::NetworkIdentity>
+pub async fn ratspeak_tauri::commands::network_identity::export_network_identity(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::network_identity::import_network_identity(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::network_identity::ImportNetworkIdentityArgs) -> ratspeak_tauri::error::AppResult<ratspeak_tauri::commands::network_identity::NetworkIdentity>
+pub async fn ratspeak_tauri::commands::network_identity::remove_network_identity(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<ratspeak_tauri::commands::network_identity::NetworkIdentity>
 pub mod ratspeak_tauri::commands::network_ownership
 pub async fn ratspeak_tauri::commands::network_ownership::api_network_ownership(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::network_ownership::export_shared_access(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, core::option::Option<alloc::string::String>, core::option::Option<bool>) -> ratspeak_tauri::error::AppResult<alloc::string::String>

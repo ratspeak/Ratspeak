@@ -1081,6 +1081,19 @@ fn safe_ifac_args(args: InterfaceIfacArgs<'_>) -> bool {
         && args.ifac_size.is_none_or(|size| (1..=64).contains(&size))
 }
 
+/// Interface discovery for a TCP or Backbone server. Each key is written only
+/// when on or set; Reticulum reads the others only while `discoverable`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HostDiscoveryArgs<'a> {
+    pub discoverable: bool,
+    /// The address others connect to; a server is announced only with one.
+    pub reachable_on: Option<&'a str>,
+    /// Announce the IFAC network name and passphrase.
+    pub publish_ifac: bool,
+    /// Encrypt the announce for the `network_identity`.
+    pub discovery_encrypt: bool,
+}
+
 /// Removes any existing block with the same `name` before insertion.
 pub fn add_rnode_interface(config_dir: &Path, args: RnodeInterfaceArgs<'_>) -> bool {
     add_rnode_interface_with_usb_selector(config_dir, args, None)
@@ -1853,6 +1866,13 @@ const BACKBONE_SERVER_OWNED_KEYS: &[&str] = &[
     "prefer_ipv6",
     "device",
 ];
+const HOST_DISCOVERY_OWNED_KEYS: &[&str] = &[
+    "discoverable",
+    "reachable_on",
+    "publish_ifac",
+    "discovery_publish_ifac",
+    "discovery_encrypt",
+];
 
 /// Key lines in `name`'s block that no generator owns, in original order.
 fn unowned_block_lines(
@@ -2013,16 +2033,33 @@ fn tcp_client_block(
     block
 }
 
+fn append_host_discovery_fields(block: &mut Zeroizing<String>, discovery: HostDiscoveryArgs<'_>) {
+    if discovery.discoverable {
+        block.push_str("    discoverable = yes\n");
+    }
+    if let Some(reachable_on) = discovery.reachable_on.filter(|s| !s.is_empty()) {
+        block.push_str(&format!("    reachable_on = {reachable_on}\n"));
+    }
+    if discovery.publish_ifac {
+        block.push_str("    publish_ifac = yes\n");
+    }
+    if discovery.discovery_encrypt {
+        block.push_str("    discovery_encrypt = yes\n");
+    }
+}
+
 fn tcp_server_block(
     name: &str,
     listen_port: u16,
     listen_ip: &str,
     ifac: InterfaceIfacArgs<'_>,
+    discovery: HostDiscoveryArgs<'_>,
 ) -> Zeroizing<String> {
     let mut block = Zeroizing::new(format!(
         "\n  [[{name}]]\n    type = TCPServerInterface\n    listen_ip = {listen_ip}\n    listen_port = {listen_port}\n    enabled = true\n"
     ));
     append_ifac_fields(&mut block, ifac);
+    append_host_discovery_fields(&mut block, discovery);
     block
 }
 
@@ -2077,6 +2114,7 @@ fn backbone_server_block(
     prefer_ipv6: bool,
     device: Option<&str>,
     ifac: InterfaceIfacArgs<'_>,
+    discovery: HostDiscoveryArgs<'_>,
 ) -> Zeroizing<String> {
     let mut block = Zeroizing::new(format!(
         "\n  [[{name}]]\n    type = BackboneInterface\n    listen_on = {listen_ip}\n    listen_port = {listen_port}\n    enabled = true\n"
@@ -2088,6 +2126,7 @@ fn backbone_server_block(
         block.push_str(&format!("    device = {d}\n"));
     }
     append_ifac_fields(&mut block, ifac);
+    append_host_discovery_fields(&mut block, discovery);
     block
 }
 
@@ -2168,6 +2207,7 @@ pub fn add_tcp_server(config_dir: &Path, name: &str, listen_port: u16, listen_ip
         listen_port,
         listen_ip,
         InterfaceIfacArgs::default(),
+        HostDiscoveryArgs::default(),
     )
 }
 
@@ -2177,11 +2217,16 @@ pub fn add_tcp_server_with_ifac(
     listen_port: u16,
     listen_ip: &str,
     ifac: InterfaceIfacArgs<'_>,
+    discovery: HostDiscoveryArgs<'_>,
 ) -> bool {
-    if !safe_interface_name(name) || !safe_config_scalar(listen_ip) || !safe_ifac_args(ifac) {
+    if !safe_interface_name(name)
+        || !safe_config_scalar(listen_ip)
+        || !safe_ifac_args(ifac)
+        || !safe_optional_scalar(discovery.reachable_on)
+    {
         return false;
     }
-    let block = tcp_server_block(name, listen_port, listen_ip, ifac);
+    let block = tcp_server_block(name, listen_port, listen_ip, ifac, discovery);
     upsert_interface_block(config_dir, &[name], &block)
 }
 
@@ -2209,6 +2254,7 @@ pub fn add_backbone_server(
         prefer_ipv6,
         device,
         InterfaceIfacArgs::default(),
+        HostDiscoveryArgs::default(),
     )
 }
 
@@ -2221,17 +2267,27 @@ pub fn add_backbone_server_with_ifac(
     prefer_ipv6: bool,
     device: Option<&str>,
     ifac: InterfaceIfacArgs<'_>,
+    discovery: HostDiscoveryArgs<'_>,
 ) -> bool {
     if !safe_interface_name(name)
         || !safe_config_scalar(listen_ip)
         || !safe_optional_scalar(device)
         || !safe_ifac_args(ifac)
+        || !safe_optional_scalar(discovery.reachable_on)
     {
         return false;
     }
     // Synthesizer reads `listen_on` (interface_factory.rs); IPC arg is
     // `listen_ip` for parity with the TCP server command.
-    let block = backbone_server_block(name, listen_port, listen_ip, prefer_ipv6, device, ifac);
+    let block = backbone_server_block(
+        name,
+        listen_port,
+        listen_ip,
+        prefer_ipv6,
+        device,
+        ifac,
+        discovery,
+    );
     upsert_interface_block(config_dir, &[name], &block)
 }
 
@@ -2332,6 +2388,7 @@ pub fn update_tcp_server(
         listen_port,
         listen_ip,
         InterfaceIfacArgs::default(),
+        HostDiscoveryArgs::default(),
     )
 }
 
@@ -2342,21 +2399,28 @@ pub fn update_tcp_server_with_ifac(
     listen_port: u16,
     listen_ip: &str,
     ifac: InterfaceIfacArgs<'_>,
+    discovery: HostDiscoveryArgs<'_>,
 ) -> bool {
     if !safe_interface_name(old_name)
         || !safe_interface_name(name)
         || !safe_config_scalar(listen_ip)
         || !safe_ifac_args(ifac)
+        || !safe_optional_scalar(discovery.reachable_on)
     {
         return false;
     }
-    let block = tcp_server_block(name, listen_port, listen_ip, ifac);
+    let block = tcp_server_block(name, listen_port, listen_ip, ifac, discovery);
     replace_interface_block(
         config_dir,
         old_name,
         name,
         &block,
-        &[COMMON_OWNED_KEYS, IFAC_OWNED_KEYS, TCP_SERVER_OWNED_KEYS],
+        &[
+            COMMON_OWNED_KEYS,
+            IFAC_OWNED_KEYS,
+            TCP_SERVER_OWNED_KEYS,
+            HOST_DISCOVERY_OWNED_KEYS,
+        ],
         false,
     )
 }
@@ -2402,6 +2466,7 @@ pub fn update_backbone_server(
         prefer_ipv6,
         device,
         InterfaceIfacArgs::default(),
+        HostDiscoveryArgs::default(),
     )
 }
 
@@ -2415,16 +2480,26 @@ pub fn update_backbone_server_with_ifac(
     prefer_ipv6: bool,
     device: Option<&str>,
     ifac: InterfaceIfacArgs<'_>,
+    discovery: HostDiscoveryArgs<'_>,
 ) -> bool {
     if !safe_interface_name(old_name)
         || !safe_interface_name(name)
         || !safe_config_scalar(listen_ip)
         || !safe_optional_scalar(device)
         || !safe_ifac_args(ifac)
+        || !safe_optional_scalar(discovery.reachable_on)
     {
         return false;
     }
-    let block = backbone_server_block(name, listen_port, listen_ip, prefer_ipv6, device, ifac);
+    let block = backbone_server_block(
+        name,
+        listen_port,
+        listen_ip,
+        prefer_ipv6,
+        device,
+        ifac,
+        discovery,
+    );
     replace_interface_block(
         config_dir,
         old_name,
@@ -2434,6 +2509,7 @@ pub fn update_backbone_server_with_ifac(
             COMMON_OWNED_KEYS,
             IFAC_OWNED_KEYS,
             BACKBONE_SERVER_OWNED_KEYS,
+            HOST_DISCOVERY_OWNED_KEYS,
         ],
         false,
     )
@@ -2506,6 +2582,83 @@ pub fn apply_network_settings(
         &updated,
     )
     .map(|_| true)
+}
+
+/// Where a profile keeps its network identity: a raw 64-byte Reticulum
+/// identity file in Reticulum's identity store under its config.
+pub fn network_identity_path(config_dir: &Path) -> PathBuf {
+    config_dir
+        .join("storage")
+        .join("identities")
+        .join("network")
+}
+
+/// The file `[reticulum] network_identity` names, resolved as Reticulum does.
+pub fn configured_network_identity_path(config_dir: &Path) -> Option<PathBuf> {
+    let content = read_config(config_dir)?;
+    let config = rns_runtime::config::Config::parse(&content).ok()?;
+    rns_runtime::reticulum::ReticulumConfig::try_from_config(&config)
+        .ok()?
+        .network_identity_path
+}
+
+/// The configured network identity, when its file loads.
+pub fn load_network_identity(config_dir: &Path) -> Option<rns_identity::identity::Identity> {
+    rns_identity::identity::Identity::from_file(&configured_network_identity_path(config_dir)?).ok()
+}
+
+/// Points `[reticulum] network_identity` at [`network_identity_path`], or
+/// removes it; true when the config changed. The path is absolute and quoted,
+/// since Reticulum resolves a relative one against its working directory.
+pub fn set_network_identity_key(config_dir: &Path, on: bool) -> std::io::Result<bool> {
+    let value = if on {
+        let path = std::path::absolute(network_identity_path(config_dir))?;
+        Some(quoted_config_path(&path).ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "the profile path cannot be written into the config",
+            )
+        })?)
+    } else {
+        None
+    };
+    let previous = read_config(config_dir);
+    let content = previous
+        .clone()
+        .unwrap_or_else(|| ratspeak_default_config(config_dir));
+    let updated = section_keys_update(&content, "reticulum", &[("network_identity", value)]);
+    if previous.as_deref() == Some(&*updated) {
+        return Ok(false);
+    }
+    write_config_if_unchanged(
+        config_dir,
+        previous.as_deref().map(String::as_str),
+        &updated,
+    )
+    .map(|_| true)
+}
+
+/// Keeps `network_identity` on the profile's own file while it exists, so a
+/// moved data directory still finds it; a key naming another file is left as is.
+pub fn apply_network_identity(config_dir: &Path) -> std::io::Result<bool> {
+    if !network_identity_path(config_dir).is_file() {
+        return Ok(false);
+    }
+    set_network_identity_key(config_dir, true)
+}
+
+fn quoted_config_path(path: &Path) -> Option<String> {
+    let path = path.to_str()?;
+    if path.contains(['\r', '\n', '\0']) {
+        return None;
+    }
+    if !path.contains('"') {
+        Some(format!("\"{path}\""))
+    } else if !path.contains('\'') {
+        Some(format!("'{path}'"))
+    } else {
+        None
+    }
 }
 
 /// The Network settings a config's own keys describe, for a profile that has
@@ -4736,11 +4889,25 @@ mod tests {
                             ("TCPClientInterface", _) => {
                                 update_tcp_client_with_ifac(&dir, old, new, "peer", 4242, ifac)
                             }
-                            ("TCPServerInterface", _) => {
-                                update_tcp_server_with_ifac(&dir, old, new, 4242, "0.0.0.0", ifac)
-                            }
+                            ("TCPServerInterface", _) => update_tcp_server_with_ifac(
+                                &dir,
+                                old,
+                                new,
+                                4242,
+                                "0.0.0.0",
+                                ifac,
+                                HostDiscoveryArgs::default(),
+                            ),
                             (_, true) => update_backbone_server_with_ifac(
-                                &dir, old, new, 4242, "0.0.0.0", false, None, ifac,
+                                &dir,
+                                old,
+                                new,
+                                4242,
+                                "0.0.0.0",
+                                false,
+                                None,
+                                ifac,
+                                HostDiscoveryArgs::default(),
                             ),
                             _ => update_backbone_client(
                                 &dir,
@@ -4806,5 +4973,147 @@ mod tests {
         assert_eq!(listing["tcp_client"].as_array().unwrap().len(), 0);
         assert!(!set_interface_enabled(&dir, "Peer", true));
         assert_eq!(read_config(&dir).unwrap().as_str(), content);
+    }
+
+    #[test]
+    fn host_discovery_keys_are_written_when_on_and_absent_when_off() {
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        let on = HostDiscoveryArgs {
+            discoverable: true,
+            reachable_on: Some("relay.example.org"),
+            publish_ifac: true,
+            discovery_encrypt: true,
+        };
+        let ifac = InterfaceIfacArgs {
+            network_name: Some("mesh"),
+            passphrase: Some("secret"),
+            ifac_size: None,
+        };
+        assert!(add_tcp_server_with_ifac(
+            &dir, "Host", 4242, "0.0.0.0", ifac, on
+        ));
+        assert!(add_backbone_server_with_ifac(
+            &dir, "Spine", 4343, "0.0.0.0", false, None, ifac, on
+        ));
+        let content = read_config(&dir).unwrap();
+        let parsed = rns_runtime::config::Config::parse(&content).unwrap();
+        for name in ["Host", "Spine"] {
+            let section = parsed.subsection("interfaces", name).unwrap();
+            for key in ["discoverable", "publish_ifac", "discovery_encrypt"] {
+                assert_eq!(section.get_bool(key), Some(true), "{name} {key}");
+            }
+            assert_eq!(section.get("reachable_on"), Some("relay.example.org"));
+        }
+        let listing = get_all_interfaces(&dir);
+        for group in ["tcp_server", "backbone_server"] {
+            let entry = &listing[group][0];
+            assert_eq!(entry["discoverable"], "yes", "{group}");
+            assert_eq!(entry["reachable_on"], "relay.example.org", "{group}");
+            assert_eq!(entry["publish_ifac"], "yes", "{group}");
+            assert_eq!(entry["discovery_encrypt"], "yes", "{group}");
+        }
+
+        // An update owns the keys: off drops them, and an alias goes with them.
+        let edited = read_config(&dir).unwrap().replace(
+            "    discovery_encrypt = yes\n",
+            "    discovery_encrypt = yes\n    discovery_publish_ifac = yes\n    gravity = 2\n",
+        );
+        write_config(&dir, &edited);
+        assert!(update_tcp_server_with_ifac(
+            &dir,
+            "Host",
+            "Host",
+            4242,
+            "0.0.0.0",
+            ifac,
+            HostDiscoveryArgs::default(),
+        ));
+        assert!(update_backbone_server_with_ifac(
+            &dir,
+            "Spine",
+            "Spine",
+            4343,
+            "0.0.0.0",
+            false,
+            None,
+            ifac,
+            HostDiscoveryArgs::default(),
+        ));
+        let content = read_config(&dir).unwrap();
+        for key in [
+            "discoverable",
+            "reachable_on",
+            "publish_ifac",
+            "discovery_publish_ifac",
+            "discovery_encrypt",
+        ] {
+            assert!(!content.contains(&format!("{key} =")), "{key}");
+        }
+        // Keys it does not own stay in each block.
+        assert_eq!(content.matches("gravity = 2").count(), 2);
+        let listing = get_all_interfaces(&dir);
+        for group in ["tcp_server", "backbone_server"] {
+            let entry = listing[group][0].as_object().unwrap();
+            assert!(!entry.contains_key("discoverable"), "{group}");
+            assert!(!entry.contains_key("discovery_encrypt"), "{group}");
+        }
+        // Off by default, as the plain writers are.
+        assert!(add_tcp_server(&dir, "Plain", 4444, "0.0.0.0"));
+        assert!(!read_config(&dir).unwrap().contains("discoverable"));
+        // A reachable address is one config line.
+        let bad = HostDiscoveryArgs {
+            reachable_on: Some("relay.example.org # hidden"),
+            ..on
+        };
+        assert!(!add_tcp_server_with_ifac(
+            &dir, "Bad", 4545, "0.0.0.0", ifac, bad
+        ));
+    }
+
+    #[test]
+    fn the_network_identity_key_names_the_profile_file() {
+        // A comma or `#` in the profile path must not split or cut the value.
+        let dir = temp_config_dir().join("Name, Jr #2");
+        write_base_config(&dir);
+        let file = network_identity_path(&dir);
+        assert!(file.ends_with("storage/identities/network"));
+        assert_eq!(configured_network_identity_path(&dir), None);
+        assert!(!apply_network_identity(&dir).unwrap());
+
+        assert!(set_network_identity_key(&dir, true).unwrap());
+        assert!(!set_network_identity_key(&dir, true).unwrap());
+        let content = read_config(&dir).unwrap();
+        assert_eq!(
+            reticulum_value(&content, "network_identity"),
+            Some(format!("\"{}\"", file.display()).as_str())
+        );
+        // Reticulum reads the same file back.
+        assert_eq!(configured_network_identity_path(&dir), Some(file.clone()));
+        assert!(load_network_identity(&dir).is_none());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let identity = rns_identity::identity::Identity::new();
+        identity.to_file(&file).unwrap();
+        assert_eq!(load_network_identity(&dir).unwrap().hash, identity.hash);
+
+        assert!(set_network_identity_key(&dir, false).unwrap());
+        assert_eq!(
+            reticulum_value(&read_config(&dir).unwrap(), "network_identity"),
+            None
+        );
+        // At start, an existing file gets its key back.
+        assert!(apply_network_identity(&dir).unwrap());
+        assert_eq!(configured_network_identity_path(&dir), Some(file.clone()));
+
+        // A key naming another file is left as written while the profile has none.
+        std::fs::remove_file(&file).unwrap();
+        let other = dir.join("elsewhere");
+        let hand = read_config(&dir).unwrap().replace(
+            &format!("\"{}\"", file.display()),
+            &format!("'{}'", other.display()),
+        );
+        write_config(&dir, &hand);
+        assert!(!apply_network_identity(&dir).unwrap());
+        assert_eq!(configured_network_identity_path(&dir), Some(other));
     }
 }

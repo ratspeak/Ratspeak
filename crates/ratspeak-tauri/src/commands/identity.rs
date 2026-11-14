@@ -171,7 +171,7 @@ fn base32_value(ch: u8) -> Option<u8> {
     }
 }
 
-fn base32_decode_text(text: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn base32_decode_text(text: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::new();
     let mut buffer: u32 = 0;
     let mut bits: u8 = 0;
@@ -206,7 +206,7 @@ fn base32_decode_text(text: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
-fn base32_encode_padded(bytes: &[u8]) -> String {
+pub(crate) fn base32_encode_padded(bytes: &[u8]) -> String {
     let mut out = String::new();
     let mut buffer: u32 = 0;
     let mut bits: u8 = 0;
