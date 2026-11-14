@@ -112,7 +112,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
  "x11rb",
 ]
 
@@ -1410,7 +1410,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1636,7 +1636,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2998,7 +2998,7 @@ dependencies = [
 
 [[package]]
 name = "lxmf-core"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -3015,24 +3015,26 @@ dependencies = [
  "rns-protocol",
  "rns-transport",
  "rns-wire",
+ "rusqlite",
  "serde",
  "sha2",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
+ "unicode-general-category",
  "unicode-normalization",
 ]
 
 [[package]]
 name = "lxst-codec2"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "libm",
 ]
 
 [[package]]
 name = "lxst-core"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "half",
  "opus-rs",
@@ -3042,7 +3044,7 @@ dependencies = [
 
 [[package]]
 name = "lxst-rns"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "lxst-core",
@@ -3055,7 +3057,7 @@ dependencies = [
 
 [[package]]
 name = "lxst-telephony"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bytes",
  "lxst-codec2",
@@ -3206,7 +3208,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.21",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3322,7 +3324,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3794,9 +3796,9 @@ checksum = "04744f49eae99ab78e0d5c0b603ab218f515ea8cfe5a456d7629ad883a3b6e7d"
 
 [[package]]
 name = "opus-rs"
-version = "0.1.29"
+version = "0.1.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eadaf84d53a021172447a8771d74f805ac3719a61041dafa95720ef86b8e271d"
+checksum = "bafbcaf2ed381cdf68ced4ed8d16517de90ffd7424e36f0b9e45d67fbe30b1f9"
 
 [[package]]
 name = "ordered-multimap"
@@ -4644,7 +4646,7 @@ dependencies = [
 
 [[package]]
 name = "rns-crypto"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "aes",
  "cbc",
@@ -4662,7 +4664,7 @@ dependencies = [
 
 [[package]]
 name = "rns-identity"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "hex",
  "libc",
@@ -4682,7 +4684,7 @@ dependencies = [
 
 [[package]]
 name = "rns-interface"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "bluer",
  "btleplug",
@@ -4715,7 +4717,7 @@ dependencies = [
 
 [[package]]
 name = "rns-link"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "hex",
  "libc",
@@ -4732,7 +4734,7 @@ dependencies = [
 
 [[package]]
 name = "rns-protocol"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "bzip2",
  "hex",
@@ -4749,7 +4751,7 @@ dependencies = [
 
 [[package]]
 name = "rns-ratkey"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "aes",
  "bip39",
@@ -4773,7 +4775,7 @@ dependencies = [
 
 [[package]]
 name = "rns-runtime"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "bytes",
  "hex",
@@ -4792,6 +4794,7 @@ dependencies = [
  "serde",
  "sha2",
  "subtle",
+ "tempfile",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -4800,7 +4803,7 @@ dependencies = [
 
 [[package]]
 name = "rns-transport"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "bytes",
  "hex",
@@ -4810,6 +4813,7 @@ dependencies = [
  "rns-crypto",
  "rns-identity",
  "rns-wire",
+ "rusqlite",
  "serde",
  "subtle",
  "thiserror 2.0.21",
@@ -4819,7 +4823,7 @@ dependencies = [
 
 [[package]]
 name = "rns-wire"
-version = "1.4.0"
+version = "1.5.0"
 dependencies = [
  "rns-crypto",
  "sha2",
@@ -4899,7 +4903,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5391,7 +5395,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5985,7 +5989,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6429,7 +6433,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.21",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6458,7 +6462,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6475,6 +6479,12 @@ name = "unicase"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dbc4bc3a9f746d862c45cb89d705aa10f187bb96c76001afab07a0d35ce60142"
+
+[[package]]
+name = "unicode-general-category"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2281c8c1d221438e373249e065ca4989c4c36952c211ff21a0ee91c44a3869e7"
 
 [[package]]
 name = "unicode-ident"
@@ -6891,7 +6901,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6912,7 +6922,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-quartz-core",
  "raw-window-handle",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
  "windows-version",
 ]
 

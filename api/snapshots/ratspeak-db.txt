@@ -388,6 +388,7 @@ pub fn ratspeak_db::db::delete_identity_activity(&ratspeak_db::DbPool, &[alloc::
 pub fn ratspeak_db::db::delete_message_for_identity(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<bool, alloc::string::String>
 pub fn ratspeak_db::db::delete_prunable_identity_activity(&ratspeak_db::DbPool, &[alloc::string::String], f64, &std::collections::hash::set::HashSet<alloc::string::String>) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String>
 pub fn ratspeak_db::db::delete_prunable_identity_activity_after<F>(&ratspeak_db::DbPool, &[alloc::string::String], f64, &std::collections::hash::set::HashSet<alloc::string::String>, F) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String> where F: core::ops::function::FnOnce(&[alloc::string::String]) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::db::deliver_messages_to_self(&ratspeak_db::DbPool, &str, &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::db::enqueue_pending_blackhole(&ratspeak_db::DbPool, &str, &str, core::option::Option<&str>, core::option::Option<f64>) -> bool
 pub fn ratspeak_db::db::expire_waiting(&ratspeak_db::DbPool, &str, f64) -> core::result::Result<alloc::vec::Vec<ratspeak_db::ExpiredWait>, alloc::string::String>
 pub fn ratspeak_db::db::fail_all_waiting(&ratspeak_db::DbPool) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String>
@@ -854,6 +855,7 @@ pub fn ratspeak_db::delete_identity_activity(&ratspeak_db::DbPool, &[alloc::stri
 pub fn ratspeak_db::delete_message_for_identity(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<bool, alloc::string::String>
 pub fn ratspeak_db::delete_prunable_identity_activity(&ratspeak_db::DbPool, &[alloc::string::String], f64, &std::collections::hash::set::HashSet<alloc::string::String>) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String>
 pub fn ratspeak_db::delete_prunable_identity_activity_after<F>(&ratspeak_db::DbPool, &[alloc::string::String], f64, &std::collections::hash::set::HashSet<alloc::string::String>, F) -> core::result::Result<alloc::vec::Vec<alloc::string::String>, alloc::string::String> where F: core::ops::function::FnOnce(&[alloc::string::String]) -> core::result::Result<(), alloc::string::String>
+pub fn ratspeak_db::deliver_messages_to_self(&ratspeak_db::DbPool, &str, &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::enqueue_pending_blackhole(&ratspeak_db::DbPool, &str, &str, core::option::Option<&str>, core::option::Option<f64>) -> bool
 pub fn ratspeak_db::expire_waiting(&ratspeak_db::DbPool, &str, f64) -> core::result::Result<alloc::vec::Vec<ratspeak_db::ExpiredWait>, alloc::string::String>
 pub fn ratspeak_db::fail_all_waiting(&ratspeak_db::DbPool) -> core::result::Result<alloc::vec::Vec<(alloc::string::String, alloc::string::String)>, alloc::string::String>
