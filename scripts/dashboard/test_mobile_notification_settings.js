@@ -61,11 +61,11 @@ assert(source.includes("document.addEventListener('rs-notification-permission-ch
     'the row must refresh after the Android permission result');
 assert(source.includes("window.addEventListener('focus'"),
     'the row must refresh after returning from system settings');
-assert(setupSource.includes('requestSetupNotificationPermissionIfEnabled();'),
-    'existing and newly completed mobile identities must enter the one-time permission path');
+assert(setupSource.includes('function requestNotificationPermissionOnce()'),
+    'new and upgraded mobile installs must share the one-time permission path');
 var existingIdentityBranch = setupSource.indexOf("document.body.classList.remove('setup-active')");
 assert(existingIdentityBranch >= 0 &&
-    setupSource.indexOf('requestSetupNotificationPermissionIfEnabled();', existingIdentityBranch) >= 0,
+    setupSource.indexOf('requestNotificationPermissionOnce();', existingIdentityBranch) >= 0,
     'an existing identity upgrading to native notifications must not silently stay unprompted');
 
 console.log('Mobile notification settings tests passed');

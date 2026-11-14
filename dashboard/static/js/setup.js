@@ -9,16 +9,33 @@ function dismissSetupKeyboard() {
     if (input && typeof input.blur === 'function') input.blur();
 }
 
-function requestSetupNotificationPermissionIfEnabled() {
-    if (typeof isTauriMobile !== 'function' || !isTauriMobile()) return;
-    if (typeof rsNotify === 'undefined' || !rsNotify.available()) return;
-    RS.invoke('api_notification_settings').then(function(data) {
-        if (!data || data.enabled !== true) return;
+// The app asks for notification permission once per install by itself:
+// during first run, or on the first launch of an install that predates the
+// ask. Every later ask is the person's, from Settings.
+var SETUP_NOTIFICATION_ASK_KEY = 'ratspeak_notification_prompt_settled';
+
+function _setupNotificationAskSettled() {
+    if (typeof _mobileNotificationPermissionWasRequested === 'function' &&
+            _mobileNotificationPermissionWasRequested()) return true;
+    try { return localStorage.getItem(SETUP_NOTIFICATION_ASK_KEY) === '1'; }
+    catch (_) { return false; }
+}
+
+// Resolves once the request is issued, not answered, so startup never waits on it.
+function requestNotificationPermissionOnce() {
+    if (typeof isTauriMobile !== 'function' || !isTauriMobile()) return Promise.resolve(false);
+    if (typeof rsNotify === 'undefined' || !rsNotify.available()) return Promise.resolve(false);
+    if (_setupNotificationAskSettled()) return Promise.resolve(false);
+    try { localStorage.setItem(SETUP_NOTIFICATION_ASK_KEY, '1'); } catch (_) {}
+    return RS.invoke('api_notification_settings').then(function(data) {
+        if (!data || data.enabled !== true) return false;
         rsNotify.setEnabled(true);
         return rsNotify.permissionState().then(function(state) {
-            if (state === 'prompt') return rsNotify.requestPermission();
+            if (state !== 'prompt') return false;
+            rsNotify.requestPermission();
+            return true;
         });
-    }).catch(function() {});
+    }).catch(function() { return false; });
 }
 
 function setSetupBackupLayout(active) {
@@ -92,9 +109,8 @@ function checkSetupStatus() {
                 document.body.classList.remove('setup-active');
                 setSetupBackupLayout(false);
                 setSetupConnectingDotsActive(false);
-                // Existing installs upgrading to native mobile notifications
-                // get the same one-time, visible OS prompt as new identities.
-                requestSetupNotificationPermissionIfEnabled();
+                // Installs from before the one-time ask get it once, here.
+                requestNotificationPermissionOnce();
             }
             document.body.classList.remove('checking-setup');
         })
@@ -349,13 +365,18 @@ function resetSetupToStart() {
     if (first) first.style.display = 'block';
 }
 
+// The one-time ask goes out before the restart, so the restart cannot drop it.
+function restartSetupCore() {
+    return requestNotificationPermissionOnce().then(function() {
+        return RS.invoke('api_setup_restart').catch(function() {});
+    }).then(runConnectingProgress);
+}
+
 function completeSetupAfterIdentityImport() {
     showSetupConnectingStep();
-    requestSetupNotificationPermissionIfEnabled();
     // The imported identity is already active when setup has no identity.
     // Restart the core so the dashboard opens on the imported session.
-    RS.invoke('api_setup_restart').catch(function() {});
-    runConnectingProgress();
+    restartSetupCore();
 }
 
 window.completeSetupAfterIdentityImport = completeSetupAfterIdentityImport;
@@ -409,8 +430,7 @@ function completeSetupAfterHardwareIdentity(result, pin) {
     // this reply's message, so in either order the toast shows it once.
     RS.invoke('hw_activate_and_unlock', { hash: hash, pin: pin }).then(function(res) {
         if (res && res.ok) {
-            requestSetupNotificationPermissionIfEnabled();
-            runConnectingProgress();
+            requestNotificationPermissionOnce().then(runConnectingProgress);
             return;
         }
         var detail = (res && res.error) ? res.error : 'Could not unlock the hardware identity.';
@@ -574,7 +594,6 @@ document.addEventListener('DOMContentLoaded', function() {
 
             RS.invoke('api_setup_complete', { args: { display_name: displayName || '' } })
             .then(function() {
-                requestSetupNotificationPermissionIfEnabled();
                 setSetupStep(3);
                 setSetupBackupLayout(false);
                 setSetupConnectingDotsActive(true);
@@ -590,10 +609,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     headerExtras
                 );
 
-                // Core may restart mid-request before responding.
-                RS.invoke('api_setup_restart').catch(function() {});
-
-                runConnectingProgress();
+                restartSetupCore();
             })
             .catch(function() {
                 setSetupConnectingDotsActive(false);

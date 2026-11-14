@@ -8980,7 +8980,8 @@ fn identity_management_is_first_class_tab() {
 
     let setup_js = read_source(root.join("dashboard/static/js/setup.js")).expect("setup js");
     assert!(setup_js.contains("function completeSetupAfterIdentityImport()"));
-    assert!(setup_js.contains("runConnectingProgress();"));
+    assert!(setup_js.contains("function restartSetupCore()"));
+    assert!(setup_js.contains("}).then(runConnectingProgress);"));
     assert!(setup_js.contains("function setupCompletionView()"));
     assert!(setup_js.contains("window.location.href = '/#' + setupCompletionView()"));
     assert!(!setup_js.contains("window.location.href = '/#dashboard'"));
