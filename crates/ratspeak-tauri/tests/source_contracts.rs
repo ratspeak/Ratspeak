@@ -9101,8 +9101,8 @@ fn software_identity_creation_uses_passcode_and_backup_acknowledgement_flow() {
     assert!(!index.contains(r#"id="setup-verify-fields""#));
     assert!(!index.contains(r#"id="hw-step-verify""#));
     assert!(!index.contains(r#"id="hw-verify-fields""#));
-    assert_eq!(index.matches(r#"class="setup-dot"#).count(), 4);
-    assert_eq!(index.matches(r#"class="setup-dot active"#).count(), 1);
+    // First run is one card per step, without onboarding dots.
+    assert!(!index.contains("setup-dot"));
 
     let _ = (modals_css, views_css);
     let ui_css =

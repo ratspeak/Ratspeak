@@ -1,13 +1,12 @@
 var needsSetup = false;
 var SETUP_RECOVERY_PHRASE_WORDS = 12;
 var setupRecoveryMnemonic = '';
-var setupConnectingDotsTimer = null;
-var setupConnectingDotCount = 1;
 
-function dismissSetupKeyboard() {
-    var input = document.getElementById('setup-display-name');
-    if (input && typeof input.blur === 'function') input.blur();
-}
+// The last row of a progress list holds until this long after its screen
+// appeared, so a fast start never just flashes. A minimum, never an addition.
+var SETUP_PROGRESS_HOLD_MS = 900;
+var SETUP_START_POLL_MS = 150;
+var SETUP_START_GIVE_UP_MS = 60000;
 
 // The app asks for notification permission once per install by itself:
 // during first run, or on the first launch of an install that predates the
@@ -38,65 +37,38 @@ function requestNotificationPermissionOnce() {
     }).catch(function() { return false; });
 }
 
-function setSetupBackupLayout(active) {
-    document.body.classList.toggle('setup-backup-active', !!active);
+function dismissSetupKeyboard() {
+    var input = document.getElementById('setup-display-name');
+    if (input && typeof input.blur === 'function') input.blur();
 }
 
-function renderSetupConnectingDots() {
-    var dots = document.getElementById('setup-connecting-dots');
-    if (dots) dots.textContent = '.'.repeat(setupConnectingDotCount);
-}
-
-function setSetupConnectingDotsActive(active) {
-    if (setupConnectingDotsTimer) {
-        clearInterval(setupConnectingDotsTimer);
-        setupConnectingDotsTimer = null;
-    }
-    setupConnectingDotCount = 1;
-    renderSetupConnectingDots();
-    if (!active) return;
-    setupConnectingDotsTimer = setInterval(function() {
-        setupConnectingDotCount = setupConnectingDotCount >= 3 ? 1 : setupConnectingDotCount + 1;
-        renderSetupConnectingDots();
-    }, 450);
-}
-
-function setSetupStep(stepIndex) {
-    var dots = document.querySelectorAll('#setup-progress-dots .setup-dot');
-    for (var i = 0; i < dots.length; i++) {
-        dots[i].classList.toggle('active', i === stepIndex);
-    }
-}
-
-function transitionStep(hideEl, showEl, extras, callback) {
+function transitionStep(hideEl, showEl, callback) {
     var FADE_OUT = 200;
     var FADE_IN = 280;
-    if (hideEl) {
-        hideEl.classList.add('setup-fade-out');
-    }
-    if (extras) {
-        for (var i = 0; i < extras.length; i++) {
-            if (extras[i]) extras[i].classList.add('setup-fade-out');
-        }
-    }
+    if (hideEl) hideEl.classList.add('setup-fade-out');
     setTimeout(function() {
         if (hideEl) { hideEl.style.display = 'none'; hideEl.classList.remove('setup-fade-out'); }
-        if (extras) {
-            for (var i = 0; i < extras.length; i++) {
-                if (extras[i]) { extras[i].style.display = 'none'; extras[i].classList.remove('setup-fade-out'); }
-            }
-        }
         if (showEl) {
             showEl.style.display = 'block';
             showEl.classList.add('setup-fade-in');
+            var title = showEl.querySelector('.solo-title');
+            if (title && !isMobile()) title.focus({ preventScroll: true });
             setTimeout(function() {
                 showEl.classList.remove('setup-fade-in');
                 if (callback) callback();
             }, FADE_IN);
-        } else {
-            if (callback) callback();
+        } else if (callback) {
+            callback();
         }
-    }, FADE_OUT);
+    }, hideEl ? FADE_OUT : 0);
+}
+
+function visibleSetupStep() {
+    var visible = null;
+    document.querySelectorAll('#view-setup .setup-step').forEach(function(step) {
+        if (!visible && step.style.display !== 'none') visible = step;
+    });
+    return visible;
 }
 
 function checkSetupStatus() {
@@ -107,8 +79,6 @@ function checkSetupStatus() {
                 enterSetupMode();
             } else {
                 document.body.classList.remove('setup-active');
-                setSetupBackupLayout(false);
-                setSetupConnectingDotsActive(false);
                 // Installs from before the one-time ask get it once, here.
                 requestNotificationPermissionOnce();
             }
@@ -122,8 +92,6 @@ function checkSetupStatus() {
 
 function enterSetupMode() {
     document.body.classList.add('setup-active');
-    setSetupBackupLayout(false);
-    setSetupConnectingDotsActive(false);
 
     var sidebar = document.getElementById('sidebar');
     if (sidebar) sidebar.style.display = 'none';
@@ -142,34 +110,43 @@ function enterSetupMode() {
     if (uptimeEl) uptimeEl.style.display = 'none';
 }
 
-function startCryptoAnimation() {
-    var el = document.getElementById('crypto-hex-stream');
-    if (el) el.style.display = 'none';
+// ---- Progress rows ----
 
-    var step1 = document.getElementById('prog-step-1');
-    var step2 = document.getElementById('prog-step-2');
-    if (step1) step1.classList.remove('done');
-    if (step2) step2.classList.remove('active', 'done');
-    if (step1) step1.classList.add('active');
+function setSetupProgressStep(id, status) {
+    var row = document.getElementById(id);
+    if (!row) return;
+    row.className = 'progress-step' + (status && status !== 'pending' ? ' is-' + status : '');
+    var meta = row.querySelector('.progress-step-meta');
+    if (meta) meta.textContent = status === 'done' ? 'Done' : status === 'failed' ? 'Stopped' : '';
+}
 
-    function randomDelay() {
-        return 675 + Math.floor(Math.random() * 676);
-    }
+function announceSetupProgress(id, text) {
+    var live = document.getElementById(id);
+    if (live) live.textContent = text;
+}
 
-    return new Promise(function(resolve) {
-        setTimeout(function() {
-            if (step1) { step1.classList.remove('active'); step1.classList.add('done'); }
-            if (step2) step2.classList.add('active');
-
+// Keys and address come back in one reply: the keys tick when it arrives, the
+// address holds to the minimum.
+function runGenerateProgress(backendPromise) {
+    var shownAt = Date.now();
+    setSetupProgressStep('setup-gen-keys', 'active');
+    setSetupProgressStep('setup-gen-address', 'pending');
+    announceSetupProgress('setup-generate-live', '');
+    return backendPromise.then(function(result) {
+        setSetupProgressStep('setup-gen-keys', 'done');
+        setSetupProgressStep('setup-gen-address', 'active');
+        announceSetupProgress('setup-generate-live', 'Generating your keys: done.');
+        var wait = Math.max(0, shownAt + SETUP_PROGRESS_HOLD_MS - Date.now());
+        return new Promise(function(resolve) {
             setTimeout(function() {
-                if (step2) { step2.classList.remove('active'); step2.classList.add('done'); }
-                var lockIcon = document.getElementById('crypto-lock-icon');
-                if (lockIcon) lockIcon.classList.add('locked');
-                resolve();
-            }, randomDelay());
-        }, randomDelay());
+                setSetupProgressStep('setup-gen-address', 'done');
+                resolve(result);
+            }, wait);
+        });
     });
 }
+
+// ---- Recovery phrase ----
 
 function setupRecoveryWords(mnemonic) {
     if (typeof window.recoveryPhraseWords === 'function') {
@@ -178,135 +155,255 @@ function setupRecoveryWords(mnemonic) {
     return String(mnemonic || '').trim().split(/\s+/).filter(Boolean);
 }
 
-function setupRecoveryPhraseGrid(words) {
-    if (typeof window.renderRecoveryPhraseGrid === 'function') {
-        return window.renderRecoveryPhraseGrid(words);
+// Covered, the well holds stand-ins; the words exist in the page only once shown.
+function renderSetupPhrase(words) {
+    var grid = document.getElementById('setup-mnemonic-grid');
+    if (!grid) return;
+    var shown = !!words;
+    var items = [];
+    for (var i = 0; i < SETUP_RECOVERY_PHRASE_WORDS; i++) {
+        items.push('<li>' + (shown ? escapeHtml(words[i] || '') : 'xxxxxx') + '</li>');
     }
-    return (words || []).map(function(word, i) {
-        return '<div class="hw-mnemonic-word">' +
-            '<span class="hw-mnemonic-index">' + (i + 1) + '</span>' +
-            '<span class="hw-mnemonic-text">' + escapeHtml(word) + '</span>' +
-        '</div>';
-    }).join('');
+    grid.innerHTML = items.join('');
+    grid.setAttribute('aria-hidden', shown ? 'false' : 'true');
+    var shell = document.getElementById('setup-mnemonic-shell');
+    if (shell) shell.classList.toggle('is-covered', !shown);
+    var copy = document.getElementById('setup-mnemonic-copy-btn');
+    if (copy) copy.disabled = !shown;
+    var confirm = document.getElementById('setup-mnemonic-confirm');
+    if (confirm) {
+        confirm.disabled = !shown;
+        if (!shown) confirm.checked = false;
+    }
+    var continueBtn = document.getElementById('setup-mnemonic-continue-btn');
+    if (continueBtn) continueBtn.disabled = !(shown && confirm && confirm.checked);
 }
 
 function resetSetupRecoveryStep() {
     setupRecoveryMnemonic = '';
-    var grid = document.getElementById('setup-mnemonic-grid');
-    if (grid) {
-        grid.innerHTML = '';
-        grid.setAttribute('aria-hidden', 'true');
-    }
-    var shell = document.getElementById('setup-mnemonic-shell');
-    if (shell) shell.classList.remove('revealed');
-    var cover = document.getElementById('setup-mnemonic-cover');
-    if (cover) cover.style.display = '';
-    var confirm = document.getElementById('setup-mnemonic-confirm');
-    if (confirm) confirm.checked = false;
-    var continueBtn = document.getElementById('setup-mnemonic-continue-btn');
-    if (continueBtn) continueBtn.disabled = true;
+    renderSetupPhrase(null);
 }
 
 function showSetupRecoveryStep(mnemonic, fromEl) {
-    setSetupConnectingDotsActive(false);
     var words = setupRecoveryWords(mnemonic);
     if (words.length !== SETUP_RECOVERY_PHRASE_WORDS) {
         showSetupIdentityStep(fromEl);
         return;
     }
-
     setupRecoveryMnemonic = mnemonic;
-    var grid = document.getElementById('setup-mnemonic-grid');
-    if (grid) {
-        grid.innerHTML = setupRecoveryPhraseGrid(words);
-        grid.setAttribute('aria-hidden', 'true');
-    }
-
-    var shell = document.getElementById('setup-mnemonic-shell');
-    if (shell) shell.classList.remove('revealed');
-    var cover = document.getElementById('setup-mnemonic-cover');
-    if (cover) cover.style.display = '';
-    var confirm = document.getElementById('setup-mnemonic-confirm');
-    if (confirm) confirm.checked = false;
-    var continueBtn = document.getElementById('setup-mnemonic-continue-btn');
-    if (continueBtn) continueBtn.disabled = true;
-
-    setSetupStep(2);
-    setSetupBackupLayout(true);
-    transitionStep(fromEl, document.getElementById('setup-step-backup'), null, function() {
-        if (cover && !isMobile()) cover.focus();
-    });
+    renderSetupPhrase(null);
+    transitionStep(fromEl, document.getElementById('setup-step-backup'));
 }
 
 function showSetupIdentityStep(fromEl) {
-    setSetupStep(3);
-    setSetupBackupLayout(false);
-    setSetupConnectingDotsActive(false);
-    transitionStep(fromEl, document.getElementById('setup-step-2'), null, function() {
+    transitionStep(fromEl, document.getElementById('setup-step-2'), function() {
         var nameInput = document.getElementById('setup-display-name');
         if (nameInput && !isMobile()) nameInput.focus();
     });
 }
 
+function renderSetupAddress(hash) {
+    var el = document.getElementById('setup-lxmf-hash');
+    if (!el) return;
+    if (hash && RS.kit && RS.kit.hash) {
+        el.innerHTML = RS.kit.hash.copy(hash, { form: 'full', noun: 'LXMF address' });
+    } else {
+        el.textContent = hash || '—';
+    }
+}
+
+// ---- Starting Ratspeak ----
+
+// Startup timing rule. Each real step ticks only when the runtime reaches it:
+// the identity is loaded once the stage passes "rns", and the network is up at
+// "ready". The playful step then holds until SETUP_PROGRESS_HOLD_MS after the
+// screen appeared, and adds nothing when the work took longer.
+var SETUP_START_STAGE_RANK = { lxmf: 1, rns: 2, ready: 3 };
+
+function createSetupStartTimeline(shownAt) {
+    return {
+        shownAt: shownAt,
+        network: 'active',
+        identity: 'pending',
+        nest: 'pending',
+        leaveAt: null,
+        finished: false,
+        failed: null
+    };
+}
+
+function advanceSetupStartTimeline(t, stage, now) {
+    if (t.finished || t.failed) return t;
+    if (stage === 'error') {
+        // The step that was running stops; a step that never got going is pending again.
+        t.failed = t.identity === 'active' ? 'identity' : 'network';
+        if (t.failed === 'identity') {
+            t.identity = 'failed';
+            if (t.network === 'active') t.network = 'pending';
+        } else {
+            t.network = 'failed';
+        }
+        t.nest = 'pending';
+        return t;
+    }
+    var rank = SETUP_START_STAGE_RANK[stage] || 0;
+    if (rank >= 1 && t.identity === 'pending') t.identity = 'active';
+    if (rank >= 2) t.identity = 'done';
+    if (rank >= 3) {
+        t.network = 'done';
+        if (t.nest === 'pending') {
+            t.nest = 'active';
+            t.leaveAt = Math.max(now, t.shownAt + SETUP_PROGRESS_HOLD_MS);
+        }
+    }
+    return tickSetupStartTimeline(t, now);
+}
+
+function tickSetupStartTimeline(t, now) {
+    if (t.nest === 'active' && t.leaveAt !== null && now >= t.leaveAt) {
+        t.nest = 'done';
+        t.finished = true;
+    }
+    return t;
+}
+
+function setupStartFailureLead(step, detail) {
+    var text = String(detail || '');
+    var reason;
+    if (step === 'identity') {
+        reason = 'Ratspeak couldn’t load your identity.';
+    } else if (/already in use|os error (98|48|10048)\b|address in use/i.test(text)) {
+        reason = 'The network didn’t start because another app is using its port.';
+    } else {
+        reason = 'The network didn’t start.';
+    }
+    return reason + ' Your identity is saved, so nothing is lost.';
+}
+
+var _setupStartRun = null;
+var _setupStartDetail = '';
+var _setupStartVisibleAt = 0;
+
+function renderSetupStart(t) {
+    setSetupProgressStep('setup-start-network', t.network);
+    setSetupProgressStep('setup-start-identity', t.identity);
+    setSetupProgressStep('setup-start-nest', t.nest);
+    var steps = document.getElementById('setup-start-steps');
+    if (steps) steps.classList.toggle('is-running', !t.failed);
+    var done = [];
+    if (t.network === 'done') done.push('Starting the network: done.');
+    if (t.identity === 'done') done.push('Importing identity: done.');
+    announceSetupProgress('setup-start-live', done.join(' '));
+}
+
+function resetSetupStartScreen() {
+    var title = document.getElementById('setup-start-title');
+    if (title) title.textContent = 'Starting Ratspeak';
+    var lead = document.getElementById('setup-start-lead');
+    if (lead) lead.textContent = 'Getting everything ready. This takes a moment.';
+    var actions = document.getElementById('setup-start-actions');
+    if (actions) actions.hidden = true;
+    announceSetupProgress('setup-start-alert', '');
+    _setupStartDetail = '';
+    renderSetupStart(createSetupStartTimeline(Date.now()));
+}
+
+function showSetupConnectingStep() {
+    needsSetup = false;
+    resetSetupStartScreen();
+    var step = document.getElementById('setup-step-connecting');
+    var from = visibleSetupStep();
+    if (from === step) return;
+    // The hold counts from when the card is on screen, after the fade out.
+    _setupStartVisibleAt = Date.now() + (from ? 200 : 0);
+    transitionStep(from, step);
+}
+
+function stopSetupStartRun() {
+    if (!_setupStartRun) return;
+    clearTimeout(_setupStartRun.timer);
+    _setupStartRun = null;
+}
+
+function finishSetupStart() {
+    stopSetupStartRun();
+    window.location.href = '/#' + setupCompletionView();
+    window.location.reload();
+}
+
+function failSetupStart(t) {
+    stopSetupStartRun();
+    RS.invoke('api_network_ownership').catch(function() { return null; }).then(function(status) {
+        var networkError = status && status.error ? String(status.error) : '';
+        _setupStartDetail = 'Ratspeak couldn’t start.\nStep: ' +
+            (t.failed === 'identity' ? 'Importing identity' : 'Starting the network') +
+            '\nStartup stage: error' + (networkError ? '\nNetwork: ' + networkError : '');
+        var title = document.getElementById('setup-start-title');
+        if (title) title.textContent = 'Ratspeak couldn’t start';
+        var lead = document.getElementById('setup-start-lead');
+        var leadText = setupStartFailureLead(t.failed, networkError);
+        if (lead) lead.textContent = leadText;
+        var actions = document.getElementById('setup-start-actions');
+        if (actions) actions.hidden = false;
+        announceSetupProgress('setup-start-alert', 'Ratspeak couldn’t start. ' + leadText);
+        if (title) title.focus({ preventScroll: true });
+    });
+}
+
+// Polls the runtime's startup stage. Call only once the stage belongs to this
+// start: after api_setup_restart replies, or once an unlock has finished.
 function runConnectingProgress() {
-    var pollDone = false;
-    var maxPolls = 60;
-    var pollAttempt = 0;
-    var startedAt = Date.now();
+    stopSetupStartRun();
+    var t = createSetupStartTimeline(_setupStartVisibleAt || Date.now());
+    var run = _setupStartRun = { timeline: t, timer: null };
+    renderSetupStart(t);
 
-    function onServerReady() {
-        if (pollDone) return;
-        pollDone = true;
-
-        var elapsed = Date.now() - startedAt;
-        var remaining = Math.max(0, 2000 - elapsed);
-        setTimeout(function() {
-            window.location.href = '/#' + setupCompletionView();
-            window.location.reload();
-        }, remaining);
+    function schedule(fn, ms) {
+        if (_setupStartRun !== run) return;
+        clearTimeout(run.timer);
+        run.timer = setTimeout(fn, ms);
     }
 
-    // After a soft reset, first wait for IPC to answer, then poll startup state.
-    function pollAlive() {
-        pollAttempt++;
-        RS.invoke('api_version').then(function() {
-            pollProgress();
-        }).catch(function() {
-            if (pollAttempt < maxPolls) {
-                setTimeout(pollAlive, 1000);
-            } else {
-                onServerReady();
-            }
-        });
+    function settle() {
+        if (_setupStartRun !== run) return;
+        var now = Date.now();
+        tickSetupStartTimeline(t, now);
+        renderSetupStart(t);
+        if (t.finished) { finishSetupStart(); return; }
+        if (t.nest === 'active') { schedule(settle, Math.max(0, t.leaveAt - now)); return; }
+        // A start that never reports opens the app, as before.
+        if (now - t.shownAt >= SETUP_START_GIVE_UP_MS) { finishSetupStart(); return; }
+        schedule(poll, SETUP_START_POLL_MS);
     }
 
-    function pollProgress() {
-        if (pollDone) return;
-        pollAttempt++;
+    function poll() {
+        if (_setupStartRun !== run) return;
         RS.invoke('api_startup_progress').then(function(data) {
-            if (data.stage === 'hw_locked') {
+            if (_setupStartRun !== run) return;
+            if (data && data.stage === 'hw_locked') {
                 // Active identity is locked — prompt for the PIN. Unlock
                 // re-inits the runtime and reloads the app.
+                stopSetupStartRun();
                 if (typeof showHwUnlock === 'function') showHwUnlock(data.hw_locked, data.hw_locked_kind);
                 return;
             }
-            if (data.stage === 'ready') {
-                onServerReady();
-            } else if (pollAttempt < maxPolls) {
-                setTimeout(pollProgress, 500);
-            } else {
-                onServerReady();
-            }
+            advanceSetupStartTimeline(t, data && data.stage, Date.now());
+            if (t.failed) { renderSetupStart(t); failSetupStart(t); return; }
+            settle();
         }).catch(function() {
-            if (pollAttempt < maxPolls) {
-                setTimeout(pollAlive, 1000);
-            } else {
-                onServerReady();
-            }
+            // The core can be between sessions for a moment.
+            schedule(poll, 500);
         });
     }
 
-    pollAlive();
+    poll();
+}
+
+// The one-time ask goes out before the restart, so the restart cannot drop it.
+function restartSetupCore() {
+    return requestNotificationPermissionOnce().then(function() {
+        return RS.invoke('api_setup_restart').catch(function() {});
+    }).then(runConnectingProgress);
 }
 
 function setupCompletionView() {
@@ -316,60 +413,18 @@ function setupCompletionView() {
     return nativeMobile || compact ? 'peers' : 'dashboard';
 }
 
-function showSetupConnectingStep() {
-    needsSetup = false;
-    setSetupBackupLayout(false);
-    setSetupConnectingDotsActive(true);
-    setSetupStep(3);
-
-    var headerExtras = [
-        document.querySelector('.setup-icon'),
-        document.querySelector('.setup-title'),
-        document.querySelector('.setup-subtitle'),
-        document.getElementById('setup-progress-dots')
-    ];
-    var visibleStep = null;
-    document.querySelectorAll('#view-setup .setup-step').forEach(function(step) {
-        if (!visibleStep && step.style.display !== 'none') visibleStep = step;
-    });
-    transitionStep(
-        visibleStep || document.getElementById('setup-step-1'),
-        document.getElementById('setup-step-connecting'),
-        headerExtras
-    );
-}
-
 function resetSetupToStart() {
     needsSetup = true;
+    stopSetupStartRun();
     document.body.classList.add('setup-active');
-    setSetupBackupLayout(false);
-    setSetupConnectingDotsActive(false);
-    setSetupStep(0);
     resetSetupRecoveryStep();
-    [
-        document.querySelector('.setup-icon'),
-        document.querySelector('.setup-title'),
-        document.querySelector('.setup-subtitle'),
-        document.getElementById('setup-progress-dots')
-    ].forEach(function(el) {
-        if (el) {
-            el.style.display = '';
-            el.classList.remove('setup-fade-out');
-        }
-    });
+    resetSetupStartScreen();
     document.querySelectorAll('#view-setup .setup-step').forEach(function(step) {
         step.style.display = 'none';
         step.classList.remove('setup-fade-out', 'setup-fade-in');
     });
     var first = document.getElementById('setup-step-1');
     if (first) first.style.display = 'block';
-}
-
-// The one-time ask goes out before the restart, so the restart cannot drop it.
-function restartSetupCore() {
-    return requestNotificationPermissionOnce().then(function() {
-        return RS.invoke('api_setup_restart').catch(function() {});
-    }).then(runConnectingProgress);
 }
 
 function completeSetupAfterIdentityImport() {
@@ -430,6 +485,7 @@ function completeSetupAfterHardwareIdentity(result, pin) {
     // this reply's message, so in either order the toast shows it once.
     RS.invoke('hw_activate_and_unlock', { hash: hash, pin: pin }).then(function(res) {
         if (res && res.ok) {
+            // The unlock has already loaded the identity; the stage is final.
             requestNotificationPermissionOnce().then(runConnectingProgress);
             return;
         }
@@ -449,6 +505,18 @@ function initSetupTooltips() {
     }
 }
 
+function setSetupButtonBusy(button, label) {
+    if (!button) return;
+    button.disabled = !!label;
+    button.setAttribute('aria-busy', label ? 'true' : 'false');
+    if (label) {
+        button.dataset.idleLabel = button.dataset.idleLabel || button.textContent;
+        button.innerHTML = '<span class="ui-spin" aria-hidden="true"></span>' + escapeHtml(label);
+    } else if (button.dataset.idleLabel) {
+        button.textContent = button.dataset.idleLabel;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', function() {
 
     initSetupTooltips();
@@ -457,35 +525,27 @@ document.addEventListener('DOMContentLoaded', function() {
     if (generateBtn) {
         generateBtn.addEventListener('click', function() {
             generateBtn.disabled = true;
-            generateBtn.textContent = 'Creating...';
-
-            setSetupBackupLayout(false);
-            setSetupConnectingDotsActive(false);
-            setSetupStep(1);
             var step1El = document.getElementById('setup-step-1');
             var genStep = document.getElementById('setup-step-generating');
-            transitionStep(step1El, genStep, null, function() {});
+            transitionStep(step1El, genStep);
 
-            var animPromise = startCryptoAnimation();
-
-            var backendPromise = RS.invoke('api_setup_complete', { args: { display_name: '' } });
-
-            Promise.all([backendPromise, animPromise])
-                .then(function(results) {
-                    var data = results[0] || {};
+            var backendPromise = RS.invoke('api_setup_complete', { args: { display_name: '' } })
+                .then(function(data) {
+                    data = data || {};
                     if (data.ok === false) {
                         throw new Error(data.error || 'Failed to create identity');
                     }
-                    document.getElementById('setup-lxmf-hash').textContent =
-                        data.lxmf_hash || data.identity_hash || '--';
+                    return data;
+                });
+
+            runGenerateProgress(backendPromise)
+                .then(function(data) {
+                    renderSetupAddress(data.lxmf_hash || data.identity_hash || '');
                     showSetupRecoveryStep(data.mnemonic || '', genStep);
                 })
                 .catch(function(err) {
-                    setSetupBackupLayout(false);
-                    setSetupConnectingDotsActive(false);
                     transitionStep(genStep, document.getElementById('setup-step-1'));
                     generateBtn.disabled = false;
-                    generateBtn.textContent = 'Create Identity';
                     var detail = err ? (err.message || String(err)) : 'Unknown error';
                     window.RS.diag('error', '[setup] Create identity failed:', detail);
                     if (typeof showToast === 'function') {
@@ -498,11 +558,13 @@ document.addEventListener('DOMContentLoaded', function() {
     var setupMnemonicCover = document.getElementById('setup-mnemonic-cover');
     if (setupMnemonicCover) {
         setupMnemonicCover.addEventListener('click', function() {
-            setupMnemonicCover.style.display = 'none';
-            var shell = document.getElementById('setup-mnemonic-shell');
-            if (shell) shell.classList.add('revealed');
-            var grid = document.getElementById('setup-mnemonic-grid');
-            if (grid) grid.setAttribute('aria-hidden', 'false');
+            if (!setupRecoveryMnemonic) return;
+            renderSetupPhrase(setupRecoveryWords(setupRecoveryMnemonic));
+            // The cover button is gone; keep keyboard focus in the step.
+            var copy = document.getElementById('setup-mnemonic-copy-btn');
+            if (copy && RS.ui && typeof RS.ui.prefersKeyboardFocus === 'function' && RS.ui.prefersKeyboardFocus()) {
+                copy.focus({ preventScroll: true });
+            }
         });
     }
 
@@ -560,61 +622,20 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
 
-    var copyBtn = document.getElementById('setup-copy-btn');
-    if (copyBtn) {
-        copyBtn.addEventListener('click', function() {
-            var hashEl = document.getElementById('setup-lxmf-hash');
-            var hashText = hashEl ? hashEl.textContent : '';
-            if (hashText && hashText !== '\u2014' && hashText !== '--') {
-                RS.copyText(hashText).then(function(ok) {
-                    if (ok) {
-                        if (typeof showCopyConfirmationToast === 'function') {
-                            showCopyConfirmationToast('Address');
-                        }
-                    } else {
-                        // Clipboard unavailable; fall back to text selection.
-                        var range = document.createRange();
-                        range.selectNodeContents(hashEl);
-                        var sel = window.getSelection();
-                        sel.removeAllRanges();
-                        sel.addRange(range);
-                    }
-                });
-            }
-        });
-    }
-
     var finishBtn = document.getElementById('setup-finish-btn');
     if (finishBtn) {
         finishBtn.addEventListener('click', function() {
             dismissSetupKeyboard();
             var displayName = document.getElementById('setup-display-name').value.trim();
-            finishBtn.disabled = true;
-            finishBtn.textContent = 'Connecting...';
+            setSetupButtonBusy(finishBtn, 'Starting…');
 
             RS.invoke('api_setup_complete', { args: { display_name: displayName || '' } })
             .then(function() {
-                setSetupStep(3);
-                setSetupBackupLayout(false);
-                setSetupConnectingDotsActive(true);
-                var headerExtras = [
-                    document.querySelector('.setup-icon'),
-                    document.querySelector('.setup-title'),
-                    document.querySelector('.setup-subtitle'),
-                    document.getElementById('setup-progress-dots')
-                ];
-                transitionStep(
-                    document.getElementById('setup-step-2'),
-                    document.getElementById('setup-step-connecting'),
-                    headerExtras
-                );
-
+                showSetupConnectingStep();
                 restartSetupCore();
             })
             .catch(function() {
-                setSetupConnectingDotsActive(false);
-                finishBtn.disabled = false;
-                finishBtn.textContent = 'Connect';
+                setSetupButtonBusy(finishBtn, null);
                 if (typeof showToast === 'function') {
                     showToast('Could not complete setup', 'toast-error', 5000);
                 }
@@ -629,6 +650,35 @@ document.addEventListener('DOMContentLoaded', function() {
                 e.preventDefault();
                 if (!finishBtn.disabled) finishBtn.click();
             }
+        });
+    }
+
+    var retryBtn = document.getElementById('setup-retry-btn');
+    if (retryBtn) {
+        retryBtn.addEventListener('click', function() {
+            resetSetupStartScreen();
+            _setupStartVisibleAt = Date.now();
+            var title = document.getElementById('setup-start-title');
+            if (title && !isMobile()) title.focus({ preventScroll: true });
+            RS.invoke('api_setup_restart').catch(function() {}).then(runConnectingProgress);
+        });
+    }
+
+    var copyDetailsBtn = document.getElementById('setup-copy-details-btn');
+    if (copyDetailsBtn) {
+        copyDetailsBtn.addEventListener('click', function() {
+            if (!_setupStartDetail) return;
+            Promise.resolve(RS.copyText(_setupStartDetail)).then(function(ok) {
+                if (!ok) {
+                    if (typeof showToast === 'function') showToast('Could not copy details', 'toast-error', 3000);
+                    return;
+                }
+                copyDetailsBtn.textContent = 'Copied';
+                clearTimeout(copyDetailsBtn._rsCopiedTimer);
+                copyDetailsBtn._rsCopiedTimer = setTimeout(function() {
+                    copyDetailsBtn.textContent = 'Copy details';
+                }, 2000);
+            });
         });
     }
 });
