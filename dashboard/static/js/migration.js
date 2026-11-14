@@ -42,7 +42,8 @@ function migrationModel(status, shown) {
     var running = !finished && !failed;
     var fraction = migrationFraction(shown, status);
     var pct = finished ? 100 : Math.min(99, Math.floor(fraction * 100));
-    var count = migrationCount(status.done, status.total);
+    // A step whose files carry no count (the destination files alone) shows no numbers.
+    var count = Number(status.total) > 0 ? migrationCount(status.done, status.total) : '';
     var steps = MIGRATION_STEPS.map(function(step, index) {
         var current = index === (phase === 'peers' ? 1 : 0);
         var past = phase === 'peers' && index === 0;
@@ -70,7 +71,7 @@ function migrationModel(status, shown) {
         canSkip: failed && error.can_skip !== false,
         detail: String(error.detail || ''),
         valueText: finished ? '100 percent. Update finished'
-            : pct + ' percent. ' + label + (running ? ', ' + count : '') + (failed ? '. Stopped' : '')
+            : pct + ' percent. ' + label + (running && count ? ', ' + count : '') + (failed ? '. Stopped' : '')
     };
 }
 

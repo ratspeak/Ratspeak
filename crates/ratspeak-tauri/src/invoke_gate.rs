@@ -30,6 +30,9 @@ pub(crate) const IDENTITY_FREE: &[&str] = &[
     // Startup, setup and reset.
     "api_version",
     "api_startup_progress",
+    "get_network_migration_status",
+    "retry_network_migration",
+    "skip_network_migration",
     "api_setup_status",
     "api_setup_complete",
     "api_setup_restart",
@@ -274,6 +277,17 @@ mod tests {
             .build()
             .unwrap();
         (app, window)
+    }
+
+    #[test]
+    fn the_network_data_move_answers_before_an_identity_is_active() {
+        for command in [
+            "get_network_migration_status",
+            "retry_network_migration",
+            "skip_network_migration",
+        ] {
+            assert!(super::IDENTITY_FREE.contains(&command), "{command}");
+        }
     }
 
     #[test]

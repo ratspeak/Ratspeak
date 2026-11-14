@@ -240,6 +240,55 @@ pub async fn api_setup_restart(state: State<'_, Arc<AppState>>) -> AppResult<Val
     Ok(json!({ "message": "Initializing..." }))
 }
 
+/// The network data move this session: the last `network-migration` snapshot,
+/// or null when this start had nothing to move. The page loads alongside the
+/// start, so it reads this before the events it may have missed.
+#[tauri::command]
+pub async fn get_network_migration_status(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    Ok(state
+        .network_migration
+        .lock()
+        .ok()
+        .and_then(|snapshot| snapshot.clone())
+        .unwrap_or(Value::Null))
+}
+
+/// "Try again": starts the network again; the move resumes from the files left.
+#[tauri::command]
+pub async fn retry_network_migration(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    restart_after_migration(Arc::clone(&state));
+    Ok(json!({ "ok": true }))
+}
+
+/// "Continue without old data": removes the files the move left, then starts
+/// the network with an empty peer list that refills as peers announce.
+#[tauri::command]
+pub async fn skip_network_migration(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    let st = Arc::clone(&state);
+    tokio::task::spawn_blocking(move || {
+        ratspeak_runtime::network_migration::discard_remaining(&st)
+    })
+    .await
+    .map_err(|_| AppError::internal("network data removal task failed"))?
+    .map_err(|error| {
+        AppError::internal(format!(
+            "could not remove the earlier network data: {error}"
+        ))
+    })?;
+    restart_after_migration(Arc::clone(&state));
+    Ok(json!({ "ok": true }))
+}
+
+fn restart_after_migration(state: Arc<AppState>) {
+    state.set_startup_stage("checking");
+    tokio::spawn(async move {
+        if let Err(error) = crate::restart_rns_lxmf(Arc::clone(&state)).await {
+            tracing::error!(%error, "network restart after the data move aborted at lifecycle boundary");
+            state.set_startup_stage("error");
+        }
+    });
+}
+
 #[derive(Deserialize)]
 pub struct SetForegroundArgs {
     #[serde(default)]
