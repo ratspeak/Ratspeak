@@ -26,8 +26,8 @@ For commercial licensing inquiries, contact license@unsigned.io
 Because of those terms, any build of Ratspeak that includes rsLXST is
 non-commercial, and no derivative of rsLXST or use of it outside Ratspeak is
 permitted. The Reticulum License's permission to sell covers the rest of the
-software; a build meant for sale or for use outside Ratspeak has to leave the
-LXST component out (the lxst-voice feature) or carry a license from its author.
+software; no builds or software outside of Ratspeak-owned projects are allowed
+to utilize rsLXST in any form.
 
 The Reticulum License text follows. Its conditions apply to Ratspeak as
 distributed.
