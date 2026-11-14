@@ -283,15 +283,14 @@ assert(!channelsCss.includes('.channel-event[data-tone='));
 assert(!channelsCss.includes('.channel-member-row[data-tone='));
 assert(channelsCss.includes('.channel-members-pane.showing-detail .ch-members-head'));
 assert(indexSource.includes('id="channel-members-back" type="button" aria-label="Back to people here"'));
-assert(indexSource.includes('id="channel-message-input" class="nr-input message-composer-input" rows="1"'));
-assert(indexSource.includes('class="channel-send-btn message-send-btn" id="channel-send-btn"'));
-assert(!indexSource.includes('nr-btn nr-btn-primary channel-send-btn'));
-assert(channelsSource.includes("'Message ' + roomName : 'Waiting for the hub'"),
-    'the composer names the room, and waits while the hub link recovers');
-assert(componentsCss.includes('.message-composer-input'));
-assert(componentsCss.includes('border-radius: var(--radius-pill);'));
-assert(componentsCss.includes('.message-send-btn::before'));
-assert(componentsCss.includes('border-radius: var(--radius-full);'));
+// Channels use the shared composer: no attach, no voice, and its disabled state while the hub reconnects.
+assert(indexSource.includes('<textarea class="cmp-input" rows="1" id="channel-message-input"'));
+assert(indexSource.includes('class="ui-send cmp-send" id="channel-send-btn"'));
+assert(!/channel-compose[^r]/.test(indexSource) && !indexSource.includes('message-composer-input'));
+assert(channelsSource.includes("input.placeholder = 'Message ' + roomName;"));
+assert(channelsSource.includes("reason: room && room.phase === 'joined' ? 'Waiting for the hub' : ''"),
+    'the composer waits, with its reason, while the hub link is not live');
+assert(channelsSource.includes('RS.composer.setDisabled(root, waiting, {'));
 assert(indexSource.includes('/static/style.css?v=ui-20260924-4'));
 assert(indexSource.includes('/static/js/nav.js?v=ui-20260924-4'));
 assert(indexSource.includes('/static/js/ui_shared.js?v=ui-20260924-4'));

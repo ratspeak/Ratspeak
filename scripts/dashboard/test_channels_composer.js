@@ -230,11 +230,18 @@ policyContext.isMobile = function() { return true; };
 assert.strictEqual(policyContext.RS.composer.shouldSendOnEnter({ key: 'Enter' }), false);
 
 var insertionInput = fakeInput();
+var replyPreview = { hidden: true, innerHTML: '' };
+var previews = [];
 var insertionContext = {
     channelsActiveRoom: 'general',
     channelsHistorySelection: null,
     channelsSnapshot: { phase: 'active' },
-    _channelsEl: function() { return insertionInput; },
+    RS: { composer: {
+        preview: function(o) { previews.push(o); return '<preview>'; },
+        syncExtras: function() {},
+        focusWithoutScroll: function() {}
+    } },
+    _channelsEl: function(id) { return id === 'channel-reply-preview' ? replyPreview : insertionInput; },
     _channelsRoomByName: function() { return { name: 'general', phase: 'joined' }; },
     _channelsMessageLimit: function() { return 350; },
     _channelsMessageBody: function(value) { return value; },
@@ -271,11 +278,20 @@ assert.strictEqual(insertionContext._channelsInsertQuote({
     kind: 'message',
     text: 'line one\nline two'
 }, 'Scout'), true);
+assert.strictEqual(insertionInput.value, 'Draft', 'a reply leaves the draft alone');
+assert.strictEqual(replyPreview.hidden, false, 'the reply shows as the composer preview');
+assert.deepStrictEqual(JSON.parse(JSON.stringify(previews[previews.length - 1])),
+    { title: 'Replying to Scout', text: 'line one line two', closeLabel: 'Cancel reply' });
 assert.strictEqual(
-    insertionInput.value,
-    'Draft\n> Scout: line one line two\n\n',
+    insertionContext._channelsComposedText('Draft'),
+    '> Scout: line one line two\n\nDraft',
     'quotes must remain plain, interoperable text rather than a wire extension'
 );
+assert.strictEqual(insertionContext._channelsComposedText('/me waves'), '/me waves',
+    'commands are sent as typed');
+insertionContext._channelsClearReply();
+assert.strictEqual(replyPreview.hidden, true);
+assert.strictEqual(insertionContext._channelsComposedText('Draft'), 'Draft');
 
 insertionContext.channelsHistorySelection = { room_name: 'general' };
 assert.strictEqual(
@@ -297,6 +313,10 @@ var sendContext = {
     _channelsMessageBody: function(value) { return value; },
     _channelsMessageLimit: function() { return 4096; },
     _channelsUpdateComposer: function() {},
+    _channelsComposedText: function(value) { return value; },
+    _channelsClearReply: function() {},
+    _channelsRenderReplyPreview: function() {},
+    _channelsReply: null,
     _channelsHandleComposerResult: function() { return Promise.resolve(); },
     document: {
         activeElement: composerInput,

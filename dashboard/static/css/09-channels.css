@@ -164,83 +164,26 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     overflow: hidden;
     background: var(--surface-panel);
     --row-surface: var(--surface-panel);
+    /* One inset for the header, the messages, and the composer, so their edges line up. */
+    --chat-inset: 16px;
+    --cmp-bg: var(--surface-panel);
 }
 
 .ch-room-head {
     flex: 0 0 auto;
 }
 
-.channel-room-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 64px;
-    padding: 8px 20px 8px 16px;
-    box-sizing: border-box;
-    border-bottom: 1px solid var(--border-row);
+.ch-room-head > .ui-detail-head {
+    padding-right: var(--chat-inset);
 }
 
-.channel-room-header[hidden],
-.channel-compose[hidden],
+.ch-room-head > .ui-detail-head[hidden],
 .ch-room-notice[hidden] {
     display: none;
 }
 
-/* Name and topic are one button: it opens the channel's options. */
-.ch-who {
-    display: flex;
-    flex: 1 1 auto;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
-    padding: 4px;
-    border: 0;
-    border-radius: var(--radius-control);
-    background: transparent;
-    color: inherit;
-    font: inherit;
-    text-align: left;
-    cursor: pointer;
-}
-
-.ch-who:hover {
-    background: var(--row-hover);
-}
-
-.ch-who:focus-visible {
-    outline: 2px solid var(--focus-ring);
-    outline-offset: -2px;
-}
-
-.ch-who-text {
-    display: flex;
-    flex: 1;
-    min-width: 0;
-    flex-direction: column;
-    gap: 2px;
-}
-
-.ch-who-name {
-    overflow: hidden;
-    color: var(--text-primary);
-    font-size: var(--text-xl);
-    font-weight: 600;
-    line-height: 1.2;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
-.ch-who-sub {
-    overflow: hidden;
-    color: var(--text-muted);
-    font-size: var(--text-xs);
-    line-height: 1.3;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-
 .ch-room-notice {
-    padding: 12px 20px 0;
+    padding: 12px var(--chat-inset) 0;
 }
 
 .ch-log {
@@ -274,7 +217,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     grid-template-columns: 32px minmax(0, 1fr);
     column-gap: 12px;
     margin-top: 12px;
-    padding: 4px 20px 2px;
+    padding: 4px var(--chat-inset) 2px;
 }
 
 .ch-msg--cont {
@@ -358,7 +301,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 .ch-msg-actions {
     position: absolute;
     top: -14px;
-    right: 16px;
+    right: var(--chat-inset);
     z-index: 2;
     display: none;
     gap: 2px;
@@ -383,7 +326,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 .ch-day {
-    margin: 20px 20px 4px;
+    margin: 20px var(--chat-inset) 4px;
 }
 
 .ch-day::before,
@@ -395,7 +338,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 .ch-new {
-    margin: 16px 20px 0;
+    margin: 16px var(--chat-inset) 0;
     color: var(--accent-ink);
 }
 
@@ -411,7 +354,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     display: flex;
     align-items: baseline;
     gap: 8px;
-    margin: 8px 20px 0 64px;
+    margin: 8px var(--chat-inset) 0 calc(var(--chat-inset) + 44px);
     color: var(--text-muted);
     font-size: var(--text-xs);
     line-height: 1.4;
@@ -423,7 +366,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .channel-hub-notice {
     position: relative;
-    margin: 12px 20px 0;
+    margin: 12px var(--chat-inset) 0;
     padding: 12px 16px;
     border-radius: var(--radius-card);
     background: var(--surface-sunken);
@@ -449,7 +392,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     align-items: center;
     justify-content: center;
     gap: 12px;
-    margin: 8px 20px;
+    margin: 8px var(--chat-inset);
     color: var(--text-muted);
     font-size: var(--text-xs);
 }
@@ -461,7 +404,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .channel-history-banner {
     align-items: center;
-    margin: 8px 20px 0;
+    margin: 8px var(--chat-inset) 0;
 }
 
 .channel-hub-home {
@@ -505,7 +448,7 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 .channel-transition-card {
-    width: min(100% - 40px, 560px);
+    width: min(100% - 2 * var(--chat-inset), 560px);
     margin: 12px auto;
     padding: 16px 20px;
     box-sizing: border-box;
@@ -624,31 +567,6 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 
 .ui-avatar--64 > .channel-avatar-fallback {
     font-size: var(--text-xl);
-}
-
-.channel-compose {
-    padding: var(--space-5) var(--space-7) max(var(--space-5), env(safe-area-inset-bottom, 0px));
-    border-top: 1px solid var(--border-row);
-    background: var(--surface-panel);
-}
-
-.channel-char-count {
-    align-self: center;
-    color: var(--text-muted);
-    font-family: var(--font-mono);
-    font-size: var(--text-2xs);
-}
-
-.channel-char-count[hidden] {
-    display: none;
-}
-
-.channel-char-count.near-limit {
-    color: var(--status-warning-fg);
-}
-
-.channel-char-count.over-limit {
-    color: var(--status-error-fg);
 }
 
 /* People here: a third column on wide desktops, a drawer on narrow ones, a sheet on a phone. */
@@ -831,14 +749,6 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 @media (max-width: 768px), (pointer: coarse) {
-    .ch-msg {
-        padding: 4px 16px 2px;
-    }
-
-    .ch-msg--cont {
-        padding-top: 0;
-    }
-
     .ch-msg-actions {
         display: none !important;
     }
@@ -857,46 +767,16 @@ html[data-channel-hosting="off"] .channel-owned-hub {
         padding: 8px 16px;
     }
 
-    .channel-room-header {
-        min-height: 56px;
-        gap: 0;
-        padding: 6px 16px 6px 4px;
-    }
-
     .ch-members-head {
         padding-left: 16px;
     }
 
-    .ch-who {
-        gap: 10px;
-    }
-
-    .ch-who-name {
-        font-size: var(--text-base);
-    }
-
     .ch-room-notice {
-        padding: 8px 16px 0;
+        padding-top: 8px;
     }
 
     .ch-pane-head > .ui-pane-head {
         padding-left: var(--ui-gutter);
-    }
-
-    .ch-day,
-    .ch-new {
-        margin-right: 16px;
-        margin-left: 16px;
-    }
-
-    .ch-sys {
-        margin-left: 60px;
-    }
-
-    .channel-hub-notice,
-    .channel-history-banner {
-        margin-right: 12px;
-        margin-left: 12px;
     }
 
     .ch-share-row {

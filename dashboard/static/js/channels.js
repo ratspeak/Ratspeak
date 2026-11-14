@@ -470,19 +470,57 @@ function _channelsInsertComposerText(value) {
     return true;
 }
 
+// Reply: the quoted line waits in the composer's preview and leads the message when it is sent.
+var _channelsReply = null;
+
 function _channelsInsertQuote(item, authorText) {
     var input = _channelsEl('channel-message-input');
-    if (!input || !item) return false;
+    if (!input || !item || !_channelsCanCompose()) return false;
     var body = String(item.text || '').replace(/\s+/g, ' ').trim();
     if (!body) return false;
     var author = String(authorText || 'Channel member').replace(/\s+/g, ' ').trim();
     var quote = item.kind === 'action'
         ? '> * ' + author + ' ' + body
         : '> ' + author + ': ' + body;
-    quote = _channelsUtf8Truncate(quote, Math.min(200, _channelsMessageLimit()));
-    var start = Number.isInteger(input.selectionStart) ? input.selectionStart : input.value.length;
-    var needsLineBreak = start > 0 && input.value.charAt(start - 1) !== '\n';
-    return _channelsInsertComposerText((needsLineBreak ? '\n' : '') + quote + '\n\n');
+    _channelsReply = {
+        room: channelsActiveRoom,
+        author: author,
+        text: body,
+        quote: _channelsUtf8Truncate(quote, Math.min(200, _channelsMessageLimit()))
+    };
+    _channelsRenderReplyPreview();
+    _channelsUpdateComposer();
+    if (typeof RS !== 'undefined' && RS.composer && typeof RS.composer.focusWithoutScroll === 'function') {
+        RS.composer.focusWithoutScroll(input);
+    } else if (input.focus) {
+        input.focus();
+    }
+    return true;
+}
+
+function _channelsClearReply() {
+    if (!_channelsReply) return;
+    _channelsReply = null;
+    _channelsRenderReplyPreview();
+    _channelsUpdateComposer();
+}
+
+function _channelsRenderReplyPreview() {
+    var preview = _channelsEl('channel-reply-preview');
+    if (!preview) return;
+    var reply = _channelsReply && _channelsReply.room === channelsActiveRoom ? _channelsReply : null;
+    preview.hidden = !reply;
+    preview.innerHTML = reply && RS.composer && typeof RS.composer.preview === 'function'
+        ? RS.composer.preview({ title: 'Replying to ' + reply.author, text: reply.text, closeLabel: 'Cancel reply' })
+        : '';
+    if (RS.composer && typeof RS.composer.syncExtras === 'function') RS.composer.syncExtras('channel-composer');
+}
+
+// What a send carries: the reply's quoted line, a blank line, then the draft. Commands go as typed.
+function _channelsComposedText(draft) {
+    var reply = _channelsReply && _channelsReply.room === channelsActiveRoom ? _channelsReply : null;
+    if (!reply || String(draft).charAt(0) === '/') return draft;
+    return reply.quote + '\n\n' + draft;
 }
 
 function _channelsInsertMemberMention(member) {
@@ -3030,7 +3068,7 @@ function _channelsRenderRoomNotice(room) {
 function _channelsRenderRoom(scrollRestore) {
     var layout = _channelsEl('channels-layout');
     var header = _channelsEl('channel-room-header');
-    var compose = _channelsEl('channel-compose');
+    var compose = _channelsEl('channel-composer');
     var transcript = _channelsEl('channel-transcript');
     var output = _channelsEl('channel-log');
     var room = _channelsSelectedRoomView();
@@ -3060,7 +3098,11 @@ function _channelsRenderRoom(scrollRestore) {
         : 'room|' + room.name;
     var roomChanged = _channelsRenderedRoomKey !== renderKey;
     _channelsRenderedRoomKey = renderKey;
-    if (roomChanged) _channelsCaptureNewMarker(historyContext);
+    if (roomChanged) {
+        _channelsCaptureNewMarker(historyContext);
+        if (_channelsReply && _channelsReply.room !== channelsActiveRoom) _channelsReply = null;
+        _channelsRenderReplyPreview();
+    }
 
     header.hidden = false;
     compose.hidden = room.phase !== 'joined';
@@ -4399,23 +4441,35 @@ function _channelsRefreshMemberNamesFromPeers() {
 }
 
 function _channelsUpdateComposer() {
+    var root = _channelsEl('channel-composer');
     var input = _channelsEl('channel-message-input');
     var count = _channelsEl('channel-char-count');
     var send = _channelsEl('channel-send-btn');
-    if (!input || !count || !send) return;
+    if (!root || !input || !send) return;
     var limit = _channelsMessageLimit();
-    var used = _channelsUtf8Length(_channelsMessageBody(input.value));
-    count.textContent = used >= Math.floor(limit * 0.75) ? used + '/' + limit : '';
-    count.hidden = !count.textContent;
-    count.classList.toggle('near-limit', used >= Math.floor(limit * 0.75) && used <= limit);
-    count.classList.toggle('over-limit', used > limit);
+    var used = _channelsUtf8Length(_channelsMessageBody(_channelsComposedText(input.value)));
+    if (count) {
+        count.textContent = used >= Math.floor(limit * 0.75) ? used + '/' + limit : '';
+        count.hidden = !count.textContent;
+        count.classList.toggle('is-over', used > limit);
+    }
     var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
-    send.disabled = _channelsSendPending || !room || room.phase !== 'joined' || channelsSnapshot.phase !== 'active' || !input.value.trim() || used > limit;
     var roomName = room ? _channelsRoomDisplayName(room.name) : '';
-    // While the hub link recovers the composer waits; a draft stays put.
-    input.placeholder = channelsSnapshot.phase === 'active' ? 'Message ' + roomName : 'Waiting for the hub';
+    input.placeholder = 'Message ' + roomName;
     input.setAttribute('aria-label', 'Message ' + roomName);
-    input.disabled = !room || room.phase !== 'joined' || channelsSnapshot.phase !== 'active';
+    // While the hub link is not live the composer waits; a draft stays put.
+    var waiting = !room || room.phase !== 'joined' || channelsSnapshot.phase !== 'active';
+    var phase = channelsSnapshot.phase;
+    if (RS.composer && typeof RS.composer.setDisabled === 'function') {
+        RS.composer.setDisabled(root, waiting, {
+            reason: room && room.phase === 'joined' ? 'Waiting for the hub' : '',
+            busy: phase === 'stale' || phase === 'reconnecting' || _channelsIsConnecting(),
+            voice: false
+        });
+    } else {
+        input.disabled = waiting;
+    }
+    send.disabled = waiting || _channelsSendPending || !input.value.trim() || used > limit;
 }
 
 function channelsSelectRoom(roomName) {
@@ -6279,10 +6333,12 @@ function channelsSendMessage() {
     var input = _channelsEl('channel-message-input');
     var room = channelsActiveRoom ? _channelsRoomByName(channelsActiveRoom) : null;
     if (!input || !room || room.phase !== 'joined' || _channelsSendPending) return;
-    var text = input.value;
+    var draft = input.value;
+    if (!draft.trim()) return;
+    var reply = _channelsReply;
+    var text = _channelsComposedText(draft);
     var bodyBytes = _channelsUtf8Length(_channelsMessageBody(text));
     var limit = _channelsMessageLimit();
-    if (!text.trim()) return;
     if (bodyBytes > limit) {
         if (typeof showToast === 'function') showToast('Channel message exceeds the hub limit', 'toast-warning', 3000);
         return;
@@ -6304,6 +6360,7 @@ function channelsSendMessage() {
         input.style.height = '';
         input.scrollTop = 0;
     }
+    if (text !== draft) _channelsClearReply();
     if (shouldRestoreComposerFocus && RS.composer) {
         RS.composer.focusWithoutScroll(input);
     }
@@ -6315,7 +6372,11 @@ function channelsSendMessage() {
         return _channelsHandleComposerResult(result, room.name);
     }).catch(function(error) {
         if (!input.value) {
-            input.value = text;
+            input.value = draft;
+            if (text !== draft && !_channelsReply) {
+                _channelsReply = reply;
+                _channelsRenderReplyPreview();
+            }
             if (typeof RS !== 'undefined' && RS.composer && typeof RS.composer.resize === 'function') RS.composer.resize(input);
             else {
                 input.style.height = 'auto';
@@ -6420,6 +6481,14 @@ function _channelsBindUI() {
             }
         });
     }
+    var extras = _channelsEl('channel-composer-extras');
+    if (extras) extras.addEventListener('click', function(event) {
+        if (!event.target.closest || !event.target.closest('[data-cmp-close]')) return;
+        _channelsClearReply();
+        if (input && RS.composer && typeof RS.composer.focusWithoutScroll === 'function') {
+            RS.composer.focusWithoutScroll(input);
+        }
+    });
     var send = _channelsEl('channel-send-btn');
     if (send && input && RS.composer) {
         RS.composer.bindTapToSend(send, input, channelsSendMessage);

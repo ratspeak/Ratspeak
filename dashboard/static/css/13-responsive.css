@@ -537,14 +537,6 @@
         height: 20px;
     }
 
-    /* Keep all composer circles on the same rail, including multiline input. */
-    .message-send-btn{
-        width: var(--touch-target);
-        height: var(--touch-target);
-        min-width: var(--touch-target);
-        min-height: var(--touch-target);
-        flex-basis: var(--touch-target);
-    }
 
     .view-grid-identity {
         grid-template-columns: 1fr;
@@ -2503,24 +2495,22 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
     }
 
     /* The app header is hidden in a room, so the room header takes the top inset. */
-    .channel-room-header {
+    .ch-room-head > .ui-detail-head {
         min-height: calc(56px + var(--sat));
         padding-top: calc(6px + var(--sat));
+    }
+
+    .channel-room-pane {
+        --cmp-bg: var(--surface-page);
     }
 
     .channel-transcript {
         padding: 0 var(--sar) 0 var(--sal);
     }
 
-    .channel-compose {
-        padding: var(--space-4) calc(var(--space-5) + var(--sar))
-            max(var(--space-4), var(--sab)) calc(var(--space-5) + var(--sal));
-        border-top: 0;
-        background: var(--surface-page);
-    }
-
-    .channel-compose .nr-input {
-        font-size: max(16px, var(--text-base));
+    .channel-room-pane > .cmp {
+        padding-right: calc(var(--chat-inset) + var(--sar));
+        padding-left: calc(var(--chat-inset) + var(--sal));
     }
 
     /* People here is a bottom sheet over the room. */
@@ -2602,10 +2592,6 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
 
     body.view-channel-detail .main-content {
         padding-bottom: 0;
-    }
-
-    .keyboard-open .channel-compose {
-        padding-bottom: var(--space-2);
     }
 
     .channel-host-admin-tabs {
@@ -2766,7 +2752,7 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
 @media (min-width: 769px) {
     .lxmf-chat,
     .channel-transcript,
-    .channel-compose,
+    .channel-room-pane > .cmp,
     .channel-members-pane,
     .games-detail,
     .people-split > .ui-detail,
@@ -2780,8 +2766,8 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
     .lxmf-sidebar,
     .lxmf-chat,
     .channels-sidebar,
-    .channel-transcript:has(+ .channel-compose[hidden]),
-    .channel-compose,
+    .channel-transcript:has(+ .cmp[hidden]),
+    .channel-room-pane > .cmp,
     .channel-members-pane,
     .games-pane,
     .games-detail,
@@ -2806,7 +2792,7 @@ html[data-text-scale-tier="xlarge"] .activity-event-details > div {
 /* An open people column takes the right edge only where it is a grid column. */
 @media (min-width: 1121px) {
     html:not([data-text-scale-tier="xlarge"]) .channels-layout.room-live.members-open .channel-transcript,
-    html:not([data-text-scale-tier="xlarge"]) .channels-layout.room-live.members-open .channel-compose {
+    html:not([data-text-scale-tier="xlarge"]) .channels-layout.room-live.members-open .channel-room-pane > .cmp {
         border-right-width: 0;
     }
 }

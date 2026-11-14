@@ -244,7 +244,7 @@ function createHarness(options) {
     var elements = {};
     [
         'view-channels', 'channels-layout', 'channel-hub-strip', 'channels-list',
-        'channel-room-header', 'channel-compose', 'channel-transcript', 'channel-log', 'node-modal'
+        'channel-room-header', 'channel-composer', 'channel-transcript', 'channel-log', 'node-modal'
     ].forEach(function(id) {
         elements[id] = new FakeElement('div');
         elements[id].isConnected = true;

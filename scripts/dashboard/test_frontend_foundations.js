@@ -115,9 +115,9 @@ assert(!/<legend\b[^>]*>\s*Text size\s*<\/legend>/.test(html),
     'the visible settings label must be the preset group\'s only text-size heading');
 assert(!html.includes('no_pinch.js'), 'browser zoom must remain available');
 assert(html.includes('<div class="cmp" id="lxmf-composer" hidden>'), 'Messages uses the shared composer pill');
-assert(html.includes('channel-compose message-composer'));
-assert(html.includes('message-composer-input'));
-assert(html.includes('message-send-btn'));
+assert(html.includes('<div class="cmp" id="channel-composer" hidden>'));
+assert(html.includes('class="cmp-input" rows="1" id="channel-message-input"'));
+assert(!html.includes('message-send-btn'), 'the old composer circles are gone');
 assert(/id="games-filter"[\s\S]*?class="ui-seg ui-seg--block" role="radiogroup" aria-label="Show games"/.test(html),
     'the Games filter is the kit segmented control');
 assert(html.includes('network-subtabs section-subtabs'));

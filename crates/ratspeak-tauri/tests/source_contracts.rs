@@ -275,9 +275,9 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(responsive_css.contains("calc(56px + var(--sat))"));
     assert!(responsive_css.contains("body.view-channel-detail .main-content"));
     assert!(responsive_css.contains(".channels-layout.room-live.members-open"));
-    assert!(responsive_css.contains("max(var(--space-4), var(--sab))"));
-    assert!(responsive_css.contains("calc(var(--space-5) + var(--sar))"));
-    assert!(responsive_css.contains("calc(var(--space-5) + var(--sal))"));
+    assert!(responsive_css.contains(".channel-room-pane > .cmp {"));
+    assert!(responsive_css.contains("calc(var(--chat-inset) + var(--sar))"));
+    assert!(responsive_css.contains("calc(var(--chat-inset) + var(--sal))"));
     assert!(channels_css.contains(".channel-members-scrim"));
     assert!(channels_css.contains(".channels-layout.room-live.members-open {"));
     assert!(channels_css.contains(".channel-transition-rail"));
@@ -636,7 +636,7 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
     assert!(!channels_js.contains("action === 'connect')"));
     assert!(channels_js.contains("function _channelsHubNeedsNetwork"));
     assert!(channels_js.contains("'Connect to a network first.'"));
-    assert!(channels_js.contains("disabled: offline || blocked"));
+    assert!(channels_js.contains("disabled: !current && (offline || blocked)"));
 
     // The view re-renders from the existing stats and interface events; nothing polls.
     assert!(channels_js.contains("function channelsNetworkChanged"));
@@ -6025,11 +6025,11 @@ fn message_composer_send_preserves_preexisting_focus_state() {
 
     let components_css =
         read_source(root.join("dashboard/static/css/07-components.css")).expect("css");
-    assert!(components_css.contains(".message-composer-input {"));
-    assert!(components_css.contains("overflow-y: auto;"));
-    assert!(components_css.contains("scrollbar-width: none;"));
-    assert!(components_css.contains("-webkit-appearance: none;"));
-    assert!(components_css.contains(".message-composer-input::-webkit-scrollbar"));
+    let messaging_css =
+        read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
+    assert!(!components_css.contains(".message-composer-input"));
+    assert!(messaging_css.contains(".cmp-input::-webkit-scrollbar { display: none; }"));
+    assert!(messaging_css.contains("overflow-y: auto; scrollbar-width: none;"));
 
     let responsive_css =
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("css");
