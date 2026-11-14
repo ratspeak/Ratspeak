@@ -192,7 +192,10 @@ function showSetupRecoveryStep(mnemonic, fromEl) {
     }
     setupRecoveryMnemonic = mnemonic;
     renderSetupPhrase(null);
-    transitionStep(fromEl, document.getElementById('setup-step-backup'));
+    transitionStep(fromEl, document.getElementById('setup-step-backup'), function() {
+        var cover = document.getElementById('setup-mnemonic-cover');
+        if (cover && !isMobile()) cover.focus();
+    });
 }
 
 function showSetupIdentityStep(fromEl) {
