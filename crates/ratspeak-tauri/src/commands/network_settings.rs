@@ -212,7 +212,9 @@ fn joined_interface<'a>(
 ) -> Option<&'a InterfaceStatRpcEntry> {
     let (host, port) = (record.info.reachable_on.as_deref()?, record.info.port?);
     live.iter().find(|entry| {
+        // Stats read from a shared instance name the parent but carry no id.
         entry.parent_id.is_none()
+            && entry.parent_interface_name.is_none()
             && !saved.names.contains(&entry.name)
             && entry.identity.as_ref().is_some_and(|identity| {
                 identity.name
