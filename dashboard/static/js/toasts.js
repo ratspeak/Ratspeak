@@ -78,9 +78,10 @@ function createToastStatusIcon(colorClass) {
 // asynchronous inbound/background event deserves attention. Routine state
 // changes already rendered in the interface must stay inline. Diagnostics
 // belong in RS.diag/Activity, not here. onClick is reserved for undo of a
-// just-happened destructive action or navigating to an inbound item; use
-// rsChoice/rsPrompt for confirmation flows.
-function showToast(message, colorClass, duration, onClick) {
+// just-happened destructive action, navigating to an inbound item, or copying
+// an error's details, named by actionLabel; use rsChoice/rsPrompt for
+// confirmation flows.
+function showToast(message, colorClass, duration, onClick, actionLabel) {
     colorClass = TOAST_CLASS_MAP[colorClass] || colorClass || '';
 
     duration = Math.min(duration || 3000, 5000);
@@ -113,6 +114,13 @@ function showToast(message, colorClass, duration, onClick) {
     var msgSpan = document.createElement('span');
     msgSpan.className = 'toast-message';
     msgSpan.textContent = message;
+    if (onClick && actionLabel) {
+        var actionText = document.createElement('span');
+        actionText.className = 'text-xs text-accent';
+        actionText.textContent = actionLabel;
+        msgSpan.appendChild(document.createElement('br'));
+        msgSpan.appendChild(actionText);
+    }
     toast.appendChild(msgSpan);
 
     // Whole toast is the tap target so the click area matches the visual.
@@ -121,7 +129,8 @@ function showToast(message, colorClass, duration, onClick) {
         var actionBtn = document.createElement('button');
         actionBtn.type = 'button';
         actionBtn.className = 'toast-action-target';
-        actionBtn.setAttribute('aria-label', 'Open: ' + message);
+        if (actionLabel) actionBtn.setAttribute('aria-label', actionLabel);
+        else actionBtn.setAttribute('aria-label', 'Open: ' + message);
         actionBtn.addEventListener('click', function() {
             dismissToast();
             onClick();

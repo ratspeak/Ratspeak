@@ -955,6 +955,7 @@ impl AppState {
         emitter: Arc<dyn Emitter>,
         notifier: Arc<dyn NativeNotifier>,
     ) -> Self {
+        crate::storage_errors::install(Arc::clone(&emitter));
         // LRGP owns the canonical built-in registry. A new built-in game must
         // not require a second hard-coded registration list in Ratspeak.
         let lrgp_router = lrgp::router::LrgpRouter::with_builtin_apps();

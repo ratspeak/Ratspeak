@@ -1374,6 +1374,18 @@ RS.listen('identity_error', function(data) {
     });
 });
 
+// A database write failed; the core sends each operation once per session.
+RS.listen('storage_error', function(data) {
+    if (!data || !data.details) return;
+    var details = String(data.details);
+    showToast(String(data.message || "Ratspeak couldn't save some changes."), 'toast-error', 5000, function() {
+        Promise.resolve(RS.copyText(details)).then(function(copied) {
+            if (copied) showCopyConfirmationToast('Details');
+            else showToast('Could not copy details', 'toast-error', 3000);
+        });
+    }, 'Copy Details');
+});
+
 document.addEventListener('DOMContentLoaded', function() {
     initConnections();
 });

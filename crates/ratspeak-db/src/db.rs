@@ -10,6 +10,8 @@ use ratspeak_core::delivery::{
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use tokio::task::JoinError;
 
+use crate::write_error::{OrReport, report_write_error};
+
 pub type DbPool = Pool<SqliteConnectionManager>;
 
 pub(crate) const SCHEMA_VERSION: i64 = 52;
@@ -2633,9 +2635,8 @@ pub fn save_contact_with_identity_pubkey(
         tracing::warn!(reason = "no_identity", "save_contact refused");
         return;
     }
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("save_contact_with_identity_pubkey") else {
+        return;
     };
     let now = now_ts();
     let exists: bool = conn
@@ -2658,7 +2659,7 @@ pub fn save_contact_with_identity_pubkey(
                  WHERE dest_hash = ?5 AND identity_id = ?6",
                 params![dn, identity_pubkey, trust, now, dest_hash, identity_id],
             )
-            .ok();
+            .or_report("save_contact_with_identity_pubkey");
         } else {
             conn.execute(
                 "UPDATE contacts
@@ -2668,27 +2669,26 @@ pub fn save_contact_with_identity_pubkey(
                  WHERE dest_hash = ?4 AND identity_id = ?5",
                 params![identity_pubkey, trust, now, dest_hash, identity_id],
             )
-            .ok();
+            .or_report("save_contact_with_identity_pubkey");
         }
     } else {
         let dn = display_name.unwrap_or("");
         conn.execute(
             "INSERT INTO contacts (dest_hash, identity_id, display_name, identity_pubkey, first_seen, last_seen, trust, notes) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '')",
             params![dest_hash, identity_id, dn, identity_pubkey, now, now, trust],
-        ).ok();
+        ).or_report("save_contact_with_identity_pubkey");
     }
 }
 
 pub fn delete_contact(pool: &DbPool, dest_hash: &str, identity_id: &str) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("delete_contact") else {
+        return;
     };
     conn.execute(
         "DELETE FROM contacts WHERE dest_hash = ?1 AND identity_id = ?2",
         params![dest_hash, identity_id],
     )
-    .ok();
+    .or_report("delete_contact");
 }
 
 // `row_to_contact` reads these positions.
@@ -2749,17 +2749,23 @@ pub fn fill_unnamed_contact_names(
     identity_id: &str,
     names: &[(String, String)],
 ) -> bool {
-    let Ok(mut conn) = pool.get() else {
+    let Some(mut conn) = pool.get().or_report("fill_unnamed_contact_names") else {
         return false;
     };
     let unnamed: std::collections::HashSet<String> = {
-        let Ok(mut stmt) = conn.prepare(
-            "SELECT dest_hash FROM contacts WHERE identity_id = ?1
+        let Some(mut stmt) = conn
+            .prepare(
+                "SELECT dest_hash FROM contacts WHERE identity_id = ?1
              AND (display_name IS NULL OR display_name = '')",
-        ) else {
+            )
+            .or_report("fill_unnamed_contact_names")
+        else {
             return false;
         };
-        let Ok(rows) = stmt.query_map(params![identity_id], |row| row.get::<_, String>(0)) else {
+        let Some(rows) = stmt
+            .query_map(params![identity_id], |row| row.get::<_, String>(0))
+            .or_report("fill_unnamed_contact_names")
+        else {
             return false;
         };
         rows.filter_map(Result::ok).collect()
@@ -2767,7 +2773,7 @@ pub fn fill_unnamed_contact_names(
     if unnamed.is_empty() {
         return false;
     }
-    let Ok(tx) = conn.transaction() else {
+    let Some(tx) = conn.transaction().or_report("fill_unnamed_contact_names") else {
         return false;
     };
     let now = std::time::SystemTime::now()
@@ -2783,10 +2789,14 @@ pub fn fill_unnamed_contact_names(
                  AND (display_name IS NULL OR display_name = '')",
                 params![name, dest_hash, identity_id, now],
             )
+            .or_report("fill_unnamed_contact_names")
             .unwrap_or(0)
             > 0;
     }
-    tx.commit().is_ok() && changed
+    tx.commit()
+        .or_report("fill_unnamed_contact_names")
+        .is_some()
+        && changed
 }
 
 pub fn get_contact(pool: &DbPool, dest_hash: &str, identity_id: &str) -> Option<serde_json::Value> {
@@ -2824,28 +2834,30 @@ pub fn set_contact_kind(
     kind: &str,
     caps: &[String],
 ) -> bool {
-    let Ok(conn) = pool.get() else {
+    let Some(conn) = pool.get().or_report("set_contact_kind") else {
         return false;
     };
     conn.execute(
         "UPDATE contacts SET kind = ?1, caps = ?2 WHERE dest_hash = ?3 AND identity_id = ?4",
         params![kind, caps.join(","), dest_hash, identity_id],
     )
-    .is_ok_and(|changed| changed > 0)
+    .or_report("set_contact_kind")
+    .is_some_and(|changed| changed > 0)
 }
 
 /// Mark an existing contact as an rsNode device; true when that changed it.
 pub fn mark_contact_rsnode_device(pool: &DbPool, dest_hash: &str, identity_id: &str) -> bool {
-    let Ok(conn) = pool.get() else {
+    let Some(conn) = pool.get().or_report("mark_contact_rsnode_device") else {
         return false;
     };
-    let Ok(Some((kind, caps))) = conn
+    let Some(Some((kind, caps))) = conn
         .query_row(
             "SELECT kind, caps FROM contacts WHERE dest_hash = ?1 AND identity_id = ?2",
             params![dest_hash, identity_id],
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
         )
         .optional()
+        .or_report("mark_contact_rsnode_device")
     else {
         return false;
     };
@@ -2861,21 +2873,23 @@ pub fn mark_contact_rsnode_device(pool: &DbPool, dest_hash: &str, identity_id: &
         "UPDATE contacts SET kind = ?1, caps = ?2 WHERE dest_hash = ?3 AND identity_id = ?4",
         params![CONTACT_KIND_DEVICE, caps.join(","), dest_hash, identity_id],
     )
-    .is_ok_and(|changed| changed > 0)
+    .or_report("mark_contact_rsnode_device")
+    .is_some_and(|changed| changed > 0)
 }
 
 /// Add one capability to an existing device contact; true when that changed it.
 pub fn add_contact_cap(pool: &DbPool, dest_hash: &str, identity_id: &str, cap: &str) -> bool {
-    let Ok(conn) = pool.get() else {
+    let Some(conn) = pool.get().or_report("add_contact_cap") else {
         return false;
     };
-    let Ok(Some(caps)) = conn
+    let Some(Some(caps)) = conn
         .query_row(
             "SELECT caps FROM contacts WHERE dest_hash = ?1 AND identity_id = ?2 AND kind = ?3",
             params![dest_hash, identity_id, CONTACT_KIND_DEVICE],
             |row| row.get::<_, String>(0),
         )
         .optional()
+        .or_report("add_contact_cap")
     else {
         return false;
     };
@@ -2888,7 +2902,8 @@ pub fn add_contact_cap(pool: &DbPool, dest_hash: &str, identity_id: &str, cap: &
         "UPDATE contacts SET caps = ?1 WHERE dest_hash = ?2 AND identity_id = ?3",
         params![caps.join(","), dest_hash, identity_id],
     )
-    .is_ok_and(|changed| changed > 0)
+    .or_report("add_contact_cap")
+    .is_some_and(|changed| changed > 0)
 }
 
 /// Store a message's decoded FIELD_RESULTS (a JSON object).
@@ -2898,7 +2913,7 @@ pub fn save_message_results(
     identity_id: &str,
     results: &serde_json::Value,
 ) -> bool {
-    let Ok(conn) = pool.get() else {
+    let Some(conn) = pool.get().or_report("save_message_results") else {
         return false;
     };
     conn.execute(
@@ -2906,7 +2921,8 @@ pub fn save_message_results(
          VALUES (?1, ?2, ?3)",
         params![message_id, identity_id, results.to_string()],
     )
-    .is_ok()
+    .or_report("save_message_results")
+    .is_some()
 }
 
 fn get_message_results_batch(
@@ -2994,7 +3010,7 @@ const RSNODE_UPDATE_COLUMNS: &str =
     "contact, image_sha256, release, stage, sent, total, baseline, detail, updated_at";
 
 pub fn save_rsnode_update(pool: &DbPool, identity_id: &str, row: &RsnodeUpdateRow) -> bool {
-    let Ok(conn) = pool.get() else {
+    let Some(conn) = pool.get().or_report("save_rsnode_update") else {
         return false;
     };
     conn.execute(
@@ -3018,7 +3034,8 @@ pub fn save_rsnode_update(pool: &DbPool, identity_id: &str, row: &RsnodeUpdateRo
             row.updated_at,
         ],
     )
-    .is_ok()
+    .or_report("save_rsnode_update")
+    .is_some()
 }
 
 pub fn get_rsnode_update(
@@ -3070,44 +3087,24 @@ pub fn block_contact(pool: &DbPool, dest_hash: &str, display_name: &str, identit
         tracing::warn!(reason = "no_identity", "block_contact refused");
         return;
     }
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => {
-            tracing::warn!(
-                reason = "pool_unavailable",
-                "block_contact: pool.get() failed"
-            );
-            return;
-        }
+    let Some(conn) = pool.get().or_report("block_contact") else {
+        return;
     };
-    if conn.execute(
+    conn.execute(
         "INSERT OR REPLACE INTO blocked_contacts (dest_hash, identity_id, display_name, blocked_at) VALUES (?1, ?2, ?3, ?4)",
         params![dest_hash, identity_id, display_name, now_ts()],
-    ).is_err() {
-        tracing::warn!(reason = "insert_failed", "block_contact: INSERT failed");
-    }
+    ).or_report("block_contact");
 }
 
 pub fn unblock_contact(pool: &DbPool, dest_hash: &str, identity_id: &str) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => {
-            tracing::warn!(
-                reason = "pool_unavailable",
-                "unblock_contact: pool.get() failed"
-            );
-            return;
-        }
+    let Some(conn) = pool.get().or_report("unblock_contact") else {
+        return;
     };
-    if conn
-        .execute(
-            "DELETE FROM blocked_contacts WHERE dest_hash = ?1 AND identity_id = ?2",
-            params![dest_hash, identity_id],
-        )
-        .is_err()
-    {
-        tracing::warn!(reason = "delete_failed", "unblock_contact: DELETE failed");
-    }
+    conn.execute(
+        "DELETE FROM blocked_contacts WHERE dest_hash = ?1 AND identity_id = ?2",
+        params![dest_hash, identity_id],
+    )
+    .or_report("unblock_contact");
 }
 
 pub fn get_blocked_contacts(pool: &DbPool, identity_id: &str) -> Vec<serde_json::Value> {
@@ -3227,31 +3224,17 @@ pub fn enqueue_pending_blackhole(
         tracing::warn!(reason = "no_identity", "enqueue_pending_blackhole refused");
         return false;
     }
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => {
-            tracing::warn!(
-                reason = "pool_unavailable",
-                "enqueue_pending_blackhole: pool.get() failed"
-            );
-            return false;
-        }
+    let Some(conn) = pool.get().or_report("enqueue_pending_blackhole") else {
+        return false;
     };
-    match conn.execute(
+    conn.execute(
         "INSERT OR REPLACE INTO pending_blackholes
             (dest_hash, identity_id, reason_label, ttl_seconds, queued_at)
             VALUES (?1, ?2, ?3, ?4, ?5)",
         params![dest_hash, identity_id, reason_label, ttl_seconds, now_ts()],
-    ) {
-        Ok(_) => true,
-        Err(_) => {
-            tracing::warn!(
-                reason = "insert_failed",
-                "enqueue_pending_blackhole: INSERT failed"
-            );
-            false
-        }
-    }
+    )
+    .or_report("enqueue_pending_blackhole")
+    .is_some()
 }
 
 /// All pending rows for a given dest_hash across local identities. Used by
@@ -3314,15 +3297,15 @@ pub fn list_pending_blackholes_for_identity(
 
 /// Delete a pending row. Returns true if a row was removed.
 pub fn clear_pending_blackhole(pool: &DbPool, dest_hash: &str, identity_id: &str) -> bool {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return false,
+    let Some(conn) = pool.get().or_report("clear_pending_blackhole") else {
+        return false;
     };
     conn.execute(
         "DELETE FROM pending_blackholes WHERE dest_hash = ?1 AND identity_id = ?2",
         params![dest_hash, identity_id],
     )
     .map(|n| n > 0)
+    .or_report("clear_pending_blackhole")
     .unwrap_or(false)
 }
 
@@ -3351,10 +3334,10 @@ fn update_pending_network_lifts(
         return false;
     }
     let key = pending_network_lifts_key(identity_id);
-    let Ok(mut conn) = pool.get() else {
+    let Some(mut conn) = pool.get().or_report("update_pending_network_lifts") else {
         return false;
     };
-    let Ok(tx) = conn.transaction() else {
+    let Some(tx) = conn.transaction().or_report("update_pending_network_lifts") else {
         return false;
     };
     let mut lifts: Vec<String> = tx
@@ -3378,7 +3361,11 @@ fn update_pending_network_lifts(
             params![key, serde_json::to_string(&lifts).unwrap_or_default()],
         )
     };
-    written.is_ok() && tx.commit().is_ok()
+    written.or_report("update_pending_network_lifts").is_some()
+        && tx
+            .commit()
+            .or_report("update_pending_network_lifts")
+            .is_some()
 }
 
 pub fn queue_pending_network_lift(pool: &DbPool, identity_id: &str, dest_hash: &str) -> bool {
@@ -3427,16 +3414,15 @@ pub fn update_message_delivery_method(
     identity_id: &str,
     delivery_method: &str,
 ) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("update_message_delivery_method") else {
+        return;
     };
     conn.execute(
         "UPDATE messages SET delivery_method = ?1 \
          WHERE id = ?2 AND identity_id = ?3 AND direction = 'outbound'",
         params![delivery_method, msg_id, identity_id],
     )
-    .ok();
+    .or_report("update_message_delivery_method");
 }
 
 pub fn message_exists(pool: &DbPool, msg_id: &str) -> bool {
@@ -4183,12 +4169,14 @@ pub fn rename_conversation_thread(
 }
 
 pub fn mark_conversation_thread_opened(pool: &DbPool, identity_id: &str, peer: &str, thread: &str) {
-    let Ok(conn) = pool.get() else { return };
+    let Some(conn) = pool.get().or_report("mark_conversation_thread_opened") else {
+        return;
+    };
     conn.execute(
         "UPDATE conversation_threads SET opened = 1 WHERE identity_id = ?1 AND peer_hash = ?2 AND thread = ?3 AND opened = 0",
         params![identity_id, peer, thread],
     )
-    .ok();
+    .or_report("mark_conversation_thread_opened");
 }
 
 /// Label for `thread` when `peer` has extra conversations; `None` for a
@@ -4405,9 +4393,8 @@ pub fn update_message_state(
     state: &str,
     rtt_ms: Option<f64>,
 ) -> bool {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return false,
+    let Some(conn) = pool.get().or_report("update_message_state") else {
+        return false;
     };
     // A proof outranks every earlier outcome: a message that arrived was never
     // undelivered. Nothing else leaves a settled state, and no step of a send
@@ -4430,7 +4417,7 @@ pub fn update_message_state(
             params![state, rtt_ms, msg_id, identity_id],
         )
         .map(|updated| updated > 0);
-    result.unwrap_or(false)
+    result.or_report("update_message_state").unwrap_or(false)
 }
 
 /// What [`settle_failure`] wrote.
@@ -4453,10 +4440,10 @@ pub fn settle_failure(
     now: f64,
     final_state: OutboundState,
 ) -> Option<Settled> {
-    let mut conn = pool.get().ok()?;
+    let mut conn = pool.get().or_report("settle_failure")?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .ok()?;
+        .or_report("settle_failure")?;
     let (current, destination, entry) = tx
         .query_row(
             "SELECT m.state, m.destination, o.queued_at, o.auto_sends, o.preference
@@ -4477,7 +4464,7 @@ pub fn settle_failure(
             },
         )
         .optional()
-        .ok()??;
+        .or_report("settle_failure")??;
     if OutboundState::parse(&current)
         .is_some_and(|current| current.is_final() || current == OutboundState::Waiting)
     {
@@ -4497,8 +4484,8 @@ pub fn settle_failure(
         "UPDATE messages SET state = ?1 WHERE id = ?2 AND identity_id = ?3 AND direction = 'outbound'",
         params![state.as_str(), msg_id, identity_id],
     )
-    .ok()?;
-    tx.commit().ok()?;
+    .or_report("settle_failure")?;
+    tx.commit().or_report("settle_failure")?;
     Some(Settled {
         state,
         verdict,
@@ -4600,7 +4587,7 @@ pub fn fail_all_waiting(pool: &DbPool) -> Result<Vec<(String, String)>, String> 
 /// send is taken up again by a wake, under its gate, never by the resume.
 /// Returns the ids put back.
 pub fn return_woken_to_waiting(pool: &DbPool, identity_id: &str) -> Vec<String> {
-    let Ok(conn) = pool.get() else {
+    let Some(conn) = pool.get().or_report("return_woken_to_waiting") else {
         return Vec::new();
     };
     conn.prepare(&format!(
@@ -4616,6 +4603,7 @@ pub fn return_woken_to_waiting(pool: &DbPool, identity_id: &str) -> Vec<String> 
         stmt.query_map(params![identity_id], |row| row.get(0))?
             .collect()
     })
+    .or_report("return_woken_to_waiting")
     .unwrap_or_default()
 }
 
@@ -4627,7 +4615,7 @@ pub fn deliver_messages_to_self(
     identity_id: &str,
     own_address: &str,
 ) -> Vec<String> {
-    let Ok(conn) = pool.get() else {
+    let Some(conn) = pool.get().or_report("deliver_messages_to_self") else {
         return Vec::new();
     };
     conn.prepare(&format!(
@@ -4641,6 +4629,7 @@ pub fn deliver_messages_to_self(
         stmt.query_map(params![identity_id, own_address], |row| row.get(0))?
             .collect()
     })
+    .or_report("deliver_messages_to_self")
     .unwrap_or_default()
 }
 
@@ -4648,7 +4637,7 @@ pub fn deliver_messages_to_self(
 /// was set back must not let a message wait longer than its limit from here
 /// on, nor keep it from being woken.
 pub fn clamp_future_queue_times(pool: &DbPool, identity_id: &str, now: f64) -> usize {
-    let Ok(conn) = pool.get() else {
+    let Some(conn) = pool.get().or_report("clamp_future_queue_times") else {
         return 0;
     };
     conn.execute(
@@ -4656,6 +4645,7 @@ pub fn clamp_future_queue_times(pool: &DbPool, identity_id: &str, now: f64) -> u
          WHERE identity_id = ?1 AND (queued_at > ?2 OR last_auto_at > ?2)",
         params![identity_id, now],
     )
+    .or_report("clamp_future_queue_times")
     .unwrap_or(0)
 }
 
@@ -4797,10 +4787,13 @@ pub fn claim_waiting(
     now: f64,
     delivery_method: &str,
 ) -> bool {
-    let Ok(mut conn) = pool.get() else {
+    let Some(mut conn) = pool.get().or_report("claim_waiting") else {
         return false;
     };
-    let Ok(tx) = conn.transaction_with_behavior(TransactionBehavior::Immediate) else {
+    let Some(tx) = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .or_report("claim_waiting")
+    else {
         return false;
     };
     let claimed = tx
@@ -4809,15 +4802,17 @@ pub fn claim_waiting(
              WHERE id = ?1 AND identity_id = ?2 AND direction = 'outbound' AND state = 'waiting'",
             params![msg_id, identity_id, delivery_method],
         )
-        .is_ok_and(|changed| changed == 1)
+        .or_report("claim_waiting")
+        .is_some_and(|changed| changed == 1)
         && tx
             .execute(
                 "UPDATE lxmf_outbox SET auto_sends = auto_sends + 1, last_auto_at = ?3
                  WHERE identity_id = ?1 AND message_id = ?2",
                 params![identity_id, msg_id, now],
             )
-            .is_ok_and(|changed| changed == 1);
-    claimed && tx.commit().is_ok()
+            .or_report("claim_waiting")
+            .is_some_and(|changed| changed == 1);
+    claimed && tx.commit().or_report("claim_waiting").is_some()
 }
 
 /// The stored state of `identity_id`'s outbound message, `None` when it has no row.
@@ -4837,9 +4832,8 @@ pub fn outbound_message_state(
 }
 
 pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str, identity_id: &str) -> bool {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return false,
+    let Some(conn) = pool.get().or_report("cancel_outbound_message_state") else {
+        return false;
     };
     conn.execute(
         &format!(
@@ -4850,6 +4844,7 @@ pub fn cancel_outbound_message_state(pool: &DbPool, msg_id: &str, identity_id: &
         params![msg_id, identity_id],
     )
     .map(|n| n > 0)
+    .or_report("cancel_outbound_message_state")
     .unwrap_or(false)
 }
 
@@ -5013,14 +5008,13 @@ pub fn search_messages(
 /// Marks inbound messages from `dest_hash` read: one conversation, or all
 /// of them when `thread` is `None`.
 pub fn mark_read(pool: &DbPool, dest_hash: &str, thread: Option<&str>, identity_id: &str) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("mark_read") else {
+        return;
     };
     conn.execute(
         "UPDATE messages SET state = 'read' WHERE source = ?1 AND direction = 'inbound' AND state != 'read' AND identity_id = ?2 AND (?3 IS NULL OR thread = ?3)",
         params![dest_hash, identity_id, thread],
-    ).ok();
+    ).or_report("mark_read");
 }
 
 pub fn get_all_unread_counts(
@@ -5148,9 +5142,8 @@ fn stale_outbound_states() -> impl Iterator<Item = &'static str> {
 /// Fail what the last run left on its way or waiting, except what the outbox
 /// sends again and Sent messages, which already left the device.
 pub fn cleanup_stale_outbound(pool: &DbPool, identity_id: &str) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("cleanup_stale_outbound") else {
+        return;
     };
     let result = conn.execute(
         &format!(
@@ -5166,7 +5159,10 @@ pub fn cleanup_stale_outbound(pool: &DbPool, identity_id: &str) {
         ),
         params![identity_id],
     );
-    if let Some(count) = result.ok().filter(|count| *count > 0) {
+    if let Some(count) = result
+        .or_report("cleanup_stale_outbound")
+        .filter(|count| *count > 0)
+    {
         tracing::info!("Cleaned up {count} stale outbound message(s)");
     }
 }
@@ -5176,26 +5172,24 @@ pub fn hide_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) {
         tracing::warn!(reason = "no_identity", "hide_conversation refused");
         return;
     }
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("hide_conversation") else {
+        return;
     };
     conn.execute(
         "INSERT OR REPLACE INTO hidden_conversations (dest_hash, identity_id, hidden_at) VALUES (?1, ?2, ?3)",
         params![dest_hash, identity_id, now_ts()],
-    ).ok();
+    ).or_report("hide_conversation");
 }
 
 pub fn unhide_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("unhide_conversation") else {
+        return;
     };
     conn.execute(
         "DELETE FROM hidden_conversations WHERE dest_hash = ?1 AND identity_id = ?2",
         params![dest_hash, identity_id],
     )
-    .ok();
+    .or_report("unhide_conversation");
 }
 
 pub fn get_hidden_conversations(
@@ -5250,9 +5244,8 @@ where
 }
 
 pub fn delete_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) -> Vec<String> {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return vec![],
+    let Some(conn) = pool.get().or_report("delete_conversation") else {
+        return vec![];
     };
 
     let file_refs = query_message_file_refs(
@@ -5265,17 +5258,17 @@ pub fn delete_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) ->
         "DELETE FROM messages WHERE ((source = ?1 AND direction != 'outbound') OR (destination = ?1 AND direction = 'outbound')) AND identity_id = ?2",
         params![dest_hash, identity_id],
     )
-    .ok();
+    .or_report("delete_conversation");
     conn.execute(
         "DELETE FROM hidden_conversations WHERE dest_hash = ?1 AND identity_id = ?2",
         params![dest_hash, identity_id],
     )
-    .ok();
+    .or_report("delete_conversation");
     conn.execute(
         "DELETE FROM conversation_threads WHERE peer_hash = ?1 AND identity_id = ?2",
         params![dest_hash, identity_id],
     )
-    .ok();
+    .or_report("delete_conversation");
 
     file_refs
 }
@@ -9409,23 +9402,27 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
     if updates.is_empty() {
         return 0;
     }
-    let mut conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return 0,
+    let Some(mut conn) = pool.get().or_report("touch_identity_activity_updates") else {
+        return 0;
     };
-    let tx = match conn.transaction() {
-        Ok(t) => t,
-        Err(_) => return 0,
+    let Some(tx) = conn
+        .transaction()
+        .or_report("touch_identity_activity_updates")
+    else {
+        return 0;
     };
     let mut touched = 0usize;
+    let mut first_error = None;
     {
-        let mut existing_stmt = match tx.prepare_cached(
-            "SELECT COALESCE(services, '') FROM identity_activity WHERE dest_hash = ?1",
-        ) {
-            Ok(s) => s,
-            Err(_) => return 0,
+        let Some(mut existing_stmt) = tx
+            .prepare_cached(
+                "SELECT COALESCE(services, '') FROM identity_activity WHERE dest_hash = ?1",
+            )
+            .or_report("touch_identity_activity_updates")
+        else {
+            return 0;
         };
-        let mut stmt = match tx.prepare_cached(
+        let Some(mut stmt) = tx.prepare_cached(
             "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, status, last_interface, services, lxmf_compression_support)
              VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), COALESCE(?6, ''), ?7, COALESCE(?8, ''))
              ON CONFLICT(dest_hash) DO UPDATE SET
@@ -9452,9 +9449,8 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
                      WHEN ?8 IS NOT NULL AND ?8 != '' THEN excluded.lxmf_compression_support
                      ELSE lxmf_compression_support
                  END",
-        ) {
-            Ok(s) => s,
-            Err(_) => return 0,
+        ).or_report("touch_identity_activity_updates") else {
+            return 0;
         };
         for update in updates {
             let services = normalized_peer_services(update.services.iter().map(String::as_str));
@@ -9481,24 +9477,28 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
                 .lxmf_compression_support
                 .as_deref()
                 .and_then(normalized_lxmf_compression_support);
-            let ok = stmt
-                .execute(params![
-                    update.dest_hash,
-                    identity_hash,
-                    update.timestamp,
-                    n,
-                    update.status.as_deref(),
-                    i,
-                    merged_services,
-                    lxmf_compression_support,
-                ])
-                .is_ok();
-            if ok {
-                touched += 1;
+            let written = stmt.execute(params![
+                update.dest_hash,
+                identity_hash,
+                update.timestamp,
+                n,
+                update.status.as_deref(),
+                i,
+                merged_services,
+                lxmf_compression_support,
+            ]);
+            match written {
+                Ok(_) => touched += 1,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
             }
         }
     }
-    tx.commit().ok();
+    if let Some(error) = first_error {
+        report_write_error("touch_identity_activity_updates", error);
+    }
+    tx.commit().or_report("touch_identity_activity_updates");
     touched
 }
 
@@ -9522,22 +9522,24 @@ pub fn set_identity_lxmf_compression_support(
     let Some(support) = normalized_lxmf_compression_support(support) else {
         return false;
     };
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return false,
+    let Some(conn) = pool
+        .get()
+        .or_report("set_identity_lxmf_compression_support")
+    else {
+        return false;
     };
     conn.execute(
         "UPDATE identity_activity SET lxmf_compression_support = ?1 WHERE dest_hash = ?2",
         params![support, dest_hash],
     )
     .map(|rows| rows > 0)
+    .or_report("set_identity_lxmf_compression_support")
     .unwrap_or(false)
 }
 
 pub fn touch_identity_last_heard(pool: &DbPool, dest_hash: &str, timestamp: f64) -> bool {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return false,
+    let Some(conn) = pool.get().or_report("touch_identity_last_heard") else {
+        return false;
     };
     conn.execute(
         "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count, services)
@@ -9552,6 +9554,7 @@ pub fn touch_identity_last_heard(pool: &DbPool, dest_hash: &str, timestamp: f64)
         params![dest_hash, timestamp, PEER_SERVICE_LXMF_DELIVERY],
     )
     .map(|n| n > 0)
+    .or_report("touch_identity_last_heard")
     .unwrap_or(false)
 }
 
@@ -9566,7 +9569,7 @@ pub struct HeardPropagationNode {
 
 /// Keep the newest announce per node; an older one never replaces it.
 pub fn save_propagation_node(pool: &DbPool, node: &HeardPropagationNode) -> bool {
-    let Ok(conn) = pool.get() else {
+    let Some(conn) = pool.get().or_report("save_propagation_node") else {
         return false;
     };
     conn.execute(
@@ -9579,7 +9582,8 @@ pub fn save_propagation_node(pool: &DbPool, node: &HeardPropagationNode) -> bool
          WHERE excluded.last_seen >= propagation_nodes.last_seen",
         params![node.dest_hash, node.app_data, node.hops, node.last_seen],
     )
-    .is_ok()
+    .or_report("save_propagation_node")
+    .is_some()
 }
 
 /// Drops nodes last heard before `since` and all but the `limit` newest, then
@@ -9884,13 +9888,11 @@ pub fn delete_identity_activity(pool: &DbPool, hashes: &[String]) -> usize {
     if hashes.is_empty() {
         return 0;
     }
-    let mut conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return 0,
+    let Some(mut conn) = pool.get().or_report("delete_identity_activity") else {
+        return 0;
     };
-    let tx = match conn.transaction() {
-        Ok(t) => t,
-        Err(_) => return 0,
+    let Some(tx) = conn.transaction().or_report("delete_identity_activity") else {
+        return 0;
     };
     let mut deleted = 0usize;
     for chunk in hashes.chunks(500) {
@@ -9905,21 +9907,11 @@ pub fn delete_identity_activity(pool: &DbPool, hashes: &[String]) -> usize {
             .collect();
         match tx.execute(&sql, params.as_slice()) {
             Ok(n) => deleted += n,
-            Err(_) => {
-                // Continue on chunk failure; pruner retries next pass.
-                tracing::warn!(
-                    chunk_len = chunk.len(),
-                    reason = "delete_failed",
-                    "delete_identity_activity chunk failed; remaining chunks will still be attempted"
-                );
-            }
+            // Continue on chunk failure; pruner retries next pass.
+            Err(error) => report_write_error("delete_identity_activity", error),
         }
     }
-    if tx.commit().is_err() {
-        tracing::error!(
-            reason = "commit_failed",
-            "delete_identity_activity commit failed — deletions discarded"
-        );
+    if tx.commit().or_report("delete_identity_activity").is_none() {
         return 0;
     }
     deleted
@@ -10023,13 +10015,14 @@ where
 /// propagation nodes are not merely cache; keeping those rows preserves name
 /// resolution and conversation affordances after an announce-cache clear.
 pub fn clear_discovered_identity_activity(pool: &DbPool) -> usize {
-    let mut conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return 0,
+    let Some(mut conn) = pool.get().or_report("clear_discovered_identity_activity") else {
+        return 0;
     };
-    let tx = match conn.transaction() {
-        Ok(t) => t,
-        Err(_) => return 0,
+    let Some(tx) = conn
+        .transaction()
+        .or_report("clear_discovered_identity_activity")
+    else {
+        return 0;
     };
     let deleted = tx
         .execute(
@@ -10052,8 +10045,13 @@ pub fn clear_discovered_identity_activity(pool: &DbPool) -> usize {
              )",
             [],
         )
+        .or_report("clear_discovered_identity_activity")
         .unwrap_or(0);
-    if tx.commit().is_err() {
+    if tx
+        .commit()
+        .or_report("clear_discovered_identity_activity")
+        .is_none()
+    {
         return 0;
     }
     deleted
@@ -10065,28 +10063,34 @@ pub fn seed_identity_activity_now(pool: &DbPool, hashes: &[String]) {
         return;
     }
     let now = now_ts();
-    let mut conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(mut conn) = pool.get().or_report("seed_identity_activity_now") else {
+        return;
     };
-    let tx = match conn.transaction() {
-        Ok(t) => t,
-        Err(_) => return,
+    let Some(tx) = conn.transaction().or_report("seed_identity_activity_now") else {
+        return;
     };
     {
-        let mut stmt = match tx.prepare_cached(
-            "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count)
+        let Some(mut stmt) = tx
+            .prepare_cached(
+                "INSERT INTO identity_activity(dest_hash, last_seen, first_seen, announce_count)
              VALUES (?1, ?2, ?2, 0)
              ON CONFLICT(dest_hash) DO NOTHING",
-        ) {
-            Ok(s) => s,
-            Err(_) => return,
+            )
+            .or_report("seed_identity_activity_now")
+        else {
+            return;
         };
+        let mut first_error = None;
         for hash in hashes {
-            let _ = stmt.execute(params![hash, now]);
+            if let Err(error) = stmt.execute(params![hash, now]) {
+                first_error.get_or_insert(error);
+            }
+        }
+        if let Some(error) = first_error {
+            report_write_error("seed_identity_activity_now", error);
         }
     }
-    tx.commit().ok();
+    tx.commit().or_report("seed_identity_activity_now");
 }
 
 pub fn save_reaction(
@@ -10096,14 +10100,13 @@ pub fn save_reaction(
     emoji: &str,
     identity_id: &str,
 ) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("save_reaction") else {
+        return;
     };
     conn.execute(
         "INSERT OR IGNORE INTO reactions (message_id, sender, emoji, timestamp, identity_id) VALUES (?1, ?2, ?3, ?4, ?5)",
         params![message_id, sender, emoji, now_ts(), identity_id],
-    ).ok();
+    ).or_report("save_reaction");
 }
 
 pub fn remove_reaction(
@@ -10113,14 +10116,13 @@ pub fn remove_reaction(
     emoji: &str,
     identity_id: &str,
 ) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("remove_reaction") else {
+        return;
     };
     conn.execute(
         "DELETE FROM reactions WHERE message_id = ?1 AND sender = ?2 AND emoji = ?3 AND identity_id = ?4",
         params![message_id, sender, emoji, identity_id],
-    ).ok();
+    ).or_report("remove_reaction");
 }
 
 fn get_reactions_batch(
@@ -10225,21 +10227,19 @@ pub fn get_connection_history(pool: &DbPool, limit: i64) -> Vec<serde_json::Valu
 }
 
 pub fn delete_connection_history(pool: &DbPool, history_id: i64) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("delete_connection_history") else {
+        return;
     };
     conn.execute(
         "DELETE FROM connection_history WHERE id = ?1",
         params![history_id],
     )
-    .ok();
+    .or_report("delete_connection_history");
 }
 
 pub fn save_connection_history(pool: &DbPool, host: &str, port: i64, name: &str) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("save_connection_history") else {
+        return;
     };
     let now = now_ts();
     let existing: Option<(i64, i64)> = conn
@@ -10254,12 +10254,12 @@ pub fn save_connection_history(pool: &DbPool, host: &str, port: i64, name: &str)
         conn.execute(
             "UPDATE connection_history SET last_used = ?1, times_used = times_used + 1, name = CASE WHEN ?2 != '' THEN ?2 ELSE name END WHERE id = ?3",
             params![now, name, id],
-        ).ok();
+        ).or_report("save_connection_history");
     } else {
         conn.execute(
             "INSERT INTO connection_history (host, port, name, last_used, times_used) VALUES (?1, ?2, ?3, ?4, 1)",
             params![host, port, name, now],
-        ).ok();
+        ).or_report("save_connection_history");
     }
 }
 
@@ -10284,15 +10284,14 @@ pub fn clear_all_contacts(pool: &DbPool, identity_id: &str) {
         tracing::warn!(reason = "no_identity", "clear_all_contacts refused");
         return;
     }
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("clear_all_contacts") else {
+        return;
     };
     conn.execute(
         "DELETE FROM contacts WHERE identity_id = ?1",
         params![identity_id],
     )
-    .ok();
+    .or_report("clear_all_contacts");
 }
 
 pub fn get_database_stats(pool: &DbPool) -> serde_json::Value {
@@ -10319,9 +10318,8 @@ pub fn get_database_stats(pool: &DbPool) -> serde_json::Value {
 }
 
 pub fn save_game_session(pool: &DbPool, session: &lrgp::session::Session) -> bool {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return false,
+    let Some(conn) = pool.get().or_report("save_game_session") else {
+        return false;
     };
     let metadata_json = serde_json::to_string(&session.metadata).unwrap_or_else(|_| "{}".into());
     let written = conn.execute(
@@ -10374,8 +10372,8 @@ pub fn save_game_session(pool: &DbPool, session: &lrgp::session::Session) -> boo
             );
             false
         }
-        Err(_) => {
-            tracing::error!(reason = "storage_error", "Failed to persist LRGP session");
+        Err(error) => {
+            report_write_error("save_game_session", error);
             false
         }
     }
@@ -10476,9 +10474,8 @@ pub fn save_game_action(
     action: &lrgp::store::Action,
     envelope_mp: Option<&[u8]>,
 ) -> bool {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return false,
+    let Some(conn) = pool.get().or_report("save_game_action") else {
+        return false;
     };
     conn.execute(
         "INSERT INTO app_actions (session_id, identity_id, action_num, command, payload_json, sender, timestamp, envelope_mp) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
@@ -10487,7 +10484,7 @@ pub fn save_game_action(
             action.command, action.payload_json, action.sender, action.timestamp,
             envelope_mp,
         ],
-    ).is_ok()
+    ).or_report("save_game_action").is_some()
 }
 
 /// Atomically allocate and append the next action number for a session.
@@ -10507,10 +10504,10 @@ pub fn append_game_action(
     timestamp: f64,
     envelope_mp: Option<&[u8]>,
 ) -> Option<i64> {
-    let mut conn = pool.get().ok()?;
+    let mut conn = pool.get().or_report("append_game_action")?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .ok()?;
+        .or_report("append_game_action")?;
     let action_num: i64 = tx
         .query_row(
             "SELECT COALESCE(MAX(action_num), -1) + 1
@@ -10518,7 +10515,7 @@ pub fn append_game_action(
             params![session_id, identity_id],
             |row| row.get(0),
         )
-        .ok()?;
+        .or_report("append_game_action")?;
     tx.execute(
         "INSERT INTO app_actions
          (session_id, identity_id, action_num, command, payload_json, sender, timestamp, envelope_mp)
@@ -10534,8 +10531,8 @@ pub fn append_game_action(
             envelope_mp,
         ],
     )
-    .ok()?;
-    tx.commit().ok()?;
+    .or_report("append_game_action")?;
+    tx.commit().or_report("append_game_action")?;
     Some(action_num)
 }
 
@@ -10568,10 +10565,10 @@ pub fn persist_outbound_game_action(
         return None;
     }
 
-    let mut conn = pool.get().ok()?;
+    let mut conn = pool.get().or_report("persist_outbound_game_action")?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .ok()?;
+        .or_report("persist_outbound_game_action")?;
     let existing: Option<(String, u32, String, String)> = tx
         .query_row(
             "SELECT app_id, app_version, contact_hash, initiator
@@ -10587,7 +10584,7 @@ pub fn persist_outbound_game_action(
             },
         )
         .optional()
-        .ok()?;
+        .or_report("persist_outbound_game_action")?;
     if existing.is_some_and(|(app_id, version, contact_hash, initiator)| {
         app_id != session.app_id
             || version != session.app_version
@@ -10604,12 +10601,12 @@ pub fn persist_outbound_game_action(
                 "SELECT envelope_mp FROM app_actions
                  WHERE session_id = ?1 AND identity_id = ?2 AND envelope_mp IS NOT NULL",
             )
-            .ok()?;
+            .or_report("persist_outbound_game_action")?;
         let rows = statement
             .query_map(params![session.session_id, session.identity_id], |row| {
                 row.get::<_, Vec<u8>>(0)
             })
-            .ok()?;
+            .or_report("persist_outbound_game_action")?;
         rows.filter_map(Result::ok)
             .any(|packed| packed_game_nonce(&packed).as_deref() == Some(nonce.as_slice()))
     };
@@ -10656,7 +10653,7 @@ pub fn persist_outbound_game_action(
                 session.last_action_at,
             ],
         )
-        .ok()?;
+        .or_report("persist_outbound_game_action")?;
     if session_written != 1 {
         return None;
     }
@@ -10668,7 +10665,7 @@ pub fn persist_outbound_game_action(
             params![session.session_id, session.identity_id],
             |row| row.get(0),
         )
-        .ok()?;
+        .or_report("persist_outbound_game_action")?;
     tx.execute(
         "INSERT INTO app_actions
          (session_id, identity_id, action_num, command, payload_json, sender, timestamp, envelope_mp)
@@ -10684,8 +10681,8 @@ pub fn persist_outbound_game_action(
             envelope_mp,
         ],
     )
-    .ok()?;
-    tx.commit().ok()?;
+    .or_report("persist_outbound_game_action")?;
+    tx.commit().or_report("persist_outbound_game_action")?;
     Some(action_num)
 }
 
@@ -10703,13 +10700,14 @@ pub fn rollback_outbound_game_action(
     }) {
         return false;
     }
-    let mut conn = match pool.get() {
-        Ok(conn) => conn,
-        Err(_) => return false,
+    let Some(mut conn) = pool.get().or_report("rollback_outbound_game_action") else {
+        return false;
     };
-    let tx = match conn.transaction_with_behavior(TransactionBehavior::Immediate) {
-        Ok(tx) => tx,
-        Err(_) => return false,
+    let Some(tx) = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .or_report("rollback_outbound_game_action")
+    else {
+        return false;
     };
     if tx
         .execute(
@@ -10717,7 +10715,7 @@ pub fn rollback_outbound_game_action(
              WHERE session_id = ?1 AND identity_id = ?2 AND action_num = ?3",
             params![session_id, identity_id, action_num],
         )
-        .ok()
+        .or_report("rollback_outbound_game_action")
         != Some(1)
     {
         return false;
@@ -10750,19 +10748,21 @@ pub fn rollback_outbound_game_action(
                     session.initiator,
                 ],
             )
-            .ok()
+            .or_report("rollback_outbound_game_action")
             != Some(1)
         {
             return false;
         }
     } else {
-        let remaining_actions: i64 = match tx.query_row(
-            "SELECT COUNT(*) FROM app_actions WHERE session_id = ?1 AND identity_id = ?2",
-            params![session_id, identity_id],
-            |row| row.get(0),
-        ) {
-            Ok(count) => count,
-            Err(_) => return false,
+        let Some(remaining_actions) = tx
+            .query_row(
+                "SELECT COUNT(*) FROM app_actions WHERE session_id = ?1 AND identity_id = ?2",
+                params![session_id, identity_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .or_report("rollback_outbound_game_action")
+        else {
+            return false;
         };
         if remaining_actions != 0
             || tx
@@ -10770,14 +10770,16 @@ pub fn rollback_outbound_game_action(
                     "DELETE FROM app_sessions WHERE session_id = ?1 AND identity_id = ?2",
                     params![session_id, identity_id],
                 )
-                .ok()
+                .or_report("rollback_outbound_game_action")
                 != Some(1)
         {
             return false;
         }
     }
 
-    tx.commit().is_ok()
+    tx.commit()
+        .or_report("rollback_outbound_game_action")
+        .is_some()
 }
 
 /// Persist an accepted inbound action, its session snapshot, and unread
@@ -10796,10 +10798,10 @@ pub fn persist_inbound_game_action(
     envelope_mp: &[u8],
     session: Option<&lrgp::session::Session>,
 ) -> Option<bool> {
-    let mut conn = pool.get().ok()?;
+    let mut conn = pool.get().or_report("persist_inbound_game_action")?;
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
-        .ok()?;
+        .or_report("persist_inbound_game_action")?;
     let result = persist_inbound_game_action_conn(
         &tx,
         session_id,
@@ -10811,7 +10813,7 @@ pub fn persist_inbound_game_action(
         envelope_mp,
         session,
     )?;
-    tx.commit().ok()?;
+    tx.commit().or_report("persist_inbound_game_action")?;
     Some(result)
 }
 
@@ -10860,7 +10862,7 @@ pub fn persist_inbound_game_action_conn(
             },
         )
         .optional()
-        .ok()?;
+        .or_report("persist_inbound_game_action")?;
 
     match &existing {
         Some((_, contact_hash, app_id, app_version, _)) => {
@@ -10898,12 +10900,12 @@ pub fn persist_inbound_game_action_conn(
                 "SELECT envelope_mp FROM app_actions
                  WHERE session_id = ?1 AND identity_id = ?2 AND envelope_mp IS NOT NULL",
             )
-            .ok()?;
+            .or_report("persist_inbound_game_action")?;
         let packed = statement
             .query_map(params![session_id, identity_id], |row| {
                 row.get::<_, Vec<u8>>(0)
             })
-            .ok()?;
+            .or_report("persist_inbound_game_action")?;
         packed.filter_map(Result::ok).any(|existing| {
             packed_game_nonce(&existing).as_deref() == Some(incoming_nonce.as_slice())
         })
@@ -10919,7 +10921,7 @@ pub fn persist_inbound_game_action_conn(
             params![session_id, identity_id],
             |row| row.get(0),
         )
-        .ok()?;
+        .or_report("persist_inbound_game_action")?;
     tx.execute(
         "INSERT INTO app_actions
          (session_id, identity_id, action_num, command, payload_json, sender, timestamp, envelope_mp)
@@ -10935,7 +10937,7 @@ pub fn persist_inbound_game_action_conn(
             envelope_mp,
         ],
     )
-    .ok()?;
+    .or_report("persist_inbound_game_action")?;
 
     let unread = existing
         .as_ref()
@@ -10981,7 +10983,7 @@ pub fn persist_inbound_game_action_conn(
                 session.last_action_at,
             ],
         )
-        .ok()
+        .or_report("persist_inbound_game_action")
         .filter(|written| *written == 1)?;
     } else if existing.is_some() {
         tx.execute(
@@ -10989,7 +10991,7 @@ pub fn persist_inbound_game_action_conn(
              WHERE session_id = ?3 AND identity_id = ?4",
             params![unread, timestamp, session_id, identity_id],
         )
-        .ok()?;
+        .or_report("persist_inbound_game_action")?;
     }
 
     Some(existing.is_some())
@@ -11097,35 +11099,36 @@ pub fn get_game_action_count(pool: &DbPool, session_id: &str, identity_id: &str)
 }
 
 pub fn mark_game_read(pool: &DbPool, session_id: &str, identity_id: &str) {
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return,
+    let Some(conn) = pool.get().or_report("mark_game_read") else {
+        return;
     };
     conn.execute(
         "UPDATE app_sessions SET unread = 0 WHERE session_id = ?1 AND identity_id = ?2",
         params![session_id, identity_id],
     )
-    .ok();
+    .or_report("mark_game_read");
 }
 
 pub fn delete_game_session(pool: &DbPool, session_id: &str, identity_id: &str) -> bool {
-    let mut conn = match pool.get() {
-        Ok(c) => c,
-        Err(_) => return false,
-    };
-    let Ok(tx) = conn.transaction_with_behavior(TransactionBehavior::Immediate) else {
+    let Some(mut conn) = pool.get().or_report("delete_game_session") else {
         return false;
     };
-    let status: Option<String> = match tx
+    let Some(tx) = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .or_report("delete_game_session")
+    else {
+        return false;
+    };
+    let Some(status) = tx
         .query_row(
             "SELECT status FROM app_sessions WHERE session_id = ?1 AND identity_id = ?2",
             params![session_id, identity_id],
-            |row| row.get(0),
+            |row| row.get::<_, String>(0),
         )
         .optional()
-    {
-        Ok(status) => status,
-        Err(_) => return false,
+        .or_report("delete_game_session")
+    else {
+        return false;
     };
     if !status.is_some_and(|status| matches!(status.as_str(), "completed" | "declined" | "expired"))
     {
@@ -11136,7 +11139,8 @@ pub fn delete_game_session(pool: &DbPool, session_id: &str, identity_id: &str) -
             "DELETE FROM app_actions WHERE session_id = ?1 AND identity_id = ?2",
             params![session_id, identity_id],
         )
-        .is_err()
+        .or_report("delete_game_session")
+        .is_none()
     {
         return false;
     }
@@ -11145,11 +11149,12 @@ pub fn delete_game_session(pool: &DbPool, session_id: &str, identity_id: &str) -
             "DELETE FROM app_sessions WHERE session_id = ?1 AND identity_id = ?2",
             params![session_id, identity_id],
         )
-        .is_err()
+        .or_report("delete_game_session")
+        .is_none()
     {
         return false;
     }
-    tx.commit().is_ok()
+    tx.commit().or_report("delete_game_session").is_some()
 }
 
 fn row_to_identity(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value> {

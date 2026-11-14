@@ -41,6 +41,7 @@ pub mod rns_config;
 pub mod rrc;
 pub mod rsnode;
 pub mod state;
+mod storage_errors;
 pub mod transport_observation;
 pub mod vault;
 #[cfg(feature = "lxst-voice")]

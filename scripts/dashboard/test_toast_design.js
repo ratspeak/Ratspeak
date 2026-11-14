@@ -304,6 +304,12 @@ var actionableCalls = toastCalls.filter(function(call) {
 });
 assert(actionableCalls.length > 0, 'dashboard must retain actionable inbound toasts');
 actionableCalls.forEach(function(call) {
+    var args = splitCallArguments(call.source);
+    if (args.length >= 5 && args[4]) {
+        assert(args[1] === "'toast-error'" && args[4] === "'Copy Details'",
+            call.file + ' labelled toast actions are reserved for copying error details');
+        return;
+    }
     assert(call.source.includes("'toast-action'") || call.source.includes('"toast-action"'),
         call.file + ' callback toast must use the toast-action intent');
 });
@@ -399,5 +405,29 @@ assert.strictEqual(actionTarget.attributes['aria-label'], 'Open: New message fro
     'the action target must identify its destination when focused independently');
 actionTarget.listeners.click();
 assert.strictEqual(opened, 1, 'the native action target must preserve the toast callback');
+
+var copied = 0;
+sandbox.showToast("Ratspeak couldn't save some changes.", 'toast-error', 5000,
+    function() { copied += 1; }, 'Copy Details');
+var errorToast = toastContainer.children[1];
+assert.strictEqual(errorToast.attributes.role, 'alert', 'a labelled error toast stays an alert');
+var errorMessage = errorToast.children.find(function(child) { return child.className === 'toast-message'; });
+assert.strictEqual(errorMessage.textContent, "Ratspeak couldn't save some changes.");
+var errorActionLabel = errorMessage.children.find(function(child) { return child.tagName === 'span'; });
+assert(errorActionLabel && errorActionLabel.textContent === 'Copy Details',
+    'a labelled toast action must be visible, not only announced');
+var copyTarget = errorToast.children.find(function(child) {
+    return child.className === 'toast-action-target';
+});
+assert.strictEqual(copyTarget.attributes['aria-label'], 'Copy Details',
+    'a labelled action target must announce its action');
+copyTarget.listeners.click();
+assert.strictEqual(copied, 1, 'the labelled action must run its callback');
+
+var tauriEvents = callsiteSource('tauri_events.js');
+assert(tauriEvents.includes("RS.listen('storage_error'") &&
+    tauriEvents.includes('RS.copyText(details)') &&
+    tauriEvents.includes("showCopyConfirmationToast('Details')"),
+    'a failed write must offer its details on the clipboard');
 
 console.log('toast design contract tests passed');

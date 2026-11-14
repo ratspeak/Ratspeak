@@ -11835,3 +11835,38 @@ fn activity_words_every_delivery_reason_and_retry_cause() {
     assert!(labels.contains("attempts_exhausted: 'Tried several times'"));
     assert!(!activity.contains("Out of retries") && !activity.contains("Too old to send"));
 }
+
+#[test]
+fn failed_storage_writes_surface_a_copyable_error_once_per_operation() {
+    let root = repo_root();
+    let db = read_source(root.join("crates/ratspeak-db/src/db.rs")).expect("db");
+    let write_error =
+        read_source(root.join("crates/ratspeak-db/src/write_error.rs")).expect("write errors");
+    let reporter = read_source(root.join("crates/ratspeak-runtime/src/storage_errors.rs"))
+        .expect("storage errors");
+    let state = read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("state");
+    let events =
+        read_source(root.join("dashboard/static/js/tauri_events.js")).expect("frontend events");
+    let toasts = read_source(root.join("dashboard/static/js/toasts.js")).expect("toasts");
+
+    let touch = rust_function_block(&db, "touch_identity_activity_updates");
+    assert!(!touch.contains("Err(_)") && !touch.contains(".is_ok()"));
+    assert!(touch.contains(".or_report(\"touch_identity_activity_updates\")"));
+    assert!(write_error.contains("tracing::error!(operation, %error, \"database write failed\");"));
+    assert!(write_error.contains("static HOOK: OnceLock<WriteErrorHook>"));
+
+    assert!(state.contains("crate::storage_errors::install(Arc::clone(&emitter));"));
+    assert!(reporter.contains("ratspeak_db::set_storage_write_error_hook("));
+    assert!(reporter.contains("const STORAGE_ERROR_EVENT: &str = \"storage_error\";"));
+    assert!(reporter.contains("\"Ratspeak couldn't save some changes.\""));
+    assert!(reporter.contains(".insert(error.operation)"));
+    assert!(reporter.contains("\"details\": details"));
+
+    assert!(events.contains("RS.listen('storage_error'"));
+    assert!(events.contains("RS.copyText(details)"));
+    assert!(events.contains("'Copy Details');"));
+    assert!(
+        toasts.contains("function showToast(message, colorClass, duration, onClick, actionLabel)")
+    );
+    assert!(toasts.contains("actionBtn.setAttribute('aria-label', actionLabel)"));
+}
