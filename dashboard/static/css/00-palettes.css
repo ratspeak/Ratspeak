@@ -200,7 +200,7 @@
     --status-online-fg: #A3BE8C;
     --status-online-rgb: 163, 190, 140;
     --status-error: #E88A93;
-    --status-error-fg: #E88A93;
+    --status-error-fg: #E99EA6;
     --status-error-rgb: 232, 138, 147;
     --status-warning: #EBCB8B;
     --status-warning-fg: #EBCB8B;
@@ -248,7 +248,7 @@
     --border-card: #BEC5B2;
     --border-control: #6D796C;
     --text-primary: #445158;
-    --text-secondary: #526068;
+    --text-secondary: #4E5B63;
     --text-muted: #5C6A72;
     --text-disabled: #829181;
     --accent: #526B2F;
@@ -308,7 +308,7 @@
     --border-card: #475258;
     --border-control: #7A8478;
     --text-primary: #D3C6AA;
-    --text-secondary: #B8B096;
+    --text-secondary: #C6BBA0;
     --text-muted: #9DA9A0;
     --text-disabled: #7A8478;
     --accent: #A7C080;
@@ -490,7 +490,7 @@
     --border-card: #BCC0CC;
     --border-control: #7C7F93;
     --text-primary: #4C4F69;
-    --text-secondary: #5C5F77;
+    --text-secondary: #545770;
     --text-muted: #666A80;
     --text-disabled: #8C8FA1;
     --accent: #8839EF;
@@ -611,7 +611,7 @@
     --border-card: #CECACD;
     --border-control: #797593;
     --text-primary: #575279;
-    --text-secondary: #625D7E;
+    --text-secondary: #5C587C;
     --text-muted: #696480;
     --text-disabled: #9893A5;
     --accent: #9C4D69;
@@ -712,4 +712,23 @@
     --status-discovered: #908CAA;
     --status-discovered-rgb: 144, 140, 170;
     --surface-game-gradient: #493447;
+}
+
+/* Labels on an accent or error tint: at least 4.5:1 at rest and on hover in every family. */
+:root {
+    --accent-ink: var(--accent-dark);
+    --danger-ink: color-mix(in srgb, var(--status-error-fg) 75%, var(--text-primary));
+}
+
+[data-theme="dark"] {
+    --accent-ink: color-mix(in srgb, var(--accent) 50%, var(--text-primary));
+    --danger-ink: color-mix(in srgb, var(--status-error) 50%, var(--text-primary));
+}
+
+/* Mirrors [data-theme="dark"] above for the pre-JS paint. */
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme]) {
+        --accent-ink: color-mix(in srgb, var(--accent) 50%, var(--text-primary));
+        --danger-ink: color-mix(in srgb, var(--status-error) 50%, var(--text-primary));
+    }
 }
