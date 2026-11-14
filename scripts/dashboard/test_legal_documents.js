@@ -104,6 +104,21 @@ Object.keys(canonicalHeadings).forEach((documentId) => {
         );
     });
 });
+// Frontend components ship their license texts beside them and in the bundle's resources.
+const tauriConfig = JSON.parse(fs.readFileSync(path.join(dashboard, '..', 'src-tauri', 'tauri.conf.json'), 'utf8'));
+[
+    ['jsQR 1.4.0', 'static/js/vendor/jsQR.LICENSE.txt', 'third-party/jsQR/LICENSE.txt', 'Apache License'],
+    ['Outfit', 'static/fonts/Outfit.LICENSE.txt', 'third-party/fonts/Outfit.LICENSE.txt', 'Copyright 2021 The Outfit Project Authors'],
+    ['JetBrains Mono', 'static/fonts/JetBrainsMono.LICENSE.txt', 'third-party/fonts/JetBrainsMono.LICENSE.txt', 'Copyright 2020 The JetBrains Mono Project Authors']
+].forEach(([name, file, resource, marker]) => {
+    assert(legal.documents.licenses.content.includes('<li>' + name + ', '), 'Licenses must list ' + name);
+    assert(fs.readFileSync(path.join(dashboard, file), 'utf8').includes(marker), file + ' must carry its license text');
+    assert.strictEqual(tauriConfig.bundle.resources['../dashboard/' + file], resource, name + ' license must ship in the bundle');
+});
+['Outfit', 'JetBrainsMono'].forEach((family) => {
+    assert(fs.readFileSync(path.join(dashboard, 'static/fonts', family + '.LICENSE.txt'), 'utf8')
+        .includes('SIL OPEN FONT LICENSE Version 1.1'), family + ' must ship the OFL text');
+});
 assert.strictEqual(index.includes('/static/js/legal_documents.js'), true);
 assert(css.includes('.rs-legal-sheet .bottom-sheet-body'));
 assert(css.includes('.bottom-sheet.open.rs-legal-sheet'));

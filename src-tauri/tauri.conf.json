@@ -24,7 +24,10 @@
       "../third_party/lxst-codec2/licenses/LGPL-2.1.txt": "third-party/lxst-codec2/licenses/LGPL-2.1.txt",
       "../third_party/lxst-codec2/licenses/KISS-FFT-BSD-3-Clause.txt": "third-party/lxst-codec2/licenses/KISS-FFT-BSD-3-Clause.txt",
       "../third_party/lxst-codec2/licenses/upstream-Cargo.toml": "third-party/lxst-codec2/licenses/upstream-Cargo.toml",
-      "../third_party/lxst-codec2/licenses/upstream-README.md": "third-party/lxst-codec2/licenses/upstream-README.md"
+      "../third_party/lxst-codec2/licenses/upstream-README.md": "third-party/lxst-codec2/licenses/upstream-README.md",
+      "../dashboard/static/js/vendor/jsQR.LICENSE.txt": "third-party/jsQR/LICENSE.txt",
+      "../dashboard/static/fonts/Outfit.LICENSE.txt": "third-party/fonts/Outfit.LICENSE.txt",
+      "../dashboard/static/fonts/JetBrainsMono.LICENSE.txt": "third-party/fonts/JetBrainsMono.LICENSE.txt"
     },
     "icon": [
       "icons/32x32.png",
