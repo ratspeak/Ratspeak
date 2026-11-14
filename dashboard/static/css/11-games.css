@@ -327,13 +327,13 @@
     to { stroke-dashoffset: 0; }
 }
 .ttt-cell.win-cell {
-    background: color-mix(in oklab, var(--accent) 14%, var(--bg-secondary));
+    background: rgba(var(--accent-rgb), 0.12);
     animation: tttWinBurst 0.8s ease-in-out infinite alternate;
     font-weight: var(--type-weight-bold);
 }
 @keyframes tttWinBurst {
-    0% { transform: scale(1); background: color-mix(in oklab, var(--accent) 10%, var(--bg-secondary)); }
-    100% { transform: scale(1.06); background: color-mix(in oklab, var(--accent) 18%, var(--bg-secondary)); }
+    0% { transform: scale(1); background: rgba(var(--accent-rgb), 0.10); }
+    100% { transform: scale(1.06); background: rgba(var(--accent-rgb), 0.18); }
 }
 .game-stage.is-veiled .ttt-cell.win-cell { animation: none; }
 
