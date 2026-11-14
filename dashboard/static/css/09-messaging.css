@@ -1368,11 +1368,12 @@ button.msg-mark:focus-visible { outline: 2px solid var(--focus-ring); outline-of
 .voice-memo-recorder[data-state="sending"] .voice-memo-send { cursor: wait; }
 
 /* Waveforms: 3 px bars, the played part in the accent ink; recording grows from the right. */
-.voice-memo-waveform, .voice-memo-player-waveform { position: relative; min-width: 0; flex: 1; height: 28px; display: flex; align-items: center; gap: 2px; overflow: hidden; }
+/* Bars shrink to fit any track width; spare width goes to the gaps, so all 42 always show. */
+.voice-memo-waveform, .voice-memo-player-waveform { position: relative; min-width: 0; flex: 1; height: 28px; display: flex; align-items: center; justify-content: space-between; gap: 1px; overflow: hidden; }
 .voice-memo-waveform.has-playback-progress, .voice-memo-player-waveform { display: block; --voice-playback-unplayed: 100%; }
-.voice-memo-waveform-layer { position: absolute; inset: 0; display: flex; align-items: center; gap: 2px; overflow: hidden; pointer-events: none; }
+.voice-memo-waveform-layer { position: absolute; inset: 0; display: flex; align-items: center; justify-content: space-between; gap: 1px; overflow: hidden; pointer-events: none; }
 .voice-memo-waveform:not(.has-playback-progress) > span,
-.voice-memo-waveform-layer > span { flex: 1 1 3px; width: 3px; min-width: 2px; height: var(--voice-bar-height, 4px); max-height: 26px; border-radius: 2px; background: var(--border-control); transition: height 90ms linear; }
+.voice-memo-waveform-layer > span { flex: 1 1 0; width: auto; min-width: 1px; max-width: 4px; height: var(--voice-bar-height, 4px); max-height: 26px; border-radius: 2px; background: var(--border-control); transition: height 90ms linear; }
 .voice-memo-waveform-played { clip-path: inset(0 var(--voice-playback-unplayed) 0 0); transition: clip-path 80ms linear; }
 .voice-memo-waveform-played > span { background: var(--accent-ink); }
 .voice-memo-waveform > span.is-empty { opacity: .4; }
