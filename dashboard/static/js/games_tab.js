@@ -31,6 +31,7 @@
         four_in_a_row: 'Drop pieces into columns. First to line up four wins.',
         ttt: 'Three in a row on nine squares. The quickest game.'
     };
+    var CHESS_REASONS = { cm: 'checkmate', sm: 'stalemate', ins: 'insufficient material', '3fr': 'threefold repetition', '50m': 'fifty-move rule', agr: 'by agreement' };
     var NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'];
 
     function _icon(name) {
@@ -237,7 +238,7 @@
         var winner = _sessionValue(session, 'winner', '');
         if (_isMe(session, winner)) return 'won';
         if (winner) return 'lost';
-        return 'draw';
+        return 'ended';
     }
 
     function _isResignation(session) {
@@ -277,6 +278,7 @@
         if (status === 'completed') {
             var outcome = _outcome(session);
             if (outcome === 'draw') return 'Draw';
+            if (outcome === 'ended') return 'Finished';
             if (_isResignation(session)) return outcome === 'won' ? them + ' resigned' : 'You resigned';
             return outcome === 'won' ? 'You won' : them + ' won';
         }
@@ -728,6 +730,10 @@
                 sentence += ' was delivered ' + escapeHtml(RS.kit.time.sentence(_sessionTime(session))) + '.';
             } else if (session.delivery_state === 'failed') {
                 sentence += ' wasn’t delivered.';
+            } else if (session.delivery_state === 'propagating') {
+                sentence += ' is being stored in an Offline Inbox.';
+            } else if (session.delivery_state === 'propagated') {
+                sentence += ' is waiting in an Offline Inbox.';
             } else {
                 sentence += ' is on its way.';
             }
@@ -775,6 +781,7 @@
         var reason = _sessionValue(session, 'terminal_reason', '');
         var moves = parseInt(_sessionValue(session, 'move_count', 0), 10) || 0;
 
+        if (outcome === 'ended') return 'The game is over.';
         if (_isResignation(session)) return outcome === 'won' ? them + ' resigned.' : 'You resigned.';
         if (appId === 'chess') {
             var full = parseInt(String(_sessionValue(session, 'fen', '')).split(' ')[5], 10) || 0;
@@ -816,7 +823,7 @@
         var them = _firstName(session.contact_hash);
         return {
             outcome: outcome,
-            title: outcome === 'won' ? 'You won' : outcome === 'lost' ? them + ' won' : 'Draw',
+            title: outcome === 'won' ? 'You won' : outcome === 'lost' ? them + ' won' : outcome === 'draw' ? 'Draw' : 'Game over',
             body: _endLine(session),
             tile: outcome === 'won' ? 'ui-tile--online' : 'ui-tile--neutral',
             glyph: outcome === 'won' ? _icon('trophy') : _icon('games'),
@@ -846,6 +853,9 @@
         var dot = outcome === 'won' ? ' ui-dot--online' : '';
         var label = session.status === 'completed' ? _resultParts(session).title : '';
         if (session.status === 'completed' && _isResignation(session)) label = _statusText(session);
+        var reason = _appId(session) === 'chess' && !_isResignation(session)
+            ? CHESS_REASONS[_sessionValue(session, 'terminal_reason', '')] : '';
+        if (label && reason) label += ' \u00b7 ' + reason;
         return '<div class="game-controls game-after"' + (hidden ? ' hidden' : '') + '>' +
             (withStatus !== false && label ? '<span class="ui-status"><span class="ui-dot' + dot + '"></span>' + escapeHtml(label) + '</span>' : '') +
             '<button type="button" class="ui-btn ui-btn--quiet ui-btn--pair" data-game-action="remove">Remove game</button>' +
@@ -861,7 +871,9 @@
         var active = session.status === 'active';
         var myMove = active && !!_isMe(session, turn);
         var theirMove = active && !!turn && !myMove;
-        var delivery = active && session.delivery_state !== 'failed' ? _activeMoveDeliveryText(session.delivery_state) : '';
+        var delivery = !active || session.delivery_state === 'failed' ? ''
+            : session.delivery_state === 'propagated' ? 'Move stored in Offline Inbox'
+            : _activeMoveDeliveryText(session.delivery_state);
         var veiled = session.status === 'completed' && !!_freshEndings[session.game_id];
         var isNew = veiled && !_resultShown[session.game_id];
         var myHash = _getMyHash(session);
