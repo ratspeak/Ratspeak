@@ -18,7 +18,7 @@ use crate::error::{AppError, AppResult};
 use crate::helpers::validate_hex;
 use crate::state::AppState;
 
-/// The Discovered list holds this many entries, the most recently heard first.
+/// The Discovered list holds this many entries, the best first.
 pub const DISCOVERED_LIST_LIMIT: usize = 100;
 
 /// Join automatically keeps at most this many servers.
@@ -159,11 +159,13 @@ fn kind_of(interface_type: &str) -> &'static str {
     }
 }
 
-/// Saved connections: every interface name, and each client's `host:port`.
+/// What this device keeps: every interface name, each client's `host:port`,
+/// and the publishers it trusts.
 #[derive(Default)]
 struct Saved {
     names: Vec<String>,
     targets: Vec<(String, u16)>,
+    trusted: Vec<String>,
 }
 
 impl Saved {
@@ -241,6 +243,7 @@ fn entry(
         .as_deref()
         .is_some_and(|h| !h.ends_with(".i2p") && !h.ends_with(".onion"));
     let joined_interface = joined_interface(record, live, saved).map(|entry| entry.name.clone());
+    let publisher = hex::encode(record.network_id);
     DiscoveredEntry {
         id: hex::encode(record.discovery_hash()),
         name: info.name.clone(),
@@ -257,7 +260,8 @@ fn entry(
         port: info.port,
         latitude: info.latitude,
         longitude: info.longitude,
-        publisher: hex::encode(record.network_id),
+        trusted: saved.trusted.contains(&publisher),
+        publisher,
         frequency: info.frequency,
         bandwidth: info.bandwidth,
         spreading_factor: info.spreading_factor,
@@ -271,12 +275,58 @@ fn entry(
             && reachable
             && info.port.is_some()
             && !added,
+        stamp_value: record.stamp_value,
+        heard_count: record.heard_count,
     }
 }
 
-/// The list as the UI shows it: one row per server, most recently heard
-/// first, cut to `limit`. A joined or saved entry always stays and counts
-/// toward the limit.
+fn status_rank(entry: &DiscoveredEntry) -> u8 {
+    match entry.status.as_str() {
+        "available" => 0,
+        "unknown" => 1,
+        _ => 2,
+    }
+}
+
+/// It carries what connecting needs: a radio its settings, anything else an
+/// address and port. I2P is never usable from this list.
+fn usable(entry: &DiscoveredEntry) -> bool {
+    match entry.kind.as_str() {
+        "radio" => {
+            entry.frequency.is_some()
+                && entry.bandwidth.is_some()
+                && entry.spreading_factor.is_some()
+                && entry.coding_rate.is_some()
+        }
+        "i2p" => false,
+        _ => entry.address.is_some() && entry.port.is_some(),
+    }
+}
+
+/// Available first, then trusted, usable, the higher stamp, fewer hops, more
+/// sightings, and the most recently heard.
+fn ranking(a: &DiscoveredEntry, b: &DiscoveredEntry) -> std::cmp::Ordering {
+    status_rank(a)
+        .cmp(&status_rank(b))
+        .then(b.trusted.cmp(&a.trusted))
+        .then(usable(b).cmp(&usable(a)))
+        .then(b.stamp_value.total_cmp(&a.stamp_value))
+        .then(a.hops.cmp(&b.hops))
+        .then(b.heard_count.cmp(&a.heard_count))
+        .then(b.last_heard.cmp(&a.last_heard))
+}
+
+/// Which copy of one server stands for it: the freshest, a trusted
+/// publisher's first.
+fn freshness(a: &DiscoveredEntry, b: &DiscoveredEntry) -> std::cmp::Ordering {
+    status_rank(a)
+        .cmp(&status_rank(b))
+        .then(b.trusted.cmp(&a.trusted))
+        .then(b.last_heard.cmp(&a.last_heard))
+}
+
+/// The list as the UI shows it: one row per server, best first, cut to
+/// `limit`. A joined or saved entry always stays and counts toward the limit.
 fn listed(
     records: &[DiscoveredInterface],
     live: &[InterfaceStatRpcEntry],
@@ -284,11 +334,12 @@ fn listed(
     limit: usize,
 ) -> Vec<DiscoveredEntry> {
     let mut entries: Vec<DiscoveredEntry> = records.iter().map(|r| entry(r, live, saved)).collect();
-    entries.sort_by_key(|e| std::cmp::Reverse(e.last_heard));
     // A publisher without transport has a new identity each start, so one server can be
     // stored several times; show it once, as last heard.
+    entries.sort_by(freshness);
     let mut seen = std::collections::HashSet::new();
     entries.retain(|e| seen.insert((e.kind.clone(), e.name.clone(), e.address.clone(), e.port)));
+    entries.sort_by(ranking);
     let held = entries.iter().filter(|e| e.joined || e.added).count();
     let mut room = limit.saturating_sub(held);
     entries.retain(|e| {
@@ -332,7 +383,10 @@ pub async fn api_discovered_interfaces(
     };
     let enabled = handle.discovery_enabled().await && state.network_settings().discover;
     let live = live_interfaces(&handle).await;
-    let saved = saved_connections(&active_rns_config_dir(&state));
+    let saved = Saved {
+        trusted: state.network_settings().trusted_publishers,
+        ..saved_connections(&active_rns_config_dir(&state))
+    };
     Ok(DiscoveredInterfaces {
         enabled,
         entries: listed(&records, &live, &saved, DISCOVERED_LIST_LIMIT),
@@ -556,6 +610,7 @@ mod tests {
         let saved = Saved {
             names: vec!["Home".to_string()],
             targets: vec![("s0.example.org".to_string(), 4242)],
+            ..Saved::default()
         };
         let live = [backbone_client(5, "Server 1", "s1.example.org")];
         let entries = listed(&records, &live, &saved, DISCOVERED_LIST_LIMIT);
@@ -612,6 +667,7 @@ mod tests {
         let saved = Saved {
             names: vec!["Maya's backbone (2)".to_string()],
             targets: vec![("maya.example.org".to_string(), 4242)],
+            ..Saved::default()
         };
         assert!(joined_interface(&record, &live, &saved).is_none());
         let mut child = backbone_client(4, "Maya's backbone", "maya.example.org");
@@ -632,6 +688,129 @@ mod tests {
         let long = connection_name(&"x".repeat(200), &["x".repeat(58)]);
         assert_eq!(long, format!("{} (2)", "x".repeat(58)));
         assert!(long.chars().count() <= 64);
+    }
+
+    fn trusting() -> Saved {
+        Saved {
+            trusted: vec![hex::encode([9u8; 16])],
+            ..Saved::default()
+        }
+    }
+
+    #[test]
+    fn the_list_ranks_each_criterion_in_turn() {
+        // Each row differs from the one above it in exactly one criterion.
+        let mut chain = Vec::new();
+        let mut row = server("A", "a.example.org", 100);
+        row.stamp_value = 10.0;
+        row.hops = 1;
+        row.heard_count = 5;
+        chain.push(row.clone());
+        type Step = (&'static str, fn(&mut DiscoveredInterface));
+        let steps: [Step; 8] = [
+            ("B", |r| r.last_heard = 90.0),
+            ("C", |r| r.heard_count = 4),
+            ("D", |r| r.hops = 2),
+            ("E", |r| r.stamp_value = 5.0),
+            ("F", |r| r.info.port = None),
+            ("G", |r| r.network_id = [8; 16]),
+            ("H", |r| r.status = Some(DiscoveryStatus::Unknown)),
+            ("I", |r| r.status = Some(DiscoveryStatus::Stale)),
+        ];
+        for (name, step) in steps {
+            step(&mut row);
+            row.info.name = name.to_string();
+            row.info.reachable_on = Some(format!("{name}.example.org"));
+            chain.push(row.clone());
+        }
+        chain.reverse();
+        chain.swap(2, 6);
+        let entries = listed(&chain, &[], &trusting(), 100);
+        assert_eq!(
+            names(&entries),
+            ["A", "B", "C", "D", "E", "F", "G", "H", "I"]
+        );
+        assert!(entries[0].trusted && !entries[6].trusted);
+        assert_eq!((entries[0].stamp_value, entries[0].heard_count), (10.0, 5));
+    }
+
+    #[test]
+    fn usable_means_what_connecting_needs() {
+        let none = Saved::default();
+        let mut radio = server("Ridge LoRa", "x", 10);
+        radio.info.interface_type = "RNodeInterface".to_string();
+        radio.info.reachable_on = None;
+        radio.info.port = None;
+        radio.info.frequency = Some(915_000_000);
+        radio.info.bandwidth = Some(125_000);
+        radio.info.spreading_factor = Some(8);
+        radio.info.coding_rate = Some(5);
+        assert!(usable(&entry(&radio, &[], &none)));
+        radio.info.coding_rate = None;
+        assert!(!usable(&entry(&radio, &[], &none)));
+        let mut i2p = server("Tunnel", "abcdef.b32.i2p", 10);
+        i2p.info.interface_type = "I2PInterface".to_string();
+        assert!(!usable(&entry(&i2p, &[], &none)));
+        let mut tcp = server("Relay", "relay.example.org", 10);
+        tcp.info.interface_type = "TCPServerInterface".to_string();
+        assert!(usable(&entry(&tcp, &[], &none)));
+        tcp.info.reachable_on = None;
+        assert!(!usable(&entry(&tcp, &[], &none)));
+    }
+
+    #[test]
+    fn the_limit_cuts_the_lowest_ranked_and_keeps_saved_ones() {
+        let mut records: Vec<DiscoveredInterface> = (0..4)
+            .map(|n| {
+                let mut record = server(&format!("Up {n}"), &format!("u{n}.example.org"), 10);
+                record.stamp_value = f64::from(n);
+                record
+            })
+            .collect();
+        for n in 0..2 {
+            let mut record = server(&format!("Old {n}"), &format!("o{n}.example.org"), 99);
+            record.status = Some(DiscoveryStatus::Stale);
+            records.push(record);
+        }
+        let saved = Saved {
+            names: vec!["Kept".to_string()],
+            targets: vec![("o1.example.org".to_string(), 4242)],
+            ..Saved::default()
+        };
+        let entries = listed(&records, &[], &saved, 4);
+        assert_eq!(names(&entries), ["Up 3", "Up 2", "Up 1", "Old 1"]);
+        assert!(entries[3].added);
+    }
+
+    #[test]
+    fn one_server_shows_its_freshest_copy_a_trusted_one_first() {
+        let twin = |heard: u64, publisher: u8, status: DiscoveryStatus| {
+            let mut record = server("Relay", "relay.example.org", heard);
+            record.network_id = [publisher; 16];
+            record.status = Some(status);
+            record
+        };
+        // An older copy with a higher stamp and more sightings is not the one shown.
+        let mut older = twin(10, 8, DiscoveryStatus::Available);
+        older.stamp_value = 20.0;
+        older.heard_count = 9;
+        let records = [older, twin(20, 7, DiscoveryStatus::Available)];
+        let entries = listed(&records, &[], &trusting(), 100);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].last_heard, 20);
+        // A trusted publisher's copy stands for the server over a newer one.
+        let records = [
+            twin(30, 8, DiscoveryStatus::Available),
+            twin(10, 9, DiscoveryStatus::Available),
+            twin(40, 9, DiscoveryStatus::Stale),
+        ];
+        let entries = listed(&records, &[], &trusting(), 100);
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].trusted);
+        assert_eq!(
+            (entries[0].last_heard, entries[0].status.as_str()),
+            (10, "available")
+        );
     }
 
     #[test]

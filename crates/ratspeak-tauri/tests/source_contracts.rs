@@ -11877,3 +11877,24 @@ fn release_mobile_webviews_are_inspectable_only_through_the_devtools_policy() {
     let lib = read_source(root.join("src-tauri/src/lib.rs")).expect("Tauri shell");
     assert!(lib.contains("let window = window.devtools(mobile_webview_devtools_enabled(\n        cfg!(debug_assertions),\n        diagnostics_enabled(),\n    ));"));
 }
+
+/// The Discovered list is ranked, and one server shows its freshest copy.
+#[test]
+fn discovered_entries_are_ranked() {
+    let commands =
+        read_source(repo_root().join("crates/ratspeak-tauri/src/commands/network_settings.rs"))
+            .expect("network settings commands");
+    let listed = rust_function_block(&commands, "listed");
+    let fresh = listed
+        .find("entries.sort_by(freshness);")
+        .expect("dedupe order");
+    let dedupe = listed
+        .find("entries.retain(|e| seen.insert(")
+        .expect("dedupe");
+    let ranked = listed.find("entries.sort_by(ranking);").expect("ranking");
+    assert!(fresh < dedupe && dedupe < ranked);
+    assert!(
+        rust_function_block(&commands, "api_discovered_interfaces")
+            .contains("trusted: state.network_settings().trusted_publishers,")
+    );
+}

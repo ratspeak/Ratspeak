@@ -220,6 +220,7 @@ pub ratspeak_core::types::DiscoveredEntry::bandwidth: core::option::Option<u64>
 pub ratspeak_core::types::DiscoveredEntry::coding_rate: core::option::Option<u8>
 pub ratspeak_core::types::DiscoveredEntry::connectable: bool
 pub ratspeak_core::types::DiscoveredEntry::frequency: core::option::Option<u64>
+pub ratspeak_core::types::DiscoveredEntry::heard_count: u64
 pub ratspeak_core::types::DiscoveredEntry::hops: u8
 pub ratspeak_core::types::DiscoveredEntry::id: alloc::string::String
 pub ratspeak_core::types::DiscoveredEntry::joined: bool
@@ -233,8 +234,10 @@ pub ratspeak_core::types::DiscoveredEntry::port: core::option::Option<u16>
 pub ratspeak_core::types::DiscoveredEntry::private_network: bool
 pub ratspeak_core::types::DiscoveredEntry::publisher: alloc::string::String
 pub ratspeak_core::types::DiscoveredEntry::spreading_factor: core::option::Option<u8>
+pub ratspeak_core::types::DiscoveredEntry::stamp_value: f64
 pub ratspeak_core::types::DiscoveredEntry::status: alloc::string::String
 pub ratspeak_core::types::DiscoveredEntry::transport: bool
+pub ratspeak_core::types::DiscoveredEntry::trusted: bool
 pub struct ratspeak_core::types::DiscoveredInterfaces
 pub ratspeak_core::types::DiscoveredInterfaces::enabled: bool
 pub ratspeak_core::types::DiscoveredInterfaces::entries: alloc::vec::Vec<ratspeak_core::types::DiscoveredEntry>

@@ -68,7 +68,7 @@ pub struct NetworkSettings {
 pub struct DiscoveredInterfaces {
     /// Discovery is running.
     pub enabled: bool,
-    /// Most recently heard first, at most the list limit.
+    /// Best first, at most the list limit.
     pub entries: Vec<DiscoveredEntry>,
 }
 
@@ -116,6 +116,15 @@ pub struct DiscoveredEntry {
     pub added: bool,
     /// Connect can add it: a server with an address this device can reach.
     pub connectable: bool,
+    /// The announce's stamp value.
+    #[serde(default)]
+    pub stamp_value: f64,
+    /// Sightings after the first.
+    #[serde(default)]
+    pub heard_count: u64,
+    /// The publisher is one of the trusted publishers.
+    #[serde(default)]
+    pub trusted: bool,
 }
 
 pub const MAX_DISCOVERED_PROPAGATION_NODES: usize = 512;
