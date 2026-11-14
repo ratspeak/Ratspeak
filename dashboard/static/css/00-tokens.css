@@ -192,8 +192,10 @@
     --z-sidebar-overlay: 99;  --z-sidebar: 100;
     --z-dropdown: 200;  --z-modal: 1000;
     --z-tooltip: 5000;
-    --z-announce-ring: 9998;  --z-toast: 9999;
+    --z-announce-ring: 9998;
     --z-overlay: 99999;
+    /* Toasts sit above dialogs, so a copy inside one still confirms. */
+    --z-toast: 100001;
 
     --opacity-disabled: 0.4;
     --opacity-muted: 0.5;

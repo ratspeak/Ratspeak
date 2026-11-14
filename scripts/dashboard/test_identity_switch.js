@@ -92,7 +92,7 @@ async function setupFailureIsShownOnce() {
             return {
                 style: {}, classList: { add: function() {}, remove: function() {} },
                 setAttribute: function() {}, addEventListener: function() {}, remove: function() {},
-                appendChild: function(child) { return child; },
+                appendChild: function(child) { return child; }, insertAdjacentHTML: function() {},
             };
         }
         var container = element();
@@ -112,6 +112,7 @@ async function setupFailureIsShownOnce() {
                 listen: function(event, handler) { listeners[event] = handler; },
                 invoke: function() { return new Promise(function(_resolve, reject) { reply = reject; }); },
                 gestures: { attachSwipe: function() {}, SWIPE_DISTANCE_TOAST_DISMISS_PX: 0 },
+                kit: { icon: function() { return ''; } },
                 diag: function() {},
             },
             loadIdentities: function() {},
@@ -122,7 +123,6 @@ async function setupFailureIsShownOnce() {
         vm.createContext(screen);
         vm.runInContext(
             toastsSource.slice(0, toastsSource.indexOf('function toastDeveloperDetailsEnabled')) +
-            functionSource('createToastStatusIcon', toastsSource) + '\n' +
             functionSource('showToast', toastsSource) + '\n' +
             pendingDeclaration + '\n' +
             'var _identitySwitchFailed = null; function activeIdentity() { return null; } function isViewActive() { return false; }\n' +

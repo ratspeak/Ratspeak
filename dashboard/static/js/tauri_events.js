@@ -1383,7 +1383,7 @@ RS.listen('storage_error', function(data) {
             if (copied) showCopyConfirmationToast('Details');
             else showToast('Could not copy details', 'toast-error', 3000);
         });
-    }, 'Copy Details');
+    }, 'Copy details');
 });
 
 document.addEventListener('DOMContentLoaded', function() {

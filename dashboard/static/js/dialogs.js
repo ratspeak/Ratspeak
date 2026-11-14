@@ -213,8 +213,8 @@ function _rsBuildSheet(opts, onClose) {
 
     var overlay = document.createElement('div');
     overlay.className = 'ui-modal';
-    // Stack above any open sheet — iOS mid-animation sheets bury confirmations otherwise.
-    overlay.style.zIndex = '99999';
+    // Above any open sheet and the unlock screen (iOS mid-animation sheets bury confirmations otherwise).
+    overlay.style.zIndex = 'var(--z-overlay)';
 
     var sheet = document.createElement('div');
     sheet.className = 'ui-dialog rs-sheet-shell' + (RS_DIALOG_SIZES[opts.size] || '') +

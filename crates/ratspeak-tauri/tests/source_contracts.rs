@@ -11792,11 +11792,11 @@ fn failed_storage_writes_surface_a_copyable_error_once_per_operation() {
 
     assert!(events.contains("RS.listen('storage_error'"));
     assert!(events.contains("RS.copyText(details)"));
-    assert!(events.contains("'Copy Details');"));
+    assert!(events.contains("'Copy details');"));
     assert!(
         toasts.contains("function showToast(message, colorClass, duration, onClick, actionLabel)")
     );
-    assert!(toasts.contains("actionBtn.setAttribute('aria-label', actionLabel)"));
+    assert!(toasts.contains("link.textContent = actionLabel;"));
 }
 
 #[test]

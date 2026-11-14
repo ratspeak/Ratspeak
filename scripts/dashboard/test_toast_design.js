@@ -9,7 +9,8 @@ var vm = require('vm');
 var dashboardRoot = path.join(__dirname, '..', '..', 'dashboard');
 var toastJs = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'toasts.js'), 'utf8');
 var components = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '07-components.css'), 'utf8');
-var responsive = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '13-responsive.css'), 'utf8');
+var kit = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '07-ui-components.css'), 'utf8');
+var tokens = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '00-tokens.css'), 'utf8');
 var animations = fs.readFileSync(path.join(dashboardRoot, 'static', 'css', '12-animations.css'), 'utf8');
 var index = fs.readFileSync(path.join(dashboardRoot, 'index.html'), 'utf8');
 var jsRoot = path.join(dashboardRoot, 'static', 'js');
@@ -142,64 +143,56 @@ callsiteSources.forEach(function(source) {
     });
 });
 
-assert(toastJs.includes("status.className = 'toast-status'"),
-    'toasts must carry a compact semantic status mark');
-assert(toastJs.includes("status.setAttribute('aria-hidden', 'true')"),
-    'the decorative status mark must stay out of the accessibility tree');
+// The kit toast (07-ui-components.css): a bare tone glyph, 12 px radius, bottom centre on desktop,
+// above the tab bar on a phone. toasts.js never draws its own card.
+assert(index.includes('<div id="toast-container" class="ui-toasts" role="status" aria-live="polite"></div>'),
+    'toasts stack in the kit container, announced politely');
+assert(toastJs.includes("toast.className = 'ui-toast' + kitTone + ' is-entering';"),
+    'each toast is the kit toast, entering from below');
 ['toast-error', 'toast-warning', 'toast-success', 'toast-info', 'toast-progress', 'toast-action'].forEach(function(intent) {
     assert(toastJs.includes("'" + intent + "':"), 'toast API must accept the ' + intent + ' semantic intent');
 });
-assert(toastJs.includes("colorClass === 'toast-progress'") &&
-    toastJs.includes("colorClass === 'toast-action'"),
-    'progress and actionable notices must have distinct status glyphs');
-assert(toastJs.includes("M10 4.5v8m-3.25-3.25L10 12.5l3.25-3.25M5 15.25h10"),
-    'inbound action notices must use the reviewed receive/downward glyph');
-assert(toastJs.includes("msgSpan.className = 'toast-message'"),
-    'toast copy must use the shared presentation class');
+assert(toastJs.includes("error: 'x-circle'") && toastJs.includes("warning: 'alert'") &&
+    toastJs.includes("success: 'check-circle'") && toastJs.includes("info: 'info'") && toastJs.includes("action: 'inbox'"),
+    'each tone has its bare kit glyph; something received reads as an inbox');
+assert(toastJs.includes('<span class="ui-spin" aria-hidden="true"></span>'),
+    'work in progress turns instead of showing a still glyph');
+assert(toastJs.includes("msgSpan.className = 'msg'"),
+    'toast copy must use the kit message slot');
 assert(toastJs.includes("toast.setAttribute('role', 'alert')"),
     'error toasts must retain assertive announcement semantics');
 assert(toastJs.includes("toast.setAttribute('aria-atomic', 'true')"),
     'each toast must be announced as one complete status update');
-assert(toastJs.includes("var toastKey = message + '|' + colorClass"),
+assert(toastJs.includes("var toastKey = message + '|' + tone"),
     'the visual refresh must preserve duplicate suppression');
 assert(toastJs.includes('setTimeout(dismissToast, duration)'),
     'the visual refresh must preserve toast timing');
 assert(toastJs.includes("actionBtn.className = 'toast-action-target'") &&
     toastJs.includes("actionBtn.setAttribute('aria-label', 'Open: ' + message)"),
     'actionable toasts must expose a native, named keyboard target');
+assert(toastJs.includes("link.className = 'ui-link'"),
+    'a named toast action is a kit Link');
+assert(toastJs.includes("closeBtn.className = 'ui-icon-btn ui-icon-btn--sm'") &&
+    toastJs.includes("closeBtn.setAttribute('aria-label', 'Dismiss')"),
+    'dismissal is the kit icon button with its own label');
+assert(toastJs.includes("direction: 'down'"),
+    'toasts rise from the bottom bar, so a swipe down puts one away');
 assert(!toastJs.includes("toast.style.cursor = 'pointer'"),
     'actionable semantics must not stop at a mouse-only cursor hint');
-assert(toastJs.includes("svg.setAttribute('aria-hidden', 'true')") &&
-    toastJs.includes("svg.setAttribute('focusable', 'false')"),
-    'the dismiss glyph must not duplicate its button label');
-
-var toastRule = components.match(/\.toast\s*\{([\s\S]*?)\n\}/);
-assert(toastRule && /grid-template-columns:\s*28px minmax\(0, 1fr\) 32px/.test(toastRule[1]),
-    'toast layout must give status, message, and dismissal deliberate columns');
-assert(toastRule && /background:\s*var\(--surface-popover\)/.test(toastRule[1]),
-    'toast cards must use the active theme surface');
-assert(!toastRule[1].includes('border-left'),
-    'toast cards must not return to the colored left-rail treatment');
-assert(!/\.toast\.toast-(?:blue|green|red|orange|purple)[^{]*\{[^}]*linear-gradient/s.test(components),
-    'toast variants must not wash the entire card in a status gradient');
-assert(/\.toast\.toast-yellow\s*\{[^}]*--toast-tone:\s*var\(--status-warning-fg\)/s.test(components),
-    'the existing yellow warning alias must receive the warning presentation');
-assert(/\.toast\.toast-progress\s*\{[^}]*--toast-tone:\s*var\(--status-info-fg\)/s.test(components),
-    'progress toasts must use the informational status family');
-assert(/\.toast\.toast-action\s*\{[^}]*--toast-tone:\s*var\(--accent\)/s.test(components),
-    'actionable inbound toasts must use the Ratspeak action accent');
-assert(/\.toast-close:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\)/s.test(components),
-    'toast dismissal must expose keyboard focus');
-assert(/\.toast-action-target\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;/s.test(components),
+assert(/\.ui-toasts \{[^}]*bottom: 88px;[^}]*z-index: var\(--z-toast\);/.test(kit),
+    'desktop toasts sit at the bottom centre, clear of pane headers and lifted above a composer row');
+assert(/@media \(max-width: 768px\) \{ \.ui-toasts \{[^}]*bottom: calc\(76px \+ var\(--sab, 0px\)\);/.test(kit),
+    'phone toasts sit above the tab bar and the home indicator');
+assert(/\.ui-toast\.is-entering \{ opacity: 0; transform: translateY\(12px\); \}/.test(kit),
+    'toasts enter by rising into place');
+assert(/--z-toast: 100001;/.test(tokens) && /--z-overlay: 99999;/.test(tokens),
+    'toasts stay above dialogs, so a copy inside one still confirms');
+assert(/\.toast-action-target \{[^}]*position: absolute;[^}]*inset: 0;/.test(components),
     'the native action target must retain the whole-card tap area');
-assert(/\.toast-action-target:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\)/s.test(components),
+assert(/\.toast-action-target:focus-visible \{[^}]*outline: 2px solid var\(--focus-ring\)/.test(components),
     'actionable toasts must expose keyboard focus');
-assert(!components.includes('.toast-actionable .toast-message::after'),
-    'the action glyph must remain the single affordance instead of repeating a chevron');
-assert(/@media \(max-width:\s*768px\)[\s\S]*?#toast-container[\s\S]*?top:\s*calc\(8px \+ var\(--sat\)\)/.test(responsive),
-    'mobile toasts must respect the device safe area');
-assert(/@media \(max-width:\s*768px\)[\s\S]*?\.toast\s*\{[^}]*grid-template-columns:\s*28px minmax\(0, 1fr\) 44px/s.test(responsive),
-    'the mobile toast grid must reserve the complete dismissal touch target');
+assert(!/#toast-container \{/.test(components) && !/\.toast \{/.test(components),
+    'the pre-kit toast card is gone');
 assert(/@media \(prefers-reduced-motion:\s*reduce\)[\s\S]*?transition-duration:\s*0\.01ms !important/.test(animations),
     'toast motion must inherit the global reduced-motion contract');
 var styleRevision = index.match(/\/static\/style\.css\?v=([^"']+)/);
@@ -307,7 +300,7 @@ assert(actionableCalls.length > 0, 'dashboard must retain actionable inbound toa
 actionableCalls.forEach(function(call) {
     var args = splitCallArguments(call.source);
     if (args.length >= 5 && args[4]) {
-        assert(args[1] === "'toast-error'" && args[4] === "'Copy Details'",
+        assert(args[1] === "'toast-error'" && args[4] === "'Copy details'",
             call.file + ' labelled toast actions are reserved for copying error details');
         return;
     }
@@ -342,6 +335,7 @@ FakeElement.prototype.setAttribute = function(name, value) { this.attributes[nam
 FakeElement.prototype.appendChild = function(child) { this.children.push(child); return child; };
 FakeElement.prototype.addEventListener = function(name, handler) { this.listeners[name] = handler; };
 FakeElement.prototype.remove = function() { this.removed = true; };
+FakeElement.prototype.insertAdjacentHTML = function(_where, html) { this.children.push({ tagName: 'svg', html: html }); };
 
 var toastContainer = new FakeElement('div');
 var timers = [];
@@ -356,7 +350,8 @@ var sandbox = {
         gestures: {
             SWIPE_DISTANCE_TOAST_DISMISS_PX: 40,
             attachSwipe: function() {}
-        }
+        },
+        kit: { icon: function(name) { return '<svg data-icon="' + name + '"></svg>'; } }
     },
     requestAnimationFrame: function(callback) { callback(); },
     setTimeout: function(callback) { timers.push(callback); },
@@ -391,12 +386,8 @@ assert.strictEqual(
 var opened = 0;
 sandbox.showToast('New message from Mountain Relay', 'toast-action', 4000, function() { opened += 1; });
 var actionableToast = toastContainer.children[0];
-var actionPath = actionableToast.children[0].children[0].children[0];
-assert.strictEqual(
-    actionPath.attributes.d,
-    'M10 4.5v8m-3.25-3.25L10 12.5l3.25-3.25M5 15.25h10',
-    'action toast must render the reviewed incoming/downward glyph'
-);
+assert.strictEqual(actionableToast.children[0].html, '<svg data-icon="inbox"></svg>',
+    'an inbound action toast leads with the inbox glyph');
 var actionTarget = actionableToast.children.find(function(child) {
     return child.className === 'toast-action-target';
 });
@@ -409,26 +400,25 @@ assert.strictEqual(opened, 1, 'the native action target must preserve the toast 
 
 var copied = 0;
 sandbox.showToast("Ratspeak couldn't save some changes.", 'toast-error', 5000,
-    function() { copied += 1; }, 'Copy Details');
+    function() { copied += 1; }, 'Copy details');
 var errorToast = toastContainer.children[1];
 assert.strictEqual(errorToast.attributes.role, 'alert', 'a labelled error toast stays an alert');
-var errorMessage = errorToast.children.find(function(child) { return child.className === 'toast-message'; });
+assert(/\bui-toast--error\b/.test(errorToast.className), 'an error toast takes the kit error tone');
+var errorMessage = errorToast.children.find(function(child) { return child.className === 'msg'; });
 assert.strictEqual(errorMessage.textContent, "Ratspeak couldn't save some changes.");
-var errorActionLabel = errorMessage.children.find(function(child) { return child.tagName === 'span'; });
-assert(errorActionLabel && errorActionLabel.textContent === 'Copy Details',
-    'a labelled toast action must be visible, not only announced');
-var copyTarget = errorToast.children.find(function(child) {
-    return child.className === 'toast-action-target';
-});
-assert.strictEqual(copyTarget.attributes['aria-label'], 'Copy Details',
-    'a labelled action target must announce its action');
-copyTarget.listeners.click();
+var copyLink = errorToast.children.find(function(child) { return child.className === 'ui-link'; });
+assert(copyLink && copyLink.tagName === 'button' && copyLink.textContent === 'Copy details',
+    'a labelled toast action is a visible Link button');
+assert(!errorToast.children.some(function(child) { return child.className === 'toast-action-target'; }),
+    'copying details never hides behind the whole card');
+copyLink.listeners.click();
 assert.strictEqual(copied, 1, 'the labelled action must run its callback');
 
 var tauriEvents = callsiteSource('tauri_events.js');
 assert(tauriEvents.includes("RS.listen('storage_error'") &&
     tauriEvents.includes('RS.copyText(details)') &&
-    tauriEvents.includes("showCopyConfirmationToast('Details')"),
+    tauriEvents.includes("showCopyConfirmationToast('Details')") &&
+    tauriEvents.includes("}, 'Copy details');"),
     'a failed write must offer its details on the clipboard');
 
 console.log('toast design contract tests passed');

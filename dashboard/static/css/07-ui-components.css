@@ -471,7 +471,9 @@ button.ui-prop, a.ui-prop { cursor: pointer; text-decoration: none; }
 .ui-toasts { position: fixed; left: 50%; bottom: 88px; transform: translateX(-50%); z-index: var(--z-toast); display: flex; flex-direction: column; gap: 8px; width: min(400px, calc(100vw - 32px)); pointer-events: none; }
 @media (max-width: 768px) { .ui-toasts { left: 16px; right: 16px; width: auto; transform: none; bottom: calc(76px + var(--sab, 0px)); } }
 .ui-toast { display: flex; align-items: center; gap: 12px; padding: 8px 8px 8px 16px; min-height: 48px; box-sizing: border-box; background: var(--surface-popover); border: 1px solid var(--border-surface-strong); border-radius: var(--radius-card); box-shadow: var(--shadow-popover); color: var(--text-primary); font-size: var(--text-sm); font-weight: 500; line-height: 1.4; pointer-events: auto; transition: opacity .18s ease, transform .24s cubic-bezier(.16, 1, .3, 1); }
+.ui-toast.is-entering { opacity: 0; transform: translateY(12px); }
 .ui-toast.is-leaving { opacity: 0; transform: translateY(4px); }
+.ui-toast > .ui-spin { margin: 0 2px; color: var(--status-info-fg); }
 .ui-toast > .ui-ico { width: 20px; height: 20px; color: var(--status-info-fg); }
 .ui-toast--success > .ui-ico { color: var(--status-online-fg); }
 .ui-toast--warning > .ui-ico { color: var(--status-warning-fg); }

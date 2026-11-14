@@ -1,10 +1,20 @@
+// Semantic intents map to the kit toast tones. Unknown or legacy colour names read as info.
 var TOAST_CLASS_MAP = {
-    'toast-error':   'toast-red',
-    'toast-warning': 'toast-orange',
-    'toast-success': 'toast-green',
-    'toast-info':    'toast-blue',
-    'toast-progress':'toast-progress',
-    'toast-action':  'toast-action'
+    'toast-error':   'error',
+    'toast-warning': 'warning',
+    'toast-success': 'success',
+    'toast-info':    'info',
+    'toast-progress':'progress',
+    'toast-action':  'action'
+};
+
+// The bare tone glyph: a check, a warning, an error, information, or something received.
+var TOAST_GLYPHS = {
+    error: 'x-circle',
+    warning: 'alert',
+    success: 'check-circle',
+    info: 'info',
+    action: 'inbox'
 };
 
 var _activeToasts = new Set();
@@ -33,46 +43,6 @@ function toastErrorCopy(error, fallback) {
     return toastDeveloperDetailsEnabled() ? base + ' — ' + detail : base;
 }
 
-function createToastStatusIcon(colorClass) {
-    var status = document.createElement('span');
-    status.className = 'toast-status';
-    status.setAttribute('aria-hidden', 'true');
-
-    var ns = 'http://www.w3.org/2000/svg';
-    var svg = document.createElementNS(ns, 'svg');
-    svg.setAttribute('viewBox', '0 0 20 20');
-    svg.setAttribute('fill', 'none');
-    svg.setAttribute('stroke', 'currentColor');
-    svg.setAttribute('stroke-width', '1.8');
-    svg.setAttribute('stroke-linecap', 'round');
-    svg.setAttribute('stroke-linejoin', 'round');
-
-    var path = document.createElementNS(ns, 'path');
-    if (colorClass === 'toast-green') {
-        path.setAttribute('d', 'M5.25 10.25 8.5 13.5 14.75 6.75');
-    } else if (colorClass === 'toast-red') {
-        path.setAttribute('d', 'm6.5 6.5 7 7m0-7-7 7');
-    } else if (colorClass === 'toast-orange' || colorClass === 'toast-yellow') {
-        path.setAttribute('d', 'M10 5.75v5.5m0 3v.1');
-    } else if (colorClass === 'toast-progress') {
-        path.setAttribute('d', 'M5.5 10h.1m4.35 0h.1m4.35 0h.1');
-        svg.setAttribute('stroke-width', '2.4');
-    } else if (colorClass === 'toast-action') {
-        // Action toasts represent something newly received. A downward arrow
-        // into a quiet baseline reads as incoming, while the full card remains
-        // the explicit "open" control for assistive technology.
-        path.setAttribute('d', 'M10 4.5v8m-3.25-3.25L10 12.5l3.25-3.25M5 15.25h10');
-    } else if (colorClass === 'toast-purple') {
-        path.setAttribute('d', 'M10 4.75v10.5M4.75 10h10.5');
-    } else {
-        path.setAttribute('d', 'M10 8.75v5m0-8.1v.1');
-    }
-
-    svg.appendChild(path);
-    status.appendChild(svg);
-    return status;
-}
-
 // Toasts are user interruptions. Use them only when the user must correct an
 // action, when an otherwise invisible action needs confirmation, or when an
 // asynchronous inbound/background event deserves attention. Routine state
@@ -82,20 +52,22 @@ function createToastStatusIcon(colorClass) {
 // an error's details, named by actionLabel; use rsChoice/rsPrompt for
 // confirmation flows.
 function showToast(message, colorClass, duration, onClick, actionLabel) {
-    colorClass = TOAST_CLASS_MAP[colorClass] || colorClass || '';
+    var tone = TOAST_CLASS_MAP[colorClass] || 'info';
 
     duration = Math.min(duration || 3000, 5000);
 
-    var toastKey = message + '|' + colorClass;
+    var toastKey = message + '|' + tone;
     if (_activeToasts.has(toastKey)) return;
     _activeToasts.add(toastKey);
 
     var container = document.getElementById('toast-container');
     var toast = document.createElement('div');
-    toast.className = 'toast ' + colorClass;
+    // The kit toast: info and progress share the info tone; an inbound action uses it too.
+    var kitTone = tone === 'error' || tone === 'warning' || tone === 'success' ? ' ui-toast--' + tone : '';
+    toast.className = 'ui-toast' + kitTone + ' is-entering';
     toast.setAttribute('aria-atomic', 'true');
 
-    if (colorClass === 'toast-red') {
+    if (tone === 'error') {
         toast.setAttribute('role', 'alert');
     }
 
@@ -104,33 +76,43 @@ function showToast(message, colorClass, duration, onClick, actionLabel) {
         if (dismissed) return;
         dismissed = true;
         _activeToasts.delete(toastKey);
-        toast.classList.add('dismiss');
-        toast.classList.remove('visible');
-        setTimeout(function() { toast.remove(); }, 350);
+        toast.classList.add('is-leaving');
+        setTimeout(function() { toast.remove(); }, 240);
     }
 
-    toast.appendChild(createToastStatusIcon(colorClass));
+    // Work in progress turns; every other tone is a still glyph.
+    toast.insertAdjacentHTML('beforeend', tone === 'progress'
+        ? '<span class="ui-spin" aria-hidden="true"></span>'
+        : RS.kit.icon(TOAST_GLYPHS[tone]));
 
     var msgSpan = document.createElement('span');
-    msgSpan.className = 'toast-message';
+    msgSpan.className = 'msg';
     msgSpan.textContent = message;
-    if (onClick && actionLabel) {
-        var actionText = document.createElement('span');
-        actionText.className = 'text-xs text-accent';
-        actionText.textContent = actionLabel;
-        msgSpan.appendChild(document.createElement('br'));
-        msgSpan.appendChild(actionText);
-    }
     toast.appendChild(msgSpan);
 
-    // Whole toast is the tap target so the click area matches the visual.
-    if (onClick) {
-        toast.classList.add('toast-actionable');
+    if (onClick && actionLabel) {
+        // A named action (copying an error's details) is its own Link, so the card stays readable.
+        var link = document.createElement('button');
+        link.type = 'button';
+        link.className = 'ui-link';
+        link.textContent = actionLabel;
+        link.addEventListener('click', function() {
+            dismissToast();
+            onClick();
+        });
+        toast.appendChild(link);
+    } else if (onClick) {
+        // An inbound item: the whole card opens it, and "Open" says so.
+        toast.classList.add('is-actionable');
+        var open = document.createElement('span');
+        open.className = 'ui-link';
+        open.setAttribute('aria-hidden', 'true');
+        open.textContent = 'Open';
+        toast.appendChild(open);
         var actionBtn = document.createElement('button');
         actionBtn.type = 'button';
         actionBtn.className = 'toast-action-target';
-        if (actionLabel) actionBtn.setAttribute('aria-label', actionLabel);
-        else actionBtn.setAttribute('aria-label', 'Open: ' + message);
+        actionBtn.setAttribute('aria-label', 'Open: ' + message);
         actionBtn.addEventListener('click', function() {
             dismissToast();
             onClick();
@@ -139,40 +121,24 @@ function showToast(message, colorClass, duration, onClick, actionLabel) {
     }
 
     var closeBtn = document.createElement('button');
-    closeBtn.className = 'toast-close';
+    closeBtn.type = 'button';
+    closeBtn.className = 'ui-icon-btn ui-icon-btn--sm';
     closeBtn.setAttribute('aria-label', 'Dismiss');
-    var ns = 'http://www.w3.org/2000/svg';
-    var svg = document.createElementNS(ns, 'svg');
-    svg.setAttribute('width', '14');
-    svg.setAttribute('height', '14');
-    svg.setAttribute('viewBox', '0 0 14 14');
-    svg.setAttribute('fill', 'none');
-    svg.setAttribute('stroke', 'currentColor');
-    svg.setAttribute('stroke-width', '2');
-    svg.setAttribute('stroke-linecap', 'round');
-    svg.setAttribute('aria-hidden', 'true');
-    svg.setAttribute('focusable', 'false');
-    var line1 = document.createElementNS(ns, 'line');
-    line1.setAttribute('x1', '2'); line1.setAttribute('y1', '2');
-    line1.setAttribute('x2', '12'); line1.setAttribute('y2', '12');
-    var line2 = document.createElementNS(ns, 'line');
-    line2.setAttribute('x1', '12'); line2.setAttribute('y1', '2');
-    line2.setAttribute('x2', '2'); line2.setAttribute('y2', '12');
-    svg.appendChild(line1);
-    svg.appendChild(line2);
-    closeBtn.appendChild(svg);
+    closeBtn.title = 'Dismiss';
+    closeBtn.innerHTML = RS.kit.icon('x');
     closeBtn.addEventListener('click', function(e) {
         e.stopPropagation();
         dismissToast();
     });
     toast.appendChild(closeBtn);
 
+    // Toasts rise from the bottom bar, so a swipe down puts one away.
     RS.gestures.attachSwipe(toast, {
-        direction: 'up',
+        direction: 'down',
         distanceThreshold: RS.gestures.SWIPE_DISTANCE_TOAST_DISMISS_PX,
         hapticAt: { commit: 'selection' },
         onProgress: function(_dx, dy) {
-            if (dy < 0) toast.style.transform = 'translateY(' + dy + 'px)';
+            if (dy > 0) toast.style.transform = 'translateY(' + dy + 'px)';
         },
         onCommit: dismissToast,
         onCancel: function() { toast.style.transform = ''; }
@@ -180,7 +146,7 @@ function showToast(message, colorClass, duration, onClick, actionLabel) {
 
     container.appendChild(toast);
     requestAnimationFrame(function() {
-        toast.classList.add('visible');
+        requestAnimationFrame(function() { toast.classList.remove('is-entering'); });
     });
 
     setTimeout(dismissToast, duration);
