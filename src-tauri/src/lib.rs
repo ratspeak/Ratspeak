@@ -1299,6 +1299,7 @@ pub fn run() {
                 ratspeak_tauri::commands::interfaces::set_close_button_action,
                 ratspeak_tauri::commands::interfaces::set_lxmf_limit_1mb,
                 ratspeak_tauri::commands::interfaces::set_lxmf_keep_trying,
+                ratspeak_tauri::commands::interfaces::set_ui_state,
                 ratspeak_tauri::commands::interfaces::accept_public_channel_consent,
                 ratspeak_tauri::commands::interfaces::set_appearance,
                 ratspeak_tauri::commands::interfaces::set_native_theme,

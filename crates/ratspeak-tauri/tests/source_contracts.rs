@@ -11898,3 +11898,32 @@ fn discovered_entries_are_ranked() {
             .contains("trusted: state.network_settings().trusted_publishers,")
     );
 }
+
+/// UI memory is an app setting: answered before an identity is active or
+/// while it is locked, and stored for an allowlist of keys only.
+#[test]
+fn ui_state_is_an_app_setting() {
+    let root = repo_root();
+    let read = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+    let interfaces = read("crates/ratspeak-tauri/src/commands/interfaces.rs");
+    let gate = read("crates/ratspeak-tauri/src/invoke_gate.rs");
+    assert!(interfaces.contains("pub async fn set_ui_state("));
+    assert!(
+        read("src-tauri/src/lib.rs")
+            .contains("ratspeak_tauri::commands::interfaces::set_ui_state,")
+    );
+    for list in ["IDENTITY_FREE", "LOCK_FREE"] {
+        assert!(gate_list(&gate, list).contains(&"set_ui_state"), "{list}");
+    }
+    let settings = rust_function_block(&interfaces, "api_app_settings");
+    for key in [
+        "activity_tab_seen",
+        "network_map_collapsed",
+        "update_last_checked",
+    ] {
+        assert!(
+            settings.contains(&format!("\"{key}\": ui_state.{key},")),
+            "{key}"
+        );
+    }
+}

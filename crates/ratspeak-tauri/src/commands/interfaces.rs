@@ -1089,6 +1089,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         lxmf_limit_1mb,
         public_channel_consent_version,
         close_button_action,
+        ui_state,
     ) = db::spawn_db(state.db.clone(), |p| {
         let hw_timeout = db::get_setting(&p, "hardware_session_timeout")
             .and_then(|v| v.parse::<u64>().ok())
@@ -1120,6 +1121,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
                 .unwrap_or(0);
         let close_button_action =
             CloseButtonAction::from_setting(db::get_setting(&p, CLOSE_BUTTON_SETTING).as_deref());
+        let ui_state = stored_ui_state(&p);
         (
             hw_timeout,
             developer_mode,
@@ -1134,6 +1136,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
             lxmf_limit_1mb,
             public_channel_consent_version,
             close_button_action,
+            ui_state,
         )
     })
     .await
@@ -1151,6 +1154,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         true,
         0,
         CloseButtonAction::Ask,
+        UiState::default(),
     ));
     Ok(json!({
         "auto_announce_interval": *state.announce_interval_rx.borrow(),
@@ -1172,7 +1176,115 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         "public_channel_consent_version": public_channel_consent_version,
         "public_channel_consent_required_version": db::PUBLIC_CHANNEL_CONSENT_VERSION,
         "close_button_action": close_button_action.as_setting(),
+        "activity_tab_seen": ui_state.activity_tab_seen,
+        "network_map_collapsed": ui_state.network_map_collapsed,
+        "update_last_checked": ui_state.update_last_checked,
     }))
+}
+
+/// Small UI memory kept beside the app settings.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct UiState {
+    activity_tab_seen: bool,
+    network_map_collapsed: bool,
+    /// Unix seconds.
+    update_last_checked: u64,
+}
+
+fn stored_ui_state(pool: &db::DbPool) -> UiState {
+    let flag = |key| db::get_setting(pool, key).is_some_and(|value| value == "true");
+    UiState {
+        activity_tab_seen: flag("activity_tab_seen"),
+        network_map_collapsed: flag("network_map_collapsed"),
+        update_last_checked: db::get_setting(pool, "update_last_checked")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(0),
+    }
+}
+
+/// The stored form of one UI state value; only these keys and types.
+fn ui_state_setting(key: &str, value: &Value) -> AppResult<String> {
+    match (key, value) {
+        ("activity_tab_seen" | "network_map_collapsed", Value::Bool(on)) => Ok(on.to_string()),
+        ("update_last_checked", Value::Number(number)) => number
+            .as_u64()
+            .map(|seconds| seconds.to_string())
+            .ok_or_else(|| AppError::bad_request("update_last_checked takes Unix seconds")),
+        ("activity_tab_seen" | "network_map_collapsed" | "update_last_checked", _) => {
+            Err(AppError::bad_request(format!("{key} has the wrong type")))
+        }
+        _ => Err(AppError::bad_request("Unknown UI state")),
+    }
+}
+
+#[tauri::command]
+pub async fn set_ui_state(
+    state: State<'_, Arc<AppState>>,
+    key: String,
+    value: Value,
+) -> AppResult<Value> {
+    let stored = ui_state_setting(&key, &value)?;
+    let setting = key.clone();
+    db::spawn_db(state.db.clone(), move |p| {
+        db::try_set_setting(&p, &setting, &stored)
+    })
+    .await
+    .map_err(|_| AppError::internal("set_ui_state db task panicked"))?
+    .map_err(|error| AppError::database_unavailable(format!("Failed to save setting: {error}")))?;
+    state.emit_to_all("app_settings_updated", json!({ key: value }));
+    Ok(json!({ "ok": true }))
+}
+
+#[cfg(test)]
+mod ui_state_tests {
+    use super::*;
+
+    #[test]
+    fn ui_state_takes_only_its_keys_and_types() {
+        assert_eq!(
+            ui_state_setting("activity_tab_seen", &json!(true)).unwrap(),
+            "true"
+        );
+        assert_eq!(
+            ui_state_setting("network_map_collapsed", &json!(false)).unwrap(),
+            "false"
+        );
+        assert_eq!(
+            ui_state_setting("update_last_checked", &json!(1_763_100_000u64)).unwrap(),
+            "1763100000"
+        );
+        for (key, value) in [
+            ("activity_tab_seen", json!("true")),
+            ("network_map_collapsed", json!(1)),
+            ("update_last_checked", json!(-1)),
+            ("update_last_checked", json!(1.5)),
+            ("update_last_checked", json!(true)),
+            ("theme_mode", json!("dark")),
+            ("", json!(true)),
+        ] {
+            assert_eq!(
+                ui_state_setting(key, &value).unwrap_err().code,
+                "bad_request",
+                "{key}"
+            );
+        }
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(r2d2_sqlite::SqliteConnectionManager::memory())
+            .unwrap();
+        db::init_schema(&pool).unwrap();
+        assert_eq!(stored_ui_state(&pool), UiState::default());
+        db::set_setting(&pool, "activity_tab_seen", "true");
+        db::set_setting(&pool, "update_last_checked", "42");
+        assert_eq!(
+            stored_ui_state(&pool),
+            UiState {
+                activity_tab_seen: true,
+                network_map_collapsed: false,
+                update_last_checked: 42,
+            }
+        );
+    }
 }
 
 /// Persist the versioned public-channel acknowledgement.
