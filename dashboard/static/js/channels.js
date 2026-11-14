@@ -2570,7 +2570,7 @@ function _channelsRenderRoom(scrollRestore) {
     var transcript = _channelsEl('channel-transcript');
     var room = _channelsSelectedRoomView();
     if (!header || !transcript || !compose) return;
-    if (RS.chatScroll) RS.chatScroll.wire(transcript);
+    RS.chatScroll.wire(transcript);
     if (layout) layout.classList.toggle('has-active-room', !!room);
     if (layout) layout.classList.toggle('room-live', !!room && room.phase === 'joined');
     if (layout && room) layout.classList.remove('pane-offers-list-action');
@@ -2638,9 +2638,7 @@ function _channelsRenderRoom(scrollRestore) {
     }
     _channelsSetText('channel-room-meta', roomMeta);
 
-    var scrollState = RS.chatScroll
-        ? RS.chatScroll.capture(transcript)
-        : { scrollTop: transcript.scrollTop, nearBottom: true, followLatest: true };
+    var scrollState = RS.chatScroll.capture(transcript);
     transcript.textContent = '';
     if (!room.history_only) {
         channelsSnapshot.notices.forEach(function(item) {
@@ -2688,18 +2686,12 @@ function _channelsRenderRoom(scrollRestore) {
         });
     }
     if (scrollRestore && scrollRestore.key === (historyContext && historyContext.key)) {
-        var restoredTop = scrollRestore.scroll_top +
-            Math.max(0, transcript.scrollHeight - scrollRestore.scroll_height);
-        if (RS.chatScroll) RS.chatScroll.setTop(transcript, restoredTop);
-        else transcript.scrollTop = restoredTop;
-    } else if (RS.chatScroll) {
+        RS.chatScroll.setTop(transcript, scrollRestore.scroll_top +
+            Math.max(0, transcript.scrollHeight - scrollRestore.scroll_height));
+    } else {
         RS.chatScroll.applyAfterRender(transcript, scrollState, {
             forceScrollBottom: roomChanged
         });
-    } else if (scrollState.nearBottom || roomChanged) {
-        transcript.scrollTop = transcript.scrollHeight;
-    } else {
-        transcript.scrollTop = scrollState.scrollTop;
     }
     _channelsRenderMembers(room.history_only ? null : room);
     _channelsUpdateComposer();
@@ -6302,9 +6294,8 @@ function channelsSendMessage() {
         RS.composer.focusWithoutScroll(input);
     }
     _channelsUpdateComposer();
-    if (document.documentElement.classList.contains('keyboard-open') && RS.chatScroll) {
-        RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'));
-    }
+    // Like Direct Messages, sending returns the reader to the latest message.
+    RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'));
 
     request.then(function(result) {
         return _channelsHandleComposerResult(result, room.name);
@@ -6316,7 +6307,7 @@ function channelsSendMessage() {
                 input.style.height = 'auto';
                 input.style.height = Math.min(input.scrollHeight, 124) + 'px';
             }
-            if (document.documentElement.classList.contains('keyboard-open') && RS.chatScroll) {
+            if (document.documentElement.classList.contains('keyboard-open')) {
                 RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'));
             }
         }
@@ -6426,9 +6417,7 @@ function _channelsBindUI() {
                 if (channelGrowRaf) cancelAnimationFrame(channelGrowRaf);
                 channelGrowRaf = requestAnimationFrame(function() {
                     channelGrowRaf = null;
-                    if (RS.chatScroll) {
-                        RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'));
-                    }
+                    RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'));
                 });
             }
         });

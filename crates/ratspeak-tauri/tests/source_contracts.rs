@@ -6065,24 +6065,36 @@ fn conversation_view_scrolls_to_recent_messages_without_yanking_history() {
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     let channels = read_source(root.join("dashboard/static/js/channels.js")).expect("channels js");
     let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
+    let chat_scroll =
+        read_source(root.join("dashboard/static/js/chat_scroll.js")).expect("chat scroll js");
+    let index = read_source(root.join("dashboard/index.html")).expect("dashboard index");
 
-    assert!(lxmf.contains("function _wireLxmfMessageScroll(container)"));
-    assert!(lxmf.contains("function _captureLxmfMessageScrollState(container)"));
-    assert!(lxmf.contains("function _scheduleLxmfScrollToBottom(container)"));
-    assert!(
-        lxmf.contains("function _applyLxmfMessageScrollAfterRender(container, state, options)")
-    );
-    assert!(lxmf.contains("function _watchLxmfImagesForBottomPin(container, shouldPin)"));
-    assert!(lxmf.contains("var _lxmfMessageScrollStates = new WeakMap();"));
-    assert!(lxmf.contains("state.followLatest = false;"));
-    assert!(lxmf.contains("state.followLatest = true;"));
-    assert!(lxmf.contains("RS.chatScroll.applyAfterRender = _applyLxmfMessageScrollAfterRender;"));
+    // One scroll controller, loaded before both transcripts that use it.
+    let shared_pos = index.find("/static/js/chat_scroll.js?v=").expect("chat scroll script");
+    assert!(shared_pos < index.find("/static/js/lxmf.js").expect("lxmf script"));
+    assert!(shared_pos < index.find("/static/js/channels.js").expect("channels script"));
+    assert!(chat_scroll.contains("function wire(container)"));
+    assert!(chat_scroll.contains("function capture(container)"));
+    assert!(chat_scroll.contains("function pinToBottom(container)"));
+    assert!(chat_scroll.contains("function applyAfterRender(container, state, options)"));
+    assert!(chat_scroll.contains("function watchImages(container, shouldPin)"));
+    assert!(chat_scroll.contains("var states = new WeakMap();"));
+    assert!(chat_scroll.contains("state.followLatest = false;"));
+    assert!(chat_scroll.contains("state.followLatest = true;"));
+    assert!(chat_scroll.contains("state.pinWhenShown = true;"));
+    assert!(chat_scroll.contains("new ResizeObserver(function()"));
+    assert!(lxmf.contains("RS.chatScroll.wire(container);"));
+    assert!(lxmf.contains("var scrollState = RS.chatScroll.capture(container);"));
+    assert!(lxmf.contains("RS.chatScroll.applyAfterRender(container, scrollState, options)"));
+    assert!(lxmf.contains("RS.chatScroll.watchImages(container, shouldPinMessages);"));
+    assert!(!lxmf.contains("function _wireLxmfMessageScroll"));
     assert!(channels.contains("RS.chatScroll.wire(transcript)"));
     assert!(channels.contains("RS.chatScroll.capture(transcript)"));
     assert!(channels.contains("RS.chatScroll.applyAfterRender(transcript, scrollState"));
     assert!(!channels.contains("_channelsTranscriptPinToken"));
-    assert!(lxmf.contains("container.querySelectorAll('img').forEach(function(img)"));
-    assert!(lxmf.contains("img.addEventListener('load', function()"));
+    assert!(!channels.contains("transcript.scrollTop = transcript.scrollHeight"));
+    assert!(chat_scroll.contains("container.querySelectorAll('img').forEach(function(img)"));
+    assert!(chat_scroll.contains("img.addEventListener('load', function()"));
     assert!(lxmf.contains("renderConversation({ forceScrollBottom: true });"));
     assert!(lxmf.contains("renderConversation({ stickToBottom: true });"));
     assert!(
@@ -6211,7 +6223,9 @@ fn message_media_viewer_links_and_native_saves_are_wired() {
     assert!(lxmf.contains("copyBtn.hidden = !canCopy;"));
     assert!(lxmf.contains("_saveDownloadedMediaFile(file, { preferPhotos: true })"));
     assert!(lxmf.contains("Saved to Photos"));
-    assert!(lxmf.contains("function _compensateImageLoadScroll(container, img, before)"));
+    let chat_scroll =
+        read_source(root.join("dashboard/static/js/chat_scroll.js")).expect("chat scroll js");
+    assert!(chat_scroll.contains("function compensateImageLoad(container, img, before)"));
     assert!(lxmf.contains("function _messageHasTransferPayload(msg)"));
     assert!(lxmf.contains("function _messageCanCancelSend(msg)"));
     assert!(lxmf.contains("function _messageCanCancelTransfer(msg)"));
@@ -8645,9 +8659,12 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(lxmf.contains("return _messageElevatedTextStartsNativeSelection(touch, bubble) ||"));
     assert!(lxmf.contains("_messageTouchStartsDirectControl(touch, bubble);"));
     assert!(!lxmf.contains("preventDefaultOnStart: function()"));
-    assert!(lxmf.contains("container.addEventListener('touchstart', function()"));
-    assert!(lxmf.contains("state.settleToken++;"));
-    assert!(lxmf.contains("state.programmaticScrollUntil = 0;"));
+    let chat_scroll =
+        read_source(root.join("dashboard/static/js/chat_scroll.js")).expect("chat scroll js");
+    assert!(chat_scroll.contains("container.addEventListener('touchstart', function()"));
+    assert!(chat_scroll.contains("state.settleToken++;"));
+    assert!(chat_scroll.contains("state.programmaticScrollUntil = 0;"));
+    assert!(chat_scroll.contains("}, { passive: true });"));
     assert!(lxmf.contains("}, { passive: true });"));
     assert!(lxmf.contains("if (e.defaultPrevented) return;"));
     assert!(lxmf.contains("(t.closest('.lxmf-msg') && _shouldPreserveLxmfComposerKeyboard())"));

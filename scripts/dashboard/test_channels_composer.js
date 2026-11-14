@@ -14,6 +14,8 @@ var lxmfPath = path.join(__dirname, '..', '..', 'dashboard', 'static', 'js', 'lx
 var lxmfSource = fs.readFileSync(lxmfPath, 'utf8');
 var uiSharedPath = path.join(__dirname, '..', '..', 'dashboard', 'static', 'js', 'ui_shared.js');
 var uiSharedSource = fs.readFileSync(uiSharedPath, 'utf8');
+var chatScrollPath = path.join(__dirname, '..', '..', 'dashboard', 'static', 'js', 'chat_scroll.js');
+var chatScrollSource = fs.readFileSync(chatScrollPath, 'utf8');
 
 function sourceFunctionFrom(source, name, nextName) {
     var start = source.indexOf('function ' + name);
@@ -55,22 +57,10 @@ assert(!channelsSource.includes('_channelsTranscriptPinToken'),
 assert(renderRoomSource.includes('RS.chatScroll.capture(transcript)'));
 assert(renderRoomSource.includes('RS.chatScroll.applyAfterRender(transcript, scrollState'));
 assert(sendSource.includes("RS.chatScroll.pinToBottom(_channelsEl('channel-transcript'))"),
-    'sending with the keyboard open must reuse the Direct Messages scroll controller');
+    'sending must reuse the shared chat scroll controller');
 assert(!renderConversationSource.includes('preventDefaultOnStart'),
     'message long-press recognition must not cancel Android transcript panning');
 
-var scrollFunctions = [
-    '_lxmfMessageScrollStateFor',
-    '_lxmfMessageBottomGap',
-    '_lxmfMessagesNearBottom',
-    '_wireLxmfMessageScroll',
-    '_setLxmfMessageScrollTop',
-    '_scheduleLxmfScrollToBottom',
-    '_captureLxmfMessageScrollState',
-    '_restoreLxmfMessageScroll',
-    '_lxmfShouldFollowLatest',
-    '_applyLxmfMessageScrollAfterRender'
-].map(function(name) { return namedFunctionSource(lxmfSource, name); }).join('\n');
 var now = 1000;
 var scrollHandlers = {};
 var pendingSettleCallbacks = [];
@@ -86,14 +76,15 @@ var scrollPolicyContext = {
         return pendingSettleCallbacks.length;
     }
 };
+scrollPolicyContext.window = { RS: {} };
 vm.createContext(scrollPolicyContext);
 vm.runInContext(
-    'var _lxmfMessageScrollStates = new WeakMap();\n' + scrollFunctions +
-    '\nthis.wire = _wireLxmfMessageScroll;' +
-    '\nthis.capture = _captureLxmfMessageScrollState;' +
-    '\nthis.applyAfterRender = _applyLxmfMessageScrollAfterRender;',
+    chatScrollSource +
+    '\nthis.wire = RS.chatScroll.wire;' +
+    '\nthis.capture = RS.chatScroll.capture;' +
+    '\nthis.applyAfterRender = RS.chatScroll.applyAfterRender;',
     scrollPolicyContext,
-    { filename: 'shared-chat-scroll-policy.js' }
+    { filename: 'chat_scroll.js' }
 );
 var scrollTop = 600;
 var transcript = {
@@ -294,6 +285,7 @@ assert.strictEqual(
 );
 
 var sentPayload = null;
+var pinnedToLatest = [];
 var composerInput = fakeInput();
 composerInput.value = 'beep FoO';
 var sendContext = {
@@ -315,6 +307,9 @@ var sendContext = {
             consumeFocus: function() { return true; },
             focusWithoutScroll: function() {}
         },
+        chatScroll: {
+            pinToBottom: function(container) { pinnedToLatest.push(container); }
+        },
         invoke: function(_name, payload) {
             sentPayload = payload;
             return Promise.resolve({ accepted: true });
@@ -329,6 +324,8 @@ sendContext.channelsSendMessage();
 setImmediate(function() {
     assert(sentPayload, 'composer must invoke the channel send command');
     assert.strictEqual(sentPayload.args.text, 'beep FoO');
+    assert.strictEqual(pinnedToLatest.length, 1,
+        'sending returns the transcript to the latest message even without a keyboard');
     process.stdout.write('\u2713 desktop text assistance disabled\n');
     process.stdout.write('\u2713 mobile typing defaults preserved\n');
     process.stdout.write('\u2713 automatic desktop replacements rejected\n');

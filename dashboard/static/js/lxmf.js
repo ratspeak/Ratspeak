@@ -73,7 +73,6 @@ var _imageHydrationActive = 0;
 var _imageHydrationMax = 3;
 var _imageHydrationObserver = null;
 var _imageCacheIdentityHash = null;
-var _lxmfMessageScrollStates = new WeakMap();
 var _messageLongPressDetachFns = [];
 var _pendingAttachmentToken = 0;
 var _attachmentRetirement = Promise.resolve();
@@ -1296,196 +1295,6 @@ function normalizeContactList(data) {
         if (normalized) contacts.push(normalized);
     });
     return contacts;
-}
-
-function _lxmfMessageScrollStateFor(container) {
-    var state = _lxmfMessageScrollStates.get(container);
-    if (!state) {
-        state = {
-            scrollTop: container ? container.scrollTop : 0,
-            lastUserScrollUpAt: 0,
-            programmaticScrollUntil: 0,
-            settleToken: 0,
-            followLatest: _lxmfMessagesNearBottom(container)
-        };
-        _lxmfMessageScrollStates.set(container, state);
-    }
-    return state;
-}
-
-function _lxmfMessageBottomGap(container) {
-    if (!container) return 0;
-    return Math.max(0, container.scrollHeight - container.clientHeight - container.scrollTop);
-}
-
-function _lxmfMessagesNearBottom(container) {
-    if (!container) return true;
-    return _lxmfMessageBottomGap(container) <= 160;
-}
-
-function _wireLxmfMessageScroll(container) {
-    if (!container || container._lxmfScrollAttached) return;
-    container._lxmfScrollAttached = true;
-    var state = _lxmfMessageScrollStateFor(container);
-    state.scrollTop = container.scrollTop;
-    state.followLatest = _lxmfMessagesNearBottom(container);
-    // A real touch takes ownership from any post-render settle callbacks.
-    // Without this, Android can begin a history pan while an optimistic send
-    // still has delayed bottom pins queued, making the transcript appear
-    // frozen as those callbacks repeatedly pull it back to the latest edge.
-    container.addEventListener('touchstart', function() {
-        state.settleToken++;
-        state.programmaticScrollUntil = 0;
-        state.scrollTop = container.scrollTop;
-    }, { passive: true });
-    container.addEventListener('scroll', function() {
-        var now = Date.now();
-        var currentTop = container.scrollTop;
-        if (now >= state.programmaticScrollUntil && currentTop < state.scrollTop - 2) {
-            state.lastUserScrollUpAt = now;
-            state.followLatest = false;
-        }
-        if (_lxmfMessagesNearBottom(container)) {
-            state.lastUserScrollUpAt = 0;
-            state.followLatest = true;
-        }
-        state.scrollTop = currentTop;
-    }, { passive: true });
-    container.addEventListener('wheel', function(e) {
-        if (e.deltaY < -1) {
-            state.settleToken++;
-            state.programmaticScrollUntil = 0;
-            state.lastUserScrollUpAt = Date.now();
-            state.followLatest = false;
-        }
-    }, { passive: true });
-}
-
-function _setLxmfMessageScrollTop(container, top) {
-    if (!container) return;
-    var state = _lxmfMessageScrollStateFor(container);
-    state.programmaticScrollUntil = Date.now() + 150;
-    container.scrollTop = top;
-    state.scrollTop = container.scrollTop;
-}
-
-function _scheduleLxmfScrollToBottom(container) {
-    if (!container) return;
-    var state = _lxmfMessageScrollStateFor(container);
-    state.followLatest = true;
-    var token = ++state.settleToken;
-    function pin() {
-        if (token !== state.settleToken || !container.isConnected) return;
-        _setLxmfMessageScrollTop(container, container.scrollHeight);
-    }
-    pin();
-    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(pin);
-    [40, 140, 360].forEach(function(delay) {
-        setTimeout(pin, delay);
-    });
-}
-
-function _compensateImageLoadScroll(container, img, before) {
-    if (!container || !img || !before) return;
-    if (!container.isConnected || !img.isConnected || !container.contains(img)) return;
-    var afterHeight = container.scrollHeight;
-    var delta = afterHeight - before.scrollHeight;
-    if (Math.abs(delta) < 1) return;
-    var containerRect = container.getBoundingClientRect();
-    // If an older image above the viewport gains height, preserve the user's
-    // current reading position by moving the scroll offset by the exact delta.
-    if (before.imgTop < containerRect.top + 8) {
-        _setLxmfMessageScrollTop(container, container.scrollTop + delta);
-    }
-}
-
-function _captureLxmfMessageScrollState(container) {
-    var controller = container ? _lxmfMessageScrollStateFor(container) : null;
-    var nearBottom = _lxmfMessagesNearBottom(container);
-    if (controller && nearBottom) {
-        controller.followLatest = true;
-        controller.lastUserScrollUpAt = 0;
-    }
-    return {
-        scrollTop: container ? container.scrollTop : 0,
-        scrollHeight: container ? container.scrollHeight : 0,
-        nearBottom: nearBottom,
-        followLatest: controller ? controller.followLatest && nearBottom : nearBottom,
-    };
-}
-
-function _restoreLxmfMessageScroll(container, state) {
-    if (!container || !state) return;
-    var controller = _lxmfMessageScrollStateFor(container);
-    controller.settleToken++;
-    controller.followLatest = !!state.followLatest;
-    var maxScroll = Math.max(0, container.scrollHeight - container.clientHeight);
-    _setLxmfMessageScrollTop(container, Math.min(maxScroll, Math.max(0, state.scrollTop)));
-}
-
-function _lxmfShouldFollowLatest(container) {
-    if (!container) return true;
-    var state = _lxmfMessageScrollStateFor(container);
-    if (_lxmfMessagesNearBottom(container)) {
-        state.followLatest = true;
-        state.lastUserScrollUpAt = 0;
-    }
-    return state.followLatest;
-}
-
-function _applyLxmfMessageScrollAfterRender(container, state, options) {
-    options = options || {};
-    var shouldFollow = !!(state && state.followLatest && state.nearBottom);
-    var shouldPin = !!options.forceScrollBottom ||
-        (!!options.stickToBottom && shouldFollow) ||
-        (!options.preserveScroll && shouldFollow);
-
-    if (shouldPin) {
-        _scheduleLxmfScrollToBottom(container);
-    } else {
-        _restoreLxmfMessageScroll(container, state);
-    }
-    return shouldPin;
-}
-
-// Direct Messages owns the established follow-latest policy. Export those
-// exact functions so Channels and keyboard viewport handling reuse it instead
-// of maintaining another scroll state machine.
-RS.chatScroll = RS.chatScroll || {};
-RS.chatScroll.wire = _wireLxmfMessageScroll;
-RS.chatScroll.capture = _captureLxmfMessageScrollState;
-RS.chatScroll.applyAfterRender = _applyLxmfMessageScrollAfterRender;
-RS.chatScroll.pinToBottom = _scheduleLxmfScrollToBottom;
-RS.chatScroll.restore = _restoreLxmfMessageScroll;
-RS.chatScroll.setTop = _setLxmfMessageScrollTop;
-RS.chatScroll.nearBottom = _lxmfMessagesNearBottom;
-RS.chatScroll.isFollowing = _lxmfShouldFollowLatest;
-
-function _watchLxmfImagesForBottomPin(container, shouldPin) {
-    if (!container) return;
-    container.querySelectorAll('img').forEach(function(img) {
-        if (img.complete && img.naturalWidth) return;
-        var before = {
-            scrollHeight: container.scrollHeight,
-            imgTop: img.getBoundingClientRect().top
-        };
-        img.addEventListener('load', function() {
-            // An old render may finish decoding after its nodes were replaced.
-            // It no longer owns any geometry in this transcript.
-            if (!img.isConnected || !container.contains(img)) return;
-            if (shouldPin && _lxmfShouldFollowLatest(container)) {
-                _scheduleLxmfScrollToBottom(container);
-                return;
-            }
-            if (typeof requestAnimationFrame === 'function') {
-                requestAnimationFrame(function() {
-                    _compensateImageLoadScroll(container, img, before);
-                });
-            } else {
-                _compensateImageLoadScroll(container, img, before);
-            }
-        }, { once: true });
-    });
 }
 
 function _lxmfRenderedImageKey(img) {
@@ -3636,8 +3445,8 @@ function renderConversation(options) {
     options = _takeDeferredConversationRenderOptions(options);
     _dismissContextMenu({ restoreFocus: false, flushDeferredRender: false });
     _detachMessageLongPressHandlers();
-    _wireLxmfMessageScroll(container);
-    var scrollState = _captureLxmfMessageScrollState(container);
+    RS.chatScroll.wire(container);
+    var scrollState = RS.chatScroll.capture(container);
     var renderedImages = _captureLxmfRenderedImages(container);
 
     var composeBar = document.getElementById('lxmf-compose-bar');
@@ -3862,8 +3671,8 @@ function renderConversation(options) {
     if (window.RS && RS.voiceMemos && typeof RS.voiceMemos.hydratePlayers === 'function') {
         RS.voiceMemos.hydratePlayers(container);
     }
-    var shouldPinMessages = _applyLxmfMessageScrollAfterRender(container, scrollState, options);
-    _watchLxmfImagesForBottomPin(container, shouldPinMessages);
+    var shouldPinMessages = RS.chatScroll.applyAfterRender(container, scrollState, options);
+    RS.chatScroll.watchImages(container, shouldPinMessages);
 
     // Swap cached images immediately; hydrate uncached media only when it is
     // near the viewport. Fetches are single-flight and globally bounded.
@@ -7371,7 +7180,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     var msgContainer = document.getElementById('lxmf-messages');
-    if (msgContainer) _wireLxmfMessageScroll(msgContainer);
+    if (msgContainer) RS.chatScroll.wire(msgContainer);
     if (msgContainer && typeof isMobile === 'function' && isMobile()) {
         msgContainer.addEventListener('touchstart', function(e) {
             if (e.defaultPrevented) return;

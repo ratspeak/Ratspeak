@@ -1233,25 +1233,19 @@ function _chatMessagesForKeyboard() {
 function _chatMessagesNearBottomForKeyboard() {
     var msgContainer = _chatMessagesForKeyboard();
     if (!msgContainer) return true;
-    if (window.RS && RS.chatScroll) return RS.chatScroll.nearBottom(msgContainer);
-    var bottomGap = Math.max(0, msgContainer.scrollHeight - msgContainer.clientHeight - msgContainer.scrollTop);
-    return bottomGap <= 160;
+    return RS.chatScroll.nearBottom(msgContainer);
 }
 
 function _chatMessagesFollowingForKeyboard() {
     var msgContainer = _chatMessagesForKeyboard();
     if (!msgContainer) return true;
-    if (window.RS && RS.chatScroll && RS.chatScroll.isFollowing) {
-        return RS.chatScroll.isFollowing(msgContainer);
-    }
-    return _chatMessagesNearBottomForKeyboard();
+    return RS.chatScroll.isFollowing(msgContainer);
 }
 
 function _pinChatMessagesToBottomForKeyboard() {
     var msgContainer = _chatMessagesForKeyboard();
     if (!msgContainer) return;
-    if (window.RS && RS.chatScroll) RS.chatScroll.pinToBottom(msgContainer);
-    else msgContainer.scrollTop = msgContainer.scrollHeight;
+    RS.chatScroll.pinToBottom(msgContainer);
 }
 
 function initKeyboardDetection() {

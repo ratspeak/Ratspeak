@@ -13,6 +13,7 @@ var path = require('path');
 var vm = require('vm');
 
 var jsRoot = path.join(__dirname, '..', '..', 'dashboard', 'static', 'js');
+var chatScrollSource = fs.readFileSync(path.join(jsRoot, 'chat_scroll.js'), 'utf8');
 var channelsSource = fs.readFileSync(path.join(jsRoot, 'channels.js'), 'utf8');
 var channelHubSource = fs.readFileSync(path.join(jsRoot, 'channel_hub.js'), 'utf8');
 var eventsSource = fs.readFileSync(path.join(jsRoot, 'tauri_events.js'), 'utf8');
@@ -382,6 +383,7 @@ function createHarness(options) {
     vm.createContext(context);
     vm.runInContext('Date.now = function() { return __clock.now; };',
         Object.assign(context, { __clock: clock }));
+    vm.runInContext(chatScrollSource, context, { filename: 'chat_scroll.js' });
     vm.runInContext(channelsSource, context, { filename: 'channels.js' });
     vm.runInContext(channelHubSource, context, { filename: 'channel_hub.js' });
     vm.runInContext(
