@@ -3974,26 +3974,32 @@ fn interface_command_lifecycles_use_origin_fences_truthful_terminals_and_scoped_
     let update_lora = interfaces
         .split("pub async fn update_lora_interface")
         .nth(1)
-        .and_then(|tail| {
-            tail.split("async fn teardown_rnode_handoff_broadcast")
-                .next()
-        })
+        .and_then(|tail| tail.split("pub async fn remove_lora_interface").next())
         .expect("update_lora command");
     assert!(update_lora.contains("mark_lora_add_freshness"));
     assert!(update_lora.contains("&old_name"));
     assert!(update_lora.contains("&name"));
 
-    let handoff = interfaces
-        .split("async fn teardown_rnode_handoff_broadcast")
-        .nth(1)
-        .and_then(|tail| tail.split("pub async fn remove_lora_interface").next())
-        .expect("Android RNode handoff");
-    assert!(handoff.contains("teardown_live_interface_by_name"));
-    assert!(handoff.contains("is_current_rnode_lifecycle_operation"));
-    assert!(handoff.contains("remove_interface_block_if_revision"));
-    assert!(handoff.contains("InterfaceBlockCasOutcome::NotFound => {}"));
-    assert!(handoff.contains("InterfaceBlockCasOutcome::WriteFailed"));
-    assert!(handoff.contains("return false;"));
+    // A USB and a Bluetooth radio are kept side by side: adding one never stops
+    // or deletes the other, and only one Bluetooth radio stays enabled.
+    for gone in [
+        "teardown_rnode_handoff_broadcast",
+        "rnode_handoff_prefix_for_port",
+        "RnodeHandoffTarget",
+    ] {
+        assert!(!interfaces.contains(gone), "{gone}");
+    }
+    assert!(!rns_config.contains("pub fn rnode_names_with_port_prefix("));
+    assert!(!add_lora.contains("remove_interface_block_if_revision"));
+    assert!(add_lora.contains(".begin_rnode_lifecycle_operation([&name])"));
+    assert!(add_lora.contains("reject_android_ble_owner_conflict(&config_dir, &name, &port)?;"));
+    assert!(
+        update_lora.contains("reject_android_ble_owner_conflict(&config_dir, &old_name, &port)?;")
+    );
+    let ble_owner = rust_function_block(&interfaces, "reject_android_ble_owner_conflict");
+    assert!(ble_owner.contains("if !requested_port.starts_with(\"ble://\")"));
+    assert!(ble_owner.contains("enabled_rnode_names_with_port_prefix(config_dir, \"ble://\")"));
+    assert!(ble_owner.contains("Pause, edit, or remove the existing Bluetooth RNode first"));
 
     let remove_lora = interfaces
         .split("pub async fn remove_lora_interface")

@@ -726,25 +726,6 @@ fn join_config_lines(lines: Vec<Zeroizing<String>>) -> Zeroizing<String> {
     join_config_text(lines.iter().map(|line| line.as_str()), true)
 }
 
-/// Used by the BLE↔USB priority handoff.
-pub fn rnode_names_with_port_prefix(config_dir: &Path, prefix: &str) -> Vec<String> {
-    let v = get_all_interfaces(config_dir);
-    let mut names = Vec::new();
-    if let Some(arr) = v.get("rnode").and_then(|v| v.as_array()) {
-        for entry in arr {
-            let port = entry.get("port").and_then(|v| v.as_str()).unwrap_or("");
-            if let Some(name) = entry
-                .get("name")
-                .and_then(|value| value.as_str())
-                .filter(|_| port.starts_with(prefix))
-            {
-                names.push(name.to_string());
-            }
-        }
-    }
-    names
-}
-
 /// Enabled RNode entries matching `prefix`, in configuration order.
 /// Android uses this to enforce its single native Bluetooth-radio owner.
 pub fn enabled_rnode_names_with_port_prefix(config_dir: &Path, prefix: &str) -> Vec<String> {

@@ -4435,26 +4435,6 @@ struct InterfaceSpawnOutcome {
     interface_id: Option<u64>,
 }
 
-struct RnodeHandoffTarget {
-    name: String,
-    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-    revision: crate::rns_config::InterfaceBlockRevision,
-}
-
-fn rnode_handoff_prefix_for_port(port: &str) -> Option<&'static str> {
-    #[cfg(target_os = "android")]
-    {
-        if port.starts_with("androidusb://") {
-            return Some("ble://");
-        }
-        if port.starts_with("ble://") {
-            return Some("androidusb://");
-        }
-    }
-    let _ = port;
-    None
-}
-
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 fn reject_android_ble_owner_conflict(
     config_dir: &std::path::Path,
@@ -4510,6 +4490,52 @@ mod android_ble_owner_policy_tests {
             reject_android_ble_owner_conflict(temp.path(), "New BLE", "ble://22:33:44:55:66:77")
                 .expect_err("another enabled BLE owner must fail closed");
         assert!(error.to_string().contains("existing Bluetooth RNode"));
+    }
+
+    #[test]
+    fn a_usb_and_a_bluetooth_radio_are_kept_side_by_side() {
+        let temp = tempfile::tempdir().expect("temp config");
+        crate::rns_config::write_config(temp.path(), "[interfaces]\n");
+        let radio = |name, port| crate::rns_config::RnodeInterfaceArgs {
+            name,
+            port,
+            mode: Some("roaming"),
+            frequency: 915_000_000,
+            bandwidth: 125_000,
+            spreading_factor: 8,
+            coding_rate: 5,
+            tx_power: 14,
+            region_key: None,
+            preset_key: None,
+            airtime_limit_short: None,
+            airtime_limit_long: None,
+            public_map: crate::rns_config::RnodePublicMapArgs::default(),
+        };
+        // Each add passes the owner check with the other kind enabled, and keeps it.
+        for (name, port) in [
+            ("USB", "androidusb://opaque"),
+            ("BLE", "ble://00:11:22:33:44:55"),
+            ("USB 2", "androidusb://second"),
+        ] {
+            assert!(reject_android_ble_owner_conflict(temp.path(), name, port).is_ok());
+            assert!(crate::rns_config::add_rnode_interface(
+                temp.path(),
+                radio(name, port)
+            ));
+        }
+        let rnodes = crate::rns_config::get_all_interfaces(temp.path())["rnode"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|entry| crate::rns_config::interface_entry_enabled(entry))
+            .map(|entry| cfg_str(entry, "name").unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(rnodes, ["USB", "BLE", "USB 2"]);
+        // A second Bluetooth radio still waits for the first.
+        assert!(
+            reject_android_ble_owner_conflict(temp.path(), "BLE 2", "ble://66:55:44:33:22:11")
+                .is_err()
+        );
     }
 
     #[test]
@@ -6118,35 +6144,13 @@ pub async fn add_lora_interface(
         fresh_marker,
         deferred_fresh_ble_config,
         existing_rnode_port,
-        handoff_targets,
         config_written,
     ) = with_rns_config_lock(&state_arc, || {
+        // A USB and a Bluetooth radio run side by side; only Bluetooth is one at a time.
         #[cfg(target_os = "android")]
         reject_android_ble_owner_conflict(&config_dir, &name, &port)?;
-        let handoff_targets = rnode_handoff_prefix_for_port(&port)
-            .map(|prefix| {
-                crate::rns_config::rnode_names_with_port_prefix(&config_dir, prefix)
-                    .into_iter()
-                    .filter(|handoff_name| handoff_name != &name)
-                    .map(|handoff_name| {
-                        crate::rns_config::snapshot_interface_block(&config_dir, &handoff_name)
-                            .map(|revision| RnodeHandoffTarget {
-                                name: handoff_name,
-                                revision,
-                            })
-                            .map_err(|_| {
-                                AppError::internal("Failed to snapshot radio handoff target")
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()
-            })
-            .transpose()?
-            .unwrap_or_default();
-        let mut operation_names = Vec::with_capacity(1 + handoff_targets.len());
-        operation_names.push(name.clone());
-        operation_names.extend(handoff_targets.iter().map(|target| target.name.clone()));
         let operation_lease = state_arc
-            .begin_rnode_lifecycle_operation(operation_names.iter())
+            .begin_rnode_lifecycle_operation([&name])
             .ok_or_else(|| AppError::internal("Failed to begin radio setup"))?;
         // add_rnode_interface upserts by name; only entries this add creates
         // may be rolled back (deleted) on connect failure or cancel.
@@ -6204,7 +6208,6 @@ pub async fn add_lora_interface(
             fresh_marker,
             deferred_fresh_ble_config,
             existing_rnode_port,
-            handoff_targets,
             config_written,
         ))
     })?;
@@ -6214,8 +6217,6 @@ pub async fn add_lora_interface(
     let _ = deferred_fresh_ble_config;
     #[cfg(not(any(feature = "ble", target_os = "android")))]
     let _ = &existing_rnode_port;
-    #[cfg(not(target_os = "android"))]
-    let _ = &handoff_targets;
 
     if !config_written {
         let _ = state_arc.finish_rnode_lifecycle_operation(&operation_lease);
@@ -6273,19 +6274,6 @@ pub async fn add_lora_interface(
         let existing_rnode_port = existing_rnode_port.clone();
         let usb_selector = android_usb_selector.expect("USB selector resolved before config write");
         tokio::spawn(async move {
-            if !teardown_rnode_handoff_broadcast(
-                &st,
-                activity_fence,
-                "ble://",
-                "BLE",
-                &handoff_targets,
-                &operation_lease,
-            )
-            .await
-            {
-                let _ = st.finish_rnode_lifecycle_operation(&operation_lease);
-                return;
-            }
             teardown_live_interface_by_name(
                 &st,
                 &iface_name,
@@ -6565,30 +6553,6 @@ pub async fn add_lora_interface(
                 true,
             );
             tokio::spawn(async move {
-                if !teardown_rnode_handoff_broadcast(
-                    &st_a,
-                    activity_fence,
-                    "androidusb://",
-                    "USB",
-                    &handoff_targets,
-                    &operation_lease,
-                )
-                .await
-                {
-                    if let Some((_, rollback_context)) =
-                        st_a.take_pending_ble_rnode_activity_operation(&activity_operation)
-                    {
-                        if let Some((config_dir, name, marker)) = rollback_context {
-                            let _ = crate::commands::shared::rollback_fresh_lora_add_marker(
-                                &st_a,
-                                &config_dir,
-                                &name,
-                                marker,
-                            );
-                        }
-                    }
-                    return;
-                }
                 if !teardown_live_interface_by_name(
                     &st_a,
                     &name_a,
@@ -7601,87 +7565,6 @@ pub async fn update_lora_interface(
         },
     ));
     Ok(json!({ "queued": true, "iface_name": name }))
-}
-
-/// BLE↔USB handoff: tear down the old side before adding the new transport.
-#[cfg(target_os = "android")]
-async fn teardown_rnode_handoff_broadcast(
-    state: &Arc<AppState>,
-    activity_fence: ActivityRequestFence,
-    other_prefix: &str,
-    friendly: &str,
-    targets: &[RnodeHandoffTarget],
-    operation_lease: &RNodeLifecycleOperationLease,
-) -> bool {
-    let config_dir = active_rns_config_dir(state);
-    for target in targets {
-        if !state.is_current_rnode_lifecycle_operation(operation_lease) {
-            return false;
-        }
-        emit_op_status_broadcast(
-            state,
-            "add_lora",
-            "hub",
-            &format!("Disconnecting {friendly} radio '{}'...", target.name),
-            false,
-            None,
-        );
-        if !teardown_live_interface_by_name(
-            state,
-            &target.name,
-            Some(other_prefix),
-            Some(operation_lease),
-        )
-        .await
-        {
-            return false;
-        }
-        match with_rns_config_lock(state, || {
-            if !state.is_current_rnode_lifecycle_operation(operation_lease) {
-                return crate::rns_config::InterfaceBlockCasOutcome::Stale;
-            }
-            crate::rns_config::remove_interface_block_if_revision(&config_dir, &target.revision)
-        }) {
-            crate::rns_config::InterfaceBlockCasOutcome::Applied => {
-                record_interface_activity(
-                    state,
-                    activity_fence,
-                    InterfaceClass::RNode,
-                    InterfaceTransition::Removed,
-                    None,
-                );
-            }
-            crate::rns_config::InterfaceBlockCasOutcome::NotFound => {}
-            crate::rns_config::InterfaceBlockCasOutcome::Stale => return false,
-            crate::rns_config::InterfaceBlockCasOutcome::WriteFailed => {
-                emit_op_status_broadcast(
-                    state,
-                    "add_lora",
-                    "hub",
-                    &format!("Failed to remove {friendly} radio '{}'", target.name),
-                    true,
-                    Some("Config write error"),
-                );
-                record_interface_activity(
-                    state,
-                    activity_fence,
-                    InterfaceClass::RNode,
-                    InterfaceTransition::Failed {
-                        reason: InterfaceFailureReason::Remove,
-                        rollback: None,
-                    },
-                    None,
-                );
-                let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
-                emit_hub_interfaces(state, ifaces);
-                return false;
-            }
-        }
-    }
-
-    let ifaces = crate::rns_config::get_all_interfaces(&config_dir);
-    emit_hub_interfaces(state, ifaces);
-    true
 }
 
 #[tauri::command]

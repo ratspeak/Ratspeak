@@ -2195,7 +2195,6 @@ pub fn ratspeak_runtime::rns_config::remove_interfaces(&std::path::Path, &[alloc
 pub fn ratspeak_runtime::rns_config::restore_interface_block_if_revision(&std::path::Path, &ratspeak_runtime::rns_config::InterfaceBlockRevision, &ratspeak_runtime::rns_config::InterfaceBlockRevision) -> ratspeak_runtime::rns_config::InterfaceBlockCasOutcome
 pub fn ratspeak_runtime::rns_config::rnode_interface_mode_passthrough(core::option::Option<&str>) -> &str
 pub fn ratspeak_runtime::rns_config::rnode_interface_mode_value(core::option::Option<&str>) -> core::option::Option<rns_interface::traits::InterfaceMode>
-pub fn ratspeak_runtime::rns_config::rnode_names_with_port_prefix(&std::path::Path, &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_runtime::rns_config::set_interface_enabled(&std::path::Path, &str, bool) -> bool
 pub fn ratspeak_runtime::rns_config::set_interface_enabled_if_revision(&std::path::Path, &ratspeak_runtime::rns_config::InterfaceBlockRevision, bool) -> ratspeak_runtime::rns_config::InterfaceBlockCasOutcome
 pub fn ratspeak_runtime::rns_config::set_network_identity_key(&std::path::Path, bool) -> core::io::error::Result<bool>
