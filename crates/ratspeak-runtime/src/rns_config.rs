@@ -2828,7 +2828,10 @@ fn section_keys_update(
     }
     if removed {
         let (start, end) = section_bounds(&lines, section).expect("section exists");
-        if lines[start + 1..end].iter().all(|line| line.trim().is_empty()) {
+        if lines[start + 1..end]
+            .iter()
+            .all(|line| line.trim().is_empty())
+        {
             lines.drain(start..end);
         }
     }
@@ -3139,11 +3142,9 @@ mod tests {
             ..stamping.clone()
         };
         assert!(apply_network_settings(&dir, &both).unwrap());
-        assert!(
-            read_config(&dir)
-                .unwrap()
-                .contains("[stamps]\nstamp_destinations = yes\nstamp_prs = yes\nenforce_stamps = yes\n\n[logging]")
-        );
+        assert!(read_config(&dir).unwrap().contains(
+            "[stamps]\nstamp_destinations = yes\nstamp_prs = yes\nenforce_stamps = yes\n\n[logging]"
+        ));
         let stamps = runtime_config(&dir).stamps;
         assert!(stamps.stamp_destinations && stamps.stamps_enforced && stamps.lr_stamps_enforced);
 

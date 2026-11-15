@@ -418,7 +418,10 @@ async fn apply_prune(
 
 /// How one prune batch ended.
 enum BatchOutcome {
-    Committed { deleted: Vec<String>, removed: usize },
+    Committed {
+        deleted: Vec<String>,
+        removed: usize,
+    },
     /// Nothing changed; `busy` when the LXMF manager was held, which a retry may clear.
     Deferred { busy: bool },
     /// Failed after the memory mutation, which was restored.
@@ -588,12 +591,9 @@ where
                 &protected_extra,
                 remove_keys,
             ),
-            PruneScope::OrphanKeys { .. } => db::confirm_orphan_identity_keys_after(
-                &pool,
-                &batch,
-                &protected_extra,
-                remove_keys,
-            ),
+            PruneScope::OrphanKeys { .. } => {
+                db::confirm_orphan_identity_keys_after(&pool, &batch, &protected_extra, remove_keys)
+            }
         }
     })
     .await;
@@ -812,7 +812,10 @@ mod tests {
         let emitter = Arc::new(CountingEmitter::default());
         let (_temp, state) = make_state_with(2, emitter.clone());
         let victims: Vec<String> = (0..PRUNE_BATCH + 1).map(|i| hash(3_000_000 + i)).collect();
-        let rows: Vec<_> = victims.iter().map(|v| (v.clone(), 1.0, None, None)).collect();
+        let rows: Vec<_> = victims
+            .iter()
+            .map(|v| (v.clone(), 1.0, None, None))
+            .collect();
         db::touch_identity_activity(&state.db, &rows);
         insert_keys(&state, &victims);
 

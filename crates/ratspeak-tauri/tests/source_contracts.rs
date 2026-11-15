@@ -8483,7 +8483,9 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(!lxmf.contains("menu.setAttribute('role', 'menu')"));
     // No hover toolbar: right-click, a long press, or the context-menu key opens the menu.
     assert!(!lxmf.contains("msg-hover"));
-    assert!(lxmf.contains("if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;"));
+    assert!(
+        lxmf.contains("if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;")
+    );
     assert!(
         lxmf.contains(
             "if (selectionExistedBeforePointer === false) _clearNativeMessageSelection();"
@@ -9854,9 +9856,11 @@ fn conversation_header_presence_uses_peer_cache_status() {
     assert!(lxmf.contains(
         "var tier = peer && peer.last_seen ? RS.kit.presenceFor(peer.last_seen) : 'older';"
     ));
-    assert!(lxmf.contains(
-        "return { tier: RS.kit.rowPresence(peer.last_seen), heard: peer.last_seen };"
-    ));
+    assert!(
+        lxmf.contains(
+            "return { tier: RS.kit.rowPresence(peer.last_seen), heard: peer.last_seen };"
+        )
+    );
     // Under the name: a named peer's short address and when they were last heard, never the route.
     assert!(lxmf.contains("return named ? '<span class=\"ui-hash\">' + escapeHtml(RS.kit.hash.short(lxmfActiveContact)) + '</span> · ' + heard : heard;"));
     assert!(!lxmf.contains("peer.route_label"));

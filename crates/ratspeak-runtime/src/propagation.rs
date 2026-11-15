@@ -2659,7 +2659,10 @@ mod tests {
                 rusqlite::params![hex::encode(current)],
             )
             .unwrap();
-        assert!(db::record_used_propagation_node(&state.db, &hex::encode(past)));
+        assert!(db::record_used_propagation_node(
+            &state.db,
+            &hex::encode(past)
+        ));
         seed_static_nodes(&state);
         for hash in [current, past] {
             seed_node(&state, hash, 3, now - 40.0 * DAY);
