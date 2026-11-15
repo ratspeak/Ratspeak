@@ -46,6 +46,7 @@
     }
 
     // One commit is one restart. A confirm shows only when something live would drop.
+    // opts.error, when given, shows a refusal in place of the toast.
     NS.commitRestart = function(opts) {
         if (NS.busy) return Promise.resolve(false);
         return RS.invoke('api_restart_impact').catch(function() { return null; }).then(function(impact) {
@@ -61,7 +62,8 @@
                 return result || true;
             }, function(err) {
                 setBusy(opts, false);
-                toast(errorText(err, 'The network could not restart'), 'toast-error', 8000);
+                if (typeof opts.error === 'function') opts.error(err);
+                else toast(errorText(err, 'The network could not restart'), 'toast-error', 8000);
                 return false;
             });
         });

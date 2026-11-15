@@ -287,8 +287,8 @@ assert(!callsiteSource('health.js').includes('Pausing interface…') &&
     !callsiteSource('health.js').includes('Resuming interface…'),
     'interface rows must own routine pause/resume progress');
 assert(callsiteSource('tauri_events.js').includes(
-    "if (data.error && !dialogResult) showToast(displayStep, 'toast-error', 5000)"
-), 'interface lifecycle events must interrupt only on failure, and once: a waiting dialog shows its own');
+    "if (data.error && !dialogResult && !commitReports) showToast(displayStep, 'toast-error', 5000)"
+), 'interface lifecycle events must interrupt only on failure, and once: a waiting dialog or restart commit shows its own');
 assert(callsiteSource('constants.js').includes('toastErrorCopy(err, message)'),
     'generic command failures must apply the user/developer detail boundary');
 

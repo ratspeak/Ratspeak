@@ -5022,17 +5022,24 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
         );
     }
 
-    // Host setup shows a refusal on the dialog, whether or not the save restarts the network.
+    // Host setup shows a refusal once, on the dialog, whether or not the save restarts the
+    // network; only a dialog that has closed falls back to a toast.
     let host_submit = modals_js
         .split("function submitHostServer() {")
         .nth(1)
         .and_then(|tail| tail.split("\nfunction ").next())
         .expect("host submit");
-    assert!(host_submit.contains(
-        "RS.invoke(command, { args: args }).catch(function(err) { lastError = err; throw err; })"
-    ));
-    assert!(host_submit.contains("if (lastError) _hostShowError(lastError.message);"));
+    assert!(
+        host_submit
+            .contains("ns.commitRestart({ run: run, done: 'Network restarted', error: refused })")
+    );
+    assert!(host_submit.contains("if (_hostDialog === dlg) _hostShowError(message);"));
     assert!(host_submit.contains("_hostShowError(err && err.message);"));
+    let network_settings_js = read_source(root.join("dashboard/static/js/network_settings.js"))
+        .expect("network settings js");
+    assert!(network_settings_js.contains(
+        "if (typeof opts.error === 'function') opts.error(err);\n                else toast("
+    ));
     assert!(
         !host_submit.contains("catch(function() {})"),
         "interface server submit must surface IPC/backend failures"

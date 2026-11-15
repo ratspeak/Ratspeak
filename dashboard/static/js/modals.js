@@ -2585,10 +2585,7 @@ function submitHostServer() {
         ? (editContext ? 'update_backbone_server' : 'add_backbone_server')
         : (editContext ? 'update_tcp_server' : 'add_tcp_server');
     var submitBtn = _netdlgPrimary(dlg);
-    var lastError = null;
-    var run = function() {
-        return RS.invoke(command, { args: args }).catch(function(err) { lastError = err; throw err; });
-    };
+    var run = function() { return RS.invoke(command, { args: args }); };
 
     // A published server's save restarts the network, and the app confirms restarts one way.
     var ns = RS.networkSettings;
@@ -2598,13 +2595,15 @@ function submitHostServer() {
             return;
         }
         _netdlgBusy(submitBtn, editContext ? 'Saving…' : 'Starting…');
-        ns.commitRestart({ run: run, done: 'Network restarted' }).then(function(result) {
-            if (result) {
-                dlg.close();
-                return;
-            }
-            _netdlgBusy(submitBtn, null);
-            if (lastError) _hostShowError(lastError.message);
+        // A refusal shows once: in this dialog, or as a toast after it has closed.
+        var refused = function(err) {
+            var message = (err && err.message) || 'The server couldn’t start. Try again.';
+            if (_hostDialog === dlg) _hostShowError(message);
+            else showToast(message, 'toast-error', 8000);
+        };
+        ns.commitRestart({ run: run, done: 'Network restarted', error: refused }).then(function(result) {
+            if (result) dlg.close();
+            else _netdlgBusy(submitBtn, null);
         });
         return;
     }

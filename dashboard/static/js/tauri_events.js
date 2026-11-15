@@ -409,6 +409,8 @@ RS.listen('node_operation_status', function(data) {
     var progressHandling = progressDialog && progressDialog.isOpen();
     // A connection dialog waiting on this operation shows its result itself.
     var dialogResult = typeof connectionDialogOperation === 'function' ? connectionDialogOperation(data) : false;
+    // A server save that restarts the network reports its own refusal.
+    var commitReports = !!(RS.networkSettings && RS.networkSettings.busy) && /^(add|update)_(backbone_)?server$/.test(data.operation);
 
     if (progressHandling) {
         if (data.done) {
@@ -427,7 +429,7 @@ RS.listen('node_operation_status', function(data) {
     if (data.done && !progressHandling) {
         // Successful lifecycle changes are reflected by the connection row.
         // Only a failure needs to interrupt the user.
-        if (data.error && !dialogResult) showToast(displayStep, 'toast-error', 5000);
+        if (data.error && !dialogResult && !commitReports) showToast(displayStep, 'toast-error', 5000);
 
         if (data.operation === 'add_lora' && !data.error) {
             closeRnodeModal();
