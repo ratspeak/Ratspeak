@@ -7743,7 +7743,9 @@ async fn update_game_session_delivery_state(
             .and_then(|v| v.as_str())
             .unwrap_or("")
             .to_string();
-        if matches!(current.as_str(), "delivered" | "failed" | "undelivered") {
+        if matches!(current.as_str(), "delivered" | "failed" | "undelivered")
+            || game_move_keeps_sent(&current, &ns)
+        {
             return None;
         }
         metadata.insert("delivery_state".to_string(), json!(ns));
@@ -7784,6 +7786,11 @@ async fn update_game_session_delivery_state(
         );
         state.emit_to_all("all_game_sessions", all.into());
     }
+}
+
+/// A move that went out stays "sent" while its copy is retried; storing it, a proof, or a failure moves it on.
+fn game_move_keeps_sent(current: &str, next: &str) -> bool {
+    current == "sent" && next != "propagating" && game_delivery_state_is_in_flight(next)
 }
 
 fn game_delivery_state_is_in_flight(state: &str) -> bool {
@@ -8791,6 +8798,24 @@ mod packet_dispatch_tests {
             &[0x99; 16],
             None
         ));
+    }
+
+    #[test]
+    fn a_sent_move_never_shows_sending_again() {
+        for next in ["pending", "sending", "routing", "link_establishing", "sent"] {
+            assert!(game_move_keeps_sent("sent", next), "{next}");
+        }
+        for next in [
+            "propagating",
+            "propagated",
+            "delivered",
+            "failed",
+            "rejected",
+        ] {
+            assert!(!game_move_keeps_sent("sent", next), "{next}");
+        }
+        assert!(!game_move_keeps_sent("sending", "routing"));
+        assert!(!game_move_keeps_sent("pending", "sent"));
     }
 
     #[test]
