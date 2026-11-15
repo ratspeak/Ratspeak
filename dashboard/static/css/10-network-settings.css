@@ -234,18 +234,20 @@
 .net-way-titles { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .net-way-title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--text-base); font-weight: 600; color: var(--text-primary); line-height: 1.3; }
 .net-way-status { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--text-xs); color: var(--text-secondary); line-height: 1.4; }
-.net-way-ctl { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; }
-.net-way-body, .net-way-foot { padding-left: calc(var(--ui-tile) + 12px); }
+/* Room for the fold chevron even without one, so the switch never moves when a way turns on. */
+.net-way-ctl { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; min-width: calc(var(--ui-switch-w) + 4px + var(--ui-icon-btn-sm)); }
+/* Three columns on every width: icons centred in the tile's width, text at tile + 12, ⋯ and chevrons on the right edge. */
 .net-way-body { margin-top: 12px; }
-.net-way-foot { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 12px; }
-@media (max-width: 768px) { .net-way-body, .net-way-foot { padding-left: 0; } }
+.net-way-foot { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 12px; padding-left: calc(var(--ui-tile) + 12px); }
+.net-way :is(.net-way-foot, .net-links) .ui-link { text-align: start; }
+.net-way .net-mark { margin-inline: calc((var(--ui-tile) - 24px) / 2); }
+.net-way .net-snote { padding-left: calc(var(--ui-tile) + 12px); }
+.net-way .net-links .ui-ico { margin: 0 calc(var(--ui-tile) / 2) 0 calc((var(--ui-tile) - 16px) / 2); }
 /* Live connections as rows inside a way: the row opens the detail, the ⋯ opens the menu. */
-.net-crows { display: flex; flex-direction: column; gap: 2px; margin: 0 -8px 0 -12px; }
-.net-crow { display: flex; align-items: center; gap: 4px; padding-right: 4px; }
-.net-crow > .ui-row { flex: 1; min-width: 0; }
-.net-crow .ui-row-sub { gap: 6px; }
+.net-crows { display: flex; flex-direction: column; gap: 2px; margin-left: -12px; }
+.net-crow { display: flex; align-items: center; gap: 4px; }
+.net-crow > .ui-row { flex: 1; min-width: 0; padding-left: 12px; }
 .net-crow .ui-row-sub .ui-dot { width: 8px; height: 8px; }
-@media (max-width: 768px) { .net-crows { margin: 0 -12px; } }
 /* Server rows to join: not navigable, so not list rows; the same gutters as one. */
 .net-slist { display: flex; flex-direction: column; margin: 0 -12px 4px; }
 .net-srow { display: flex; align-items: center; gap: 12px; min-height: var(--ui-row-1); padding: 0 12px; }
