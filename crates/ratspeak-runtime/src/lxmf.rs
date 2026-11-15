@@ -4951,7 +4951,7 @@ impl LxmfManager {
     }
 
     /// Keep Reticulum's answers for Auto's plan, as an announce brings them.
-    pub fn note_ratchet_answers(&mut self, answers: &HashMap<[u8; 16], Option<[u8; 32]>>) {
+    pub(crate) fn note_ratchet_answers(&mut self, answers: &HashMap<[u8; 16], Option<[u8; 32]>>) {
         self.ratchet_answers.extend(answers);
     }
 
