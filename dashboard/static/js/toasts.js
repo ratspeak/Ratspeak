@@ -132,13 +132,14 @@ function showToast(message, colorClass, duration, onClick, actionLabel) {
     });
     toast.appendChild(closeBtn);
 
-    // Toasts rise from the bottom bar, so a swipe down puts one away.
+    // A swipe toward the edge a toast came from puts it away: down on a phone, up on desktop.
+    var fromTop = !(typeof isCompactLayout === 'function' && isCompactLayout());
     RS.gestures.attachSwipe(toast, {
-        direction: 'down',
+        direction: fromTop ? 'up' : 'down',
         distanceThreshold: RS.gestures.SWIPE_DISTANCE_TOAST_DISMISS_PX,
         hapticAt: { commit: 'selection' },
         onProgress: function(_dx, dy) {
-            if (dy > 0) toast.style.transform = 'translateY(' + dy + 'px)';
+            if (fromTop ? dy < 0 : dy > 0) toast.style.transform = 'translateY(' + dy + 'px)';
         },
         onCommit: dismissToast,
         onCancel: function() { toast.style.transform = ''; }

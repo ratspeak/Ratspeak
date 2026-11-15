@@ -143,12 +143,12 @@ callsiteSources.forEach(function(source) {
     });
 });
 
-// The kit toast (07-ui-components.css): a bare tone glyph, 12 px radius, bottom centre on desktop,
+// The kit toast (07-ui-components.css): a bare tone glyph, 12 px radius, top right on desktop,
 // above the tab bar on a phone. toasts.js never draws its own card.
 assert(index.includes('<div id="toast-container" class="ui-toasts" role="status" aria-live="polite"></div>'),
     'toasts stack in the kit container, announced politely');
 assert(toastJs.includes("toast.className = 'ui-toast' + kitTone + ' is-entering';"),
-    'each toast is the kit toast, entering from below');
+    'each toast is the kit toast, entering from its edge');
 ['toast-error', 'toast-warning', 'toast-success', 'toast-info', 'toast-progress', 'toast-action'].forEach(function(intent) {
     assert(toastJs.includes("'" + intent + "':"), 'toast API must accept the ' + intent + ' semantic intent');
 });
@@ -175,16 +175,17 @@ assert(toastJs.includes("link.className = 'ui-link'"),
 assert(toastJs.includes("closeBtn.className = 'ui-icon-btn ui-icon-btn--sm'") &&
     toastJs.includes("closeBtn.setAttribute('aria-label', 'Dismiss')"),
     'dismissal is the kit icon button with its own label');
-assert(toastJs.includes("direction: 'down'"),
-    'toasts rise from the bottom bar, so a swipe down puts one away');
+assert(toastJs.includes("direction: fromTop ? 'up' : 'down'"),
+    'a swipe toward the edge a toast came from puts it away');
 assert(!toastJs.includes("toast.style.cursor = 'pointer'"),
     'actionable semantics must not stop at a mouse-only cursor hint');
-assert(/\.ui-toasts \{[^}]*bottom: 88px;[^}]*z-index: var\(--z-toast\);/.test(kit),
-    'desktop toasts sit at the bottom centre, clear of pane headers and lifted above a composer row');
+assert(/\.ui-toasts \{[^}]*top: calc\(var\(--sat, 0px\) \+ 88px\); right: 24px;[^}]*z-index: var\(--z-toast\);/.test(kit),
+    'desktop toasts sit top right, below the pane headers so their actions stay clear');
 assert(/@media \(max-width: 768px\) \{ \.ui-toasts \{[^}]*bottom: calc\(76px \+ var\(--sab, 0px\)\);/.test(kit),
     'phone toasts sit above the tab bar and the home indicator');
-assert(/\.ui-toast\.is-entering \{ opacity: 0; transform: translateY\(12px\); \}/.test(kit),
-    'toasts enter by rising into place');
+assert(/\.ui-toast\.is-entering \{ opacity: 0; transform: translateY\(-12px\); \}/.test(kit) &&
+    /@media \(max-width: 768px\) \{ \.ui-toast\.is-entering \{ transform: translateY\(12px\); \}/.test(kit),
+    'toasts slide down into place on desktop and rise into place on a phone');
 assert(/--z-toast: 100001;/.test(tokens) && /--z-overlay: 99999;/.test(tokens),
     'toasts stay above dialogs, so a copy inside one still confirms');
 assert(/\.toast-action-target \{[^}]*position: absolute;[^}]*inset: 0;/.test(components),
