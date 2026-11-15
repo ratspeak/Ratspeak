@@ -1007,6 +1007,12 @@
 
     function onClick(e) {
         if (e.target.closest && e.target.closest('.net-hostdisc [data-netid]') && RS.hostDiscovery.handleInline(e)) return;
+        // A way that folds folds from anywhere on its head but the switch.
+        var head = e.target.closest && e.target.closest('.net-way-head');
+        if (head && !e.target.closest('.ui-switch, button, input, a')) {
+            var fold = head.querySelector('[data-act="way-fold"]');
+            if (fold) { foldWay(fold.getAttribute('data-id')); return; }
+        }
         var lbl = e.target.closest && e.target.closest('.netmap-label');
         var el = lbl ? lbl.parentNode.querySelector('.netmap-node-btn') : e.target.closest && e.target.closest('[data-act]');
         if (!el || el.tagName === 'INPUT') return;
