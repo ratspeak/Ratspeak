@@ -14,6 +14,9 @@ const pinned = "27.0.12077973";
 const newer = "29.0.13846066";
 const script = fileURLToPath(new URL("./android-sdk-view.mjs", import.meta.url));
 const host = process.platform === "darwin" ? "darwin-x86_64" : "linux-x86_64";
+// android-sdk-view.mjs serves macOS and Linux x86_64 build hosts only; the workflow checks run anywhere.
+const hostTest = process.platform === "darwin" || (process.platform === "linux" && process.arch === "x64")
+  ? test : test.skip;
 
 function addNdk(sdk, revision) {
   const ndk = join(sdk, "ndk", revision);
@@ -65,7 +68,7 @@ ${operation}
   return { sdkmanager: executable, log };
 }
 
-test("installer discards only a corrupt pinned resume operation before a fresh retry", async (t) => {
+hostTest("installer discards only a corrupt pinned resume operation before a fresh retry", async (t) => {
   const input = fixture(t);
   const ndk = join(input.sdk, "ndk", pinned);
   rmSync(ndk, { recursive: true });
@@ -94,7 +97,7 @@ addNdk(sdk, revision);
   assert.doesNotThrow(() => createSdkView(input));
 });
 
-test("installer stops after three failed attempts without deleting other revisions", async (t) => {
+hostTest("installer stops after three failed attempts without deleting other revisions", async (t) => {
   const input = fixture(t);
   rmSync(join(input.sdk, "ndk", pinned), { recursive: true });
   const { sdkmanager, log } = fakeSdkmanager(input, `
@@ -110,7 +113,7 @@ process.exit(1);
   assert.deepEqual(readdirSync(input.parent), []);
 });
 
-test("sdkmanager success with an invalid compiler or revision still fails installation", async (t) => {
+hostTest("sdkmanager success with an invalid compiler or revision still fails installation", async (t) => {
   const input = fixture(t);
   rmSync(join(input.sdk, "ndk", pinned), { recursive: true });
   const { sdkmanager, log } = fakeSdkmanager(input, `
@@ -123,7 +126,7 @@ writeFileSync(join(ndk, "source.properties"), "Pkg.Revision = 0.0.0\\n");
   assert.deepEqual(readdirSync(input.parent), []);
 });
 
-test("installer also rejects a declared pinned revision without its compiler", async (t) => {
+hostTest("installer also rejects a declared pinned revision without its compiler", async (t) => {
   const input = fixture(t);
   rmSync(join(input.sdk, "ndk", pinned), { recursive: true });
   const { sdkmanager, log } = fakeSdkmanager(input, `
@@ -136,7 +139,7 @@ writeFileSync(join(ndk, "source.properties"), "Pkg.Revision = " + revision + "\\
   assert.deepEqual(readdirSync(input.parent), []);
 });
 
-test("a valid pinned installation survives a failed sdkmanager attempt", async (t) => {
+hostTest("a valid pinned installation survives a failed sdkmanager attempt", async (t) => {
   const input = fixture(t);
   const sentinel = join(input.sdk, "ndk", pinned, "preserve-valid-package");
   writeFileSync(sentinel, "keep this installation\n");
@@ -148,7 +151,7 @@ if (attempt === 1) process.exit(1);
   assert.equal(readFileSync(sentinel, "utf8"), "keep this installation\n");
 });
 
-test("installer rejects symlink parents and rechecks child paths after sdkmanager", async (t) => {
+hostTest("installer rejects symlink parents and rechecks child paths after sdkmanager", async (t) => {
   const parentInput = fixture(t);
   const { sdkmanager: parentManager, log: parentLog } = fakeSdkmanager(parentInput, "process.exit(0);");
   rmSync(join(parentInput.sdk, "ndk"), { recursive: true });
@@ -171,7 +174,7 @@ process.exit(1);
   assert.equal(existsSync(join(childInput.sdk, "ndk", newer, "source.properties")), true);
 });
 
-test("process-start errors and signals are failures even when a valid NDK exists", async (t) => {
+hostTest("process-start errors and signals are failures even when a valid NDK exists", async (t) => {
   const input = fixture(t);
   await assert.rejects(installNdk({ ...input, sdkmanager: join(input.directory, "missing-sdkmanager") }), /after 3 attempts:.*ENOENT/);
   const { sdkmanager, log } = fakeSdkmanager(input, "process.kill(process.pid, 'SIGTERM');");
@@ -180,7 +183,7 @@ test("process-start errors and signals are failures even when a valid NDK exists
   assert.equal(existsSync(join(input.sdk, "ndk", pinned, "source.properties")), true);
 });
 
-test("install CLI validates the package with an explicit SDK root before view creation", (t) => {
+hostTest("install CLI validates the package with an explicit SDK root before view creation", (t) => {
   const input = fixture(t);
   fakeSdkmanager(input, "assert.ok(existsSync(ndk));");
   const installed = JSON.parse(execFileSync(process.execPath, [
@@ -192,7 +195,7 @@ test("install CLI validates the package with an explicit SDK root before view cr
   assert.doesNotThrow(() => createSdkView(input));
 });
 
-test("isolated view selects the pinned compiler while preserving newer installed NDKs", (t) => {
+hostTest("isolated view selects the pinned compiler while preserving newer installed NDKs", (t) => {
   const input = fixture(t);
   const observed = createSdkView(input);
   assert.deepEqual(readdirSync(join(observed.view, "ndk")), [pinned]);
@@ -210,7 +213,7 @@ test("isolated view selects the pinned compiler while preserving newer installed
   }));
 });
 
-test("repeated jobs get distinct views without overwriting an existing path", (t) => {
+hostTest("repeated jobs get distinct views without overwriting an existing path", (t) => {
   const input = fixture(t);
   const first = createSdkView(input);
   const second = createSdkView(input);
@@ -220,7 +223,7 @@ test("repeated jobs get distinct views without overwriting an existing path", (t
   assert.equal(readdirSync(input.parent).length, 2);
 });
 
-test("missing, misleading and ambiguous pinned revisions fail before creating a view", (t) => {
+hostTest("missing, misleading and ambiguous pinned revisions fail before creating a view", (t) => {
   const input = fixture(t);
   assert.throws(() => createSdkView({ ...input, revision: "28.0.0" }), /ENOENT/);
   assert.throws(() => createSdkView({ ...input, revision: "../ndk-bundle" }), /numeric three-part/);
@@ -232,7 +235,7 @@ test("missing, misleading and ambiguous pinned revisions fail before creating a 
   assert.deepEqual(readdirSync(input.parent), []);
 });
 
-test("view cannot be created inside the installed SDK or inject environment lines", (t) => {
+hostTest("view cannot be created inside the installed SDK or inject environment lines", (t) => {
   const input = fixture(t);
   assert.throws(() => createSdkView({ ...input, parent: input.sdk }), /outside the installed SDK/);
   assert.throws(() => createSdkView({ ...input, parent: `${input.parent}\nUNRELATED=value` }), /single lines/);
@@ -240,7 +243,7 @@ test("view cannot be created inside the installed SDK or inject environment line
   assert.deepEqual(readdirSync(input.parent), []);
 });
 
-test("environment drift and a Tauri log that selected another NDK are rejected", (t) => {
+hostTest("environment drift and a Tauri log that selected another NDK are rejected", (t) => {
   const input = fixture(t);
   const { view } = createSdkView(input);
   const environment = sdkViewEnvironment(view, pinned);
@@ -256,7 +259,7 @@ test("environment drift and a Tauri log that selected another NDK are rejected",
   }), /outside the pinned SDK view/);
 });
 
-test("an extra NDK installed into the disposable view is rejected without deleting it", (t) => {
+hostTest("an extra NDK installed into the disposable view is rejected without deleting it", (t) => {
   const input = fixture(t);
   const { view } = createSdkView(input);
   symlinkSync(join(input.sdk, "ndk", newer), join(view, "ndk", newer), "dir");
@@ -265,7 +268,7 @@ test("an extra NDK installed into the disposable view is rejected without deleti
   assert.equal(existsSync(join(input.sdk, "ndk", newer)), true);
 });
 
-test("a compiler redirected outside the pinned NDK is rejected", (t) => {
+hostTest("a compiler redirected outside the pinned NDK is rejected", (t) => {
   const input = fixture(t);
   const compiler = join(input.sdk, "ndk", pinned, "toolchains", "llvm", "prebuilt", host, "bin", "clang");
   rmSync(compiler);
@@ -274,7 +277,7 @@ test("a compiler redirected outside the pinned NDK is rejected", (t) => {
   assert.deepEqual(readdirSync(input.parent), []);
 });
 
-test("CLI exports paths with spaces and verifies them in the following job environment", (t) => {
+hostTest("CLI exports paths with spaces and verifies them in the following job environment", (t) => {
   const input = fixture(t);
   const environmentFile = join(input.directory, "github env");
   writeFileSync(environmentFile, "EXISTING=value\n");
