@@ -324,6 +324,11 @@ RS.listen('peer_removed', function(payload) {
         PeersCache.applyRemoved(hash);
     }
 });
+// The pruner removes peers a batch per event, so the list re-renders once per batch.
+RS.listen('peers_removed', function(payload) {
+    if (typeof PeersCache === 'undefined' || !PeersCache) return;
+    if (payload && Array.isArray(payload.hashes)) PeersCache.applyRemovedBatch(payload.hashes);
+});
 
 function _renderPathCacheCleared() {
     if (typeof lastStats !== 'undefined' && lastStats && typeof lastStats === 'object') {

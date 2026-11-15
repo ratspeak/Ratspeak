@@ -25,9 +25,16 @@ use crate::state::AppState;
 const HIGH_WATERMARK: usize = 5_000;
 const LOW_WATERMARK: usize = 4_000;
 const EVICTION_FLOOR_SECS: f64 = 24.0 * 3600.0;
-const STARTUP_SWEEP_DELAY: Duration = Duration::from_secs(5);
+const STARTUP_SWEEP_DELAY: Duration = Duration::from_secs(45);
 const SWEEP_INTERVAL: Duration = Duration::from_secs(3600);
 const RETAIN_TIMEOUT: Duration = Duration::from_millis(250);
+/// Candidates per write transaction; other writers get SQLite between batches.
+const PRUNE_BATCH: usize = 250;
+/// Longer than SQLite's longest busy-handler sleep (100 ms), so a waiting
+/// writer always wakes inside the gap instead of starving behind the pass.
+const PRUNE_BATCH_PAUSE: Duration = Duration::from_millis(150);
+/// Attempts per batch while the LXMF manager is busy before the pass defers.
+const PRUNE_BUSY_ATTEMPTS: usize = 5;
 
 /// Set while the floor holds back overflow, so it is logged once per episode.
 static FLOOR_HOLD_LOGGED: AtomicBool = AtomicBool::new(false);
@@ -106,7 +113,7 @@ async fn current_direct_destinations(state: &AppState, now: f64) -> HashSet<Stri
         .unwrap_or_default()
 }
 
-/// A sweep runs shortly after start, then hourly.
+/// A sweep runs once startup has settled, then hourly.
 fn next_sweep_delay(swept_before: bool) -> Duration {
     if swept_before {
         SWEEP_INTERVAL
@@ -371,6 +378,7 @@ pub async fn sweep_once(state: Arc<AppState>) -> (usize, usize) {
 }
 
 /// What a prune pass removes.
+#[derive(Clone)]
 enum PruneScope {
     /// Peer rows last heard before `cutoff`, with their keys.
     Peers { cutoff: f64 },
@@ -408,10 +416,17 @@ async fn apply_prune(
     .await
 }
 
-/// Revalidate candidates in one immediate DB transaction, persist the exact
-/// matching known-identity mutation, then commit those row deletions. Disk
-/// rewrite MUST commit before DB delete: reverse order could strand a peer
-/// with no activity row and make it appear freshly-seen forever.
+/// How one prune batch ended.
+enum BatchOutcome {
+    Committed { deleted: Vec<String>, removed: usize },
+    /// Nothing changed; `busy` when the LXMF manager was held, which a retry may clear.
+    Deferred { busy: bool },
+    /// Failed after the memory mutation, which was restored.
+    RolledBack,
+}
+
+/// Prune `victims` in batches of `PRUNE_BATCH`, each its own short write
+/// transaction, pausing between them so no other writer waits on the pass.
 async fn apply_prune_with_persist<F>(
     state: &Arc<AppState>,
     scope: PruneScope,
@@ -421,20 +436,108 @@ async fn apply_prune_with_persist<F>(
     persist_snapshot: F,
 ) -> (usize, usize)
 where
-    F: FnOnce(&crate::lxmf::KnownIdentitiesSnapshot) -> std::io::Result<()> + Send + 'static,
+    F: Fn(&crate::lxmf::KnownIdentitiesSnapshot) -> std::io::Result<()> + Send + Sync + 'static,
 {
     let peer_rows = matches!(scope, PruneScope::Peers { .. });
     let phase_started = std::time::Instant::now();
-    let persistence_queued_at = std::time::Instant::now();
+    let persist_snapshot = Arc::new(persist_snapshot);
+    let protected_extra = Arc::new(protected_extra);
+    let mut deleted = Vec::new();
+    let mut removed_count = 0usize;
+    let mut batches = 0usize;
+    let mut longest_batch = Duration::ZERO;
+    let mut stopped = false;
+    'batches: for batch in victims.chunks(PRUNE_BATCH) {
+        for attempt in 1..=PRUNE_BUSY_ATTEMPTS {
+            if batches > 0 || attempt > 1 {
+                tokio::time::sleep(PRUNE_BATCH_PAUSE).await;
+            }
+            let batch_started = std::time::Instant::now();
+            let outcome = prune_batch(
+                state,
+                scope.clone(),
+                batch.to_vec(),
+                Arc::clone(&protected_extra),
+                label,
+                Arc::clone(&persist_snapshot),
+            )
+            .await;
+            longest_batch = longest_batch.max(batch_started.elapsed());
+            match outcome {
+                BatchOutcome::Committed {
+                    deleted: mut batch_deleted,
+                    removed,
+                } => {
+                    batches += 1;
+                    removed_count += removed;
+                    if peer_rows && !batch_deleted.is_empty() {
+                        state.emit_to_all("peers_removed", json!({ "hashes": &batch_deleted }));
+                    }
+                    deleted.append(&mut batch_deleted);
+                    continue 'batches;
+                }
+                BatchOutcome::Deferred { busy: true } if attempt < PRUNE_BUSY_ATTEMPTS => {}
+                // Nothing done: return without locking the manager found busy.
+                BatchOutcome::Deferred { .. } if batches == 0 => return (0, 0),
+                BatchOutcome::Deferred { .. } | BatchOutcome::RolledBack => {
+                    stopped = true;
+                    break 'batches;
+                }
+            }
+        }
+    }
+    let kept_count = state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|manager| {
+            manager
+                .as_ref()
+                .map(|manager| manager.known_identities.len())
+        })
+        .unwrap_or(0);
+
+    tracing::info!(
+        pass = label,
+        candidates = victims.len(),
+        removed_from_map = removed_count,
+        pruned = deleted.len(),
+        kept = kept_count,
+        removed_rows = if peer_rows { deleted.len() } else { 0 },
+        batches,
+        stopped,
+        longest_batch_ms = longest_batch.as_millis() as u64,
+        total_ms = phase_started.elapsed().as_millis() as u64,
+        "identity prune pass complete"
+    );
+
+    (deleted.len(), kept_count)
+}
+
+/// Revalidate one batch in an immediate DB transaction, persist the exact
+/// matching known-identity mutation, then commit those row deletions. Disk
+/// rewrite MUST commit before DB delete: reverse order could strand a peer
+/// with no activity row and make it appear freshly-seen forever.
+async fn prune_batch<F>(
+    state: &Arc<AppState>,
+    scope: PruneScope,
+    batch: Vec<String>,
+    protected_extra: Arc<std::collections::HashSet<String>>,
+    label: &'static str,
+    persist_snapshot: Arc<F>,
+) -> BatchOutcome
+where
+    F: Fn(&crate::lxmf::KnownIdentitiesSnapshot) -> std::io::Result<()> + Send + Sync + 'static,
+{
     let persistence_owner = state.lxmf_persistence_lock.lock().await;
-    let persistence_wait = persistence_queued_at.elapsed();
     let removed_entries = Arc::new(std::sync::Mutex::new(Vec::new()));
     let callback_removed = Arc::clone(&removed_entries);
     let persisted_snapshot = Arc::new(std::sync::Mutex::new(None));
     let callback_snapshot = Arc::clone(&persisted_snapshot);
+    let busy = Arc::new(AtomicBool::new(false));
+    let callback_busy = Arc::clone(&busy);
     let callback_state = Arc::clone(state);
-    let db_victims = victims.clone();
-    let db_protected = protected_extra.clone();
+    let candidates = batch.len();
     let deleted_result = db::spawn_db(state.db.clone(), move |pool| {
         let remove_keys = |eligible: &[String]| -> Result<(), String> {
             if eligible.is_empty() {
@@ -443,14 +546,15 @@ where
             let eligible = eligible.iter().cloned().collect();
             // The DB transaction already owns SQLite write admission.
             // Never wait DB -> manager because user paths may hold the
-            // manager while entering SQLite. Abort this prune pass and
-            // retry later if the protocol owner is busy.
+            // manager while entering SQLite. Retry the batch shortly, then
+            // defer the pass, if the protocol owner is busy.
             let (removed, snapshot) = {
                 let mut manager = callback_state
                     .lxmf
                     .try_lock()
                     .map_err(|error| match error {
                         std::sync::TryLockError::WouldBlock => {
+                            callback_busy.store(true, Ordering::Relaxed);
                             "LXMF manager busy during identity prune".to_string()
                         }
                         std::sync::TryLockError::Poisoned(_) => {
@@ -471,7 +575,7 @@ where
                 )
             };
             *callback_removed.lock().unwrap() = removed.clone();
-            persist_snapshot(&snapshot)
+            (*persist_snapshot)(&snapshot)
                 .map_err(|error| format!("known-identity snapshot failed: {error}"))?;
             *callback_snapshot.lock().unwrap() = Some(snapshot);
             Ok(())
@@ -479,21 +583,21 @@ where
         match &scope {
             PruneScope::Peers { cutoff } => db::delete_prunable_identity_activity_after(
                 &pool,
-                &db_victims,
+                &batch,
                 *cutoff,
-                &db_protected,
+                &protected_extra,
                 remove_keys,
             ),
             PruneScope::OrphanKeys { .. } => db::confirm_orphan_identity_keys_after(
                 &pool,
-                &db_victims,
-                &db_protected,
+                &batch,
+                &protected_extra,
                 remove_keys,
             ),
         }
     })
     .await;
-    let deleted = match deleted_result {
+    let (reason, error) = match deleted_result {
         Ok(Ok(deleted)) => {
             if let Some(snapshot) = persisted_snapshot.lock().unwrap().take()
                 && let Ok(mut manager) = state.lxmf.try_lock()
@@ -501,104 +605,43 @@ where
             {
                 manager.acknowledge_known_identities_snapshot(&snapshot);
             }
-            deleted
+            let removed = removed_entries.lock().unwrap().len();
+            return BatchOutcome::Committed { deleted, removed };
         }
-        Ok(Err(error)) => {
-            let removed = removed_entries.lock().unwrap().clone();
-            if removed.is_empty() {
-                tracing::debug!(
-                    pass = label,
-                    candidates = victims.len(),
-                    %error,
-                    "identity prune deferred before memory mutation"
-                );
-                return (0, 0);
-            }
-            let kept = restore_known_identities(state, &removed);
-            if let Err(recovery_error) =
-                crate::lxmf_persistence::persist_current_known_identities_under_owner(
-                    state,
-                    &persistence_owner,
-                    "identity_prune_rollback",
-                )
-                .await
-            {
-                tracing::error!(%recovery_error, "identity prune rollback persistence deferred");
-            }
-            tracing::warn!(
-                pass = label,
-                candidates = victims.len(),
-                kept,
-                %error,
-                "identity prune failed; DB transaction rolled back and memory restored"
-            );
-            return (0, kept);
-        }
-        Err(error) => {
-            let removed = removed_entries.lock().unwrap().clone();
-            if removed.is_empty() {
-                tracing::warn!(
-                    pass = label,
-                    candidates = victims.len(),
-                    %error,
-                    "identity prune DB worker failed before memory mutation"
-                );
-                return (0, 0);
-            }
-            let kept = restore_known_identities(state, &removed);
-            if let Err(recovery_error) =
-                crate::lxmf_persistence::persist_current_known_identities_under_owner(
-                    state,
-                    &persistence_owner,
-                    "identity_prune_worker_rollback",
-                )
-                .await
-            {
-                tracing::error!(%recovery_error, "identity prune worker rollback persistence deferred");
-            }
-            tracing::warn!(
-                pass = label,
-                candidates = victims.len(),
-                kept,
-                %error,
-                "identity prune DB worker failed; memory restored"
-            );
-            return (0, kept);
-        }
+        Ok(Err(error)) => ("identity_prune_rollback", error),
+        Err(error) => ("identity_prune_worker_rollback", error.to_string()),
     };
-    let removed_count = removed_entries.lock().unwrap().len();
-    let kept_count = state
-        .lxmf
-        .lock()
-        .ok()
-        .and_then(|manager| {
-            manager
-                .as_ref()
-                .map(|manager| manager.known_identities.len())
-        })
-        .unwrap_or(0);
-    drop(persistence_owner);
-
-    let removed_rows = if peer_rows { deleted.len() } else { 0 };
-    if peer_rows {
-        for hash in &deleted {
-            state.emit_to_all("peer_removed", json!({ "hash": hash }));
-        }
+    let removed = removed_entries.lock().unwrap().clone();
+    if removed.is_empty() {
+        tracing::debug!(
+            pass = label,
+            candidates,
+            %error,
+            "identity prune batch deferred before memory mutation"
+        );
+        return BatchOutcome::Deferred {
+            busy: busy.load(Ordering::Relaxed),
+        };
     }
-
-    tracing::info!(
+    let kept = restore_known_identities(state, &removed);
+    if let Err(recovery_error) =
+        crate::lxmf_persistence::persist_current_known_identities_under_owner(
+            state,
+            &persistence_owner,
+            reason,
+        )
+        .await
+    {
+        tracing::error!(%recovery_error, reason, "identity prune rollback persistence deferred");
+    }
+    tracing::warn!(
         pass = label,
-        candidates = victims.len(),
-        removed_from_map = removed_count,
-        pruned = deleted.len(),
-        kept = kept_count,
-        removed_rows,
-        persistence_wait_ms = persistence_wait.as_millis() as u64,
-        total_ms = phase_started.elapsed().as_millis() as u64,
-        "identity prune pass complete"
+        candidates,
+        kept,
+        %error,
+        "identity prune batch failed; DB transaction rolled back and memory restored"
     );
-
-    (deleted.len(), kept_count)
+    BatchOutcome::RolledBack
 }
 
 fn restore_known_identities(state: &AppState, entries: &[(String, [u8; 64])]) -> usize {
@@ -641,6 +684,13 @@ mod tests {
     use std::sync::{Condvar, Mutex};
 
     fn make_state_with_pool_size(max_size: u32) -> (tempfile::TempDir, Arc<AppState>) {
+        make_state_with(max_size, Arc::new(ratspeak_core::NoopEmitter))
+    }
+
+    fn make_state_with(
+        max_size: u32,
+        emitter: Arc<dyn ratspeak_core::Emitter>,
+    ) -> (tempfile::TempDir, Arc<AppState>) {
         let temp = tempfile::TempDir::new().unwrap();
         crate::lxmf::initialize_storage_namespace(temp.path()).unwrap();
         let config = DashboardConfig::from_env_and_defaults(temp.path().to_path_buf());
@@ -652,7 +702,7 @@ mod tests {
         let state = Arc::new(AppState::new(
             config,
             pool,
-            Arc::new(ratspeak_core::NoopEmitter),
+            emitter,
             Arc::new(ratspeak_core::NoopNotifier),
         ));
         *state.lxmf.lock().unwrap() = Some(
@@ -754,6 +804,31 @@ mod tests {
         assert_eq!(
             db::get_identity_activity_first_seen(&state.db, &victim),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn a_large_prune_commits_and_reports_one_batch_at_a_time() {
+        let emitter = Arc::new(CountingEmitter::default());
+        let (_temp, state) = make_state_with(2, emitter.clone());
+        let victims: Vec<String> = (0..PRUNE_BATCH + 1).map(|i| hash(3_000_000 + i)).collect();
+        let rows: Vec<_> = victims.iter().map(|v| (v.clone(), 1.0, None, None)).collect();
+        db::touch_identity_activity(&state.db, &rows);
+        insert_keys(&state, &victims);
+
+        let (pruned, kept) =
+            apply_eviction(&state, victims.clone(), 10.0, HashSet::new(), "test").await;
+
+        assert_eq!((pruned, kept), (PRUNE_BATCH + 1, 0));
+        assert_eq!(emitter.0.lock().unwrap().get("peers_removed"), Some(&2));
+        assert!(db::find_unprotected_peers(&state.db, &HashSet::new()).is_empty());
+        let manager = state.lxmf.lock().unwrap();
+        let manager = manager.as_ref().unwrap();
+        assert!(!manager.known_identities_dirty());
+        assert!(
+            std::fs::read(manager.ratchets_dir().join("known_identities"))
+                .unwrap()
+                .is_empty()
         );
     }
 
@@ -1017,8 +1092,8 @@ mod tests {
     }
 
     #[test]
-    fn sweeps_run_at_start_then_hourly() {
-        assert_eq!(next_sweep_delay(false), Duration::from_secs(5));
+    fn sweeps_run_after_start_then_hourly() {
+        assert_eq!(next_sweep_delay(false), Duration::from_secs(45));
         assert_eq!(next_sweep_delay(true), Duration::from_secs(3_600));
     }
 
@@ -1282,6 +1357,20 @@ mod tests {
             apply_prune(&state, scope, vec![orphan.clone()], HashSet::new(), "test").await;
         assert_eq!(pruned, 0);
         assert_eq!(keys(&state), vec![orphan]);
+    }
+
+    #[derive(Default)]
+    struct CountingEmitter(Mutex<HashMap<String, usize>>);
+
+    impl ratspeak_core::Emitter for CountingEmitter {
+        fn try_emit(
+            &self,
+            event: &str,
+            _payload: serde_json::Value,
+        ) -> Result<(), ratspeak_core::EmitError> {
+            *self.0.lock().unwrap().entry(event.into()).or_default() += 1;
+            Ok(())
+        }
     }
 
     #[tokio::test]

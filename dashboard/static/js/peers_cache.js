@@ -52,8 +52,9 @@ function ratspeakDisplayNameHtml(displayName, recordOrHash) {
 
 // PeersCache: single source of truth for peer rows on the JS side.
 // Loaded once from `api_get_peers_snapshot`, updated by `peer_updated` /
-// `peer_removed` events. Status tier is computed from `last_seen` alone —
-// path_table presence informs route info but never the status dot.
+// `peer_removed` / `peers_removed` events. Status tier is computed from
+// `last_seen` alone — path_table presence informs route info but never the
+// status dot.
 // Tiers: reachable <2h, stale <1d, offline <7d, then culled. `unreachable`
 // is a contact-only sentinel for rows where last_seen is null.
 var PeersCache = (function() {
@@ -288,11 +289,19 @@ var PeersCache = (function() {
     }
 
     function applyRemoved(hash) {
-        if (!hash) return;
-        if (_cache[hash]) {
-            delete _cache[hash];
-            _notify();
+        applyRemovedBatch([hash]);
+    }
+
+    function applyRemovedBatch(hashes) {
+        if (!Array.isArray(hashes)) return;
+        var any = false;
+        for (var i = 0; i < hashes.length; i++) {
+            if (hashes[i] && _cache[hashes[i]]) {
+                delete _cache[hashes[i]];
+                any = true;
+            }
         }
+        if (any) _notify();
     }
 
     function replace(rows) {
@@ -533,6 +542,7 @@ var PeersCache = (function() {
         applyUpdated: applyUpdated,
         applyBatch: applyBatch,
         applyRemoved: applyRemoved,
+        applyRemovedBatch: applyRemovedBatch,
         replace: replace,
         clear: clear,
         get: get,
