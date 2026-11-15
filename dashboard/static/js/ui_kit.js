@@ -591,8 +591,9 @@ function identityAvatar(hashValue, size) {
     // A menu under its trigger on desktop, a sheet on a phone. opts: { title (the sheet's head and the
     // menu's name), label (its name when there is no title), caption, items, align: 'end' (default) or
     // 'start', placement: 'top', rect (an anchor box in place of the trigger's), sheet (true or false
-    // forces one), hints (show hints on desktop too), keepFocus (leave focus, and a phone's keyboard,
-    // where it is), cls, onClose(item | null) }.
+    // forces one), around ({ el, rect(), band(), scroller, end }: a message, so a phone shows the menu
+    // at it with placeAround in place of the sheet), hints (show hints on desktop too), keepFocus
+    // (leave focus, and a phone's keyboard, where it is), cls, onClose(item | null) }.
     // Item: { label, hint, icon (glyph name or svg), checked (radio items), danger, disabled, onSelect }
     // or { separator: true }. Returns { trigger, el, close() }, or null when a second press closed it.
     var openMenu = null;
@@ -624,6 +625,71 @@ function identityAvatar(hashValue, size) {
         pop.style.top = Math.round(Math.max(minY, Math.min(up ? above : below, maxY - h))) + 'px';
     }
 
+    // Panels at a message (a phone's long press): `upper` (optional) just above it, `lower` just below;
+    // both below, or both above, when a side lacks room, the upper one always nearest the message;
+    // docked in the band when nothing fits. o: { rect() (the message box), band() ({ top, bottom }: the
+    // visible transcript), upper, lower, end (align right edges), scroller, scroll (it may move to make
+    // room) }. Returns 'split', 'below', 'above', or 'dock'.
+    var AT_GAP = 8, AT_EDGE = 12;
+    function placeAround(o, settled) {
+        var g = AT_GAP, band = o.band(), r = o.rect();
+        var upper = o.upper || null, lower = o.lower;
+        var uh = upper ? upper.offsetHeight : 0, ua = upper ? uh + g : 0, lh = lower.offsetHeight;
+        function fits(t, h) { return t >= band.top && t + h <= band.bottom; }
+        var placement = null, upperTop, lowerTop;
+        if ((!upper || fits(r.top - ua, uh)) && fits(r.bottom + g, lh)) {
+            placement = upper ? 'split' : 'below';
+            upperTop = r.top - ua;
+            lowerTop = r.bottom + g;
+        } else if (fits(r.bottom + g, ua + lh)) {
+            placement = 'below';
+            upperTop = r.bottom + g;
+            lowerTop = upperTop + ua;
+        } else if (fits(r.top - ua - g - lh, lh + ua)) {
+            placement = 'above';
+            upperTop = r.top - ua;
+            lowerTop = upperTop - g - lh;
+        }
+        // The smallest transcript shift (+ scrolls down) that fits split, then below; it also reveals a
+        // message partly under the header or composer.
+        if (o.scroll && o.scroller && !settled && (!placement || r.top < band.top || r.bottom > band.bottom)) {
+            var ranges = [
+                [r.bottom + g + lh - band.bottom, r.top - ua - band.top],
+                [r.bottom + g + ua + lh - band.bottom, r.top - band.top]
+            ];
+            for (var i = 0; i < ranges.length; i++) {
+                var lo = ranges[i][0], hi = ranges[i][1];
+                if (lo > hi) continue;
+                var delta = lo > 0 ? lo : (hi < 0 ? hi : 0);
+                var before = o.scroller.scrollTop;
+                if (delta) o.scroller.scrollTop = before + delta;
+                if (o.scroller.scrollTop !== before) return placeAround(o, true);
+                break;
+            }
+        }
+        if (!placement) {
+            placement = 'dock';
+            lowerTop = band.bottom - lh;
+            upperTop = lowerTop - ua;
+            if (upperTop < band.top) {
+                upperTop = band.top;
+                lowerTop = upperTop + ua;
+            }
+        }
+        var safe = typeof safeAreaInsets === 'function' ? safeAreaInsets() : { top: 0, right: 0, bottom: 0, left: 0 };
+        function put(panel, top, below) {
+            var w = panel.offsetWidth;
+            var left = Math.max(AT_EDGE + safe.left, Math.min(o.end ? r.right - w : r.left, window.innerWidth - w - AT_EDGE - safe.right));
+            panel.style.left = Math.round(left) + 'px';
+            panel.style.top = Math.round(top) + 'px';
+            panel.style.setProperty('--ui-at-origin', (below ? 'top ' : 'bottom ') + (o.end ? 'right' : 'left'));
+            panel.style.setProperty('--ui-at-shift', (below ? -4 : 4) + 'px');
+        }
+        if (upper) put(upper, upperTop, placement === 'below');
+        put(lower, lowerTop, placement === 'split' || placement === 'below');
+        return placement;
+    }
+
     function menu(trigger, opts) {
         opts = opts || {};
         var items = opts.items || [];
@@ -634,6 +700,9 @@ function identityAvatar(hashValue, size) {
         }
         closeMenu();
         var useSheet = opts.sheet != null ? !!opts.sheet : compact();
+        // A message's actions open at the message, never in a sheet.
+        var around = useSheet && opts.around ? opts.around : null;
+        if (around) useSheet = false;
         var name = opts.title || opts.label || '';
         var caption = opts.caption ? '<div class="ui-menu-caption">' + esc(opts.caption) + '</div>' : '';
         var handle = { trigger: trigger, closed: false };
@@ -669,15 +738,35 @@ function identityAvatar(hashValue, size) {
             return handle;
         }
         var pop = document.createElement('div');
-        pop.className = 'ui-menu ui-pop' + (opts.cls ? ' ' + opts.cls : '');
+        pop.className = 'ui-menu ui-pop' + (around ? ' ui-pop--at' : '') + (opts.cls ? ' ' + opts.cls : '');
         pop.setAttribute('role', 'menu');
         if (name) pop.setAttribute('aria-label', name);
         pop.innerHTML = caption + menuItemsHtml(items, !!opts.hints);
         document.body.appendChild(pop);
-        placeMenu(pop, opts.rect || trigger.getBoundingClientRect(), opts);
-        function reflow() { if (!handle.closed && !opts.rect && trigger.isConnected) placeMenu(pop, trigger.getBoundingClientRect(), opts); }
+        var at = around && {
+            rect: around.rect || function() { return around.el.getBoundingClientRect(); },
+            band: around.band, lower: pop, end: !!around.end, scroller: around.scroller, scroll: true
+        };
+        if (at) {
+            around.el.classList.add('is-pressed');
+            if (around.scroller) around.scroller.classList.add('is-acting');
+            placeAround(at);
+            at.scroll = false;
+        } else {
+            placeMenu(pop, opts.rect || trigger.getBoundingClientRect(), opts);
+        }
+        function reflow() {
+            if (handle.closed) return;
+            if (at) {
+                var r = around.el.isConnected ? at.rect() : null, band = at.band();
+                if (!r || r.bottom < band.top || r.top > band.bottom) handle.close(null);
+                else placeAround(at);
+            } else if (!opts.rect && trigger.isConnected) {
+                placeMenu(pop, trigger.getBoundingClientRect(), opts);
+            }
+        }
         function outside(e) {
-            if (pop.contains(e.target) || (trigger && trigger.contains && trigger.contains(e.target))) return;
+            if (pop.contains(e.target) || (!at && trigger && trigger.contains && trigger.contains(e.target))) return;
             handle.close(null);
         }
         function onKey(e) {
@@ -716,6 +805,10 @@ function identityAvatar(hashValue, size) {
             window.removeEventListener('scroll', reflow, true);
             var hadFocus = pop.contains(document.activeElement);
             if (pop.parentNode) pop.parentNode.removeChild(pop);
+            if (at) {
+                around.el.classList.remove('is-pressed');
+                if (around.scroller) around.scroller.classList.remove('is-acting');
+            }
             if ((hadFocus || returnFocus) && trigger && trigger.focus && trigger.isConnected) {
                 try { trigger.focus({ preventScroll: true }); } catch (_) { trigger.focus(); }
             }
@@ -735,6 +828,7 @@ function identityAvatar(hashValue, size) {
     kit.dialog = dialog;
     kit.menu = menu;
     kit.closeMenu = closeMenu;
+    kit.placeAround = placeAround;
     kit.detailHead = detailHead;
     kit.icon = icon;
     kit.icons = Object.keys(GLYPHS);

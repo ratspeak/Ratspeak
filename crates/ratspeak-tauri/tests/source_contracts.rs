@@ -8533,7 +8533,11 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(!messaging_css.contains(".msg-hover"));
     assert!(!messaging_css.contains(".msg-text-selection-guide"));
     assert!(messaging_css.contains(".msg-menu { min-width: 248px; }"));
-    assert!(messaging_css.contains(".msg-sheet { position: fixed;"));
+    // A phone's hold opens the reactions above the message and the actions below it, never a sheet.
+    assert!(messaging_css.contains(".msg-at { position: fixed;"));
+    assert!(!messaging_css.contains(".msg-sheet"));
+    assert!(!lxmf.contains("msg-sheet"));
+    assert!(lxmf.contains("placement = RS.kit.placeAround({"));
     assert!(lxmf.contains("function _layoutMessageActionPanels(state, allowScroll)"));
     assert!(nav.contains("RS.closeMessageActionMenu()"));
 

@@ -780,8 +780,10 @@ assert(!messagingCss.includes('.msg-hover') && !lxmfSource.includes('msg-hover')
 assert(lxmfSource.includes("if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;") &&
        lxmfSource.includes("(ctx.pointer ? ' tabindex=\"0\"' : '')"),
     'a focused message opens its menu from the keyboard');
-assert(lxmfSource.includes("reactBar.className = 'msg-quick'") && lxmfSource.includes("menu.className = useSheet ? 'ui-dialog msg-sheet' : 'ui-menu ui-pop msg-menu'"),
-    'one menu: the reactions row on top of the kit menu, a sheet on a phone');
+assert(lxmfSource.includes("reactBar.className = atMessage ? 'msg-quick ui-pop--at' : 'msg-quick'") &&
+       lxmfSource.includes("menu.className = atMessage ? 'msg-at' : 'ui-menu ui-pop msg-menu'") &&
+       !lxmfSource.includes('msg-sheet') && !messagingCss.includes('.msg-sheet'),
+    'one menu: the reactions row on top of the kit menu; on a phone, reactions above the message and actions below, never a sheet');
 assert(!messagingCss.includes('.msg-text-selection-guide') &&
        !lxmfSource.includes('Text selected. Adjust the selection or choose Done.') &&
        !lxmfSource.includes('<span>Select Text</span>') &&

@@ -3658,7 +3658,6 @@ function renderConversation(options) {
                     _armPendingMessageHoldActivation(bubble, msgId, touch);
                     _showMsgContextMenu(msgData, touch.clientX, touch.clientY, bubble, null, {
                         linkUrl: _messageLinkUrlAt(touch.target),
-                        sheet: true,
                     });
                 }
             });
@@ -4861,10 +4860,7 @@ function _dismissContextMenu(opts) {
         }
     }
     if (state.row) state.row.classList.remove('is-pressed');
-    if (state.container) {
-        state.container.classList.remove('is-acting');
-        if (state.sheet) state.container.style.paddingBottom = '';
-    }
+    if (state.container) state.container.classList.remove('is-acting');
     if (trigger && trigger.hasAttribute('aria-expanded')) trigger.setAttribute('aria-expanded', 'false');
     _activeContextMenu = null;
     var flushedRender = opts.flushDeferredRender !== false && _flushDeferredConversationRender();
@@ -5584,16 +5580,6 @@ function _messageActionBand() {
     return { top: top + MSG_ACTION_GAP, bottom: bottom - MSG_ACTION_GAP };
 }
 
-// Smallest transcript shift (+ scrolls down) that brings a message of the
-// given top and bottom between the band's top and `limit`, preferring its top.
-function _messageActionScrollDelta(top, bottom, band, limit) {
-    var lower = Math.min(band.bottom, limit);
-    if (bottom - top > lower - band.top) return top - band.top;
-    if (bottom > lower) return bottom - lower;
-    if (top < band.top) return top - band.top;
-    return 0;
-}
-
 // Arrow-key target within the menu. Groups are in on-screen order; the
 // reactions row moves with Left/Right (wrapping), the action rows with
 // Up/Down, and Up/Down at an edge crosses to the neighbouring group.
@@ -5627,37 +5613,39 @@ function _messageActionKeyTarget(groups, current, key) {
 }
 
 // Desktop: one kit menu under its anchor (above it when there is no room), docked inside
-// the transcript band when neither fits. Phone: a sheet, with the pressed message kept in view.
+// the transcript band when neither fits. Phone: the reactions above the pressed message
+// and the actions below it, placed by RS.kit.placeAround.
 function _layoutMessageActionPanels(state, allowScroll) {
     var bubble = state.bubble;
     if (!bubble || !bubble.isConnected) return null;
     var menu = state.menu;
-    var band = _messageActionBand();
-    var b = bubble.getBoundingClientRect();
-    var rowRect = state.row && state.row.isConnected ? state.row.getBoundingClientRect() : b;
-    var top = b.top;
-    var bottom = Math.max(b.bottom, rowRect.bottom);
+    var placement;
 
-    if (state.sheet) {
-        var sheetTop = menu.getBoundingClientRect().top - MSG_ACTION_GAP;
-        var scroller = document.getElementById('lxmf-messages');
-        var delta = _messageActionScrollDelta(top, bottom, band, sheetTop);
-        if (allowScroll && scroller && delta) {
-            var before = scroller.scrollTop;
-            // Room under the last message so the newest can rise above the sheet too.
-            var room = Math.max(0, bottom - sheetTop);
-            if (room) scroller.style.paddingBottom = (room + MSG_ACTION_GAP) + 'px';
-            scroller.scrollTop = before + delta;
-        }
-        menu.setAttribute('data-placement', 'sheet');
-        return 'sheet';
+    if (state.atMessage) {
+        placement = RS.kit.placeAround({
+            rect: function() {
+                var r = bubble.getBoundingClientRect();
+                var rowRect = state.row && state.row.isConnected ? state.row.getBoundingClientRect() : r;
+                // The row also holds the reactions under the bubble.
+                return { top: r.top, bottom: Math.max(r.bottom, rowRect.bottom), left: r.left, right: r.right };
+            },
+            band: _messageActionBand,
+            upper: state.reactPanel,
+            lower: state.actionsPanel,
+            end: state.outbound,
+            scroller: document.getElementById('lxmf-messages'),
+            scroll: allowScroll,
+        });
+        menu.setAttribute('data-placement', placement);
+        return placement;
     }
 
+    var band = _messageActionBand();
+    var b = bubble.getBoundingClientRect();
     var a = state.anchorRect || b;
     var h = menu.offsetHeight;
     var w = menu.offsetWidth;
     var g = 4;
-    var placement;
     var menuTop;
     // A message partly under the header (a keyboard opened it) keeps its menu inside the band.
     if (a.bottom + g + h <= band.bottom) {
@@ -5694,8 +5682,16 @@ function _messageMenuButton(cls, action, glyph, label) {
     return btn;
 }
 
-// The message menu: a reactions row on top, then the actions. opts: { focusDialog, linkUrl,
-// sheet (a long press), anchor (element) }.
+// Row order by presentation; '|' is a rule between groups that both have rows. Desktop leads with
+// what the message's state allows; a phone leads with Reply, Select, and Copy, Stop trying last.
+var MSG_MENU_ORDER = ['try-now', 'stop-trying', 'retry', 'show-activity', '|',
+    'reply', 'copy-message', 'select', 'paper-qr', 'copy-paper-link', 'copy-link', 'media'];
+var MSG_AT_ORDER = ['reply', 'select', 'copy-message', 'paper-qr', 'copy-paper-link', 'copy-link', 'media', '|',
+    'try-now', 'retry', 'show-activity', 'stop-trying'];
+
+// The message menu. Desktop: one kit menu, the reactions row on top. Phone: the reactions in a
+// capsule above the message and the actions in a card below it. opts: { focusDialog, linkUrl,
+// anchor (element) }.
 function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     opts = opts || {};
     var preparedTarget = _prepareMessageActionTarget(msgData, bubble, trigger, x, y);
@@ -5714,21 +5710,20 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         var target = _findRenderedMessageBubble(container, msgData.id);
         row = target && target.closest ? target.closest('.msg-row') : null;
     }
-    var useSheet = isCompactLayout();
+    var atMessage = isCompactLayout();
     if (container) container.classList.add('is-acting');
     if (row) row.classList.add('is-pressed');
 
     var menu = document.createElement('div');
-    menu.className = useSheet ? 'ui-dialog msg-sheet' : 'ui-menu ui-pop msg-menu';
+    menu.className = atMessage ? 'msg-at' : 'ui-menu ui-pop msg-menu';
     menu.setAttribute('role', 'dialog');
     menu.setAttribute('aria-modal', 'false');
     menu.setAttribute('aria-label', 'Message actions');
     menu.addEventListener('mousedown', _preventMessageActionFocusSteal);
     menu.addEventListener('touchstart', _preventMessageActionFocusSteal, { passive: false });
-    if (useSheet) menu.innerHTML = '<div class="ui-dialog-handle" aria-hidden="true"></div>';
 
     var reactBar = document.createElement('div');
-    reactBar.className = 'msg-quick';
+    reactBar.className = atMessage ? 'msg-quick ui-pop--at' : 'msg-quick';
     reactBar.setAttribute('role', 'group');
     reactBar.setAttribute('aria-label', 'Reactions');
     MSG_QUICK_REACTIONS.forEach(function(em) {
@@ -5789,16 +5784,15 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     menu.appendChild(reactBar);
 
     var actions = document.createElement('div');
-    actions.className = useSheet ? 'ui-menu ui-menu--sheet msg-menu-items' : 'msg-menu-items';
+    actions.className = atMessage ? 'ui-menu ui-pop--at msg-menu-items' : 'msg-menu-items';
     var itemClass = 'ui-menu-item';
+    var rows = {};
     function add(btn, handler) {
         _bindMessageFocusPreservingActivation(btn, handler);
-        actions.appendChild(btn);
+        rows[btn.getAttribute('data-message-action')] = btn;
     }
-    var hasTop = false;
 
     if (_messageIsWaiting(msgData)) {
-        hasTop = true;
         add(_messageMenuButton(itemClass + ' msg-ctx-try-now', 'try-now', 'refresh', 'Try now'), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
             _dismissContextMenu();
@@ -5814,7 +5808,6 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     }
 
     if (_messageCanRetry(msgData)) {
-        hasTop = true;
         add(_messageMenuButton(itemClass + ' msg-ctx-retry', 'retry', 'refresh', 'Retry…'), function() {
             var anchorBubble = state.bubble;
             _dismissContextMenu({ restoreFocus: false });
@@ -5823,7 +5816,6 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     }
 
     if (_messageCanShowInActivity(msgData) && typeof showMessageInActivity === 'function') {
-        hasTop = true;
         add(_messageMenuButton(itemClass + ' msg-ctx-activity', 'show-activity', 'activity', 'Show in Activity'), function(e) {
             var focusChip = _messageActivationExpectsFocus(e);
             _dismissContextMenu({ restoreFocus: false });
@@ -5832,13 +5824,6 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
                 focusChip: focusChip
             });
         });
-    }
-
-    if (hasTop) {
-        var topSep = document.createElement('div');
-        topSep.className = 'ui-menu-sep';
-        topSep.setAttribute('role', 'separator');
-        actions.appendChild(topSep);
     }
 
     add(_messageMenuButton(itemClass + ' msg-ctx-reply', 'reply', 'reply', 'Reply'), function() {
@@ -5935,20 +5920,36 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         });
     }
 
-    if (!useSheet) {
+    function rule(parent) {
         var sep = document.createElement('div');
         sep.className = 'ui-menu-sep';
         sep.setAttribute('role', 'separator');
-        menu.appendChild(sep);
+        parent.appendChild(sep);
     }
+    var ruleDue = false;
+    (atMessage ? MSG_AT_ORDER : MSG_MENU_ORDER).forEach(function(key) {
+        if (key === '|') {
+            ruleDue = actions.children.length > 0;
+            return;
+        }
+        if (!rows[key]) return;
+        if (ruleDue) rule(actions);
+        ruleDue = false;
+        actions.appendChild(rows[key]);
+    });
+
+    if (!atMessage) rule(menu);
     menu.appendChild(actions);
     menu.addEventListener('keydown', function(e) {
         if (/^(Arrow(Up|Down|Left|Right)|Home|End|Tab)$/.test(e.key)) menu.classList.add('msg-action-keyboard');
         if (!/^(Arrow(Up|Down|Left|Right)|Home|End)$/.test(e.key)) return;
+        // On-screen order: on a phone the card can sit above the reactions.
         var groups = [
             { panel: reactBar, items: Array.from(reactBar.querySelectorAll('button')), horizontal: true },
             { panel: actions, items: Array.from(actions.querySelectorAll('button')), horizontal: false },
-        ].filter(function(group) { return group.panel.isConnected; });
+        ].filter(function(group) { return group.panel.isConnected; }).sort(function(a, b) {
+            return a.panel.getBoundingClientRect().top - b.panel.getBoundingClientRect().top;
+        });
         var target = _messageActionKeyTarget(groups, document.activeElement, e.key);
         if (!target) return;
         e.preventDefault();
@@ -5969,7 +5970,7 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         container: container,
         trigger: trigger,
         anchorRect: anchorRect,
-        sheet: useSheet,
+        atMessage: atMessage,
         msgId: msgData.id,
         outbound: msgData.direction === 'outbound',
         ownerHash: _canonicalConversationHash(lxmfActiveContact),

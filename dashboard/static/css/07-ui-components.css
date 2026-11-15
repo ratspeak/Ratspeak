@@ -549,6 +549,10 @@ button.ui-prop, a.ui-prop { cursor: pointer; text-decoration: none; }
 
 /* A menu anchored under its trigger (RS.kit.menu places it). */
 .ui-pop { position: fixed; z-index: var(--z-dropdown); }
+/* A panel at a message (RS.kit.placeAround): it grows from the message's side. */
+.ui-pop--at { transform-origin: var(--ui-at-origin, top left); animation: ui-at-in .16s cubic-bezier(.2, .9, .3, 1) both; }
+@keyframes ui-at-in { from { opacity: 0; transform: translateY(var(--ui-at-shift, -4px)) scale(.96); } }
+@media (prefers-reduced-motion: reduce) { .ui-pop--at { animation: ui-fade-in .1s ease-out both; } }
 
 /* Detail list, stacked: the label over the value at every width. */
 .ui-dl--stack { grid-template-columns: minmax(0, 1fr); row-gap: 4px; }

@@ -3431,9 +3431,41 @@ function _channelsBindTouchReplyAction(event, item, authorText) {
                 actions.push({ label: 'Report', icon: 'flag', danger: true,
                     onSelect: function() { _channelsReportMessage(item, authorText); } });
             }
-            if (actions.length) RS.kit.menu(event, { title: 'Message from ' + authorText, items: actions, align: 'start' });
+            if (!actions.length) return;
+            var text = event.querySelector('.ch-msg-text') || event;
+            RS.kit.menu(event, {
+                title: 'Message from ' + authorText, items: actions, align: 'start', keepFocus: true,
+                around: {
+                    el: event,
+                    // The card lines up with the text, not the avatar.
+                    rect: function() {
+                        var r = event.getBoundingClientRect();
+                        var t = text.getBoundingClientRect();
+                        return { top: r.top, bottom: r.bottom, left: t.left, right: t.right };
+                    },
+                    band: _channelsMessageActionBand,
+                    scroller: _channelsEl('channel-transcript')
+                }
+            });
         }
     });
+}
+
+// The transcript in view: below the sticky room head, above the composer and keyboard.
+function _channelsMessageActionBand() {
+    var vv = window.visualViewport;
+    var top = vv ? vv.offsetTop : 0;
+    var bottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+    var transcript = _channelsEl('channel-transcript');
+    if (transcript) {
+        var r = transcript.getBoundingClientRect();
+        top = Math.max(top, r.top);
+        bottom = Math.min(bottom, r.bottom);
+        var head = transcript.querySelector('.ch-room-head');
+        var h = head ? head.getBoundingClientRect() : null;
+        if (h && h.height > 0) top = Math.max(top, h.bottom);
+    }
+    return { top: top + 8, bottom: bottom - 8 };
 }
 
 function _channelsIsRemotePresenceItem(item) {

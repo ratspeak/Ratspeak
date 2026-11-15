@@ -1208,7 +1208,8 @@ button.msg-mark:focus-visible { outline: 2px solid var(--focus-ring); outline-of
 .msg-intro-sub > .ui-hash-copy { width: 100%; justify-content: center; }
 .msg-intro-body { margin: 8px 0 12px; font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.45; }
 
-/* The message menu: reactions on top, then the actions; a sheet on a phone, the pressed message in view. */
+/* The message menu. Desktop: reactions on top, then the actions, in one kit menu. Phone: the
+   reactions in a capsule above the pressed message, the actions in a card below it. */
 .msg-menu { min-width: 248px; }
 .msg-menu-items { display: flex; flex-direction: column; }
 .msg-quick { display: flex; align-items: center; gap: 2px; }
@@ -1217,14 +1218,15 @@ button.msg-mark:focus-visible { outline: 2px solid var(--focus-ring); outline-of
 .msg-quick-btn[aria-pressed="true"] { background: var(--selection-bg); }
 .msg-quick-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .msg-quick > .msg-quick-more { margin-left: auto; }
-.msg-sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: var(--z-modal); width: 100%; max-width: none; padding-bottom: var(--sab, 0px); animation: msg-sheet-in .22s cubic-bezier(.2, 0, 0, 1); }
-.msg-sheet > .msg-quick { justify-content: space-between; padding: 8px 16px 4px; }
-.msg-sheet > .msg-quick > .msg-quick-more { margin-left: 0; }
-@keyframes msg-sheet-in { from { transform: translateY(24px); opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .msg-sheet { animation: none; } }
-/* While a phone sheet is up, the other messages step back. */
+.msg-at { position: fixed; inset: 0; z-index: var(--z-dropdown); pointer-events: none; }
+.msg-at > * { position: absolute; top: 0; left: 0; pointer-events: auto; }
+.msg-at > .msg-menu-items { min-width: 248px; }
+.msg-at > .msg-quick { max-width: calc(100vw - 24px); padding: 4px; box-sizing: border-box; background: var(--surface-popover); border: 1px solid var(--border-surface); border-radius: 999px; box-shadow: var(--shadow-popover); }
+.msg-at > .msg-quick > :is(.msg-quick-btn, .msg-quick-more) { flex: 0 1 44px; min-width: 32px; height: 44px; border-radius: 50%; }
+.msg-at > .msg-quick > .msg-quick-more { margin-left: 0; }
+/* While a phone's message actions are open, the other messages step back. */
 @media (max-width: 768px) {
-    .lxmf-messages.is-acting .msg-row:not(.is-pressed), .lxmf-messages.is-acting .msg-day { opacity: .45; }
+    .lxmf-messages.is-acting .msg-row:not(.is-pressed), .lxmf-messages.is-acting .msg-day { opacity: .45; transition: opacity .16s ease; }
 }
 @media (max-width: 768px), (pointer: coarse) {
     .msg-quick-btn { width: 44px; height: 44px; font-size: var(--text-2xl); }

@@ -474,6 +474,7 @@ function FakeElement(tag) {
     this.classList = { add: function() {}, remove: function() {} };
 }
 FakeElement.prototype.setAttribute = function(name, value) { this.attrs[name] = value; };
+FakeElement.prototype.getAttribute = function(name) { return this.attrs[name]; };
 FakeElement.prototype.appendChild = function(child) { this.children.push(child); return child; };
 FakeElement.prototype.addEventListener = function() {};
 FakeElement.prototype.querySelector = function() { return null; };
@@ -516,6 +517,7 @@ var menuContext = {
 vm.createContext(menuContext);
 vm.runInContext(source.slice(0, source.indexOf('var lxmfIdentity')), menuContext);
 vm.runInContext(source.slice(source.indexOf('var MSG_QUICK_REACTIONS'), source.indexOf('// Visible transcript band')), menuContext);
+vm.runInContext(source.slice(source.indexOf('var MSG_MENU_ORDER'), source.indexOf('// The message menu. Desktop')), menuContext);
 ['_isCanonicalLxmfMsgId', '_messageDeliveryMethod', '_messageIsPaper', '_messageCanCancelSend', '_messageCanRetry',
     '_messageCanShowInActivity', '_messageIsWaiting', '_messageSelectable', '_messageMenuButton',
     '_prepareMessageActionTarget', '_findLxmfMessageById', '_markLxmfMessageCancelled', '_invokeLxmfCancel',
@@ -525,7 +527,9 @@ function openMenu(msg) {
     var bubble = new FakeElement('div');
     bubble.querySelector = function(selector) { return selector === '.msg-text' ? {} : null; };
     menuContext._showMsgContextMenu(msg, 0, 0, bubble, null);
-    var panel = menuBody.children[menuBody.children.length - 1].children[2];
+    var menu = menuBody.children[menuBody.children.length - 1];
+    // Desktop: reactions, a rule, the actions. Phone: the reactions capsule and the actions card.
+    var panel = menu.children[menu.className === 'msg-at' ? 1 : 2];
     var buttons = panel.children.filter(function(child) { return child.tagName === 'button'; });
     return {
         panel: panel,
@@ -549,6 +553,30 @@ assert.deepStrictEqual(openMenu(sentMessage('failed')).actions, ['retry', 'show-
     'an ended message keeps Retry… and gains nothing');
 assert.deepStrictEqual(openMenu(sentMessage('sending')).actions, ['reply', 'copy-message']);
 assert.deepStrictEqual(openMenu(sentMessage('delivered')).actions, ['reply', 'copy-message', 'select']);
+
+// A phone's hold: the same rows at the message, Reply, Select, and Copy first, then the state's
+// rows after one rule, Stop trying last.
+menuContext.isCompactLayout = function() { return true; };
+var phoneWaiting = openMenu(sentMessage('waiting'));
+assert.strictEqual(menuBody.children[menuBody.children.length - 1].className, 'msg-at', 'no sheet: panels at the message');
+assert.strictEqual(phoneWaiting.panel.className, 'ui-menu ui-pop--at msg-menu-items');
+assert.deepStrictEqual(phoneWaiting.actions, ['reply', 'copy-message', 'try-now', 'show-activity', 'stop-trying']);
+assert.deepStrictEqual(phoneWaiting.panel.children.map(function(child) { return child.className; }), [
+    'ui-menu-item msg-ctx-reply', 'ui-menu-item msg-ctx-copy', 'ui-menu-sep',
+    'ui-menu-item msg-ctx-try-now', 'ui-menu-item msg-ctx-activity', 'ui-menu-item msg-ctx-stop-trying'
+], 'one rule between the everyday rows and the state rows');
+var phoneFailed = openMenu(sentMessage('failed'));
+assert.deepStrictEqual(phoneFailed.actions, ['reply', 'select', 'copy-message', 'retry', 'show-activity']);
+assert.deepStrictEqual(phoneFailed.labels, ['Reply', 'Select', 'Copy', 'Retry…', 'Show in Activity']);
+var phoneCancelled = openMenu(sentMessage('cancelled'));
+assert.deepStrictEqual(phoneCancelled.actions, ['reply', 'select', 'copy-message', 'retry'], 'a stopped message offers Retry… again');
+var phoneDelivered = openMenu(sentMessage('delivered'));
+assert.deepStrictEqual(phoneDelivered.actions, ['reply', 'select', 'copy-message']);
+assert(phoneDelivered.panel.children.every(function(child) { return child.tagName === 'button'; }),
+    'no state rows, no rule');
+var received = openMenu({ id: id, direction: 'inbound', state: 'received' });
+assert.deepStrictEqual(received.actions, ['reply', 'select', 'copy-message']);
+menuContext.isCompactLayout = function() { return false; };
 
 (async function() {
     // Try now asks the runtime and leaves the bubble to the attempt's own step.

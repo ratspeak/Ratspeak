@@ -270,6 +270,19 @@ html[data-channel-hosting="off"] .channel-owned-hub {
     background: rgba(var(--status-warning-rgb), 0.14);
 }
 
+/* A phone's long press: the message takes the selection fill and the rest step back, as in Messages. */
+.ch-msg.is-pressed,
+.ch-msg.is-pressed:hover {
+    background: var(--selection-bg);
+}
+
+@media (max-width: 768px) {
+    .channel-transcript.is-acting .ch-log > :not(.is-pressed) {
+        opacity: .45;
+        transition: opacity .16s ease;
+    }
+}
+
 .ch-at {
     padding: 0 2px;
     border-radius: var(--radius-tag);
