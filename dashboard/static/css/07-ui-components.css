@@ -317,6 +317,18 @@ textarea.ui-input { height: auto; min-height: calc(var(--control-h) * 2); paddin
 .ui-pane-title { margin: 0; min-width: 0; font-size: var(--ui-pane-title); font-weight: 600; color: var(--text-primary); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ui-pane-count { font-size: var(--text-sm); color: var(--text-muted); font-variant-numeric: tabular-nums; }
 .ui-pane-actions { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+/* Phone: a taller title row over a full-width line, 12 px above the content, so lists sit lower for the thumb. */
+@media (max-width: 768px) {
+    .ui-pane-head { min-height: 72px; margin-bottom: 12px; border-bottom: 1px solid var(--border-row); }
+    /* A scroller right under the line scrolls up to it, so the gap rides inside the scroller. */
+    .ui-pane-head:has(+ :is(.ui-pane-scroll, .ui-scroll)) { margin-bottom: 0; }
+    .ui-pane-head + :is(.ui-pane-scroll, .ui-scroll)::before { content: ''; display: block; height: 12px; }
+    /* Filled actions take the small control, centred on the title, with a 44 px hit area. */
+    .ui-pane-head .ui-btn { height: var(--control-h-sm); }
+    .ui-pane-head .ui-btn--icon { width: var(--control-h-sm); min-width: 0; }
+    .ui-pane-head .ui-btn--icon .ui-ico { width: 18px; height: 18px; }
+    .ui-pane-head .ui-btn::before { content: ''; position: absolute; inset: -4px; }
+}
 .ui-detail-title { margin: 0; font-size: var(--text-2xl); font-weight: 600; color: var(--text-primary); line-height: 1.2; }
 .ui-card-title { margin: 0; font-size: var(--text-base); font-weight: 600; color: var(--text-primary); }
 .ui-section-title { margin: 0 0 8px; font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary); line-height: 1.3; }
