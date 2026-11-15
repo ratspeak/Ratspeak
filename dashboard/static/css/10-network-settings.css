@@ -385,7 +385,6 @@
     .netmap-node.is-ghost .netmap-label span { display: none; }
     .netmap-label.at-top { bottom: 28px; } .netmap-label.at-bottom { top: 28px; }
     .netmap-ribbon { gap: 16px; height: 80px; padding: 0 16px; }
-    .netmap-ribbon .netmap-stat:nth-of-type(n+4) { display: none; }
     .netmap-stat b { font-size: var(--text-base); }
     .netmap-insp { margin-top: 16px; overflow: visible; }
     .netmap-insp-scroll { overflow: visible; padding: 0 12px 16px; }

@@ -132,7 +132,6 @@
                 state: typeof _deriveBlePeerState === 'function' ? _deriveBlePeerState() : '' },
             disc: { on: !!settings.discover, settings: settings, entries: ((ns.discovered || {}).entries || []) },
             tx: totals.txb || 0, rx: totals.rxb || 0,
-            paths: stats ? stats.path_table_total || (stats.path_table || []).length : 0,
             activePeers: typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.enriched === 'function' ? PeersCache.enriched().filter(RS.peerIsActive).length : 0,
             lastAnnounce: Math.max(NV.lastAnnounce || 0, stats && stats.last_announce_at ? stats.last_announce_at * 1000 : 0),
             me: activeMe()
@@ -175,7 +174,6 @@
         var ribbon = '<div class="netmap-ribbon' + (lv ? (entering ? ' is-entering' : '') : ' is-empty') + '">' + (lv
             ? '<div class="netmap-ribbon-spark"><span class="netmap-cap">Traffic</span><span data-spark="ribbon">' + spark(NV.hist, 600, 34) + '</span></div>' +
               '<div class="netmap-stat"><b data-live="active">' + M.activePeers + '</b><span>Active peers</span></div>' +
-              '<div class="netmap-stat"><b data-live="paths">' + M.paths + '</b><span>Routes</span></div>' +
               '<div class="netmap-stat"><b data-live="announce" title="' + (M.lastAnnounce ? K().time.full(M.lastAnnounce) : '') + '">' + (M.lastAnnounce ? ago(Date.now() - M.lastAnnounce) : '—') + '</b><span>Last announce</span></div>'
             : '') + '</div>';
         var open = !NV.mapCollapsed, mapLabel = open ? 'Hide map' : 'Show map';
@@ -708,7 +706,6 @@
         set('[data-live="tx"]', bytes(M.tx));
         set('[data-live="rx"]', bytes(M.rx));
         set('[data-live="active"]', String(M.activePeers));
-        set('[data-live="paths"]', String(M.paths));
         set('[data-live="announce"]', M.lastAnnounce ? ago(Date.now() - M.lastAnnounce) : '—');
         var s = root.querySelector('[data-spark="ribbon"]');
         if (s) s.innerHTML = spark(NV.hist, 600, 34);
