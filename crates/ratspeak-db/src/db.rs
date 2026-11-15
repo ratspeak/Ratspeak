@@ -9359,11 +9359,12 @@ mod channel_bookmark_tests {
 pub const DEFAULT_PRUNE_DAYS: u32 = 1;
 
 /// Peers the pruner never evicts: contacts, blocked, message, game and app
-/// counterparties, and any identity's Offline Inbox node.
+/// counterparties, and any identity's Offline Inbox node. Unfiltered message
+/// subqueries probe their indexes instead of listing every message per batch.
 const PRUNE_PROTECTED_SQL: &str = "dest_hash NOT IN (SELECT dest_hash FROM contacts)
            AND dest_hash NOT IN (SELECT dest_hash FROM blocked_contacts)
-           AND dest_hash NOT IN (SELECT source FROM messages WHERE source != '')
-           AND dest_hash NOT IN (SELECT destination FROM messages WHERE destination != '')
+           AND dest_hash NOT IN (SELECT source FROM messages)
+           AND dest_hash NOT IN (SELECT destination FROM messages)
            AND dest_hash NOT IN (SELECT contact_hash FROM games)
            AND dest_hash NOT IN (SELECT contact_hash FROM app_sessions)
            AND dest_hash NOT IN (SELECT propagation_node FROM identities WHERE propagation_node != '')";
