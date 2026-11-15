@@ -11293,6 +11293,15 @@ fn the_dashboard_state_table_matches_the_runtime() {
         .chain(PROGRESS_STEPS.into_iter().map(|step| (step, "progress")))
         .collect::<Vec<_>>();
     assert_eq!(dashboard, runtime);
+
+    // A bubble keeps the check from the step the outbox records as a copy sent.
+    let copy = OutboundState::ALL
+        .into_iter()
+        .filter(|state| state.sends_a_copy())
+        .map(OutboundState::as_str)
+        .collect::<Vec<_>>();
+    assert_eq!(copy, ["sent"]);
+    assert!(lxmf.contains("if (msg.state === 'sent' || step === 'sent') msg.copy_sent = true;"));
 }
 
 /// Keys leave only through the exports that ask for the identity's PIN or a

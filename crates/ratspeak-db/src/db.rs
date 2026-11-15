@@ -14,7 +14,7 @@ use crate::write_error::{OrReport, report_write_error};
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-pub(crate) const SCHEMA_VERSION: i64 = 52;
+pub(crate) const SCHEMA_VERSION: i64 = 53;
 
 const VOICE_FORMAT_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS conversation_voice_formats (
@@ -106,6 +106,7 @@ CREATE TABLE IF NOT EXISTS lxmf_outbox (
     queued_at   REAL NOT NULL,
     auto_sends  INTEGER NOT NULL DEFAULT 0,
     last_auto_at REAL NOT NULL DEFAULT 0,
+    copy_sent   INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (identity_id, message_id),
     FOREIGN KEY (message_id, identity_id)
         REFERENCES messages(id, identity_id) ON DELETE CASCADE
@@ -116,6 +117,14 @@ AFTER UPDATE OF state ON messages
 WHEN NEW.state IN ('delivered', 'propagated', 'rejected')
 BEGIN
     DELETE FROM lxmf_outbox WHERE identity_id = NEW.identity_id AND message_id = NEW.id;
+END;
+
+-- A copy of this attempt left the device; a wake or Retry clears it.
+CREATE TRIGGER IF NOT EXISTS lxmf_outbox_copy_sent
+AFTER UPDATE OF state ON messages
+WHEN NEW.state IN ('sent')
+BEGIN
+    UPDATE lxmf_outbox SET copy_sent = 1 WHERE identity_id = NEW.identity_id AND message_id = NEW.id;
 END;
 "#;
 
@@ -2187,6 +2196,27 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
         })?;
     }
 
+    if from_version < 53 {
+        migration_step(conn, 53, |conn| {
+            if table_exists(conn, "lxmf_outbox")?
+                && !get_column_names(conn, "lxmf_outbox")?
+                    .iter()
+                    .any(|column| column == "copy_sent")
+            {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE lxmf_outbox ADD COLUMN copy_sent INTEGER NOT NULL DEFAULT 0;
+                     UPDATE lxmf_outbox SET copy_sent = 1 WHERE EXISTS (SELECT 1 FROM messages m
+                         WHERE m.identity_id = lxmf_outbox.identity_id AND m.id = lxmf_outbox.message_id
+                           AND m.state IN {});",
+                    sql_list(OutboundState::sends_a_copy)
+                ))?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 53;")?;
+            tracing::info!("Migrated to schema version 53 (sent copies)");
+            Ok(())
+        })?;
+    }
+
     Ok(())
 }
 
@@ -3939,7 +3969,7 @@ pub fn restart_outbound_message(
         )
         .map_err(|error| error.to_string())?;
         tx.execute(
-            "UPDATE lxmf_outbox SET preference = ?3, queued_at = ?4, auto_sends = 0, last_auto_at = 0 \
+            "UPDATE lxmf_outbox SET preference = ?3, queued_at = ?4, auto_sends = 0, last_auto_at = 0, copy_sent = 0 \
              WHERE identity_id = ?1 AND message_id = ?2",
             params![identity_id, msg_id, preference, now_ts()],
         )
@@ -4828,7 +4858,7 @@ pub fn claim_waiting(
         .is_some_and(|changed| changed == 1)
         && tx
             .execute(
-                "UPDATE lxmf_outbox SET auto_sends = auto_sends + 1, last_auto_at = ?3
+                "UPDATE lxmf_outbox SET auto_sends = auto_sends + 1, last_auto_at = ?3, copy_sent = 0
                  WHERE identity_id = ?1 AND message_id = ?2",
                 params![identity_id, msg_id, now],
             )
@@ -4908,9 +4938,9 @@ fn get_conversation_scoped(
     let mut stmt = match conn.prepare(
         "SELECT * FROM (
             SELECT * FROM (
-                SELECT *, rowid AS _rw, EXISTS(SELECT 1 FROM lxmf_outbox o WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) AS retryable FROM messages WHERE source = ?1 AND direction != 'outbound' AND identity_id = ?2 AND (?4 IS NULL OR thread = ?4)
+                SELECT *, rowid AS _rw, EXISTS(SELECT 1 FROM lxmf_outbox o WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) AS retryable, (SELECT o.copy_sent FROM lxmf_outbox o WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) AS copy_sent FROM messages WHERE source = ?1 AND direction != 'outbound' AND identity_id = ?2 AND (?4 IS NULL OR thread = ?4)
                 UNION ALL
-                SELECT *, rowid AS _rw, EXISTS(SELECT 1 FROM lxmf_outbox o WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) AS retryable FROM messages WHERE destination = ?1 AND direction = 'outbound' AND identity_id = ?2 AND (?4 IS NULL OR thread = ?4)
+                SELECT *, rowid AS _rw, EXISTS(SELECT 1 FROM lxmf_outbox o WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) AS retryable, (SELECT o.copy_sent FROM lxmf_outbox o WHERE o.identity_id = messages.identity_id AND o.message_id = messages.id) AS copy_sent FROM messages WHERE destination = ?1 AND direction = 'outbound' AND identity_id = ?2 AND (?4 IS NULL OR thread = ?4)
             ) ORDER BY timestamp DESC, _rw DESC LIMIT ?3
         ) ORDER BY timestamp ASC, _rw ASC"
     ) { Ok(s) => s, Err(_) => return vec![] };
@@ -11607,6 +11637,8 @@ fn row_to_message(row: &rusqlite::Row<'_>) -> rusqlite::Result<serde_json::Value
         "thread": thread,
         // Only conversation reads select it: an outbox entry Retry can send again.
         "retryable": row.get::<_, bool>("retryable").unwrap_or(false),
+        // Likewise: a copy of the current attempt left the device.
+        "copy_sent": row.get::<_, Option<bool>>("copy_sent").ok().flatten().unwrap_or(false),
     }))
 }
 
@@ -13700,6 +13732,7 @@ mod migration_tests {
             let conn = pool.get().unwrap();
             conn.execute_batch(
                 "DROP TRIGGER lxmf_outbox_settled;
+                 DROP TRIGGER lxmf_outbox_copy_sent;
                  DROP TABLE lxmf_outbox;
                  DROP INDEX idx_messages_client_msg_id;
                  ALTER TABLE messages DROP COLUMN client_msg_id;
@@ -13757,6 +13790,7 @@ mod migration_tests {
             let conn = pool.get().unwrap();
             conn.execute_batch(
                 "DROP TRIGGER lxmf_outbox_settled;
+                 DROP TRIGGER lxmf_outbox_copy_sent;
                  DROP TABLE lxmf_outbox;
                  DROP INDEX idx_messages_client_msg_id;
                  ALTER TABLE messages DROP COLUMN client_msg_id;
@@ -13813,6 +13847,7 @@ mod migration_tests {
             let conn = pool.get().unwrap();
             conn.execute_batch(
                 "DROP TRIGGER lxmf_outbox_settled;
+                 DROP TRIGGER lxmf_outbox_copy_sent;
                  DROP TABLE lxmf_outbox;
                  DROP INDEX idx_messages_client_msg_id;
                  ALTER TABLE messages DROP COLUMN client_msg_id;
@@ -14439,8 +14474,8 @@ mod migration_tests {
         let pool = outbox_pool();
         let fresh = get_column_names(&pool.get().unwrap(), "lxmf_outbox").unwrap();
         assert_eq!(
-            fresh[fresh.len() - 2..],
-            ["auto_sends", "last_auto_at"].map(String::from)
+            fresh[fresh.len() - 3..],
+            ["auto_sends", "last_auto_at", "copy_sent"].map(String::from)
         );
         let states = [
             "failed",
@@ -14458,14 +14493,16 @@ mod migration_tests {
         pool.get()
             .unwrap()
             .execute_batch(
-                "ALTER TABLE lxmf_outbox DROP COLUMN auto_sends;
+                "DROP TRIGGER lxmf_outbox_copy_sent;
+                 ALTER TABLE lxmf_outbox DROP COLUMN copy_sent;
+                 ALTER TABLE lxmf_outbox DROP COLUMN auto_sends;
                  ALTER TABLE lxmf_outbox DROP COLUMN last_auto_at;
                  UPDATE schema_version SET version = 51;",
             )
             .unwrap();
 
         init_schema(&pool).unwrap();
-        assert_eq!(read_schema_version(&pool), 52);
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
         assert_eq!(
             get_column_names(&pool.get().unwrap(), "lxmf_outbox").unwrap(),
             fresh,
@@ -14498,6 +14535,137 @@ mod migration_tests {
         assert_eq!(
             get_column_names(&pool.get().unwrap(), "lxmf_outbox").unwrap(),
             fresh
+        );
+    }
+
+    fn copy_sent_of(pool: &DbPool, id: &str) -> Option<bool> {
+        pool.get()
+            .unwrap()
+            .query_row(
+                "SELECT copy_sent FROM lxmf_outbox WHERE message_id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    /// What a conversation read tells the dashboard of `id`: `(state, copy_sent)`.
+    fn shown(pool: &DbPool, id: &str) -> (String, bool) {
+        let messages = get_conversation(pool, "peer", "identity", 50);
+        let message = messages
+            .iter()
+            .find(|message| message["id"] == id)
+            .expect("the message");
+        (
+            message["state"].as_str().unwrap().to_owned(),
+            message["copy_sent"].as_bool().unwrap(),
+        )
+    }
+
+    #[test]
+    fn a_copy_sent_is_kept_through_its_attempt_and_cleared_by_the_next() {
+        let pool = outbox_pool();
+        // The steps a phone showed for one Auto message: a packet, a path wait,
+        // the packet again, then the Offline Inbox.
+        sent_a_minute_ago(&pool, "m", "sending");
+        let mut seen = vec![shown(&pool, "m")];
+        for step in ["sent", "routing", "sent", "propagating"] {
+            assert!(update_message_state(&pool, "m", "identity", step, None));
+            seen.push(shown(&pool, "m"));
+        }
+        assert_eq!(
+            seen,
+            [
+                ("sending", false),
+                ("sent", true),
+                ("routing", true),
+                ("sent", true),
+                ("propagating", true),
+            ]
+            .map(|(state, copy)| (state.to_owned(), copy))
+        );
+        assert!(update_message_state(
+            &pool,
+            "m",
+            "identity",
+            "propagated",
+            None
+        ));
+        assert_eq!(
+            copy_sent_of(&pool, "m"),
+            None,
+            "the entry went with the deposit"
+        );
+        assert_eq!(shown(&pool, "m").0, "propagated");
+
+        // A wake is a new attempt: nothing of it has gone out yet.
+        sent_a_minute_ago(&pool, "woken", "sent");
+        assert_eq!(
+            settle(&pool, "woken", true, true, OutboundState::Failed),
+            Some((OutboundState::Waiting, AfterFailure::Wait))
+        );
+        assert_eq!(shown(&pool, "woken"), ("waiting".to_owned(), true));
+        assert!(!update_message_state(
+            &pool, "woken", "identity", "sent", None
+        ));
+        assert!(claim_waiting(
+            &pool,
+            "identity",
+            "woken",
+            NOW,
+            "opportunistic"
+        ));
+        assert_eq!(shown(&pool, "woken"), ("sending".to_owned(), false));
+
+        // So is Retry.
+        sent_a_minute_ago(&pool, "retried", "sent");
+        assert_eq!(
+            settle(&pool, "retried", true, false, OutboundState::Failed),
+            Some((OutboundState::Failed, AfterFailure::Fail))
+        );
+        assert_eq!(
+            restart_outbound_message(&pool, "identity", "retried", "auto", "opportunistic")
+                .unwrap(),
+            Some("failed".into())
+        );
+        assert_eq!(shown(&pool, "retried"), ("sending".to_owned(), false));
+    }
+
+    #[test]
+    fn migration_53_marks_the_copies_already_sent() {
+        let pool = outbox_pool();
+        let fresh = get_column_names(&pool.get().unwrap(), "lxmf_outbox").unwrap();
+        let states = ["sending", "routing", "sent", "waiting", "failed"];
+        for state in states {
+            outbound(&pool, state, "auto");
+            set_state(&pool, state, state);
+        }
+        pool.get()
+            .unwrap()
+            .execute_batch(
+                "DROP TRIGGER lxmf_outbox_copy_sent;
+                 ALTER TABLE lxmf_outbox DROP COLUMN copy_sent;
+                 UPDATE schema_version SET version = 52;",
+            )
+            .unwrap();
+
+        init_schema(&pool).unwrap();
+        assert_eq!(read_schema_version(&pool), SCHEMA_VERSION);
+        assert_eq!(
+            get_column_names(&pool.get().unwrap(), "lxmf_outbox").unwrap(),
+            fresh
+        );
+        for state in states {
+            assert_eq!(copy_sent_of(&pool, state), Some(state == "sent"), "{state}");
+        }
+        assert!(update_message_state(
+            &pool, "routing", "identity", "sent", None
+        ));
+        assert_eq!(
+            copy_sent_of(&pool, "routing"),
+            Some(true),
+            "the trigger is back"
         );
     }
 
@@ -15037,6 +15205,10 @@ mod migration_tests {
             "WHEN NEW.state IN {}\nBEGIN",
             sql_list(OutboundState::clears_outbox)
         )));
+        assert!(OUTBOX_SCHEMA_SQL.contains(&format!(
+            "WHEN NEW.state IN {}\nBEGIN\n    UPDATE lxmf_outbox SET copy_sent = 1",
+            sql_list(OutboundState::sends_a_copy)
+        )));
 
         let pool = empty_pool();
         init_schema(&pool).unwrap();
@@ -15057,6 +15229,12 @@ mod migration_tests {
             assert_eq!(
                 outbox_ids(&pool).contains(&id),
                 !state.clears_outbox(),
+                "{}",
+                state.as_str()
+            );
+            assert_eq!(
+                copy_sent_of(&pool, &id),
+                (!state.clears_outbox()).then_some(state.sends_a_copy()),
                 "{}",
                 state.as_str()
             );
@@ -15393,6 +15571,7 @@ mod migration_tests {
             let conn = pool.get().unwrap();
             conn.execute_batch(
                 "DROP TRIGGER lxmf_outbox_settled;
+                 DROP TRIGGER lxmf_outbox_copy_sent;
                  DROP TABLE lxmf_outbox;
                  DROP INDEX idx_messages_client_msg_id;
                  ALTER TABLE messages DROP COLUMN client_msg_id;
@@ -15431,6 +15610,7 @@ mod migration_tests {
             let conn = pool.get().unwrap();
             conn.execute_batch(
                 "DROP TRIGGER lxmf_outbox_settled;
+                 DROP TRIGGER lxmf_outbox_copy_sent;
                  DROP TABLE lxmf_outbox;
                  DROP INDEX idx_messages_client_msg_id;
                  ALTER TABLE messages DROP COLUMN client_msg_id;

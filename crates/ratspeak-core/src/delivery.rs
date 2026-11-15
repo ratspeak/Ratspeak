@@ -129,6 +129,12 @@ impl OutboundState {
     pub const fn clears_outbox(self) -> bool {
         matches!(self, Self::Delivered | Self::Propagated | Self::Rejected)
     }
+
+    /// A copy of the message left this device. The attempt keeps showing Sent
+    /// through its later steps; a wake or Retry starts an attempt without one.
+    pub const fn sends_a_copy(self) -> bool {
+        matches!(self, Self::Sent)
+    }
 }
 
 /// The states `include` accepts as an SQL list, `('a', 'b')`.
@@ -417,6 +423,7 @@ mod tests {
             class(OutboundState::clears_outbox),
             [Delivered, Propagated, Rejected]
         );
+        assert_eq!(class(OutboundState::sends_a_copy), [Sent]);
     }
 
     #[test]

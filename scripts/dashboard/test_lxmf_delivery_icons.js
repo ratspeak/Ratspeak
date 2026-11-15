@@ -154,7 +154,7 @@ var events = {
 };
 vm.createContext(events);
 vm.runInContext(source.slice(0, source.indexOf('var lxmfIdentity')), events);
-vm.runInContext(functionSource('_messageStateAfterStep') +
+vm.runInContext(functionSource('_messageStateAfterStep') + functionSource('_moveMessageOnItsWay') +
     listenerSource('lxmf_step') + listenerSource('lxmf_delivery_progress'), events);
 function after(event, from, step) {
     events.lxmfConversation = [{ id: 'm', direction: 'outbound', state: from }];
@@ -299,6 +299,85 @@ events.lxmfConversation = [{ id: 'out_1', direction: 'outbound', state: 'sending
 handlers.lxmf_step({ step: 'waiting', msg_id: id, client_msg_id: 'out_1', method: 'direct' });
 assert.deepStrictEqual(Object.assign({}, events.lxmfConversation[0]),
     { id: id, direction: 'outbound', state: 'waiting', delivery_method: 'direct' });
+
+// ---------------------------------------------------------------------------
+// The mark only moves forward, and only a proof shows two checks.
+// ---------------------------------------------------------------------------
+function marksFor(start, steps) {
+    events.lxmfConversation = [Object.assign({ id: 'm', direction: 'outbound' }, start)];
+    var shown = [context._messageMarkKind(events.lxmfConversation[0])];
+    steps.forEach(function(step) {
+        handlers[step[0]]({ msg_id: 'm', step: step[1] });
+        shown.push(context._messageMarkKind(events.lxmfConversation[0]));
+    });
+    return shown;
+}
+function stepsOf(names) { return names.map(function(name) { return ['lxmf_step', name]; }); }
+// A phone's Activity for one Auto message: queued, awaiting proof, waiting for a
+// path, awaiting proof, storing in the Offline Inbox, stored. Before, the mark went
+// clock, check, clock, check, clock, envelope.
+assert.deepStrictEqual(marksFor({ state: 'sending' }, stepsOf(['sent', 'routing', 'sent', 'propagating', 'propagated'])),
+    ['sending', 'sent', 'sent', 'sent', 'sent', 'propagated']);
+assert.deepStrictEqual(marksFor({ state: 'sending' }, stepsOf(['sent', 'routing', 'link_establishing', 'sending_via_link', 'delivered'])),
+    ['sending', 'sent', 'sent', 'sent', 'sent', 'delivered'], 'the live path after a packet keeps the check too');
+assert.deepStrictEqual(marksFor({ state: 'sending' }, [['lxmf_step', 'sent'], ['lxmf_delivery_progress', 'resource_transferring']]),
+    ['sending', 'sent', 'sent'], 'transfer progress after a copy keeps the check');
+// Nothing went out yet: on its way is the clock, however many steps it takes.
+assert.deepStrictEqual(marksFor({ state: 'sending' }, stepsOf(['routing', 'link_establishing', 'propagating', 'propagated'])),
+    ['sending', 'sending', 'sending', 'sending', 'propagated']);
+// The attempt ends without a proof: waiting or Not delivered, as before.
+assert.deepStrictEqual(marksFor({ state: 'sending' }, stepsOf(['sent', 'routing', 'waiting'])),
+    ['sending', 'sent', 'sent', 'waiting']);
+assert.deepStrictEqual(marksFor({ state: 'sending' }, stepsOf(['sent', 'routing', 'failed'])),
+    ['sending', 'sent', 'sent', 'failed']);
+// A wake is a new attempt: the clock until a copy of it goes out.
+assert.deepStrictEqual(marksFor({ state: 'waiting', copy_sent: true }, stepsOf(['sending', 'routing', 'sent', 'delivered'])),
+    ['waiting', 'sending', 'sending', 'sent', 'delivered']);
+// A read from the database carries the outbox's record.
+assert.strictEqual(context._messageMarkKind({ direction: 'outbound', state: 'routing', copy_sent: true }), 'sent');
+assert.strictEqual(context._messageMarkKind({ direction: 'outbound', state: 'routing', copy_sent: false }), 'sending');
+assert.strictEqual(context._messageMarkKind({ direction: 'outbound', state: 'routing' }), 'sending', 'a row from before the outbox');
+var resent = context._messageStateIconHtml({ id: 'm1', direction: 'outbound', state: 'propagating', copy_sent: true });
+assert(resent.includes('msg-mark--sent') && resent.includes('aria-label="Sent"') && !resent.includes('<circle'));
+// Opening the chat while a proof lands: the read can predate it, and must not take it back.
+var reads = { _canonicalConversationHash: function(hash) { return hash; } };
+vm.createContext(reads);
+vm.runInContext(source.slice(0, source.indexOf('var lxmfIdentity')), reads);
+vm.runInContext(functionSource('_messageStateAfterStep') + functionSource('_mergeConversationMessages'), reads);
+function afterRead(cached, read) {
+    reads.cacheGet = function() { return [{ id: 'm', direction: 'outbound', state: cached, timestamp: 1 }]; };
+    return reads._mergeConversationMessages('peer', [{ id: 'm', direction: 'outbound', state: read, timestamp: 1 }])
+        .map(function(msg) { return msg.state; });
+}
+assert.deepStrictEqual(afterRead('delivered', 'sent'), ['delivered']);
+assert.deepStrictEqual(afterRead('delivered', 'waiting'), ['delivered']);
+assert.deepStrictEqual(afterRead('propagated', 'propagating'), ['propagated']);
+assert.deepStrictEqual(afterRead('propagated', 'delivered'), ['delivered'], 'a later proof in the read wins');
+assert.deepStrictEqual(afterRead('failed', 'sending'), ['sending'], 'Retry leaves an ended state; the read is not overruled');
+assert.deepStrictEqual(afterRead('sent', 'routing'), ['routing'], 'on its way, the read stands');
+// A settled or parked mark is its own, whatever went out.
+SETTLED.concat(['waiting']).forEach(function(state) {
+    assert.strictEqual(context._messageMarkKind({ state: state, copy_sent: true }),
+        context._messageMarkKind({ state: state }), state);
+});
+// No step and no progress but a proof shows two checks, from anywhere.
+ON_ITS_WAY.concat(SETTLED, PROGRESS, ['waiting']).forEach(function(from) {
+    [true, false].forEach(function(copy) {
+        ON_ITS_WAY.concat(SETTLED, PROGRESS, RETIRED, ['waiting', 'error']).forEach(function(step) {
+            ['lxmf_step', 'lxmf_delivery_progress'].forEach(function(event) {
+                var shown = marksFor({ state: from, copy_sent: copy }, [[event, step]]);
+                var proof = event === 'lxmf_step' && step === 'delivered';
+                if (shown[1] === 'delivered') {
+                    assert(proof || from === 'delivered', from + ' then ' + event + ' ' + step + ' claims delivery');
+                }
+                var rank = function(kind) { return kind === 'sending' ? 0 : kind === 'sent' ? 1 : 2; };
+                if (events._isUnsettledMessageState(from)) {
+                    assert(rank(shown[1]) >= rank(shown[0]), from + (copy ? ' (copy sent)' : '') + ' then ' + step + ' went back');
+                }
+            });
+        });
+    });
+});
 
 // The conversation list shows no delivery mark, whatever the last message's state; the bubble keeps its own.
 var listContainer = { innerHTML: '', querySelector: function() { return null; } };
@@ -509,6 +588,16 @@ assert.deepStrictEqual(openMenu(sentMessage('delivered')).actions, ['reply', 'co
     assert.strictEqual(waiting.state, 'waiting');
     assert.deepStrictEqual(menuToasts, [['Messaging is not ready', 'toast-error'],
         ['Could not stop sending: Messaging is not ready', 'toast-error']]);
+
+    // Retry is a new attempt: the clock until a copy of it goes out.
+    var retried = { id: id, direction: 'outbound', state: 'failed', copy_sent: true, delivery_method: 'opportunistic' };
+    menuContext.lxmfConversation = [retried];
+    menuContext.loadConversations = function() {};
+    menuContext.RS.invoke = function() { return Promise.resolve({ ok: true, msg_id: id, method: 'opportunistic' }); };
+    vm.runInContext(functionSource('_retryLxmfMessage'), menuContext);
+    await menuContext._retryLxmfMessage(retried, 'auto');
+    assert.strictEqual(retried.state, 'sending');
+    assert.strictEqual(context._messageMarkKind(retried), 'sending');
 
     console.log('LXMF delivery icon tests passed');
 })().catch(function(error) { console.error(error); process.exit(1); });

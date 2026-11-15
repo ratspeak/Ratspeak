@@ -62,6 +62,7 @@ pub const fn ratspeak_core::delivery::OutboundState::ends_delivery_clock(self) -
 pub const fn ratspeak_core::delivery::OutboundState::is_final(self) -> bool
 pub fn ratspeak_core::delivery::OutboundState::parse(&str) -> core::option::Option<Self>
 pub const fn ratspeak_core::delivery::OutboundState::phase(self) -> ratspeak_core::delivery::Phase
+pub const fn ratspeak_core::delivery::OutboundState::sends_a_copy(self) -> bool
 pub const fn ratspeak_core::delivery::OutboundState::starts_delivery_clock(self) -> bool
 pub const fn ratspeak_core::delivery::OutboundState::yields_to_proof(self) -> bool
 pub enum ratspeak_core::delivery::Phase

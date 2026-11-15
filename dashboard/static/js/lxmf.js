@@ -1604,19 +1604,21 @@ function _messageMarkSvg(kind) {
     return '<svg class="msg-mark-ico" viewBox="0 0 16 16" aria-hidden="true">' + MSG_MARKS[kind][1] + '</svg>';
 }
 
-function _messageMarkKind(state) {
+function _messageMarkKind(msg) {
+    var state = msg && msg.state;
     if (state === 'paper') return 'paper';
     // "!" as other messengers mark a send that needs you; the cross is for what you cancelled.
     if (state === 'failed' || state === 'timeout') return 'failed';
     // Parked until it can go; the clock is for an attempt that is running now.
     if (['cancelled', 'rejected', 'propagated', 'delivered', 'sent', 'waiting'].indexOf(state) !== -1) return state;
-    // Anything else is on its way: queued, routing, Link setup, or Resource transfer.
-    return 'sending';
+    // On its way: queued, routing, Link setup, or Resource transfer. Once a copy
+    // of this attempt left, it stays Sent while the attempt tries again.
+    return msg && msg.copy_sent ? 'sent' : 'sending';
 }
 
 // Not delivered and Waiting are buttons: they open the message menu (Retry, Try now, Activity).
 function _messageStateIconHtml(msg) {
-    var kind = _messageMarkKind(msg.state);
+    var kind = _messageMarkKind(msg);
     var label = MSG_MARKS[kind][0];
     if (kind === 'failed' || kind === 'waiting') {
         var title = kind === 'waiting' ? MSG_WAITING_TITLE : label;
@@ -1699,6 +1701,7 @@ function _retryLxmfMessage(msg, method) {
     }).then(function(resp) {
         var current = _findLxmfMessageById(msg.id) || msg;
         current.state = 'sending';
+        current.copy_sent = false;
         if (resp && resp.method) current.delivery_method = resp.method;
         delete current.rtt;
         delete current.delivery_progress;
@@ -2002,13 +2005,21 @@ function _mergeConversationMessages(hash, serverMessages) {
 
     var seen = {};
     merged.forEach(function(msg) {
-        if (msg && msg.id) seen[msg.id] = true;
+        if (msg && msg.id) seen[msg.id] = msg;
     });
 
     var now = Date.now() / 1000;
     cached.forEach(function(msg) {
-        if (!msg || !msg.id || seen[msg.id] || msg.direction !== 'outbound') return;
+        if (!msg || !msg.id || msg.direction !== 'outbound') return;
         var state = msg.state || '';
+        var read = seen[msg.id];
+        if (read) {
+            // A read that started before a proof or an outcome arrived does not take it back.
+            if (LXMF_OUTBOUND_STATES[state] === 'done' && _messageStateAfterStep(read.state, state) === state) {
+                read.state = state;
+            }
+            return;
+        }
         var recent = !msg.timestamp || (now - msg.timestamp) < 3600;
         if (recent && (_isUnsettledMessageState(state) || state === 'propagated')) {
             merged.push(msg);
@@ -3372,7 +3383,7 @@ function _messageRowHtml(msg, prev, next, ctx) {
     var progressPercent = isOut ? _messageProgressPercent(msg) : null;
     var canCancelSend = isOut && _messageCanCancelSend(msg);
     var canCancelTransfer = isOut && _messageCanCancelTransfer(msg);
-    var kind = isOut && !paper ? _messageMarkKind(msg.state) : '';
+    var kind = isOut && !paper ? _messageMarkKind(msg) : '';
     // Earlier messages in a group keep a mark that needs you; settled ones show only on the last.
     var exceptional = paper || kind === 'waiting' || kind === 'failed' || kind === 'sending' || kind === 'cancelled' || kind === 'rejected';
 
@@ -6282,6 +6293,14 @@ function _messageStateAfterStep(current, step) {
     return _isInFlightStep(resolvedState) ? resolvedState : null;
 }
 
+// Move a message on its way by `step`. As the outbox records it, a copy of
+// this attempt that left keeps the check through the attempt's later steps.
+function _moveMessageOnItsWay(msg, step) {
+    if (!_isInFlightStep(step) || !_messageStateAfterStep(msg.state, step)) return;
+    if (msg.state === 'sent' || step === 'sent') msg.copy_sent = true;
+    msg.state = step;
+}
+
 RS.listen('lxmf_step', function(data) {
     // Remap optimistic client_msg_id to canonical server msg_id.
     if (data.client_msg_id && data.msg_id) {
@@ -6328,7 +6347,7 @@ RS.listen('lxmf_step', function(data) {
     if (_isInFlightStep(data.step)) {
         lxmfConversation.forEach(function(msg) {
             if (data.msg_id && msg.id === data.msg_id) {
-                if (_messageStateAfterStep(msg.state, data.step)) msg.state = data.step;
+                _moveMessageOnItsWay(msg, data.step);
                 if (data.method) msg.delivery_method = data.method;
             }
         });
@@ -6341,6 +6360,7 @@ RS.listen('lxmf_step', function(data) {
         lxmfConversation.forEach(function(msg) {
             if (data.msg_id && msg.id === data.msg_id && _messageStateAfterStep(msg.state, data.step)) {
                 msg.state = data.step;
+                if (data.step === 'sending') msg.copy_sent = false;
                 if (data.method) msg.delivery_method = data.method;
                 delete msg.delivery_progress;
                 delete msg.delivery_link_id;
@@ -6382,9 +6402,7 @@ RS.listen('lxmf_delivery_progress', function(data) {
             if (data.link_id) msg.delivery_link_id = data.link_id;
             if (data.representation) msg.delivery_representation = data.representation;
             if (data.method) msg.delivery_method = data.method;
-            if (_isInFlightStep(data.step) && _messageStateAfterStep(msg.state, data.step)) {
-                msg.state = data.step;
-            }
+            _moveMessageOnItsWay(msg, data.step);
             changed = true;
         }
     });

@@ -24,8 +24,8 @@
       "tier": "application-internal",
       "compatibility": "reviewed-snapshot",
       "snapshot": "api/snapshots/ratspeak-core.txt",
-      "itemCount": 329,
-      "sha256": "37e0911fdd0a8b978cce88220fd92cd0f40ed1074f5688a147ee39fb09ee3f16"
+      "itemCount": 330,
+      "sha256": "9d0c61dd90614f08036d4f29413e333a43033962cb8f319f77ce7518333024c1"
     },
     {
       "name": "ratspeak-db",
