@@ -146,6 +146,9 @@ RS.newestPeerItems = function(items, cap) {
     return items.filter(function(c, i) { return keep[i]; });
 };
 
+// The Active tier (heard in the last 2 hours): the Peers view's Active groups and Network's Active peers.
+RS.peerIsActive = function(c) { return c.status === 'reachable' || c.status === 'direct'; };
+
 // Shared Peers/Connections grouping: same buckets, labels, and collapse
 // semantics in both lists. Row markup and virtualization stay view-specific
 // (peers uses variable-height profile rows; connections a fixed-height table).
@@ -156,7 +159,7 @@ RS.buildPeerGroupItems = function(peers, collapsedGroups, hasName, opts) {
     var contactItems = [], onlineItems = [], onlineStarItems = [], staleItems = [], offlineItems = [];
     peers.forEach(function(c) {
         if (c.is_contact) contactItems.push(c);
-        else if (c.status === 'reachable' || c.status === 'direct') {
+        else if (RS.peerIsActive(c)) {
             if (hasName(c)) onlineItems.push(c);
             else onlineStarItems.push(c);
         } else if (c.status === 'stale') staleItems.push(c);

@@ -53,6 +53,7 @@
         return (n < 9.95 ? n.toFixed(1) : String(Math.round(n))) + ' ' + u[i];
     }
     var BYTES_WIDEST = ['999 B', '9.9 KB', '999 KB', '9.9 MB', '999 MB', '9.9 GB', '999 GB', '999 TB'];
+    var AGO_WIDEST = ['just now', '59 min ago', '23 h ago', '99 d ago'];
     function ago(ms) {
         var m = Math.floor(ms / MIN);
         if (m < 1) return 'just now';
@@ -131,7 +132,7 @@
             disc: { on: !!settings.discover, settings: settings, entries: ((ns.discovered || {}).entries || []) },
             tx: totals.txb || 0, rx: totals.rxb || 0,
             paths: stats ? stats.path_table_total || (stats.path_table || []).length : 0,
-            peersHeard: typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.enriched === 'function' ? PeersCache.enriched().length : 0,
+            activePeers: typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.enriched === 'function' ? PeersCache.enriched().filter(RS.peerIsActive).length : 0,
             lastAnnounce: Math.max(NV.lastAnnounce || 0, stats && stats.last_announce_at ? stats.last_announce_at * 1000 : 0),
             me: activeMe()
         };
@@ -157,20 +158,6 @@
         return '<span class="net-io" title="Total sent and received"><span><span aria-hidden="true">↑</span> <b data-live="tx">' + bytes(M.tx) + '</b></span>' +
             '<span><span aria-hidden="true">↓</span> <b data-live="rx">' + bytes(M.rx) + '</b></span></span>';
     }
-    function heroTitle(M) {
-        var lv = live(M), pending = M.conns.some(function(c) { return c.status === 'pending'; });
-        if (!M.conns.length) return 'Not connected yet';
-        if (M.pausedAll && !lv.length && !pending) return 'Paused';
-        if (!lv.length) return pending ? 'Connecting…' : 'Not connected';
-        var parts = [], servers = lv.filter(function(c) { return c.kind === 'tcp'; }).length;
-        if (servers) parts.push(servers + (servers === 1 ? ' server' : ' servers'));
-        ['ble', 'local'].forEach(function(k) { if (lv.some(function(c) { return c.kind === k; })) parts.push(KIND[k].label); });
-        var radios = lv.filter(function(c) { return c.kind === 'lora'; }).length;
-        if (radios) parts.push(radios === 1 ? 'a radio' : radios + ' radios');
-        if (lv.some(function(c) { return c.kind === 'host'; })) parts.push('your host');
-        if (M.phone || parts.length > 2) return 'Connected';
-        return 'Connected through ' + (parts.length === 2 ? parts.join(' and ') : parts[0]);
-    }
     // Activity is Secondary; Announce is Primary. On a phone both are icon-only squares.
     function heroActions(M) {
         var lv = live(M).length > 0, sq = M.phone ? ' ui-btn--icon' : '';
@@ -186,13 +173,14 @@
         NV.ribbonWas = !!lv;
         var ribbon = '<div class="netmap-ribbon' + (lv ? (entering ? ' is-entering' : '') : ' is-empty') + '">' + (lv
             ? '<div class="netmap-ribbon-spark"><span class="netmap-cap">Traffic</span><span data-spark="ribbon">' + spark(NV.hist, 600, 34) + '</span></div>' +
-              '<div class="netmap-stat"><b data-live="peers">' + M.peersHeard + '</b><span>Peers heard</span></div>' +
-              '<div class="netmap-stat"><b data-live="paths">' + M.paths + '</b><span>Routes known</span></div>' +
+              '<div class="netmap-stat"><b data-live="active">' + M.activePeers + '</b><span>Active peers</span></div>' +
+              '<div class="netmap-stat"><b data-live="paths">' + M.paths + '</b><span>Routes</span></div>' +
               '<div class="netmap-stat"><b data-live="announce" title="' + (M.lastAnnounce ? K().time.full(M.lastAnnounce) : '') + '">' + (M.lastAnnounce ? ago(Date.now() - M.lastAnnounce) : '—') + '</b><span>Last announce</span></div>'
             : '') + '</div>';
         var open = !NV.mapCollapsed, mapLabel = open ? 'Hide map' : 'Show map';
         var toggle = '<button type="button" class="ui-icon-btn ui-icon-btn--sm ui-icon-btn--disclosure" data-act="map-toggle" aria-expanded="' + open + '" aria-label="' + mapLabel + '" title="' + mapLabel + '">' + icon(open ? 'chevron-up' : 'chevron-down') + '</button>';
-        var title = M.phone ? '<h2 class="ui-card-title">' + esc(heroTitle(M)) + '</h2>' : '<h2 class="ui-detail-title">' + esc(heroTitle(M)) + '</h2>';
+        // On a phone the pane header carries the title.
+        var title = M.phone ? '' : '<h2 class="ui-detail-title">Network</h2>';
         return '<section class="netmap-stage" aria-label="Network map">' +
             '<div class="netmap-hero"><div class="netmap-hero-text">' + title + '<p class="netmap-hero-sub">' + totalIO(M) + '</p></div>' +
             '<div class="netmap-hero-actions">' + (M.phone ? '' : heroActions(M)) + toggle + '</div></div>' +
@@ -507,7 +495,7 @@
         });
         return nodes;
     }
-    function ghostWord(n) { return n.busy ? 'Turning on…' : n.kind === 'tcp' ? 'Join a server' : (n.kind === 'lora' || n.kind === 'host') ? 'Not set up' : 'Off'; }
+    function ghostWord(n) { return n.busy ? 'Turning on…' : n.kind === 'tcp' ? 'Join a server' : 'Off'; }
     function nodeName(c) { return c.scanning ? KIND[c.kind].label : rowName(c); }
     function layoutMap(M, shrink) {
         var map = document.getElementById('netmap-map');
@@ -544,7 +532,7 @@
         svg += '</svg>';
         var you = '<div class="netmap-you" data-on="' + (live(M).length > 0) + '" style="left:' + cx + 'px;top:' + (cy + (phone ? 0 : 14)) + 'px">' +
             '<span class="netmap-you-ring" style="margin-top:' + (phone ? 0 : -28) + 'px">' + K().avatar(M.me.hash, phone ? 32 : 40) + '</span>' +
-            (phone ? '' : '<span class="netmap-you-name">' + esc(M.me.name) + '</span><span class="netmap-you-sub">This device</span>') + '</div>';
+            (phone ? '' : '<span class="netmap-you-name">' + esc(M.me.name) + '</span>') + '</div>';
         map.innerHTML = '<div class="netmap-plane" style="width:' + w + 'px;height:' + ph + 'px">' + svg + you + html + '</div>';
         var plane = map.firstChild, pr = plane.getBoundingClientRect(), mr = map.getBoundingClientRect(), lo = Infinity, hi = -Infinity;
         plane.querySelectorAll('.netmap-node-btn, .netmap-label, .netmap-you').forEach(function(el) { var r = el.getBoundingClientRect(); lo = Math.min(lo, r.top - pr.top); hi = Math.max(hi, r.bottom - pr.top); });
@@ -699,23 +687,28 @@
         var set = function(sel, text) { var el = root.querySelector(sel); if (el && el.textContent !== text) el.textContent = text; };
         set('[data-live="tx"]', bytes(M.tx));
         set('[data-live="rx"]', bytes(M.rx));
-        set('[data-live="peers"]', String(M.peersHeard));
+        set('[data-live="active"]', String(M.activePeers));
         set('[data-live="paths"]', String(M.paths));
         set('[data-live="announce"]', M.lastAnnounce ? ago(Date.now() - M.lastAnnounce) : '—');
         var s = root.querySelector('[data-spark="ribbon"]');
         if (s) s.innerHTML = spark(NV.hist, 600, 34);
     }
-    // Each total gets a slot as wide as the formatter's widest value in this font, so values never shift the line.
-    function sizeTotals() {
-        var b = root && root.querySelector('.net-io b');
+    // Each total and stat gets a slot as wide as its widest value in this font, so values never shift the line.
+    function slot(b, widest, prop) {
         if (!b) return;
         var probe = document.createElement('b');
         probe.style.cssText = 'position:absolute;visibility:hidden;white-space:nowrap;min-width:0';
         b.parentNode.appendChild(probe);
         var wMax = 0;
-        BYTES_WIDEST.forEach(function(t) { probe.textContent = t; wMax = Math.max(wMax, probe.getBoundingClientRect().width); });
+        widest.forEach(function(t) { probe.textContent = t; wMax = Math.max(wMax, probe.getBoundingClientRect().width); });
         probe.remove();
-        if (wMax) document.documentElement.style.setProperty('--net-io-slot', Math.ceil(wMax + 1) + 'px');
+        if (wMax) document.documentElement.style.setProperty(prop, Math.ceil(wMax + 1) + 'px');
+    }
+    function sizeTotals() {
+        if (!root) return;
+        slot(root.querySelector('.net-io b'), BYTES_WIDEST, '--net-io-slot');
+        slot(root.querySelector('[data-live="active"]'), ['99999'], '--net-count-slot');
+        slot(root.querySelector('[data-live="announce"]'), AGO_WIDEST, '--net-ago-slot');
     }
     function sampleTraffic() {
         var stats = typeof lastStats !== 'undefined' && lastStats ? lastStats : null;

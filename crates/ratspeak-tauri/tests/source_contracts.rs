@@ -9743,7 +9743,7 @@ fn peer_reachability_uses_uncapped_path_index() {
     assert!(peers.contains("voice_route_label: voiceInfo.route_label"));
     assert!(peers.contains("route_service: primaryInfo.service"));
 
-    // Network's Routes known is the transport's own count, never the capped table.
+    // Network's Routes is the transport's own count, never the capped table.
     let network_view =
         read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
     assert!(
@@ -9751,6 +9751,10 @@ fn peer_reachability_uses_uncapped_path_index() {
             "paths: stats ? stats.path_table_total || (stats.path_table || []).length : 0,"
         )
     );
+    // Active peers is the Peers view's Active tier, from the same predicate.
+    let constants = read_source(root.join("dashboard/static/js/constants.js")).expect("constants");
+    assert!(network_view.contains("PeersCache.enriched().filter(RS.peerIsActive).length"));
+    assert!(constants.contains("else if (RS.peerIsActive(c)) {"));
 }
 
 #[test]

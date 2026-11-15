@@ -265,7 +265,6 @@
 /* The header and the strip have fixed heights, so changing data never moves the map. */
 .netmap-ann:not(.ui-btn--icon) { min-width: 136px; }
 .netmap-hero-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-.netmap-hero-text h2 { text-wrap: balance; }
 .netmap-hero-sub { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.4; }
 .netmap-hero-actions { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
 .netmap-map { position: relative; flex: 1; min-height: 0; }
@@ -287,7 +286,6 @@
 .netmap-you-ring { display: grid; place-items: center; width: 76px; height: 76px; border-radius: 50%; background: var(--surface-panel); box-shadow: 0 0 0 1px var(--border-surface-strong), 0 0 0 8px rgba(var(--accent-rgb), .08), var(--shadow-md); }
 .netmap-you[data-on="true"] .netmap-you-ring { box-shadow: 0 0 0 2px var(--accent-border), 0 0 0 10px rgba(var(--accent-rgb), .10), var(--shadow-md); }
 .netmap-you-name { font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); }
-.netmap-you-sub { margin-top: -6px; font-size: var(--text-2xs); color: var(--text-muted); }
 .netmap-node { position: absolute; z-index: 3; width: 0; height: 0; }
 .netmap-node-btn { position: absolute; left: -26px; top: -26px; display: grid; place-items: center; width: 52px; height: 52px; padding: 0; box-sizing: border-box; border: 2px solid var(--kfg, var(--border-surface-strong)); border-radius: 50%; background: var(--surface-panel); color: var(--kfg, var(--text-secondary)); box-shadow: var(--shadow-sm); cursor: pointer; transition: transform .15s ease, background-color .15s ease; }
 .netmap-node-btn .ui-ico { width: 22px; height: 22px; stroke-width: 1.7; }
@@ -324,7 +322,8 @@
 .netmap-ribbon-spark .net-spark { height: 34px; }
 .netmap-cap { font-size: var(--text-2xs); color: var(--text-muted); }
 .netmap-stat { display: flex; flex-direction: column; gap: 2px; flex: 0 0 auto; }
-.netmap-stat b { font-size: var(--text-xl); font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; line-height: 1.2; }
+.netmap-stat b { display: block; min-width: var(--net-count-slot, 5ch); white-space: nowrap; font-size: var(--text-xl); font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; line-height: 1.2; }
+.netmap-stat b[data-live="announce"] { min-width: var(--net-ago-slot, 10ch); }
 .netmap-stat span { font-size: var(--text-2xs); color: var(--text-muted); }
 /* Side panel: Connectivity, a connection's detail, or the Discovered list. */
 .netmap-insp { display: flex; flex-direction: column; min-height: 0; overflow: hidden; border: 1px solid var(--border-surface); border-radius: var(--radius-card); background: var(--surface-panel); }
@@ -382,7 +381,7 @@
     .netmap-node.is-ghost .netmap-label span { display: none; }
     .netmap-label.at-top { bottom: 28px; } .netmap-label.at-bottom { top: 28px; }
     .netmap-ribbon { gap: 16px; height: 80px; padding: 0 16px; }
-    .netmap-ribbon .netmap-stat:nth-of-type(n+3) { display: none; }
+    .netmap-ribbon .netmap-stat:nth-of-type(n+4) { display: none; }
     .netmap-stat b { font-size: var(--text-base); }
     .netmap-insp { margin-top: 16px; overflow: visible; }
     .netmap-insp-scroll { overflow: visible; padding: 0 12px 16px; }
