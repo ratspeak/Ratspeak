@@ -1169,17 +1169,32 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         "close_button_action": close_button_action.as_setting(),
         "activity_tab_seen": ui_state.activity_tab_seen,
         "network_map_collapsed": ui_state.network_map_collapsed,
+        "network_ways_collapsed": ui_state.network_ways_collapsed,
+        "network_connected_once": ui_state.network_connected_once,
         "update_last_checked": ui_state.update_last_checked,
     }))
 }
 
 /// Small UI memory kept beside the app settings.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct UiState {
     activity_tab_seen: bool,
     network_map_collapsed: bool,
+    /// Connectivity ways folded shut, from `NETWORK_WAYS`.
+    network_ways_collapsed: Vec<&'static str>,
+    /// Set once any connection exists; "Start here" never returns after.
+    network_connected_once: bool,
     /// Unix seconds.
     update_last_checked: u64,
+}
+
+const NETWORK_WAYS: [&str; 6] = ["tcp", "ble", "local", "lora", "host", "discovered"];
+
+fn network_ways(stored: &str) -> Vec<&'static str> {
+    NETWORK_WAYS
+        .into_iter()
+        .filter(|way| stored.split(',').any(|item| item == *way))
+        .collect()
 }
 
 fn stored_ui_state(pool: &db::DbPool) -> UiState {
@@ -1187,6 +1202,10 @@ fn stored_ui_state(pool: &db::DbPool) -> UiState {
     UiState {
         activity_tab_seen: flag("activity_tab_seen"),
         network_map_collapsed: flag("network_map_collapsed"),
+        network_ways_collapsed: db::get_setting(pool, "network_ways_collapsed")
+            .map(|value| network_ways(&value))
+            .unwrap_or_default(),
+        network_connected_once: flag("network_connected_once"),
         update_last_checked: db::get_setting(pool, "update_last_checked")
             .and_then(|value| value.parse().ok())
             .unwrap_or(0),
@@ -1196,14 +1215,31 @@ fn stored_ui_state(pool: &db::DbPool) -> UiState {
 /// The stored form of one UI state value; only these keys and types.
 fn ui_state_setting(key: &str, value: &Value) -> AppResult<String> {
     match (key, value) {
-        ("activity_tab_seen" | "network_map_collapsed", Value::Bool(on)) => Ok(on.to_string()),
+        (
+            "activity_tab_seen" | "network_map_collapsed" | "network_connected_once",
+            Value::Bool(on),
+        ) => Ok(on.to_string()),
+        ("network_ways_collapsed", Value::Array(items)) => items
+            .iter()
+            .map(|item| {
+                item.as_str()
+                    .and_then(|way| NETWORK_WAYS.into_iter().find(|known| *known == way))
+                    .ok_or_else(|| AppError::bad_request("Unknown Connectivity way"))
+            })
+            .collect::<AppResult<Vec<_>>>()
+            .map(|ways| network_ways(&ways.join(",")).join(",")),
         ("update_last_checked", Value::Number(number)) => number
             .as_u64()
             .map(|seconds| seconds.to_string())
             .ok_or_else(|| AppError::bad_request("update_last_checked takes Unix seconds")),
-        ("activity_tab_seen" | "network_map_collapsed" | "update_last_checked", _) => {
-            Err(AppError::bad_request(format!("{key} has the wrong type")))
-        }
+        (
+            "activity_tab_seen"
+            | "network_map_collapsed"
+            | "network_connected_once"
+            | "network_ways_collapsed"
+            | "update_last_checked",
+            _,
+        ) => Err(AppError::bad_request(format!("{key} has the wrong type"))),
         _ => Err(AppError::bad_request("Unknown UI state")),
     }
 }
@@ -1247,6 +1283,9 @@ mod ui_state_tests {
         for (key, value) in [
             ("activity_tab_seen", json!("true")),
             ("network_map_collapsed", json!(1)),
+            ("network_connected_once", json!("true")),
+            ("network_ways_collapsed", json!("tcp")),
+            ("network_ways_collapsed", json!(["tcp", "wifi"])),
             ("update_last_checked", json!(-1)),
             ("update_last_checked", json!(1.5)),
             ("update_last_checked", json!(true)),
@@ -1267,13 +1306,25 @@ mod ui_state_tests {
         assert_eq!(stored_ui_state(&pool), UiState::default());
         db::set_setting(&pool, "activity_tab_seen", "true");
         db::set_setting(&pool, "update_last_checked", "42");
+        db::set_setting(&pool, "network_connected_once", "true");
+        db::set_setting(
+            &pool,
+            "network_ways_collapsed",
+            &ui_state_setting("network_ways_collapsed", &json!(["local", "tcp", "tcp"])).unwrap(),
+        );
         assert_eq!(
             stored_ui_state(&pool),
             UiState {
                 activity_tab_seen: true,
                 network_map_collapsed: false,
+                network_ways_collapsed: vec!["tcp", "local"],
+                network_connected_once: true,
                 update_last_checked: 42,
             }
+        );
+        assert_eq!(
+            ui_state_setting("network_ways_collapsed", &json!([])).unwrap(),
+            ""
         );
     }
 }

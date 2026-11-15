@@ -11765,6 +11765,8 @@ fn ui_state_is_an_app_setting() {
     for key in [
         "activity_tab_seen",
         "network_map_collapsed",
+        "network_ways_collapsed",
+        "network_connected_once",
         "update_last_checked",
     ] {
         assert!(

@@ -17,7 +17,8 @@
     var NV = RS.networkView = {
         sel: null, view: null, dfilter: 'all', older: false, moreOpen: false, joinOpen: false,
         mapCollapsed: false, announcing: false, lastAnnounce: 0, hist: [], lastTotal: null,
-        bleStarting: false, setupFor: null, ribbonWas: null
+        bleStarting: false, setupFor: null, ribbonWas: null,
+        internetOpen: false, waysCollapsed: [], connectedOnce: false, flash: null
     };
 
     function K() { return RS.kit; }
@@ -191,16 +192,24 @@
     function tile(kind, on, lg) {
         return '<span class="ui-tile ui-tile--' + KIND[kind].tile + (lg ? ' ui-tile--lg' : '') + (on ? ' net-tile-solid' : '') + '" aria-hidden="true">' + icon(KIND[kind].icon) + '</span>';
     }
+    // A way that is on folds shut with its own chevron; one that is off has nothing to fold.
     function way(kind, o) {
-        return '<section class="net-way k-' + kind + (o.on ? ' is-on' : '') + (o.start ? ' is-start' : '') + '" aria-labelledby="net-wt-' + kind + '">' +
+        var fold = o.on && o.fold !== false && !!(o.body || o.full || o.foot);
+        var shut = fold && NV.waysCollapsed.indexOf(kind) !== -1;
+        var verb = shut ? 'Show ' : 'Hide ';
+        var chev = fold ? '<button type="button" class="ui-icon-btn ui-icon-btn--sm ui-icon-btn--disclosure" data-act="way-fold" data-id="' + kind + '" aria-expanded="' + !shut +
+            '" aria-label="' + esc(verb + o.title) + '" title="' + esc(verb + o.title) + '">' + icon(shut ? 'chevron-down' : 'chevron-up') + '</button>' : '';
+        return '<section class="net-way k-' + kind + (o.on ? ' is-on' : '') + (o.start ? ' is-start' : '') + (NV.flash === kind ? ' is-flash' : '') + '" aria-labelledby="net-wt-' + kind + '">' +
             '<div class="net-way-head">' + tile(kind, o.on) +
-                '<div class="net-way-titles"><h3 class="net-way-title" id="net-wt-' + kind + '">' + esc(o.title) + (o.start ? '<span class="ui-tag ui-tag--accent">Start here</span>' : '') + '</h3>' +
+                '<div class="net-way-titles"><h3 class="net-way-title" id="net-wt-' + kind + '">' + esc(o.title) + '</h3>' +
                 '<p class="net-way-status">' + o.status + '</p></div>' +
-                (o.ctl ? '<div class="net-way-ctl">' + o.ctl + '</div>' : '') + '</div>' +
-            (o.body ? '<div class="net-way-body">' + o.body + '</div>' : '') +
-            (o.full ? '<div class="net-way-full">' + o.full + '</div>' : '') +
-            (o.foot ? '<div class="net-way-foot">' + o.foot + '</div>' : '') + '</section>';
+                (o.ctl || chev ? '<div class="net-way-ctl">' + (o.ctl || '') + chev + '</div>' : '') + '</div>' +
+            (o.body && !shut ? '<div class="net-way-body">' + o.body + '</div>' : '') +
+            (o.full && !shut ? '<div class="net-way-full">' + o.full + '</div>' : '') +
+            (o.foot && !shut ? '<div class="net-way-foot">' + o.foot + '</div>' : '') + '</section>';
     }
+    // "Start here" shows until the first connection, and never again after.
+    function isStart(M) { return !M.conns.length && !NV.connectedOnce; }
     function onLine(text) { return dot('online') + esc(text); }
     // What keeps Bluetooth Peer from working fully, from the platform's own state.
     function bleNote(M) {
@@ -275,13 +284,18 @@
         return way(kind, { title: title, on: n > 0, status: status, ctl: sw({ act: 'dev-' + kind, on: n > 0 || NV.setupFor === kind, label: title }), body: crows(lst, M) });
     }
     function ways(M) {
-        var tcp = byKind(M, 'tcp'), first = !M.conns.length, out = '';
-        if (!tcp.length) out += way('tcp', { title: 'Internet', start: first, status: 'Join a server to reach people anywhere.', body: serverList() });
-        else {
-            var up = tcp.filter(function(c) { return c.status === 'up'; }).length;
+        var tcp = byKind(M, 'tcp'), out = '';
+        // With no server yet, the switch only opens the server list; with servers, it turns them all off or on.
+        if (!tcp.length) {
+            out += way('tcp', { title: 'Internet', start: isStart(M), on: NV.internetOpen, fold: false, status: 'Join a server to reach people anywhere.',
+                ctl: sw({ act: 'tcp', on: NV.internetOpen, label: 'Internet' }), body: NV.internetOpen ? serverList() : '' });
+        } else {
+            var tcpOn = tcp.filter(function(c) { return c.status !== 'off'; });
+            var up = tcpOn.filter(function(c) { return c.status === 'up'; }).length;
             out += way('tcp', {
-                title: 'Internet', on: true,
-                status: allPaused(tcp) ? pausedLine() : up ? onLine('On · ' + up + (up === 1 ? ' server' : ' servers')) : 'Joining…',
+                title: 'Internet', on: tcpOn.length > 0,
+                status: !tcpOn.length ? 'Off' : allPaused(tcpOn) ? pausedLine() : up ? onLine('On · ' + up + (up === 1 ? ' server' : ' servers')) : 'Joining…',
+                ctl: sw({ act: 'tcp', on: tcpOn.length > 0, label: 'Internet' }),
                 body: crows(tcp, M) + (NV.joinOpen ? '<div class="net-join-more">' + serverList() + '</div>' : ''),
                 foot: link(NV.joinOpen ? 'Hide servers' : 'Join another server', 'join-toggle', ' aria-expanded="' + !!NV.joinOpen + '"')
             });
@@ -486,7 +500,7 @@
         var nodes = [], tcp = byKind(M, 'tcp'), phone = M.phone;
         var spread = Math.min(58, 2 * Math.asin(Math.min(0.95, (phone ? 55 : 78) / r1)) / D2R);
         if (tcp.length) tcp.forEach(function(c, i) { nodes.push({ c: c, kind: 'tcp', a: -90 + (i - (tcp.length - 1) / 2) * spread }); });
-        else nodes.push({ ghost: true, kind: 'tcp', a: -90, start: !M.conns.length });
+        else nodes.push({ ghost: true, kind: 'tcp', a: -90, start: isStart(M) });
         ['ble', 'local', 'lora', 'host'].forEach(function(k) {
             if (k === 'host' && phone) return;
             var lst = byKind(M, k), at = (phone ? SLOT_PHONE : SLOT)[k];
@@ -661,12 +675,16 @@
     function signature(M) {
         return JSON.stringify([M.phone, M.conns.map(function(c) { return [c.id, c.status, c.name, c.health]; }), M.pausedAll, M.life.paused_count, M.ble.on, M.ble.starting,
             M.ble.duration, Math.ceil((M.ble.expiresAt * 1000 - Date.now()) / MIN), M.disc.on, M.disc.entries.length, M.disc.settings.autojoin, NV.sel, NV.view, NV.dfilter, NV.older,
-            NV.moreOpen, NV.joinOpen, NV.mapCollapsed, NV.announcing, NV.setupFor, live(M).length > 0, M.disc.entries.map(function(e) { return [e.id, e.joined, e.added, e.status]; })]);
+            NV.moreOpen, NV.joinOpen, NV.mapCollapsed, NV.announcing, NV.setupFor, NV.internetOpen, NV.waysCollapsed.join(), NV.connectedOnce, live(M).length > 0, M.disc.entries.map(function(e) { return [e.id, e.joined, e.added, e.status]; })]);
     }
     function render(force) {
         root = root || document.getElementById('network-root');
         if (!root || !K()) return;
         var M = model();
+        if (M.conns.length && !NV.connectedOnce) {
+            NV.connectedOnce = true;
+            RS.invoke('set_ui_state', { key: 'network_connected_once', value: true }).catch(function() {});
+        }
         var sig = signature(M);
         if (!force && sig === lastSig && root.childElementCount) { update(M); return; }
         lastSig = sig;
@@ -840,6 +858,10 @@
             watchSetupClose(done);
             return;
         }
+        switchAll(lst, on);
+        if (!on) toast((kind === 'lora' ? (lst.length === 1 ? rowName(lst[0]) : 'Radios') : 'Hosting') + ' is off');
+    }
+    function switchAll(lst, on) {
         lst.forEach(function(c) {
             if (on && (c.status === 'off' || c.status === 'paused')) {
                 RS.invoke('resume_interface', { args: { name: c.id, iface_type: c.ifaceType } }).catch(function(err) { fail(err, 'Could not turn it on'); });
@@ -847,7 +869,33 @@
                 RS.invoke('pause_interface', { args: { name: c.id, iface_type: c.ifaceType, off: true } }).catch(function(err) { fail(err, 'Could not turn it off'); });
             }
         });
-        if (!on) toast((kind === 'lora' ? (lst.length === 1 ? rowName(lst[0]) : 'Radios') : 'Hosting') + ' is off');
+    }
+    function internetSwitch(on) {
+        var lst = byKind(model(), 'tcp');
+        if (!lst.length) { NV.internetOpen = on; render(true); return; }
+        switchAll(lst, on);
+        if (!on) toast('Internet is off');
+    }
+    // One action per way's switch, from the switch itself or a tap on the map.
+    function switchWay(kind, on) {
+        if (kind === 'tcp') { internetSwitch(on); return; }
+        if (kind === 'ble') { if (on) enableBle(); else disableBle(); return; }
+        if (kind === 'lora' || kind === 'host') { deviceSwitch(kind, on); return; }
+        if (kind !== 'local') return;
+        if (on) {
+            var paused = byKind(model(), 'local')[0];
+            if (paused && paused.status === 'paused') RS.invoke('resume_interface', { args: { name: paused.id, iface_type: paused.ifaceType } }).catch(function(err) { fail(err, 'Could not turn on Local Network'); });
+            else if (typeof showAutoInterfaceConfigSheet === 'function') showAutoInterfaceConfigSheet();
+        } else {
+            RS.invoke('disable_auto_interface', {}).then(function() { toast('Local Network is off'); }).catch(function(err) { fail(err, 'Could not turn off Local Network'); });
+        }
+        render(true);
+    }
+    function foldWay(kind) {
+        var i = NV.waysCollapsed.indexOf(kind);
+        NV.waysCollapsed = i === -1 ? NV.waysCollapsed.concat(kind) : NV.waysCollapsed.filter(function(k) { return k !== kind; });
+        RS.invoke('set_ui_state', { key: 'network_ways_collapsed', value: NV.waysCollapsed }).catch(function() {});
+        render(true);
     }
     // Setup dialogs are app sheets; when the last one closes, the switch follows what was added.
     function watchSetupClose(done) {
@@ -911,9 +959,50 @@
         anim.ensure();
     }
 
+    // A map node that is off leads to its way below: a quick scroll, a brief tint, then its switch turns on.
+    function reveal(kind, keyboard) {
+        var card = root && root.querySelector('.net-way.k-' + kind);
+        if (!card) return;
+        NV.flash = kind;
+        card.classList.add('is-flash');
+        clearTimeout(NV.flashTimer);
+        scrollToWay(card, function() {
+            var M = model();
+            if (!(kind === 'ble' && (M.ble.on || M.ble.starting)) && !(kind === 'tcp' && NV.internetOpen)) switchWay(kind, true);
+            var now = root.querySelector('.net-way.k-' + kind);
+            if (keyboard && now) { var f = now.querySelector('input'); if (f) f.focus({ preventScroll: true }); }
+            NV.flashTimer = setTimeout(function() {
+                NV.flash = null;
+                var el = root.querySelector('.net-way.k-' + kind);
+                if (el) el.classList.remove('is-flash');
+            }, 1100);
+        });
+    }
+    function scrollToWay(card, done) {
+        var sc = document.getElementById('netmap-scroll') || card.closest('.netmap-insp-scroll');
+        if (!sc) { card.scrollIntoView({ block: 'nearest' }); done(); return; }
+        var head = sc.querySelector('.netmap-insp-head'), above = head && getComputedStyle(head).position === 'sticky' ? head.offsetHeight : 0;
+        var from = sc.scrollTop, max = sc.scrollHeight - sc.clientHeight;
+        var to = Math.max(0, Math.min(max, from + card.getBoundingClientRect().top - sc.getBoundingClientRect().top - above - 12));
+        var dist = Math.abs(to - from);
+        if (dist < 2 || anim.reduced()) { sc.scrollTop = to; done(); return; }
+        var ms = Math.min(380, Math.max(220, dist * 0.45)), t0 = 0, over = false;
+        // Frames stop in a hidden WebView; the timer still lands the scroll and the switch.
+        var finish = function() { if (over) return; over = true; sc.scrollTop = to; done(); };
+        var guard = setTimeout(finish, ms + 120);
+        requestAnimationFrame(function step(t) {
+            if (over) return;
+            if (!t0) t0 = t;
+            var k = Math.min(1, (t - t0) / ms);
+            sc.scrollTop = from + (to - from) * (1 - Math.pow(1 - k, 3));
+            if (k < 1) requestAnimationFrame(step); else { clearTimeout(guard); finish(); }
+        });
+    }
+
     function onClick(e) {
         if (e.target.closest && e.target.closest('.net-hostdisc [data-netid]') && RS.hostDiscovery.handleInline(e)) return;
-        var el = e.target.closest && e.target.closest('[data-act]');
+        var lbl = e.target.closest && e.target.closest('.netmap-label');
+        var el = lbl ? lbl.parentNode.querySelector('.netmap-node-btn') : e.target.closest && e.target.closest('[data-act]');
         if (!el || el.tagName === 'INPUT') return;
         var a = el.getAttribute('data-act'), id = el.getAttribute('data-id');
         switch (a) {
@@ -924,6 +1013,7 @@
                 setTimeout(function() { NV.announcing = false; render(true); }, 2500);
                 return;
             case 'map-toggle': setMapCollapsed(!NV.mapCollapsed); return;
+            case 'way-fold': foldWay(id); return;
             case 'pause-all': pauseAll(); return;
             case 'resume-all': resumeAll(); return;
             case 'join': {
@@ -940,12 +1030,7 @@
             case 'own': if (typeof openConnectModal === 'function') openConnectModal(); return;
             case 'ble-dur': setBleDuration(parseInt(el.getAttribute('data-v'), 10) || 0, el.textContent); return;
             case 'c-node': openConn(id); return;
-            case 'c-ghost':
-                if (id === 'tcp') { NV.joinOpen = true; render(true); return; }
-                if (id === 'ble') { enableBle(); return; }
-                if (id === 'local') { if (typeof showAutoInterfaceConfigSheet === 'function') showAutoInterfaceConfigSheet(); return; }
-                deviceSwitch(id, true);
-                return;
+            case 'c-ghost': reveal(id, e.detail === 0); return;
             case 'c-menu': {
                 var M = model(), c = byId(M, id);
                 if (c && RS.kit) RS.kit.menu(el, { title: rowName(c), items: menuItems(c).map(function(x) {
@@ -977,19 +1062,8 @@
         var el = e.target.closest && e.target.closest('input[data-act]');
         if (!el) return;
         var a = el.getAttribute('data-act');
-        if (a === 'ble') { if (el.checked) enableBle(); else disableBle(); return; }
-        if (a === 'local') {
-            if (el.checked) {
-                var paused = byKind(model(), 'local')[0];
-                if (paused && paused.status === 'paused') RS.invoke('resume_interface', { args: { name: paused.id, iface_type: paused.ifaceType } }).catch(function(err) { fail(err, 'Could not turn on Local Network'); });
-                else if (typeof showAutoInterfaceConfigSheet === 'function') showAutoInterfaceConfigSheet();
-            } else {
-                RS.invoke('disable_auto_interface', {}).then(function() { toast('Local Network is off'); }).catch(function(err) { fail(err, 'Could not turn off Local Network'); });
-            }
-            render(true);
-            return;
-        }
-        if (a === 'dev-lora' || a === 'dev-host') { deviceSwitch(a.slice(4), el.checked); return; }
+        if (a === 'tcp' || a === 'ble' || a === 'local') { switchWay(a, el.checked); return; }
+        if (a === 'dev-lora' || a === 'dev-host') { switchWay(a.slice(4), el.checked); return; }
         if (a === 'disc') {
             var input = document.getElementById('ns-discover-toggle');
             if (input) { input.checked = el.checked; input.dispatchEvent(new Event('change')); }
@@ -1008,9 +1082,11 @@
             });
         }
         if (RS.uiStateListeners) RS.uiStateListeners.push(function(data) {
-            if (data.network_map_collapsed === undefined || data.network_map_collapsed === NV.mapCollapsed) return;
-            NV.mapCollapsed = !!data.network_map_collapsed;
-            NV.render(true);
+            var before = [NV.mapCollapsed, NV.waysCollapsed.join(), NV.connectedOnce].join('|');
+            if (data.network_map_collapsed !== undefined) NV.mapCollapsed = !!data.network_map_collapsed;
+            if (Array.isArray(data.network_ways_collapsed)) NV.waysCollapsed = data.network_ways_collapsed.slice();
+            if (data.network_connected_once === true) NV.connectedOnce = true;
+            if ([NV.mapCollapsed, NV.waysCollapsed.join(), NV.connectedOnce].join('|') !== before) NV.render(true);
         });
         if (typeof watchViewLayout === 'function') watchViewLayout('network', function() { NV.render(true); });
         if (RS.networkIdentity) RS.networkIdentity.onChange(function() { flushHostDrafts(); NV.render(true); });
