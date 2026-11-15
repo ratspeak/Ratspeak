@@ -576,7 +576,55 @@ assert(phoneDelivered.panel.children.every(function(child) { return child.tagNam
     'no state rows, no rule');
 var received = openMenu({ id: id, direction: 'inbound', state: 'received' });
 assert.deepStrictEqual(received.actions, ['reply', 'select', 'copy-message']);
+
+// Retry… on a phone: the send methods open at the same message (RS.kit.placeAround), never a sheet,
+// and hold transcript renders like the message menu did.
+['_openRetryMethodPopover', '_messageActionRect', '_offlineInboxAvailable'].forEach(function(name) {
+    vm.runInContext(functionSource(name), menuContext);
+});
+vm.runInContext('var _retryMethodMenu = null; this.retryMenu = function() { return _retryMethodMenu; };', menuContext);
+var kitMenus = [];
+var flushes = 0;
+menuContext.RS.kit.menu = function(trigger, opts) {
+    var handle = { el: {}, close: function(value) { if (opts.onClose) opts.onClose(value); } };
+    kitMenus.push({ trigger: trigger, opts: opts, handle: handle });
+    return handle;
+};
+menuContext._messageActionBand = function() { return { top: 72, bottom: 722 }; };
+menuContext._flushDeferredConversationRender = function() { flushes++; };
+var transcript = new FakeElement('div');
+var retryRow = new FakeElement('div');
+retryRow.isConnected = true;
+retryRow.getBoundingClientRect = function() { return { top: 299, bottom: 362, left: 0, right: 390 }; };
+var retryBubble = new FakeElement('div');
+retryBubble.isConnected = true;
+retryBubble.closest = function(selector) { return selector === '.msg-row' ? retryRow : null; };
+retryBubble.getBoundingClientRect = function() { return { top: 300, bottom: 340, left: 200, right: 380 }; };
+menuContext.document.getElementById = function(name) { return name === 'lxmf-messages' ? transcript : null; };
+menuContext._openRetryMethodPopover(sentMessage('failed'), retryBubble);
+var retryList = kitMenus[0];
+assert.strictEqual(retryList.trigger, retryBubble);
+assert.deepStrictEqual(Array.from(retryList.opts.items, function(item) { return item.label; }),
+    ['Automatic', 'Opportunistic', 'Direct', 'Offline Inbox']);
+assert.strictEqual(retryList.opts.around.el, retryRow, 'the pressed row stays pressed under the list');
+assert.strictEqual(retryList.opts.around.scroller, transcript);
+assert.strictEqual(retryList.opts.around.band, menuContext._messageActionBand, 'the same band as the message menu');
+assert.strictEqual(retryList.opts.around.end, true, 'your message: right edges align');
+assert.deepStrictEqual(JSON.parse(JSON.stringify(retryList.opts.around.rect())), { top: 300, bottom: 362, left: 200, right: 380 },
+    'the same message box as the message menu, reactions included');
+assert.strictEqual(retryList.opts.keepFocus, true, 'the keyboard stays where it was');
+assert.strictEqual(menuContext.retryMenu().msgId, id, 'renders wait while it is open');
+retryList.handle.close(retryList.opts.items[0]);
+assert.strictEqual(menuContext.retryMenu(), null);
+assert.strictEqual(flushes, 1, 'closing it releases the held render');
+
+// Desktop keeps its kit menu under the bubble.
 menuContext.isCompactLayout = function() { return false; };
+menuContext._openRetryMethodPopover(sentMessage('failed'), retryBubble);
+assert.strictEqual(kitMenus[1].opts.around, null);
+assert.strictEqual(kitMenus[1].opts.keepFocus, false);
+assert.strictEqual(menuContext.retryMenu(), null, 'a desktop menu holds nothing');
+menuContext.document.getElementById = function() { return null; };
 
 (async function() {
     // Try now asks the runtime and leaves the bubble to the attempt's own step.

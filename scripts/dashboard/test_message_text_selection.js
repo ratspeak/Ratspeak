@@ -386,7 +386,7 @@ function classListStub() {
 (function testActionRenderDeferral() {
     var context = {};
     vm.runInNewContext(
-        'var _activeContextMenu = null;\n' +
+        'var _activeContextMenu = null; var _retryMethodMenu = null;\n' +
         'var _deferredConversationRenderOptions = null; var _deferredConversationRenderOwnerHash = null;\n' +
         'var _deferredConversationRenderGeneration = 0; var _deferredConversationRenderRelease = null;\n' +
         'var lxmfConversation = [{ id: "message-1" }]; var lxmfActiveContact = "owner-a";\n' +
@@ -473,7 +473,7 @@ function classListStub() {
         clearTimeout: function(id) { timers.delete(id); },
     };
     vm.runInNewContext(
-        'var _activeContextMenu = null;\n' +
+        'var _activeContextMenu = null; var _retryMethodMenu = null;\n' +
         'var _deferredConversationRenderOptions = null; var _deferredConversationRenderOwnerHash = null;\n' +
         'var _deferredConversationRenderGeneration = 0; var _deferredConversationRenderRelease = null;\n' +
         'var lxmfActiveContact = "owner-a"; var lxmfConversation = [{ id: "message-1" }, { id: "message-2" }];\n' +
@@ -511,6 +511,11 @@ function classListStub() {
         'this.dismiss = _dismissContextMenu; this.renderLog = renderLog;\n' +
         'this.hasActive = function() { return !!_activeContextMenu; };\n' +
         'this.hasDeferred = function() { return !!_deferredConversationRenderOptions; };\n' +
+        'this.openRetry = function(msgId, list, closed) {\n' +
+        '  _retryMethodMenu = { msgId: msgId, ownerHash: _canonicalConversationHash(lxmfActiveContact),\n' +
+        '    handle: { el: { contains: function(target) { return target === list; } }, close: function(value) { closed.push(value); } } };\n' +
+        '};\n' +
+        'this.hasRetry = function() { return !!_retryMethodMenu; };\n' +
         'this.setOwner = function(owner) { lxmfActiveContact = owner; };',
         context,
         { filename: 'message-outside-pointer-lease.js' }
@@ -602,6 +607,31 @@ function classListStub() {
     runTimers(0);
     assert.strictEqual(context.renderLog.length, 1,
         'a delayed synthetic click must activate before the coalesced render');
+
+    // A phone's Retry… list, open at its message, holds renders the same way.
+    resetLog();
+    var retryList = { id: 'retry-list' };
+    var retryClosed = [];
+    context.openRetry('message-1', retryList, retryClosed);
+    assert.strictEqual(context.requestRender({ stickToBottom: true }), 'deferred',
+        'the transcript stays put under the open Retry list');
+    context.outside({ target: retryList });
+    assert.strictEqual(context.hasRetry(), true, 'a press inside the list keeps it');
+    context.outside({ target: outsideLink });
+    assert.strictEqual(context.hasRetry(), false);
+    assert.deepStrictEqual(retryClosed, [null], 'a tap away closes the list');
+    documentStub.dispatch('pointerup', {});
+    documentStub.dispatch('click', { target: outsideLink });
+    assert.strictEqual(context.renderLog.length, 0, 'the tap reaches its target before the transcript changes');
+    runTimers();
+    assert.strictEqual(context.renderLog.length, 1);
+
+    resetLog();
+    context.openRetry('message-1', retryList, retryClosed);
+    context.requestRender({ stickToBottom: true });
+    assert.strictEqual(context.dismiss(), true, 'Back and a new message menu dismiss the Retry list');
+    assert.strictEqual(context.renderLog.length, 1, 'and the held render runs at once');
+    assert.strictEqual(context.hasRetry(), false);
 }());
 
 // Link context is deliberately modality-specific: native on pointer desktops,
@@ -689,7 +719,7 @@ function classListStub() {
 (function testElevatedTextKeepsActionLease() {
     var context = {};
     vm.runInNewContext(
-        'var _activeContextMenu = null; var lxmfActiveContact = "owner-a"; var _dismissCalls = 0;\n' +
+        'var _activeContextMenu = null; var _retryMethodMenu = null; var lxmfActiveContact = "owner-a"; var _dismissCalls = 0;\n' +
         'function _canonicalConversationHash(value) { return String(value || "").toLowerCase(); }\n' +
         'function _dismissContextMenu() { _dismissCalls += 1; _activeContextMenu = null; return true; }\n' +
         'function _scheduleDeferredConversationRenderAfterPointer() {}\n' +

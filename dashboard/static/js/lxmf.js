@@ -1722,14 +1722,34 @@ function _openRetryMethodPopover(msg, anchor) {
         _retryLxmfMessage(msg, 'auto');
         return;
     }
-    RS.kit.menu(anchor, { title: 'Send by', caption: 'Send this message by', hints: true, align: msg.direction === 'outbound' ? 'end' : 'start', items: [
+    var outbound = msg.direction === 'outbound';
+    var row = anchor.closest ? anchor.closest('.msg-row') : null;
+    // A phone keeps the list where the message menu was, at the message, and holds renders like it.
+    var atMessage = isCompactLayout() && !!row;
+    var retry = atMessage ? { msgId: msg.id, ownerHash: _canonicalConversationHash(lxmfActiveContact) } : null;
+    var handle = RS.kit.menu(anchor, { title: 'Send by', caption: 'Send this message by', hints: true, align: outbound ? 'end' : 'start', items: [
         { label: 'Automatic', icon: 'refresh', onSelect: function() { _retryLxmfMessage(msg, 'auto'); } },
         { label: 'Opportunistic', icon: 'opportunistic', hint: 'Single packets. Best for short text.', onSelect: function() { _retryLxmfMessage(msg, 'opportunistic'); } },
         { label: 'Direct', icon: 'direct', hint: 'Opens a link first. Best for long text and files.', onSelect: function() { _retryLxmfMessage(msg, 'direct'); } },
         { label: 'Offline Inbox', icon: 'envelope', disabled: !_offlineInboxAvailable(),
             hint: _offlineInboxAvailable() ? 'Held by an Offline Inbox node until they collect it.' : 'Turn on Offline Inbox in Settings to use it.',
             onSelect: function() { _retryLxmfMessage(msg, 'propagated'); } },
-    ] });
+    ], keepFocus: atMessage, around: atMessage ? {
+        el: row,
+        rect: function() { return _messageActionRect(anchor, row); },
+        band: _messageActionBand,
+        scroller: container,
+        end: outbound,
+    } : null, onClose: retry ? function() {
+        // Dismissed through _dismissContextMenu, which flushes for itself.
+        if (_retryMethodMenu !== retry) return;
+        _retryMethodMenu = null;
+        _flushDeferredConversationRender();
+    } : null });
+    if (retry && handle) {
+        retry.handle = handle;
+        _retryMethodMenu = retry;
+    }
 }
 
 function _messageHasTransferPayload(msg) {
@@ -2931,10 +2951,11 @@ function _mergeConversationRenderOptions(previous, next) {
 }
 
 function _activeActionOwnsCurrentMessage() {
-    if (!_activeContextMenu || !_activeContextMenu.msgId) return false;
-    if (_activeContextMenu.ownerHash !== _canonicalConversationHash(lxmfActiveContact)) return false;
+    var active = _activeContextMenu || _retryMethodMenu;
+    if (!active || !active.msgId) return false;
+    if (active.ownerHash !== _canonicalConversationHash(lxmfActiveContact)) return false;
     return lxmfConversation.some(function(message) {
-        return message.id === _activeContextMenu.msgId;
+        return message.id === active.msgId;
     });
 }
 
@@ -4686,6 +4707,8 @@ function _messageSourceName(msg) {
 }
 
 var _activeContextMenu = null;
+// A phone's Retry… list, open at its message: { handle, msgId, ownerHash }.
+var _retryMethodMenu = null;
 var _pendingMessageHoldActivation = null;
 var _messageHoldActivationSequence = 0;
 var _messagePointerContextSelection = null;
@@ -4843,6 +4866,13 @@ function _focusMessageControl(control) {
 
 function _dismissContextMenu(opts) {
     opts = opts || {};
+    if (_retryMethodMenu) {
+        var retry = _retryMethodMenu;
+        _retryMethodMenu = null;
+        retry.handle.close(null);
+        if (opts.flushDeferredRender !== false) _flushDeferredConversationRender();
+        return true;
+    }
     if (!_activeContextMenu) return false;
     var state = _activeContextMenu;
     var trigger = state.trigger;
@@ -5580,6 +5610,13 @@ function _messageActionBand() {
     return { top: top + MSG_ACTION_GAP, bottom: bottom - MSG_ACTION_GAP };
 }
 
+// The pressed message's box: its bubble, down to the reactions the row holds under it.
+function _messageActionRect(bubble, row) {
+    var r = bubble.getBoundingClientRect();
+    var rowRect = row && row.isConnected ? row.getBoundingClientRect() : r;
+    return { top: r.top, bottom: Math.max(r.bottom, rowRect.bottom), left: r.left, right: r.right };
+}
+
 // Arrow-key target within the menu. Groups are in on-screen order; the
 // reactions row moves with Left/Right (wrapping), the action rows with
 // Up/Down, and Up/Down at an edge crosses to the neighbouring group.
@@ -5623,12 +5660,7 @@ function _layoutMessageActionPanels(state, allowScroll) {
 
     if (state.atMessage) {
         placement = RS.kit.placeAround({
-            rect: function() {
-                var r = bubble.getBoundingClientRect();
-                var rowRect = state.row && state.row.isConnected ? state.row.getBoundingClientRect() : r;
-                // The row also holds the reactions under the bubble.
-                return { top: r.top, bottom: Math.max(r.bottom, rowRect.bottom), left: r.left, right: r.right };
-            },
+            rect: function() { return _messageActionRect(bubble, state.row); },
             band: _messageActionBand,
             upper: state.reactPanel,
             lower: state.actionsPanel,
@@ -6008,6 +6040,13 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
 }
 
 function _handleMessageActionPointer(e) {
+    if (_retryMethodMenu) {
+        if (_retryMethodMenu.handle.el.contains(e.target)) return;
+        if (_dismissContextMenu({ restoreFocus: false, flushDeferredRender: false })) {
+            _scheduleDeferredConversationRenderAfterPointer();
+        }
+        return;
+    }
     if (_activeContextMenu) {
         var menu = _activeContextMenu.menu;
         if (menu && menu.contains(e.target)) return;
@@ -6099,7 +6138,7 @@ document.addEventListener('keydown', function(e) {
 
 window.RS = window.RS || {};
 window.RS.closeMessageActionMenu = function() {
-    if (_activeContextMenu) {
+    if (_activeContextMenu || _retryMethodMenu) {
         _dismissContextMenu();
         return true;
     }
