@@ -223,6 +223,14 @@ impl Fixture {
     }
 }
 
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        // MockRuntime never destroys the window, and its cycle with the app keeps this state alive.
+        #[allow(deprecated)]
+        drop(tauri::Manager::unmanage::<Arc<AppState>>(&self.app));
+    }
+}
+
 fn commands() -> impl Fn(tauri::ipc::Invoke<MockRuntime>) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         ratspeak_tauri::commands::system::api_version,

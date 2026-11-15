@@ -10,7 +10,7 @@ use tauri::test::{MockRuntime, get_ipc_response, mock_builder, mock_context, noo
 
 struct Fixture {
     window: tauri::WebviewWindow<MockRuntime>,
-    _app: tauri::App<MockRuntime>,
+    app: tauri::App<MockRuntime>,
     state: Arc<AppState>,
     _dir: tempfile::TempDir,
 }
@@ -49,7 +49,7 @@ impl Fixture {
             .unwrap();
         Self {
             window,
-            _app: app,
+            app,
             state,
             _dir: dir,
         }
@@ -74,6 +74,13 @@ impl Fixture {
             },
         )
         .map(|response| response.deserialize().unwrap())
+    }
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        // MockRuntime never destroys the window, and its cycle with the app keeps this state alive.
+        #[allow(deprecated)]
+        drop(tauri::Manager::unmanage::<Arc<AppState>>(&self.app));
     }
 }
 #[test]

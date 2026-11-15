@@ -20,7 +20,7 @@ static VAULT: Mutex<()> = Mutex::new(());
 struct Fixture {
     state: Arc<AppState>,
     window: tauri::WebviewWindow<MockRuntime>,
-    _app: tauri::App<MockRuntime>,
+    app: tauri::App<MockRuntime>,
     _root: tempfile::TempDir,
     _vault: MutexGuard<'static, ()>,
 }
@@ -68,7 +68,7 @@ impl Fixture {
         Self {
             state,
             window,
-            _app: app,
+            app,
             _root: root,
             _vault: vault,
         }
@@ -167,6 +167,14 @@ impl Fixture {
             json!({ "args": { "hash": identity, "passcode": PASSCODE } }),
         )
         .unwrap();
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        // MockRuntime never destroys the window, and its cycle with the app keeps this state alive.
+        #[allow(deprecated)]
+        drop(tauri::Manager::unmanage::<Arc<AppState>>(&self.app));
     }
 }
 

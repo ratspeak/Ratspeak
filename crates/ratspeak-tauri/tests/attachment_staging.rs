@@ -13,7 +13,7 @@ const LEGACY_BYTES: usize = 1_000_000;
 
 struct Fixture {
     window: tauri::WebviewWindow<MockRuntime>,
-    _app: tauri::App<MockRuntime>,
+    app: tauri::App<MockRuntime>,
     state: Arc<AppState>,
     _dir: tempfile::TempDir,
 }
@@ -50,7 +50,7 @@ impl Fixture {
             .unwrap();
         Self {
             window,
-            _app: app,
+            app,
             state,
             _dir: dir,
         }
@@ -132,6 +132,14 @@ impl Fixture {
             !path.exists(),
             "completed staging must release its private file"
         );
+    }
+}
+
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        // MockRuntime never destroys the window, and its cycle with the app keeps this state alive.
+        #[allow(deprecated)]
+        drop(tauri::Manager::unmanage::<Arc<AppState>>(&self.app));
     }
 }
 
