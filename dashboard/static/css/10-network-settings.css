@@ -235,7 +235,8 @@
 .net-way-title { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--text-base); font-weight: 600; color: var(--text-primary); line-height: 1.3; }
 .net-way-status { display: flex; align-items: center; gap: 8px; margin: 0; font-size: var(--text-xs); color: var(--text-secondary); line-height: 1.4; }
 /* Room for the fold chevron even without one, so the switch never moves when a way turns on. */
-.net-way-ctl { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; min-width: calc(var(--ui-switch-w) + 4px + var(--ui-icon-btn-sm)); }
+/* The switch stays flush right, over the rows' menus; the fold chevron appears to its left without moving it. */
+.net-way-ctl { flex: 0 0 auto; display: flex; align-items: center; justify-content: flex-end; gap: 4px; min-width: calc(var(--ui-switch-w) + 4px + var(--ui-icon-btn-sm)); }
 /* Three columns on every width: icons centred in the tile's width, text at tile + 12, ⋯ and chevrons on the right edge. */
 .net-way-body { margin-top: 12px; }
 .net-way-foot { display: flex; flex-wrap: wrap; gap: 8px 24px; margin-top: 12px; padding-left: calc(var(--ui-tile) + 12px); }

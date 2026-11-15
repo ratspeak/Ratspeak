@@ -203,7 +203,7 @@
             '<div class="net-way-head">' + tile(kind, o.on) +
                 '<div class="net-way-titles"><h3 class="net-way-title" id="net-wt-' + kind + '">' + esc(o.title) + '</h3>' +
                 '<p class="net-way-status">' + o.status + '</p></div>' +
-                (o.ctl || chev ? '<div class="net-way-ctl">' + (o.ctl || '') + chev + '</div>' : '') + '</div>' +
+                (o.ctl || chev ? '<div class="net-way-ctl">' + chev + (o.ctl || '') + '</div>' : '') + '</div>' +
             (o.body && !shut ? '<div class="net-way-body">' + o.body + '</div>' : '') +
             (o.full && !shut ? '<div class="net-way-full">' + o.full + '</div>' : '') +
             (o.foot && !shut ? '<div class="net-way-foot">' + o.foot + '</div>' : '') + '</section>';
