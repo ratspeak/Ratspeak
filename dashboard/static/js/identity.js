@@ -565,7 +565,7 @@ function identityDetailHtml(ident) {
     if (ident.is_active) {
         var status = typeof resolveActiveProfileStatus === 'function' ? String(resolveActiveProfileStatus() || '').trim() : '';
         profile = '<section aria-labelledby="identity-g-profile"><h3 class="ui-section-title" id="identity-g-profile">Profile</h3><div class="ui-group">' +
-            _identityProp('Status', status ? '“' + escapeHtml(status) + '”' : 'Not set. Ratspeak users see it under your name.', _identitySmallBtn(status ? 'Edit' : 'Set status', 'status')) +
+            _identityProp('Status', status ? '“' + escapeHtml(status) + '”' : 'None set.', _identitySmallBtn(status ? 'Edit' : 'Set status', 'status')) +
             '</div></section>';
     }
 
@@ -586,11 +586,11 @@ function identityDetailHtml(ident) {
         security = '<section aria-labelledby="identity-g-sec"><h3 class="ui-section-title" id="identity-g-sec">Security and backup</h3><div class="ui-group">' +
             (ident.passcode_protected
                 ? _identityProp('PIN', 'On. Ratspeak asks for it when it opens.', _identitySmallBtn('Change PIN', 'pin-change'))
-                : _identityProp('PIN', 'Off. Ratspeak opens without asking.', _identitySmallBtn('Set PIN', 'pin-set'))) +
+                : _identityProp('PIN', 'Not set.', _identitySmallBtn('Set PIN', 'pin-set'))) +
             (ident.has_mnemonic
                 ? _identityProp('Recovery phrase', RECOVERY_PHRASE_WORDS + ' words that restore this identity on any device.', _identitySmallBtn('View', 'phrase'))
                 : _identityProp('Recovery phrase', 'This identity has no recovery phrase on this device. Export a backup instead.', '')) +
-            _identityProp('Export', 'Save a backup file or a Reticulum key.', _identitySmallBtn('Export…', 'export')) +
+            _identityProp('Export', 'Save a backup file of your private key.', _identitySmallBtn('Export…', 'export')) +
             autoLock +
             '</div></section>';
     }
@@ -610,7 +610,9 @@ function identityDetailHtml(ident) {
     var danger = '<div class="person-danger">' +
         (original
             ? '<button type="button" class="ui-menu-item ui-menu-item--danger" disabled aria-describedby="identity-delete-why">' + RS.kit.icon('trash') + '<span class="lbl">' + deleteLabel + '</span></button>' +
-                '<p class="ui-group-foot" id="identity-delete-why">Your first identity can’t be deleted.</p>'
+                '<p class="ui-group-foot" id="identity-delete-why">' + (identityList.length <= 1
+                    ? 'You can’t delete your only identity, instead, do a factory reset in Settings › Storage.'
+                    : 'Your first identity can’t be deleted.') + '</p>'
             : '<button type="button" class="ui-menu-item ui-menu-item--danger" data-identity-action="delete">' + RS.kit.icon('trash') + '<span class="lbl">' + deleteLabel + '</span></button>') +
         '</div>';
 
@@ -633,8 +635,7 @@ function renderIdentityPage() {
     var listHtml = sorted.length
         ? '<div class="ui-list"><ul class="person-rows">' + sorted.map(function(ident) {
             return identityRowHtml(ident, !phone && selected && ident.hash === selected.hash);
-        }).join('') + '</ul></div>' +
-            (sorted.length === 1 ? '<p class="ui-list-note">Keep separate identities for work, family, or testing. Each one has its own address, contacts, and messages.</p>' : '')
+        }).join('') + '</ul></div>'
         : '<div class="ui-empty ui-empty--quiet"><p class="ui-empty-body">No identity is loaded.</p></div>';
     if (list._rsLastHtml !== listHtml) {
         list._rsLastHtml = listHtml;

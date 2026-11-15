@@ -8744,6 +8744,9 @@ fn identity_management_is_first_class_tab() {
         );
     }
     assert!(detail_source.contains("Your first identity can\u{2019}t be deleted."));
+    assert!(detail_source.contains(
+        "You can\u{2019}t delete your only identity, instead, do a factory reset in Settings \u{203a} Storage."
+    ));
 
     let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
     assert!(dialogs_js.contains("built.sheet.addEventListener('keydown'"));
