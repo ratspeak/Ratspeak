@@ -756,40 +756,6 @@
     max-width: 100vw;
     overflow-x: hidden;
 }
-.conn-detail-sheet.conn-detail-sheet--progressive {
-    min-height: 0;
-    max-height: min(72vh, 560px);
-    overflow-y: hidden;
-}
-.conn-detail-sheet.conn-detail-sheet--progressive.conn-detail-sheet--compact {
-    min-height: 0;
-    max-height: min(62vh, 480px);
-}
-.conn-detail-sheet.conn-detail-sheet--progressive.conn-detail-sheet--expanded {
-    max-height: min(84vh, calc(100vh - 40px));
-    overflow-y: auto;
-}
-.conn-detail-sheet--progressive #conn-detail-sheet-content {
-    display: flex;
-    flex: 0 0 auto;
-    width: 100%;
-    max-width: 100%;
-    min-height: 0;
-    overflow-x: hidden;
-}
-.conn-detail-sheet--progressive.conn-detail-sheet--compact #conn-detail-sheet-content {
-    flex: 0 0 auto;
-}
-.conn-detail-sheet--progressive .conn-detail-sheet-content {
-    flex: 0 0 auto;
-    gap: var(--space-5);
-    padding-bottom: calc(var(--space-6) + var(--sab));
-}
-.conn-detail-sheet--progressive.conn-detail-sheet--compact .conn-detail-sheet-content {
-    flex: 0 0 auto;
-    gap: var(--space-4);
-    padding-bottom: calc(var(--space-5) + var(--sab));
-}
 .conn-detail-sheet-identity {
     display: grid;
     grid-template-columns: 64px minmax(0, 1fr) auto;
@@ -890,9 +856,6 @@
     min-width: 0;
     margin-top: 0;
 }
-.conn-detail-sheet--compact .conn-detail-sheet-actions {
-    margin-top: 0;
-}
 .conn-detail-sheet-primary-actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -900,9 +863,6 @@
     width: 100%;
     max-width: 100%;
     min-width: 0;
-}
-.conn-detail-sheet--compact .conn-detail-sheet-primary-actions {
-    gap: var(--space-3);
 }
 .conn-detail-sheet-actions .nr-btn,
 .conn-detail-sheet-actions .danger-btn {
@@ -926,57 +886,16 @@
 .conn-detail-sheet-actions .entity-action-btn svg {
     flex: 0 0 auto;
 }
-.conn-detail-sheet--compact .conn-detail-sheet-actions .entity-action-btn {
-    padding-inline: var(--space-3);
-}
 .conn-detail-sheet-primary-actions .entity-action-btn {
     min-height: 44px;
 }
 .conn-detail-sheet-primary-actions .entity-action-btn:only-child {
     grid-column: 1 / -1;
 }
-.conn-detail-sheet-expand-hint {
-    appearance: none;
-    -webkit-appearance: none;
-    border: 0;
-    background: transparent;
-    color: var(--text-muted);
-    font: inherit;
-    font-size: var(--text-sm);
-    font-weight: var(--type-weight-medium);
-    display: inline-flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-1);
-    min-height: 48px;
-    width: 100%;
-    margin-top: 0;
-    padding: 0;
-    cursor: pointer;
-    -webkit-tap-highlight-color: transparent;
-}
-.conn-detail-sheet--compact .conn-detail-sheet-expand-hint {
-    margin-top: 0;
-    min-height: 44px;
-}
-.conn-detail-sheet-expand-hint svg {
-    color: var(--accent);
-    opacity: 0.78;
-}
 .conn-detail-sheet-fields {
     display: flex;
     flex-direction: column;
     border-top: 1px solid var(--border-light);
-}
-.conn-detail-sheet--progressive .conn-detail-sheet-fields {
-    display: none;
-}
-.conn-detail-sheet--progressive.conn-detail-sheet--expanded .conn-detail-sheet-fields {
-    display: flex;
-}
-.conn-detail-sheet--progressive.conn-detail-sheet--expanded .conn-detail-sheet-expand-hint {
-    display: none;
 }
 
 @media (max-width: 360px) {

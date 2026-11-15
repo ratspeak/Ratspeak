@@ -6045,7 +6045,6 @@ fn message_composer_send_preserves_preexisting_focus_state() {
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("css");
     assert!(responsive_css.contains("overflow-y: auto;"));
     assert!(responsive_css.contains("scrollbar-width: none;"));
-    assert!(responsive_css.contains("-webkit-appearance: none;"));
 }
 
 #[test]
@@ -7926,7 +7925,7 @@ fn contact_detail_sheet_centers_identity_and_separates_primary_actions() {
 }
 
 #[test]
-fn mobile_peers_rows_are_larger_and_detail_sheet_expands_progressively() {
+fn mobile_peers_rows_are_larger_and_open_the_person_sheet() {
     let root = repo_root();
     let peers = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
     // Row, caption, and note heights are measured from the kit components per width and text size.

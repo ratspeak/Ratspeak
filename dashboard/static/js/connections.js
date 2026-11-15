@@ -591,8 +591,7 @@ function refreshConnectionsTable() {
     }
 }
 
-function showConnectionDetailSheet(hash, options) {
-    options = options || {};
+function showConnectionDetailSheet(hash) {
     var overlay = document.getElementById('conn-detail-sheet-overlay');
     var sheet = document.getElementById('conn-detail-sheet');
     var content = document.getElementById('conn-detail-sheet-content');
@@ -606,7 +605,6 @@ function showConnectionDetailSheet(hash, options) {
 
     var name = contact.display_name && contact.display_name !== contact.hash ? contact.display_name : '';
     var saved = typeof _lookupContactRecord === 'function' ? _lookupContactRecord(contact.hash) : null;
-    var progressive = !!options.progressive;
 
     var html = '<div class="conn-detail-sheet-content">' +
         '<div class="conn-detail-sheet-identity">' +
@@ -625,78 +623,23 @@ function showConnectionDetailSheet(hash, options) {
             peerActionPairHtml('conn-detail-sheet-primary-actions entity-action-grid', 'conn-sheet', contact.hash) +
         '</div>' +
         peerActionRowsHtml(contact.is_contact) +
-        (progressive
-            ? '<button type="button" class="conn-detail-sheet-expand-hint" id="conn-sheet-expand-hint" aria-label="Swipe up for more info">' +
-                '<span>Swipe up for more info</span>' +
-                '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 15l6-6 6 6"/></svg>' +
-            '</button>'
-            : '') +
         '<div class="conn-detail-sheet-fields">' + peerDetailRowsHtml(contact, { trust: saved ? saved.trust : '' }) + '</div>' +
     '</div>';
 
     content.innerHTML = html;
-    sheet.classList.toggle('conn-detail-sheet--progressive', progressive);
-    sheet.classList.toggle('conn-detail-sheet--compact', progressive);
-    sheet.classList.remove('conn-detail-sheet--expanded');
-    sheet._progressiveExpansionEnabled = progressive;
 
     wirePeerActionPair('conn-sheet', contact.hash, closeConnectionDetailSheet);
     wirePeerActionRows(content, contact.hash, { name: name, before: closeConnectionDetailSheet });
-
-    var expandHint = document.getElementById('conn-sheet-expand-hint');
-    if (expandHint) {
-        expandHint.addEventListener('click', expandConnectionDetailSheet);
-    }
-    wireConnectionDetailExpansion(sheet);
 
     RS.ui.openExistingSheet(sheet, overlay);
 
     overlay.onclick = function() { closeConnectionDetailSheet(); };
 }
 
-function expandConnectionDetailSheet() {
-    var sheet = document.getElementById('conn-detail-sheet');
-    if (!sheet || !sheet.classList.contains('conn-detail-sheet--progressive')) return;
-    sheet.classList.add('conn-detail-sheet--expanded');
-    var content = document.getElementById('conn-detail-sheet-content');
-    if (content) {
-        requestAnimationFrame(function() {
-            var fields = content.querySelector('.conn-detail-sheet-fields');
-            if (fields && typeof fields.scrollIntoView === 'function') {
-                fields.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-            }
-        });
-    }
-}
-
-function wireConnectionDetailExpansion(sheet) {
-    if (!sheet || sheet._progressiveExpandWired) return;
-    sheet._progressiveExpandWired = true;
-    sheet._progressiveStartY = null;
-
-    sheet.addEventListener('touchstart', function(e) {
-        if (!sheet._progressiveExpansionEnabled || sheet.classList.contains('conn-detail-sheet--expanded')) return;
-        if (!e.touches || e.touches.length !== 1) return;
-        sheet._progressiveStartY = e.touches[0].clientY;
-    }, { passive: true });
-
-    sheet.addEventListener('touchend', function(e) {
-        if (!sheet._progressiveExpansionEnabled || sheet.classList.contains('conn-detail-sheet--expanded')) return;
-        if (sheet._progressiveStartY === null || !e.changedTouches || e.changedTouches.length < 1) return;
-        var dy = e.changedTouches[0].clientY - sheet._progressiveStartY;
-        sheet._progressiveStartY = null;
-        if (dy < -28) expandConnectionDetailSheet();
-    }, { passive: true });
-}
-
 function closeConnectionDetailSheet() {
     var overlay = document.getElementById('conn-detail-sheet-overlay');
     var sheet = document.getElementById('conn-detail-sheet');
-    if (sheet) {
-        RS.ui.closeExistingSheet(sheet, overlay);
-        sheet.classList.remove('conn-detail-sheet--progressive', 'conn-detail-sheet--expanded', 'conn-detail-sheet--compact');
-        sheet._progressiveExpansionEnabled = false;
-    }
+    if (sheet) RS.ui.closeExistingSheet(sheet, overlay);
 }
 
 function openSortSheet() {
