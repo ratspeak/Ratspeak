@@ -29,9 +29,9 @@ changes that materially affect how an artifact is reproduced.
 - Messages to one person that had to wait arrive in the order you sent them, and an Offline Inbox message sent while your inbox is out of reach waits instead of being refused.
 - Delivery marks now show inside a conversation only, not in the conversation list.
 - A message to your own address stays on this device as a note, and deleting that conversation no longer deletes all your other messages.
-- With Transport Mode on, a public server saved as a Backbone connection now counts toward the one-public-server limit.
+- With Relay for other devices on, a public server saved as a Backbone connection now counts toward the one-public-server limit.
 - A call no longer ends when a setup packet is lost, and damaged voice packets are skipped. On Android, recording voice messages and making calls work again.
-- Peer and contact panels show the address first and the rest under Details, with a dot for whether they've been heard recently. The sidebar groups chats, people, and this device.
+- Peer and contact panels keep Message, Call, and the contact actions in reach, with the technical details under Details and a dot for whether they've been heard recently. The sidebar groups chats, people, and this device.
 - Peers you haven't heard from in a day are cleared, so the list and Ratspeak's storage stay small on busy networks. Contacts and anyone you've messaged or played a game with always stay.
 - Messages to someone you've written to before keep using their newest encryption key, even when they haven't announced for a while.
 - On Android, tapping into a message no longer makes the screen jump around for a second or more before you can type, and closing the keyboard no longer freezes the app.
@@ -41,6 +41,7 @@ changes that materially affect how an artifact is reproduced.
 
 - Bluetooth Peer uses new Bluetooth identifiers, so 1.1.0 doesn't find devices on 1.0.44 or earlier over Bluetooth Peer until both update. Bluetooth RNodes aren't affected.
 - 1.1.0 updates how messages are stored and moves network data to new files. Ratspeak 1.0.44 and earlier can't open data used by 1.1.0, so back up your data first if you may need to go back.
+- An identity you never named, shown as !Ratspeak.org- and six characters, gets a name like Leaping Frog when you update, and new identities without a name get one too. Rename yours any time on the Identity page.
 
 ## [1.0.44] - 2026-11-09
 
