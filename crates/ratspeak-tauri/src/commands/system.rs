@@ -59,6 +59,7 @@ pub async fn api_version() -> AppResult<Value> {
     Ok(json!({
         "version": app_display_version(),
         "name": "Ratspeak",
+        "reticulum": rns_runtime::constants::RETICULUM_COMPAT_VERSION,
         "lxmf": lxmf_core::constants::LXMF_COMPAT_VERSION,
     }))
 }
@@ -933,9 +934,13 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn version_names_the_lxmf_release_the_stack_follows() {
+    async fn version_names_the_releases_the_stack_follows() {
         let version = api_version().await.unwrap();
         assert_eq!(version["name"], "Ratspeak");
+        assert_eq!(
+            version["reticulum"],
+            rns_runtime::constants::RETICULUM_COMPAT_VERSION
+        );
         assert_eq!(version["lxmf"], lxmf_core::constants::LXMF_COMPAT_VERSION);
     }
 
