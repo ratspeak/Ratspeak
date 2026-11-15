@@ -1349,10 +1349,9 @@ function _peerInfo(hash) {
 }
 
 // The chat header's line under the name: a named peer's short address, then when they were last heard.
+// Only when they were last heard: the address lives in the conversation's details.
 function _peerHeaderStatusHtml(peer) {
-    var heard = peer && peer.last_seen ? escapeHtml(RS.kit.time.lastHeard(peer.last_seen)) : 'Not heard yet';
-    var named = !!lxmfActiveContact && !_conversationNameInfo(lxmfActiveContact, null, false).isHash;
-    return named ? '<span class="ui-hash">' + escapeHtml(RS.kit.hash.short(lxmfActiveContact)) + '</span> · ' + heard : heard;
+    return peer && peer.last_seen ? escapeHtml(RS.kit.time.lastHeard(peer.last_seen)) : 'Not heard yet';
 }
 
 // Avatar 40 with presence: active or seen recently; nothing for older.

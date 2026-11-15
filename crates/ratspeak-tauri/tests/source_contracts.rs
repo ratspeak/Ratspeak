@@ -9857,8 +9857,8 @@ fn conversation_header_presence_uses_peer_cache_status() {
             "return { tier: RS.kit.rowPresence(peer.last_seen), heard: peer.last_seen };"
         )
     );
-    // Under the name: a named peer's short address and when they were last heard, never the route.
-    assert!(lxmf.contains("return named ? '<span class=\"ui-hash\">' + escapeHtml(RS.kit.hash.short(lxmfActiveContact)) + '</span> · ' + heard : heard;"));
+    // Under the name: only when they were last heard; never the address or the route.
+    assert!(!lxmf.contains("escapeHtml(RS.kit.hash.short(lxmfActiveContact))"));
     assert!(!lxmf.contains("peer.route_label"));
     assert!(lxmf.contains("_refreshRenderedConversationPresence();"));
     assert!(
