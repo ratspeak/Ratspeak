@@ -190,9 +190,9 @@
     function tile(kind, on, lg) {
         return '<span class="ui-tile ui-tile--' + KIND[kind].tile + (lg ? ' ui-tile--lg' : '') + (on ? ' net-tile-solid' : '') + '" aria-hidden="true">' + icon(KIND[kind].icon) + '</span>';
     }
-    // A way that is on folds shut with its own chevron; one that is off has nothing to fold.
+    // A way with anything under its head folds shut with its own chevron, on or off.
     function way(kind, o) {
-        var fold = o.on && o.fold !== false && !!(o.body || o.full || o.foot);
+        var fold = o.fold !== false && !!(o.body || o.full || o.foot);
         var shut = fold && NV.waysCollapsed.indexOf(kind) !== -1;
         var verb = shut ? 'Show ' : 'Hide ';
         var chev = fold ? '<button type="button" class="ui-icon-btn ui-icon-btn--sm ui-icon-btn--disclosure" data-act="way-fold" data-id="' + kind + '" aria-expanded="' + !shut +
