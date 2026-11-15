@@ -1978,10 +1978,9 @@ function _channelsListenWindowElapsed() {
         Date.now() - _channelsOnlineSince >= CHANNEL_HUB_LISTEN_WINDOW_MS;
 }
 
+// Both lead to Network, where every way to connect lives.
 function _channelsNetworkAction() {
-    return _channelsNetworkConfigured()
-        ? { action: 'open-network', text: 'Open Network' }
-        : { action: 'connect-network', text: 'Connect to a network' };
+    return { action: 'open-network', text: _channelsNetworkConfigured() ? 'Open Network' : 'Connect to a network' };
 }
 
 // Stats and interface updates call this on every tick; only a change renders.
@@ -6280,9 +6279,7 @@ function _channelsBindUI() {
         if (!actionEl) return;
         var action = actionEl.dataset.channelAction;
         if (action === 'reconnect') channelsReconnect(actionEl);
-        else if (action === 'connect-network') {
-            if (typeof openConnectModal === 'function') openConnectModal();
-        } else if (action === 'open-network') {
+        else if (action === 'open-network') {
             if (typeof switchView === 'function') switchView('network');
         } else if (action === 'add-address') channelsOpenAddressSheet();
         else if (action === 'open-owned-hub' && typeof channelHubOpenOwnHub === 'function') channelHubOpenOwnHub();

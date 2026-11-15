@@ -740,8 +740,13 @@ html[data-channel-hosting="off"] .channel-owned-hub {
 }
 
 @media (max-width: 768px) {
+    /* The hub strip stands where Messages and Peers keep their search; the first view starts below it. */
     .ch-hub {
-        padding: 0 0 4px;
+        padding: 0 0 8px;
+    }
+
+    .channels-list > .ui-phone-only > .ch-empty {
+        margin: 0 auto;
     }
 
     .ch-list-note {

@@ -591,12 +591,12 @@ function testNoNetwork() {
     assert(paneAction.classList.contains('ui-btn--primary'));
 
     action.click();
-    assert.strictEqual(h.calls.openConnectModal, 1,
-        'the button opens the Connect to Network sheet');
-    assert.deepStrictEqual(h.calls.switchView, [],
-        'the sheet opens over Channels; the view does not change');
+    assert.deepStrictEqual(h.calls.switchView, ['network'],
+        'the button leads to Network, as Peers does');
+    assert.strictEqual(h.calls.openConnectModal, 0, 'no connect sheet opens over Channels');
     paneAction.click();
-    assert.strictEqual(h.calls.openConnectModal, 2);
+    assert.deepStrictEqual(h.calls.switchView, ['network', 'network']);
+    assert.strictEqual(h.calls.openConnectModal, 0);
     assert.strictEqual(h.sheets.length, 0, 'no Channels sheet opens on the way');
 }
 
@@ -1392,7 +1392,8 @@ async function testOwnHubRunningNoNetwork() {
 
     network = h.phoneEmpty().querySelectorAll('button')[1];
     network.click();
-    assert.strictEqual(h.calls.openConnectModal, 1);
+    assert.deepStrictEqual(h.calls.switchView, ['network']);
+    assert.strictEqual(h.calls.openConnectModal, 0);
     h.phoneEmpty().querySelector('.ui-btn--primary').click();
     await h.settle();
     assert.deepStrictEqual(connectArgs(h), {

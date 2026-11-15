@@ -102,9 +102,7 @@ function renderStandaloneContactList() {
     var phone = isCompactLayout();
     var query = _contactsQuery();
     var countEl = document.getElementById('contacts-count');
-    var searchWrap = document.getElementById('contacts-search-wrap');
     if (countEl) countEl.innerHTML = all.length ? '<span class="ui-sr">, </span>' + all.length : '';
-    if (searchWrap) searchWrap.hidden = !all.length;
     var clear = document.getElementById('contacts-search-clear');
     if (clear) clear.hidden = !query;
 

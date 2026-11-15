@@ -1852,7 +1852,7 @@ body.setup-active .main-content {
 .person-share-text { min-width: 0; }
 .person-share-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; min-width: 0; }
 @media (max-width: 768px) {
-    .person-onboard { padding: 24px 16px; margin: 0; max-width: none; }
+    .person-onboard { padding: 32px 16px 24px; margin: 0; max-width: none; }
     .person-share { flex-direction: column; align-items: flex-start; }
     .person-share-actions { align-self: stretch; }
 }

@@ -651,10 +651,9 @@ fn channels_first_view_follows_the_network_and_names_each_step() {
             .count(),
         2
     );
-    assert!(channels_js.contains("action === 'connect-network'"));
-    assert!(
-        channels_js.contains("if (typeof openConnectModal === 'function') openConnectModal();")
-    );
+    // Connect to a network leads to Network, as in Peers; Channels opens no connect sheet.
+    assert!(channels_js.contains("action === 'open-network'"));
+    assert!(!channels_js.contains("openConnectModal"));
     // Desktop explains in the room pane and keeps the list a list; a phone explains in the list.
     assert!(
         channels_js.contains("_channelsOnly('phone', _channelsEmptyState(_channelsFirstView()))")

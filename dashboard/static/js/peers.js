@@ -380,8 +380,6 @@ function _peersErrorHtml() {
 function _setPeersChrome(count, hasList) {
     var countEl = document.getElementById('peers-count');
     if (countEl) countEl.innerHTML = hasList ? '<span class="ui-sr">, </span>' + count.toLocaleString('en-US') : '';
-    var search = document.getElementById('peers-search-wrap');
-    if (search) search.hidden = !hasList;
 }
 
 function _peersEmptyDetail(state) {
