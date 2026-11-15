@@ -2583,20 +2583,17 @@ fn frontend_shared_helpers_are_adopted() {
         dialogs_js.contains("var shell = RS.kit.dialog({"),
         "runtime dialogs must use the kit dialog shell"
     );
-    for file in ["dashboard/static/js/contact_card.js"] {
-        let source = read_source(root.join(file)).expect(file);
-        assert!(
-            source.contains("RS.sheetShell."),
-            "{file} must use the shared sheet shell"
-        );
-    }
-    for file in ["dashboard/static/js/peers.js"] {
-        let source = read_source(root.join(file)).expect(file);
-        assert!(
-            source.contains("RS.buildPeerGroupItems("),
-            "{file} must use the shared peer grouping"
-        );
-    }
+    let contact_card =
+        read_source(root.join("dashboard/static/js/contact_card.js")).expect("contact card js");
+    assert!(
+        contact_card.contains("RS.sheetShell."),
+        "contact_card.js must use the shared sheet shell"
+    );
+    let peers = read_source(root.join("dashboard/static/js/peers.js")).expect("peers js");
+    assert!(
+        peers.contains("RS.buildPeerGroupItems("),
+        "peers.js must use the shared peer grouping"
+    );
 
     // User-initiated contact/block actions surface failures, never the silent
     // `RS.invoke('add_contact'...).catch(function() {})` pattern.
@@ -8086,7 +8083,6 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     let identity = read_source(root.join("dashboard/static/js/identity.js")).expect("identity js");
-    let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
     let settings = read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
     let contact_card_js =
         read_source(root.join("dashboard/static/js/contact_card.js")).expect("contact card js");

@@ -1041,7 +1041,7 @@ mod tests {
                         "ok": true,
                         "identity_hash": hash,
                         "lxmf_hash": lxmf_hash,
-                        "display_name": ratspeak_core::default_display_name(&lxmf_hash),
+                        "display_name": ratspeak_core::default_display_name(lxmf_hash),
                         "mnemonic": phrase,
                     })
                 );
