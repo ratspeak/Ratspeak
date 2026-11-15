@@ -69,7 +69,6 @@ RS.gestures = {
     RIPPLE_HAPTIC_SELECTORS: [
         '.ui-tab', '.bottom-sheet-item', '.nr-btn'
     ],
-    DRILL_DOWN_VIEWS: ['identity', 'network', 'settings', 'eventlog', 'propagation'],
     HAPTIC_DURATION_MAP: { light: 10, medium: 20, heavy: 30, success: 15, warning: 25, error: 40, selection: 8 }
 };
 

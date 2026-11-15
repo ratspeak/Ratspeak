@@ -620,6 +620,14 @@ function identityDetailHtml(ident) {
         '<aside class="person-side" aria-label="Addresses and identity actions">' + addresses + details + danger + '</aside></div>';
 }
 
+// The phone's last list row: one way to add, so a single identity has a clear next step.
+function identityAddRowHtml() {
+    return '<div class="ui-list identity-add ui-phone-only"><button type="button" class="ui-row" data-identity-action="add" aria-haspopup="menu" aria-expanded="false">' +
+        '<span class="ui-tile ui-tile--neutral">' + RS.kit.icon('plus') + '</span>' +
+        '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">Add identity</span></span>' +
+        '<span class="ui-row-sub"><span class="t">Its own address, contacts, and messages.</span></span></span></button></div>';
+}
+
 function renderIdentityPage() {
     var list = document.getElementById('identity-list');
     var detail = document.getElementById('identity-detail');
@@ -629,13 +637,15 @@ function renderIdentityPage() {
     var sorted = sortedIdentities();
     if (count) count.innerHTML = sorted.length ? '<span class="ui-sr">, </span>' + sorted.length : '';
     var phone = isCompactLayout();
+    // An identity that went away (deleted, removed) takes its open detail with it.
+    if (_identityPhoneDetailOpen && identityList.length && !identityByHash(selectedIdentityHash)) _identityPhoneDetailOpen = false;
     var selected = selectedIdentity();
     if (selected) selectedIdentityHash = selected.hash;
 
     var listHtml = sorted.length
         ? '<div class="ui-list"><ul class="person-rows">' + sorted.map(function(ident) {
             return identityRowHtml(ident, !phone && selected && ident.hash === selected.hash);
-        }).join('') + '</ul></div>'
+        }).join('') + '</ul></div>' + identityAddRowHtml()
         : '<div class="ui-empty ui-empty--quiet"><p class="ui-empty-body">No identity is loaded.</p></div>';
     if (list._rsLastHtml !== listHtml) {
         list._rsLastHtml = listHtml;
@@ -646,7 +656,8 @@ function renderIdentityPage() {
     if (pane) pane.classList.toggle('is-covered', open);
     detail.classList.toggle('is-open', open);
     var html = selected
-        ? (phone ? '<header class="ui-pane-head has-back"><button type="button" class="ui-icon-btn" data-identity-action="back" aria-label="Back to identities" title="Back">' + RS.kit.icon('chevron-left') + '</button></header>' : '') +
+        ? (phone ? '<header class="ui-pane-head has-back ui-scroll-head"><button type="button" class="ui-icon-btn" data-identity-action="back" aria-label="Back to identities" title="Back to identities">' +
+            RS.kit.icon('chevron-left') + '</button><h2 class="ui-pane-title">Identity</h2></header>' : '') +
             identityDetailHtml(selected)
         : '';
     if (detail._rsLastHtml !== html) {
@@ -663,12 +674,49 @@ function selectIdentity(hash) {
     if (detail) detail.scrollTop = 0;
 }
 
-// Settings' Identity row and the sidebar open this; it shows the identity in use.
+// The phone level nav.js steps through: the list, then one identity's detail.
+function isIdentityPhoneDetailActive() {
+    return isCompactLayout() && _identityPhoneDetailOpen && !!identityByHash(selectedIdentityHash);
+}
+
+function showIdentityPhoneList(opts) {
+    opts = opts || {};
+    var wasOpen = _identityPhoneDetailOpen;
+    _identityPhoneDetailOpen = false;
+    renderIdentityPage();
+    if (!wasOpen || opts.quiet || !isCompactLayout()) return;
+    var rows = document.querySelectorAll('#identity-list .ui-row[data-identity]');
+    for (var i = 0; i < rows.length; i++) {
+        if (rows[i].getAttribute('data-identity') !== selectedIdentityHash) continue;
+        var row = rows[i];
+        requestAnimationFrame(function() { row.focus({ preventScroll: true }); });
+        break;
+    }
+}
+
+if (window.RS && RS.nav && typeof RS.nav.registerDetail === 'function') {
+    RS.nav.registerDetail('identity', {
+        pane: '#identity-detail',
+        active: isIdentityPhoneDetailActive,
+        close: function() { showIdentityPhoneList(); },
+        capture: function() { return selectedIdentityHash; },
+        restore: function(hash) {
+            if (!identityByHash(hash)) { showIdentityPhoneList({ quiet: true }); return; }
+            selectedIdentityHash = hash;
+            _identityPhoneDetailOpen = isCompactLayout();
+            renderIdentityPage();
+        },
+        reset: function() { showIdentityPhoneList({ quiet: true }); }
+    });
+}
+
+// Settings' Identity row and the sidebar open this at the list (desktop shows the identity in use);
+// a hash opens that identity's detail, with Back to the list.
 function openIdentityPage(hash) {
     selectedIdentityHash = hash || activeIdentityHash || selectedIdentityHash;
-    _identityPhoneDetailOpen = !!hash;
     if (typeof switchView === 'function') switchView('identity');
-    renderIdentityPage();
+    if (hash && isCompactLayout()) selectIdentity(hash);
+    else showIdentityPhoneList({ quiet: true });
 }
 window.openIdentityPage = openIdentityPage;
 
@@ -713,11 +761,8 @@ function openIdentityAutoLockMenu(trigger) {
 
 function _identityRunAction(action, trigger) {
     var ident = selectedIdentity();
-    if (action === 'back') {
-        _identityPhoneDetailOpen = false;
-        renderIdentityPage();
-        return;
-    }
+    if (action === 'back') { showIdentityPhoneList(); return; }
+    if (action === 'add') { openIdentityAddMenu(trigger); return; }
     if (!ident) return;
     if (action === 'switch') switchToIdentity(ident.hash);
     else if (action === 'share') {
@@ -2503,6 +2548,7 @@ function removeHardwareIdentity(target) {
         removePromise.then(function() {
             showToast('Hardware identity removed', 'toast-success', 3000);
             selectedIdentityHash = null;
+            _identityPhoneDetailOpen = false;
             loadIdentities();
         }).catch(function(err) {
             showToast((err && err.message) ? err.message : 'Could not remove the identity', 'toast-error', 3000);

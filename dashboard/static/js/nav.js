@@ -63,6 +63,61 @@ function _lastPrimaryTabView() {
     return 'peers';
 }
 
+// A view that is a list and a detail on a phone: Back closes the detail before leaving the view.
+// Level: { pane, active(), close(), capture() -> token, restore(token), reset() }.
+var VIEW_DETAIL_LEVELS = {
+    settings: {
+        pane: '#view-settings .settings-detail-pane',
+        active: function() { return typeof isSettingsMobileDetailActive === 'function' && isSettingsMobileDetailActive(); },
+        close: function() { if (typeof showSettingsMobileSectionIndex === 'function') showSettingsMobileSectionIndex(); },
+        capture: function() { return typeof _settingsShownPanelId === 'string' && _settingsShownPanelId ? _settingsShownPanelId : null; },
+        restore: function(panelId) {
+            if (typeof selectSettingsSection === 'function') selectSettingsSection(panelId, { showMobileDetail: true, skipStore: true });
+        },
+        reset: function() { if (typeof showSettingsMobileSectionIndex === 'function') showSettingsMobileSectionIndex({ restoreFocus: false }); }
+    }
+};
+
+function _activeViewDetail() {
+    var level = VIEW_DETAIL_LEVELS[currentView];
+    return level && level.active() ? level : null;
+}
+
+function _viewDetailSwipeActive() {
+    return !!_activeViewDetail();
+}
+
+// Where each More destination was opened from, so Back returns there rather than to the last tab.
+var _viewTrail = [];
+var _viewTrailStarted = false;
+var VIEW_TRAIL_MAX = 12;
+
+function _recordViewTrail(fromView, toView, opts) {
+    // The first switch is the landing, not a visit.
+    if (!_viewTrailStarted) { _viewTrailStarted = true; return; }
+    if (MORE_VIEWS.indexOf(toView) === -1) { _viewTrail = []; return; }
+    for (var i = 0; i < _viewTrail.length; i++) {
+        if (_viewTrail[i].view === toView) { _viewTrail.length = i; return; }
+    }
+    if (opts.back || fromView === toView) return;
+    var level = VIEW_DETAIL_LEVELS[fromView];
+    _viewTrail.push({ view: fromView, detail: level && level.active() ? level.capture() : null });
+    if (_viewTrail.length > VIEW_TRAIL_MAX) _viewTrail.shift();
+}
+
+// A visit opens a view at its list; Back reopens the detail it was left on.
+function _prepareViewDetail(viewId, opts) {
+    var level = VIEW_DETAIL_LEVELS[viewId];
+    _pendingDetailRestore = null;
+    if (!level) return;
+    if (opts.back && opts.detail != null) {
+        level.restore(opts.detail);
+        _pendingDetailRestore = { view: viewId, detail: opts.detail };
+    } else {
+        level.reset();
+    }
+}
+
 // Legacy hashes that predate the current view names.
 var VIEW_ALIASES = {
     'eventlog': 'dashboard',
@@ -349,6 +404,9 @@ function switchView(viewId, opts) {
         transitionType = null;
     }
 
+    _recordViewTrail(previousView, viewId, opts);
+    _prepareViewDetail(viewId, opts);
+
     VIEWS.forEach(function(v) {
         var el = document.getElementById('view-' + v);
         if (el && el !== oldEl && el !== newEl) {
@@ -519,6 +577,17 @@ function _fireViewLifecycle(viewId) {
     clearViewDirty(viewId);
     var handler = VIEW_LIFECYCLE[viewId];
     if (handler) handler(dirty);
+    _restorePendingDetail(viewId);
+}
+
+// Settings' lifecycle reopens its index; a detail restored by Back wins.
+var _pendingDetailRestore = null;
+
+function _restorePendingDetail(viewId) {
+    if (!_pendingDetailRestore || _pendingDetailRestore.view !== viewId) return;
+    var pending = _pendingDetailRestore;
+    _pendingDetailRestore = null;
+    VIEW_DETAIL_LEVELS[viewId].restore(pending.detail);
 }
 
 function _closeOpenBottomSheet() {
@@ -559,10 +628,10 @@ function _handleAppBackNavigation(opts) {
         return true;
     }
 
-    if (typeof isSettingsMobileDetailActive === 'function' && isSettingsMobileDetailActive()) {
-        if (typeof showSettingsMobileSectionIndex === 'function') {
-            showSettingsMobileSectionIndex();
-        }
+    // Only the view on screen: a detail left open in a hidden view must not swallow Back.
+    var detail = _activeViewDetail();
+    if (detail) {
+        detail.close();
         if (fromPopState) _pushCurrentHistoryAnchor();
         return true;
     }
@@ -576,18 +645,30 @@ function _handleAppBackNavigation(opts) {
     }
 
     if (isCompactLayout() && MORE_VIEWS.indexOf(currentView) !== -1) {
-        if (fromPopState && state && PRIMARY_TAB_VIEWS.indexOf(state.view) !== -1) {
-            switchView(state.view, { skipHistory: true, back: true });
-        } else {
-            switchView(_lastPrimaryTabView(), { back: true });
-        }
+        _backFromMoreView(fromPopState, state);
         return true;
     }
 
     return false;
 }
 
+// Back from a More destination: the screen it was opened from, else the last tab.
+function _backFromMoreView(fromPopState, state) {
+    if (_navTransitioning) {
+        if (fromPopState) _pushCurrentHistoryAnchor();
+        return;
+    }
+    while (_viewTrail.length && _viewTrail[_viewTrail.length - 1].view === currentView) _viewTrail.pop();
+    var entry = _viewTrail.pop() || null;
+    var target = entry ? entry.view
+        : (fromPopState && state && PRIMARY_TAB_VIEWS.indexOf(state.view) !== -1 ? state.view : _lastPrimaryTabView());
+    switchView(target, { back: true, skipHistory: !!fromPopState, detail: entry ? entry.detail : null });
+    // Still inside More: keep an entry so the next history Back reaches this handler.
+    if (fromPopState && MORE_VIEWS.indexOf(currentView) !== -1) _pushCurrentHistoryAnchor();
+}
+
 window.RS = window.RS || {};
+window.RS.nav = { registerDetail: function(viewId, level) { VIEW_DETAIL_LEVELS[viewId] = level; } };
 window.RS.handleAppBackNavigation = _handleAppBackNavigation;
 window.RS.handleAndroidBack = function() {
     return _handleAppBackNavigation({ source: 'android' });
@@ -956,6 +1037,13 @@ function initBottomSheet() {
             _closeMoreSheet();
             // Let the sheet go before switching views.
             setTimeout(function() {
+                // The destination already on screen returns to its list.
+                if (targetView === currentView) {
+                    var level = VIEW_DETAIL_LEVELS[targetView];
+                    if (level) level.reset();
+                    history.replaceState({ view: currentView }, '', '#' + currentView);
+                    return;
+                }
                 var isDrillDown = TAB_VIEWS.indexOf(targetView) === -1;
                 switchView(targetView, {
                     pushState: isDrillDown,
@@ -1428,12 +1516,6 @@ function initTextareaAutoGrow() {
     });
 }
 
-function _settingsDetailSwipeActive() {
-    return currentView === 'settings' &&
-        typeof isSettingsMobileDetailActive === 'function' &&
-        isSettingsMobileDetailActive();
-}
-
 function initDrillDownSwipeBack() {
     if (!isTouchDevice()) return;
 
@@ -1444,9 +1526,7 @@ function initDrillDownSwipeBack() {
                 RS.viewStack.pop();
                 return;
             }
-            // Drill-down reached via plain switchView (no push) returns to
-            // the last real bottom-tab, not another More destination.
-            switchView(_lastPrimaryTabView(), { back: true });
+            _backFromMoreView(false);
         }
         if (!viewEl) { _doPop(); return; }
         viewEl.style.transition = 'transform 0.2s ease, opacity 0.2s ease';
@@ -1470,14 +1550,14 @@ function initDrillDownSwipeBack() {
             if (_isMobileNavigationBlocked()) return true;
             if (_navTransitioning) return true;
             if (e.target.closest('button, a, input, select, .selector-badge')) return true;
-            if (_settingsDetailSwipeActive()) return true;
-            // Fire when something's on the stack OR sitting on a legacy drill-down.
+            if (_viewDetailSwipeActive()) return true;
+            // Fire when something's on the stack OR sitting on a More destination.
             if (RS.viewStack.depth() > 1) return false;
-            if (RS.gestures.DRILL_DOWN_VIEWS.indexOf(currentView) !== -1) return false;
+            if (MORE_VIEWS.indexOf(currentView) !== -1) return false;
             return true;
         },
         onProgress: function(dx) {
-            if (_settingsDetailSwipeActive()) return;
+            if (_viewDetailSwipeActive()) return;
             var viewEl = document.getElementById('view-' + currentView);
             if (viewEl && dx > 0) {
                 viewEl.style.transition = 'none';
@@ -1487,7 +1567,7 @@ function initDrillDownSwipeBack() {
         },
         onCommit: _animateOutAndPop,
         onCancel: function() {
-            if (_settingsDetailSwipeActive()) return;
+            if (_viewDetailSwipeActive()) return;
             var viewEl = document.getElementById('view-' + currentView);
             if (viewEl) {
                 viewEl.style.transition = 'transform 0.2s cubic-bezier(0.2, 0, 0, 1), opacity 0.2s ease';
@@ -1499,15 +1579,17 @@ function initDrillDownSwipeBack() {
     });
 }
 
-function initSettingsDetailSwipeBack() {
+// A swipe right anywhere on an open detail (Settings section, identity) returns to its list.
+function initViewDetailSwipeBack() {
     if (!isTouchDevice()) return;
 
-    function _settingsDetailPane() {
-        return document.querySelector('#view-settings .settings-detail-pane');
+    var swiping = null;
+
+    function _pane(level) {
+        return level ? document.querySelector(level.pane) : null;
     }
 
-    function _resetSettingsDetailPane() {
-        var pane = _settingsDetailPane();
+    function _resetPane(pane) {
         if (!pane) return;
         pane.style.transition = '';
         pane.style.transform = '';
@@ -1520,39 +1602,40 @@ function initSettingsDetailSwipeBack() {
         hapticAt: { commit: 'selection' },
         skipIf: function(e) {
             if (!isCompactLayout()) return true;
+            if (_isMobileNavigationBlocked()) return true;
             if (_navTransitioning) return true;
-            if (!_settingsDetailSwipeActive()) return true;
+            swiping = _activeViewDetail();
+            if (!swiping) return true;
             if (e.target.closest('button, a, input, select, textarea, .selector-badge, .theme-toggle, .prop-toggle')) return true;
             return false;
         },
         onProgress: function(dx) {
-            var pane = _settingsDetailPane();
+            var pane = _pane(swiping);
             if (!pane || dx <= 0) return;
             pane.style.transition = 'none';
             pane.style.transform = 'translateX(' + dx + 'px)';
             pane.style.opacity = Math.max(0.35, 1 - dx / RS.gestures.DRAG_DISMISS_OPACITY_DENOM_PX);
         },
         onCommit: function() {
-            var pane = _settingsDetailPane();
-            if (!pane) {
-                if (typeof showSettingsMobileSectionIndex === 'function') showSettingsMobileSectionIndex();
-                return;
-            }
+            var level = swiping;
+            var pane = _pane(level);
+            if (!level) return;
+            if (!pane) { level.close(); return; }
             pane.style.transition = 'transform 0.18s ease, opacity 0.18s ease';
             pane.style.transform = 'translateX(100%)';
             pane.style.opacity = '0';
             setTimeout(function() {
-                _resetSettingsDetailPane();
-                if (typeof showSettingsMobileSectionIndex === 'function') showSettingsMobileSectionIndex();
+                _resetPane(pane);
+                level.close();
             }, 180);
         },
         onCancel: function() {
-            var pane = _settingsDetailPane();
+            var pane = _pane(swiping);
             if (!pane) return;
             pane.style.transition = 'transform 0.18s cubic-bezier(0.2, 0, 0, 1), opacity 0.18s ease';
             pane.style.transform = '';
             pane.style.opacity = '';
-            setTimeout(_resetSettingsDetailPane, 180);
+            setTimeout(function() { _resetPane(pane); }, 180);
         }
     });
 }
@@ -1569,7 +1652,7 @@ function initTabSwipe() {
             if (typeof _isSetupActive === 'function' && _isSetupActive()) return true;
             if (_isMobileNavigationBlocked()) return true;
             if (_navTransitioning) return true;
-            if (_settingsDetailSwipeActive()) return true;
+            if (_viewDetailSwipeActive()) return true;
             if (RS.viewStack && typeof RS.viewStack.depth === 'function' && RS.viewStack.depth() > 1) return true;
             if (MOBILE_TAB_SLOTS.indexOf(_mobileTabSlot(currentView)) === -1) return true;
             if (e.target.closest('button, a, input, select, .selector-badge')) return true;
@@ -1588,7 +1671,7 @@ function initTabSwipe() {
         onCommit: function(_target, dx) {
             if (MORE_VIEWS.indexOf(currentView) !== -1 && dx > 0) {
                 haptic('selection');
-                switchView(_lastPrimaryTabView(), { back: true });
+                _backFromMoreView(false);
                 return;
             }
             var currentIdx = MOBILE_TAB_SLOTS.indexOf(_mobileTabSlot(currentView));
@@ -1763,7 +1846,7 @@ document.addEventListener('DOMContentLoaded', function() {
         hapticOnTap: 'light'
     });
     initDrillDownSwipeBack();
-    initSettingsDetailSwipeBack();
+    initViewDetailSwipeBack();
     initTabSwipe();
 
     bindFirstRunAnnounceListener();

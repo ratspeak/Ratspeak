@@ -7644,12 +7644,12 @@ fn mobile_settings_use_section_drilldown_instead_of_stacked_panels() {
     assert!(settings_js.contains("function showSettingsMobileSectionIndex(opts)"));
     assert!(settings_js.contains("function isSettingsMobileDetailActive()"));
     assert!(settings_js.contains("settings-mobile-detail-active"));
-    assert!(nav_js.contains("function _settingsDetailSwipeActive()"));
-    assert!(nav_js.contains("function initSettingsDetailSwipeBack()"));
-    assert!(nav_js.contains("if (_settingsDetailSwipeActive()) return true;"));
+    assert!(nav_js.contains("function _viewDetailSwipeActive()"));
+    assert!(nav_js.contains("function initViewDetailSwipeBack()"));
+    assert!(nav_js.contains("if (_viewDetailSwipeActive()) return true;"));
     assert!(nav_js.contains("RS.viewStack.depth() > 1) return true;"));
     assert!(nav_js.contains("showSettingsMobileSectionIndex();"));
-    assert!(nav_js.contains("initSettingsDetailSwipeBack();"));
+    assert!(nav_js.contains("initViewDetailSwipeBack();"));
     // The detail opens over the sections on a phone, through the kit split.
     assert!(settings_js.contains("detail.classList.toggle('is-open', open);"));
     assert!(settings_js.contains("pane.classList.toggle('is-covered', open);"));
