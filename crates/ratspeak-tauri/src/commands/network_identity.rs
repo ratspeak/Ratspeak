@@ -146,6 +146,15 @@ async fn change(
     Ok(status(config_dir))
 }
 
+/// Discovery's sources follow the identity: its own network is accepted under
+/// Trusted publishers too. Seeds first, as a start does, keeping hand-written keys.
+fn follow_identity(state: &AppState, config_dir: &Path) -> std::io::Result<bool> {
+    if !state.seed_network_settings(config_dir) {
+        return Ok(false);
+    }
+    crate::rns_config::apply_network_settings(config_dir, &state.network_settings())
+}
+
 async fn install(state: &Arc<AppState>, identity: Identity) -> AppResult<NetworkIdentity> {
     let config_dir = active_rns_config_dir(state);
     let path = crate::rns_config::network_identity_path(&config_dir);
@@ -155,6 +164,7 @@ async fn install(state: &Arc<AppState>, identity: Identity) -> AppResult<Network
         }
         identity.to_file(&path).map_err(std::io::Error::other)?;
         crate::rns_config::set_network_identity_key(&config_dir, true)?;
+        follow_identity(state, &config_dir)?;
         Ok(true)
     })
     .await
@@ -242,6 +252,7 @@ pub async fn remove_network_identity(
     let path = crate::rns_config::network_identity_path(&config_dir);
     change(&state, &config_dir, || {
         let changed = crate::rns_config::set_network_identity_key(&config_dir, false)?;
+        let changed = follow_identity(&state, &config_dir)? || changed;
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(true),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(changed),

@@ -319,12 +319,12 @@ fn ranking(a: &DiscoveredEntry, b: &DiscoveredEntry) -> std::cmp::Ordering {
         .then(b.last_heard.cmp(&a.last_heard))
 }
 
-/// Which copy of one server stands for it: the freshest, a trusted
-/// publisher's first.
+/// Which copy of one server stands for it: the freshest, this device's own
+/// network's or a trusted publisher's first.
 fn freshness(a: &DiscoveredEntry, b: &DiscoveredEntry) -> std::cmp::Ordering {
     status_rank(a)
         .cmp(&status_rank(b))
-        .then(b.trusted.cmp(&a.trusted))
+        .then((b.own_network || b.trusted).cmp(&(a.own_network || a.trusted)))
         .then(b.last_heard.cmp(&a.last_heard))
 }
 
@@ -818,6 +818,14 @@ mod tests {
             (entries[0].last_heard, entries[0].status.as_str()),
             (10, "available")
         );
+        // So does a copy from this device's own network, trusted or not.
+        let ours = Saved {
+            network: Some([9; 16]),
+            ..Saved::default()
+        };
+        let entries = listed(&records, &[], &ours, 100);
+        assert!(entries[0].own_network && !entries[0].trusted);
+        assert_eq!(entries[0].last_heard, 10);
     }
 
     #[test]

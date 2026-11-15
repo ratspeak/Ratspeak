@@ -2551,7 +2551,8 @@ pub fn apply_network_settings(
     let mut updated = previous
         .clone()
         .unwrap_or_else(|| ratspeak_default_config(config_dir));
-    for (section, keys) in network_settings_keys(settings) {
+    let own_network = network_identity_hash(&updated);
+    for (section, keys) in network_settings_keys(settings, own_network.as_deref()) {
         updated = section_keys_update(&updated, section, &keys);
     }
     if previous.as_deref() == Some(&*updated) {
@@ -2576,11 +2577,21 @@ pub fn network_identity_path(config_dir: &Path) -> PathBuf {
 
 /// The file `[reticulum] network_identity` names, resolved as Reticulum does.
 pub fn configured_network_identity_path(config_dir: &Path) -> Option<PathBuf> {
-    let content = read_config(config_dir)?;
-    let config = rns_runtime::config::Config::parse(&content).ok()?;
+    network_identity_path_in(&read_config(config_dir)?)
+}
+
+fn network_identity_path_in(content: &str) -> Option<PathBuf> {
+    let config = rns_runtime::config::Config::parse(content).ok()?;
     rns_runtime::reticulum::ReticulumConfig::try_from_config(&config)
         .ok()?
         .network_identity_path
+}
+
+/// The hash of the network identity `content` names, when its file loads.
+fn network_identity_hash(content: &str) -> Option<String> {
+    rns_identity::identity::Identity::from_file(&network_identity_path_in(content)?)
+        .ok()
+        .map(|identity| identity.hexhash())
 }
 
 /// The configured network identity, when its file loads.
@@ -2673,16 +2684,18 @@ fn network_settings_from_content(content: &str) -> Option<ratspeak_core::types::
     } else {
         0
     };
-    let mut trusted_publishers: Vec<String> = Vec::new();
-    for source in reticulum
+    let sources = reticulum
         .get_list("interface_discovery_sources")
-        .unwrap_or_default()
-    {
+        .unwrap_or_default();
+    // This device's own network is accepted anyway, so it never joins the trusted list.
+    let own_network = network_identity_hash(content);
+    let mut trusted_publishers: Vec<String> = Vec::new();
+    for source in &sources {
         let source = source.trim().to_ascii_lowercase();
         if hex::decode(&source).ok()?.len() != 16 {
             return None;
         }
-        if !trusted_publishers.contains(&source) {
+        if own_network.as_ref() != Some(&source) && !trusted_publishers.contains(&source) {
             trusted_publishers.push(source);
         }
     }
@@ -2700,7 +2713,7 @@ fn network_settings_from_content(content: &str) -> Option<ratspeak_core::types::
         stamp_outgoing: stamp_destinations == Some(true) || stamp_prs == Some(true),
         require_stamps: flag(stamps, "enforce_stamps")? == Some(true),
         link_mtu_discovery_off: flag(reticulum, "link_mtu_discovery")? == Some(false),
-        trusted_only: !trusted_publishers.is_empty(),
+        trusted_only: !sources.is_empty(),
         trusted_publishers,
         other: Default::default(),
     })
@@ -2708,14 +2721,23 @@ fn network_settings_from_content(content: &str) -> Option<ratspeak_core::types::
 
 type SectionKeys = Vec<(&'static str, Option<String>)>;
 
+/// `own_network`, this device's network identity hash, is always a source: its
+/// private network is decrypted with its own key, whoever else is trusted.
 fn network_settings_keys(
     s: &ratspeak_core::types::NetworkSettings,
+    own_network: Option<&str>,
 ) -> Vec<(&'static str, SectionKeys)> {
     // Defaults are left out, so an untouched config stays as upstream writes it.
     let yes = |on: bool| on.then(|| "yes".to_string());
     let list = |v: &[String]| (!v.is_empty()).then(|| v.join(", "));
+    let mut sources = s.trusted_publishers.clone();
+    if let Some(own) = own_network
+        && !sources.iter().any(|source| source == own)
+    {
+        sources.push(own.to_string());
+    }
     // Trusting no one accepts no one; upstream reads an empty list as everyone.
-    let discover = s.discover && !(s.trusted_only && s.trusted_publishers.is_empty());
+    let discover = s.discover && !(s.trusted_only && sources.is_empty());
     let autojoin = discover && s.autojoin > 0;
     vec![
         (
@@ -2732,11 +2754,7 @@ fn network_settings_keys(
                 ),
                 (
                     "interface_discovery_sources",
-                    if s.trusted_only {
-                        list(&s.trusted_publishers)
-                    } else {
-                        None
-                    },
+                    if s.trusted_only { list(&sources) } else { None },
                 ),
                 (
                     "link_mtu_discovery",
@@ -5096,5 +5114,56 @@ mod tests {
         write_config(&dir, &hand);
         assert!(!apply_network_identity(&dir).unwrap());
         assert_eq!(configured_network_identity_path(&dir), Some(other));
+    }
+
+    #[test]
+    fn trusted_publishers_always_accept_this_devices_own_network() {
+        use ratspeak_core::types::NetworkSettings;
+        let dir = temp_config_dir();
+        write_base_config(&dir);
+        let file = network_identity_path(&dir);
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let identity = rns_identity::identity::Identity::new();
+        identity.to_file(&file).unwrap();
+        assert!(set_network_identity_key(&dir, true).unwrap());
+        let sources = |dir: &Path| {
+            let cfg = rns_runtime::config::Config::parse(&read_config(dir).unwrap()).unwrap();
+            let rc = rns_runtime::reticulum::ReticulumConfig::try_from_config(&cfg).unwrap();
+            (rc.discover_interfaces, rc.interface_discovery_sources)
+        };
+
+        let trusted = NetworkSettings {
+            discover: true,
+            trusted_only: true,
+            trusted_publishers: vec!["a".repeat(32)],
+            ..NetworkSettings::default()
+        };
+        assert!(apply_network_settings(&dir, &trusted).unwrap());
+        assert_eq!(sources(&dir), (true, vec![[0xaa; 16], identity.hash]));
+        // Read back, the trusted list is the user's alone.
+        assert_eq!(network_settings_from_config(&dir).unwrap(), trusted);
+
+        // Trusting no one else still accepts the own network, and the setting survives a read.
+        let nobody = NetworkSettings {
+            trusted_publishers: vec![],
+            ..trusted.clone()
+        };
+        apply_network_settings(&dir, &nobody).unwrap();
+        assert_eq!(sources(&dir), (true, vec![identity.hash]));
+        assert_eq!(network_settings_from_config(&dir).unwrap(), nobody);
+
+        // Anyone needs no list; without a network identity the list is the trusted one.
+        apply_network_settings(
+            &dir,
+            &NetworkSettings {
+                trusted_only: false,
+                ..trusted.clone()
+            },
+        )
+        .unwrap();
+        assert_eq!(sources(&dir), (true, vec![]));
+        assert!(set_network_identity_key(&dir, false).unwrap());
+        apply_network_settings(&dir, &trusted).unwrap();
+        assert_eq!(sources(&dir), (true, vec![[0xaa; 16]]));
     }
 }

@@ -53,7 +53,8 @@ pub struct NetworkSettings {
     /// Turn off Reticulum's default link MTU discovery (`link_mtu_discovery = no`).
     #[serde(default)]
     pub link_mtu_discovery_off: bool,
-    /// Accept discoveries only from `trusted_publishers`; none listed accepts none.
+    /// Accept discoveries only from `trusted_publishers` and this device's own
+    /// network; with neither, none.
     #[serde(default)]
     pub trusted_only: bool,
     /// Publisher identity hashes, 32 hex characters each.

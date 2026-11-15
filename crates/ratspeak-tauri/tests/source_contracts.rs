@@ -11980,7 +11980,17 @@ fn private_networks_use_the_network_identity_commands() {
     let identity = start
         .find("rns_config::apply_network_identity(&config_dir)")
         .expect("start writes the network identity");
-    assert!(settings < identity);
+    // The discovery sources accept the identity's own network, so it is written first,
+    // and every identity change writes the sources again.
+    assert!(identity < settings);
+    assert!(
+        rust_function_block(&commands, "follow_identity")
+            .contains("apply_network_settings(config_dir, &state.network_settings())")
+    );
+    assert!(
+        rust_function_block(&commands, "install").contains("follow_identity(state, &config_dir)?")
+    );
+    assert!(remove.contains("follow_identity(&state, &config_dir)?"));
     let listing: String = rust_function_block(&discovery, "api_discovered_interfaces")
         .split_whitespace()
         .collect();
