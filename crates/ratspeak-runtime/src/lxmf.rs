@@ -1368,6 +1368,10 @@ pub struct LxmfManager {
     /// `Destination.encrypt`). Reticulum alone keeps received ratchets; a
     /// destination without an entry has not been answered for yet.
     outbound_ratchets: HashMap<[u8; 16], Option<[u8; 32]>>,
+    /// Reticulum's latest answer for each destination it was asked about, at an
+    /// announce or a tick. Auto plans a send by it (`Identity.current_ratchet_id`,
+    /// read by NomadNet's `Conversation.send`); only `outbound_ratchets` encrypts.
+    ratchet_answers: HashMap<[u8; 16], Option<[u8; 32]>>,
     pub known_identities: HashMap<String, [u8; 64]>,
     known_identities_revision: u64,
     known_identities_persisted_revision: u64,
@@ -2445,6 +2449,7 @@ impl LxmfManager {
             propagation_stamps: AnnounceStamps::default(),
             announce_cache_started: Instant::now(),
             outbound_ratchets: HashMap::new(),
+            ratchet_answers: HashMap::new(),
             known_identities,
             known_identities_revision: 0,
             known_identities_persisted_revision: 0,
@@ -4941,7 +4946,13 @@ impl LxmfManager {
     /// Install Reticulum's answers for [`Self::outbound_ratchet_targets`],
     /// replacing those of the previous tick.
     pub fn set_outbound_ratchets(&mut self, answers: HashMap<[u8; 16], Option<[u8; 32]>>) {
+        self.note_ratchet_answers(&answers);
         self.outbound_ratchets = answers;
+    }
+
+    /// Keep Reticulum's answers for Auto's plan, as an announce brings them.
+    pub fn note_ratchet_answers(&mut self, answers: &HashMap<[u8; 16], Option<[u8; 32]>>) {
+        self.ratchet_answers.extend(answers);
     }
 
     /// Reticulum's answer for `destination`: `None` until it has answered,
@@ -4949,6 +4960,16 @@ impl LxmfManager {
     pub(crate) fn outbound_ratchet(&self, dest_hash_hex: &str) -> Option<Option<[u8; 32]>> {
         let destination: [u8; 16] = hex::decode(dest_hash_hex).ok()?.try_into().ok()?;
         self.outbound_ratchets.get(&destination).copied()
+    }
+
+    /// This tick's answer for `destination`, else Reticulum's latest one.
+    pub(crate) fn planned_ratchet(&self, dest_hash_hex: &str) -> Option<[u8; 32]> {
+        let destination: [u8; 16] = hex::decode(dest_hash_hex).ok()?.try_into().ok()?;
+        self.outbound_ratchets
+            .get(&destination)
+            .or_else(|| self.ratchet_answers.get(&destination))
+            .copied()
+            .flatten()
     }
 
     pub fn replace_route_hops_from_path_table(

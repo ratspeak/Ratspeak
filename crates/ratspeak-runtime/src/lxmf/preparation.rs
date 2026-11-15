@@ -31,7 +31,7 @@ impl LxmfManager {
         });
         if profile == DeliveryProfile::Message
             && !has_link
-            && self.outbound_ratchet(dest_hex).flatten().is_some()
+            && self.planned_ratchet(dest_hex).is_some()
         {
             DeliveryMethod::Opportunistic
         } else {
@@ -422,5 +422,22 @@ mod tests {
             mgr.auto_live_method(&dest_hex, DeliveryProfile::Message),
             DeliveryMethod::Direct
         );
+    }
+
+    #[test]
+    fn announced_ratchet_plans_auto_before_any_send_without_encrypting() {
+        let mut mgr = test_manager();
+        let dest = [9; 16];
+        let dest_hex = hex::encode(dest);
+        let plan = |mgr: &LxmfManager| mgr.auto_live_method(&dest_hex, DeliveryProfile::Message);
+        assert_eq!(plan(&mgr), DeliveryMethod::Direct);
+        mgr.note_ratchet_answers(&HashMap::from([(dest, Some([6; 32]))]));
+        // A tick with nothing pending for it keeps the plan, but encrypts nothing.
+        mgr.set_outbound_ratchets(HashMap::new());
+        assert_eq!(plan(&mgr), DeliveryMethod::Opportunistic);
+        assert_eq!(mgr.outbound_ratchet(&dest_hex), None);
+        mgr.set_outbound_ratchets(HashMap::from([(dest, None)]));
+        mgr.set_outbound_ratchets(HashMap::new());
+        assert_eq!(plan(&mgr), DeliveryMethod::Direct);
     }
 }

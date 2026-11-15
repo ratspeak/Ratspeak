@@ -179,6 +179,10 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         .and_then(crate::lxmf::lxmf_compression_support_db_value_from_app_data)
         .map(str::to_string);
 
+    // Reticulum remembered the announced ratchet before this event; ask it
+    // first, so a send that sees the identity also sees the ratchet.
+    let ratchet_answers = crate::recall_ratchets(state, vec![event.destination_hash]).await;
+
     // The announce payload is already validated by Reticulum. Mutate all
     // related in-memory state in one short manager critical section, then
     // persist its immutable delta through the serialized writer.
@@ -188,6 +192,7 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         .ok()
         .and_then(|mut lxmf| {
             lxmf.as_mut().map(|mgr| {
+                mgr.note_ratchet_answers(&ratchet_answers);
                 let identity_changed = event
                     .public_key
                     .as_ref()
