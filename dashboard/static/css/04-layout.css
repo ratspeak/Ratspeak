@@ -43,12 +43,20 @@ html[data-native-mobile] .shell-sidebar [data-view="dashboard"] { display: none;
 .shell-sidebar.collapsed .shell-me { flex: 0 0 auto; width: 40px; }
 .shell-sidebar.collapsed .ui-nav-item:is(:hover, :focus-visible) > .shell-tip { display: block; position: absolute; left: calc(100% + 12px); top: 50%; transform: translateY(-50%); z-index: var(--z-tooltip); white-space: nowrap; color: var(--text-primary); pointer-events: none; }
 
-/* Phone More: you first (opens Identity; QR shares your card), then the destinations with 24 px glyphs. */
+/* Phone More: you first (opens Identity; QR shares your card), then the destinations: 56 px rows with 24 px glyphs,
+   hairlines from the label start between rows, hidden beside a filled row. */
 .shell-more-modal[hidden] { display: none; }
-.shell-more-me { display: flex; align-items: center; gap: 4px; padding: 4px 12px 8px 0; }
+.shell-more-me { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; padding: 4px 12px 4px 0; border-bottom: 1px solid var(--border-row); }
 .shell-more-me > .ui-row { flex: 1; width: auto; min-width: 0; }
+.shell-more-nav { --ui-menu-item: 56px; }
+.shell-more-nav .ui-menu-item { position: relative; }
+.shell-more-nav .ui-menu-item + .ui-menu-item::before { content: ''; position: absolute; top: 0; left: 56px; right: 0; height: 1px; background: var(--border-row); pointer-events: none; }
 .shell-more-nav .ui-menu-item > .ui-ico { width: 24px; height: 24px; }
+.shell-more-nav .ui-menu-item:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 .shell-more-nav .ui-menu-item[aria-current="page"] { background: var(--selection-bg); }
+.shell-more-nav .ui-menu-item:active { background: var(--control-press); }
+.shell-more-nav .ui-menu-item:is(:active, :focus-visible, [aria-current="page"])::before,
+.shell-more-nav .ui-menu-item:is(:active, :focus-visible, [aria-current="page"]) + .ui-menu-item::before { display: none; }
 
 /* Tab bar: fixed over the bottom inset; a conversation hides it. */
 @media (max-width: 768px) {
