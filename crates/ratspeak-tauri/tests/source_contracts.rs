@@ -8479,15 +8479,11 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
     assert!(lxmf.contains("label: 'Save file'"));
     assert!(lxmf.contains("menu.setAttribute('role', 'dialog')"));
     assert!(lxmf.contains("menu.setAttribute('aria-modal', 'false')"));
-    assert!(lxmf.contains(
-        "menu.setAttribute('aria-label', opts.reactOnly ? 'Reactions' : 'Message actions')"
-    ));
+    assert!(lxmf.contains("menu.setAttribute('aria-label', 'Message actions');"));
     assert!(!lxmf.contains("menu.setAttribute('role', 'menu')"));
-    // Pointer only: "+" beside the bubble expands into React, Reply, and More.
-    assert!(
-        lxmf.contains("'<div class=\"msg-hover\" role=\"group\" aria-label=\"Message actions\">'")
-    );
-    assert!(lxmf.contains("msg-hover-plus\" data-msg-id=\"' + id + '\" aria-label=\"Message actions\" title=\"Actions\" aria-expanded=\"false\">' + RS.kit.icon('plus')"));
+    // No hover toolbar: right-click, a long press, or the context-menu key opens the menu.
+    assert!(!lxmf.contains("msg-hover"));
+    assert!(lxmf.contains("if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;"));
     assert!(
         lxmf.contains(
             "if (selectionExistedBeforePointer === false) _clearNativeMessageSelection();"
@@ -8537,11 +8533,7 @@ fn message_actions_stage_touch_selection_and_preserve_accessible_actions() {
         "html[data-input-modality=\"touch\"] .lxmf-messages.is-acting .msg-row.is-pressed .msg-text"
     ));
     assert!(messaging_css.contains("touch-action: auto;"));
-    assert!(messaging_css.contains(".msg-row:hover .msg-hover, .msg-col:focus-within .msg-hover, .msg-hover.is-open { visibility: visible; }"));
-    assert!(messaging_css.contains(
-        "html[data-input-modality=\"touch\"] .msg-hover:not(.is-open) { visibility: hidden; }"
-    ));
-    assert!(messaging_css.contains("@media (hover: none), (pointer: coarse), (max-width: 768px) { .msg-hover { display: none; } }"));
+    assert!(!messaging_css.contains(".msg-hover"));
     assert!(!messaging_css.contains(".msg-text-selection-guide"));
     assert!(messaging_css.contains(".msg-menu { min-width: 248px; }"));
     assert!(messaging_css.contains(".msg-sheet { position: fixed;"));

@@ -1208,27 +1208,8 @@ button.msg-mark:focus-visible { outline: 2px solid var(--focus-ring); outline-of
 .msg-intro-sub > .ui-hash-copy { width: 100%; justify-content: center; }
 .msg-intro-body { margin: 8px 0 12px; font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.45; }
 
-/* Hover actions (pointer only): "+" on the bubble's outer side that expands into React, Reply, and More.
-   Absolute, so nothing moves; never on touch, where a long press opens the sheet. */
-.msg-hover { position: absolute; top: 50%; z-index: 4; display: flex; padding: 2px; transform: translateY(-50%); border: 1px solid var(--border-surface); border-radius: var(--radius-card); background: var(--surface-popover); box-shadow: var(--shadow-popover); visibility: hidden; }
-.msg-row--in .msg-hover { left: calc(100% + 8px); }
-.msg-row--out .msg-hover { right: calc(100% + 8px); }
-.msg-hover-set { display: none; gap: 2px; }
-.msg-hover.is-open > .msg-hover-plus { display: none; }
-.msg-hover.is-open > .msg-hover-set { display: flex; animation: msg-hover-in .14s ease-out both; }
-.msg-row--in .msg-hover-set { transform-origin: left center; }
-.msg-row--out .msg-hover-set { transform-origin: right center; }
-@keyframes msg-hover-in { from { opacity: 0; transform: scaleX(.85); } to { opacity: 1; transform: none; } }
-@media (prefers-reduced-motion: reduce) { .msg-hover.is-open > .msg-hover-set { animation: none; } }
-@media (hover: hover) and (pointer: fine) and (min-width: 769px) {
-    .msg-row:hover .msg-hover, .msg-col:focus-within .msg-hover, .msg-hover.is-open { visibility: visible; }
-    .lxmf-messages.is-selecting .msg-hover, html[data-input-modality="touch"] .msg-hover:not(.is-open) { visibility: hidden; }
-}
-@media (hover: none), (pointer: coarse), (max-width: 768px) { .msg-hover { display: none; } }
-
 /* The message menu: reactions on top, then the actions; a sheet on a phone, the pressed message in view. */
 .msg-menu { min-width: 248px; }
-.msg-react-pop { min-width: 0; }
 .msg-menu-items { display: flex; flex-direction: column; }
 .msg-quick { display: flex; align-items: center; gap: 2px; }
 .msg-quick-btn { display: grid; place-items: center; flex: 0 0 auto; width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--radius-control); background: transparent; font-size: var(--text-xl); line-height: 1; cursor: pointer; }

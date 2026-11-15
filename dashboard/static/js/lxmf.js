@@ -3083,92 +3083,10 @@ function _flushDeferredConversationRender(expectedGeneration) {
     return true;
 }
 
-// Hover actions (pointer only): "+" expands in place into React, Reply, and More. It collapses on
-// Escape, a click away, focus leaving, or the pointer leaving the bubble after a short grace;
-// while its reactions or menu are open, leaving keeps it.
-var MSG_HOVER_LEAVE_GRACE_MS = 280;
-var _hoverLeaveTimer = null;
-
-function _hoverButtons(bar) {
-    return Array.prototype.slice.call(bar.querySelectorAll('.msg-hover-set > button'));
-}
-
-function _hoverOwnsMenu(bar) {
-    return !!(_activeContextMenu && _activeContextMenu.hoverBar === bar);
-}
-
-function _cancelHoverLeave() {
-    if (_hoverLeaveTimer) clearTimeout(_hoverLeaveTimer);
-    _hoverLeaveTimer = null;
-}
-
-function _closeHoverBar(bar) {
-    if (!bar) return;
-    _cancelHoverLeave();
-    bar.classList.remove('is-open');
-    bar._pointerIn = false;
-    var plus = bar.querySelector('.msg-hover-plus');
-    if (plus) plus.setAttribute('aria-expanded', 'false');
-    _hoverButtons(bar).forEach(function(btn) {
-        if (btn.hasAttribute('aria-expanded')) btn.setAttribute('aria-expanded', 'false');
-    });
-}
-
-function _openHoverBar(bar, byPointer, focusFirst) {
-    document.querySelectorAll('#lxmf-messages .msg-hover.is-open').forEach(function(other) {
-        if (other !== bar) _closeHoverBar(other);
-    });
-    _cancelHoverLeave();
-    bar.classList.add('is-open');
-    bar._pointerIn = !!byPointer;
-    var plus = bar.querySelector('.msg-hover-plus');
-    if (plus) plus.setAttribute('aria-expanded', 'true');
-    var buttons = _hoverButtons(bar);
-    buttons.forEach(function(btn, i) { btn.tabIndex = i ? -1 : 0; });
-    if (focusFirst !== false && buttons[0]) _focusMessageControl(buttons[0]);
-}
-
-function _openHoverMessageId(container) {
-    var bar = container && container.querySelector('.msg-hover.is-open');
-    if (!bar) return null;
-    var focused = bar.contains(document.activeElement) && document.activeElement.getAttribute('data-hover-act');
-    var bubble = bar.closest('.msg-bubble');
-    return bubble ? { id: bubble.getAttribute('data-msg-id'), act: focused || '', pointer: !!bar._pointerIn } : null;
-}
-
-function _reopenHoverBar(container, open) {
-    var bubble = _findRenderedMessageBubble(container, open.id);
-    var bar = bubble && bubble.querySelector('.msg-hover');
-    if (!bar) return;
-    _openHoverBar(bar, open.pointer, false);
-    if (open.act) _focusMessageControl(bar.querySelector('[data-hover-act="' + open.act + '"]'));
-}
-
 function _messageForElement(el) {
     var bubble = el && el.closest ? el.closest('.msg-bubble[data-msg-id]') : null;
     var msg = bubble ? _conversationMessageById(bubble.getAttribute('data-msg-id')) : null;
     return { bubble: bubble, msg: msg };
-}
-
-function _runHoverAction(btn, event) {
-    var bar = btn.closest('.msg-hover');
-    var found = _messageForElement(btn);
-    if (!found.msg) return;
-    var act = btn.getAttribute('data-hover-act');
-    var wasOpen = btn.getAttribute('aria-expanded') === 'true';
-    if (_hoverOwnsMenu(bar)) _dismissContextMenu({ restoreFocus: false });
-    if (wasOpen) return;
-    if (act === 'reply') {
-        _closeHoverBar(bar);
-        setReplyTarget(found.msg);
-        return;
-    }
-    var rect = btn.getBoundingClientRect();
-    _showMsgContextMenu(found.msg, rect.left, rect.bottom, found.bubble, btn, {
-        focusDialog: _messageActivationExpectsFocus(event),
-        anchor: act === 'more' ? btn : null,
-        reactOnly: act === 'react',
-    });
 }
 
 // The jump button: shown away from the latest, counting new messages still below the view.
@@ -3213,16 +3131,6 @@ function _wireTranscript(container) {
     container.addEventListener('click', function(e) {
         var t = e.target;
         if (!t || !t.closest) return;
-        var plus = t.closest('.msg-hover-plus');
-        if (plus) {
-            _openHoverBar(plus.closest('.msg-hover'), e.detail > 0, true);
-            return;
-        }
-        var act = t.closest('.msg-hover-set > button');
-        if (act) {
-            _runHoverAction(act, e);
-            return;
-        }
         var quote = t.closest('.msg-quote');
         if (quote) {
             if (_consumePendingMessageHoldActivation(e, quote)) return;
@@ -3273,28 +3181,6 @@ function _wireTranscript(container) {
     container.addEventListener('keydown', function(e) {
         var t = e.target;
         if (!t || !t.closest) return;
-        var bar = t.closest('.msg-hover');
-        if (e.key === 'Escape') {
-            var open = bar && bar.classList.contains('is-open') ? bar : container.querySelector('.msg-hover.is-open');
-            if (open && !_hoverOwnsMenu(open)) {
-                e.preventDefault();
-                e.stopPropagation();
-                _closeHoverBar(open);
-                _focusMessageControl(open.querySelector('.msg-hover-plus'));
-            }
-            return;
-        }
-        if (bar) {
-            var buttons = _hoverButtons(bar);
-            var at = buttons.indexOf(t);
-            var to = { ArrowRight: at + 1, ArrowDown: at + 1, ArrowLeft: at - 1, ArrowUp: at - 1, Home: 0, End: buttons.length - 1 }[e.key];
-            if (at === -1 || to == null) return;
-            e.preventDefault();
-            to = (to + buttons.length) % buttons.length;
-            buttons.forEach(function(btn, k) { btn.tabIndex = k === to ? 0 : -1; });
-            buttons[to].focus();
-            return;
-        }
         if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;
         var found = _messageForElement(t);
         if (!found.msg) return;
@@ -3304,36 +3190,6 @@ function _wireTranscript(container) {
             focusDialog: true,
             anchor: found.bubble,
         });
-    });
-
-    container.addEventListener('focusout', function(e) {
-        var bar = e.target && e.target.closest && e.target.closest('.msg-hover.is-open');
-        if (!bar || _hoverOwnsMenu(bar)) return;
-        if (e.relatedTarget && !bar.contains(e.relatedTarget)) _closeHoverBar(bar);
-    });
-
-    // The pointer zone is the bubble, which holds the bar.
-    document.addEventListener('pointerover', function(e) {
-        var bar = container.querySelector('.msg-hover.is-open');
-        if (!bar) return;
-        var bubble = bar.closest('.msg-bubble');
-        if (bubble && bubble.contains(e.target)) {
-            bar._pointerIn = true;
-            _cancelHoverLeave();
-            return;
-        }
-        if (!bar._pointerIn || _hoverOwnsMenu(bar)) return;
-        _cancelHoverLeave();
-        _hoverLeaveTimer = setTimeout(function() {
-            _hoverLeaveTimer = null;
-            if (bar.classList.contains('is-open') && !_hoverOwnsMenu(bar)) _closeHoverBar(bar);
-        }, MSG_HOVER_LEAVE_GRACE_MS);
-    });
-    document.addEventListener('click', function(e) {
-        var bar = container.querySelector('.msg-hover.is-open');
-        if (!bar || bar.contains(e.target) || _hoverOwnsMenu(bar)) return;
-        if (_activeContextMenu && _activeContextMenu.menu.contains(e.target)) return;
-        _closeHoverBar(bar);
     });
 
     var jumpFrame = 0;
@@ -3467,20 +3323,6 @@ function _messageReactionsHtml(msg, ourHash) {
     }).join('') + '</div>';
 }
 
-// Pointer only: one "+" on the bubble's outer side that expands into React, Reply, and More.
-function _messageHoverBarHtml(id) {
-    var b = function(act, glyph, label, title, extra) {
-        return '<button type="button" class="ui-icon-btn ui-icon-btn--sm" data-hover-act="' + act + '" aria-label="' + label + '" title="' + title + '"' + (extra || '') + '>' + RS.kit.icon(glyph) + '</button>';
-    };
-    return '<div class="msg-hover" role="group" aria-label="Message actions">' +
-        '<button type="button" class="ui-icon-btn ui-icon-btn--sm msg-hover-plus" data-msg-id="' + id + '" aria-label="Message actions" title="Actions" aria-expanded="false">' + RS.kit.icon('plus') + '</button>' +
-        '<div class="msg-hover-set" role="toolbar" aria-label="Message actions">' +
-            b('react', 'smile-plus', 'Add a reaction', 'React', ' aria-haspopup="dialog" aria-expanded="false"') +
-            b('reply', 'reply', 'Reply', 'Reply', ' tabindex="-1"') +
-            b('more', 'more', 'More actions', 'More', ' tabindex="-1" aria-haspopup="dialog" aria-expanded="false"') +
-        '</div></div>';
-}
-
 function _messageImageHtml(msg, overlay, mediaMeta) {
     var image = msg.image;
     var filename = image.filename || 'image';
@@ -3575,7 +3417,7 @@ function _messageRowHtml(msg, prev, next, ctx) {
         (emoji ? ' msg-bubble--emoji' : '') + (audioHtml ? ' msg-bubble--voice' : '');
     return '<div class="msg-row msg-row--' + (isOut ? 'out' : 'in') + pos + '">' +
         '<div class="msg-col"><div class="' + bubbleClass + '" data-msg-id="' + id + '"' + (ctx.pointer ? ' tabindex="0"' : '') + '>' +
-            parts + (ctx.pointer ? _messageHoverBarHtml(id) : '') + '</div>' +
+            parts + '</div>' +
             _messageReactionsHtml(msg, ctx.ourHash) + '</div></div>';
 }
 
@@ -3590,7 +3432,6 @@ function renderConversation(options) {
         _clearDeferredConversationRender();
     }
     options = _takeDeferredConversationRenderOptions(options);
-    var hoverOpen = _openHoverMessageId(container);
     _dismissContextMenu({ restoreFocus: false, flushDeferredRender: false });
     _detachMessageLongPressHandlers();
     RS.chatScroll.wire(container);
@@ -3849,7 +3690,6 @@ function renderConversation(options) {
     });
 
     _applyMessageSelection();
-    if (hoverOpen) _reopenHoverBar(container, hoverOpen);
     _syncJumpButton(container);
 }
 
@@ -5018,8 +4858,6 @@ function _dismissContextMenu(opts) {
     }
     if (trigger && trigger.hasAttribute('aria-expanded')) trigger.setAttribute('aria-expanded', 'false');
     _activeContextMenu = null;
-    // A choice collapses the hover actions; Escape or a click away leaves them as they were.
-    if (state.hoverBar && opts.collapseHover) _closeHoverBar(state.hoverBar);
     var flushedRender = opts.flushDeferredRender !== false && _flushDeferredConversationRender();
     if (opts.restoreFocus !== false && restoreFocusExpected) {
         var focusTarget = trigger;
@@ -5027,13 +4865,7 @@ function _dismissContextMenu(opts) {
             var container = document.getElementById('lxmf-messages');
             var bubble = _findRenderedMessageBubble(container, msgId);
             focusTarget = bubble;
-            if (bubble && state.hoverAct && !opts.collapseHover) {
-                var bar = bubble.querySelector('.msg-hover');
-                if (bar) {
-                    _openHoverBar(bar, false, false);
-                    focusTarget = bar.querySelector('[data-hover-act="' + state.hoverAct + '"]') || bubble;
-                }
-            } else if (bubble && trigger.classList && trigger.classList.contains('msg-mark')) {
+            if (bubble && trigger.classList && trigger.classList.contains('msg-mark')) {
                 focusTarget = bubble.querySelector('.msg-mark') || bubble;
             }
         }
@@ -5314,7 +5146,7 @@ function _messageTouchStartsDirectControl(touch, bubble) {
     var target = touch && touch.target;
     if (!target || !target.closest || !bubble || !bubble.contains(target)) return false;
     return !!target.closest(
-        '.msg-hover, .msg-cancel, .msg-mark, .msg-react, ' +
+        '.msg-cancel, .msg-mark, .msg-react, ' +
         '.voice-memo-player-play, .voice-memo-player-waveform, .voice-memo-player-download, .md-code-copy'
     );
 }
@@ -5854,7 +5686,7 @@ function _messageMenuButton(cls, action, glyph, label) {
 }
 
 // The message menu: a reactions row on top, then the actions. opts: { focusDialog, linkUrl,
-// sheet (a long press), anchor (element), reactOnly (the hover bar's React) }.
+// sheet (a long press), anchor (element) }.
 function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     opts = opts || {};
     var preparedTarget = _prepareMessageActionTarget(msgData, bubble, trigger, x, y);
@@ -5873,16 +5705,15 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         var target = _findRenderedMessageBubble(container, msgData.id);
         row = target && target.closest ? target.closest('.msg-row') : null;
     }
-    var useSheet = isCompactLayout() && !opts.reactOnly;
+    var useSheet = isCompactLayout();
     if (container) container.classList.add('is-acting');
     if (row) row.classList.add('is-pressed');
-    var hoverBar = trigger && trigger.closest ? trigger.closest('.msg-hover') : null;
 
     var menu = document.createElement('div');
-    menu.className = useSheet ? 'ui-dialog msg-sheet' : 'ui-menu ui-pop msg-menu' + (opts.reactOnly ? ' msg-react-pop' : '');
+    menu.className = useSheet ? 'ui-dialog msg-sheet' : 'ui-menu ui-pop msg-menu';
     menu.setAttribute('role', 'dialog');
     menu.setAttribute('aria-modal', 'false');
-    menu.setAttribute('aria-label', opts.reactOnly ? 'Reactions' : 'Message actions');
+    menu.setAttribute('aria-label', 'Message actions');
     menu.addEventListener('mousedown', _preventMessageActionFocusSteal);
     menu.addEventListener('touchstart', _preventMessageActionFocusSteal, { passive: false });
     if (useSheet) menu.innerHTML = '<div class="ui-dialog-handle" aria-hidden="true"></div>';
@@ -5919,7 +5750,7 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         var shouldRestoreComposer = _messageActionShouldPreserveComposer();
         // Capture before dismiss removes plusBtn from the DOM.
         var btnRect = plusBtn.getBoundingClientRect();
-        _dismissContextMenu({ collapseHover: true });
+        _dismissContextMenu();
         _restoreLxmfComposerKeyboard(shouldRestoreComposer);
         var tempAnchor = document.createElement('div');
         tempAnchor.style.cssText = 'position:fixed;left:' + btnRect.left + 'px;top:' + btnRect.top + 'px;width:' + btnRect.width + 'px;height:' + btnRect.height + 'px;pointer-events:none;';
@@ -5961,13 +5792,13 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         hasTop = true;
         add(_messageMenuButton(itemClass + ' msg-ctx-try-now', 'try-now', 'refresh', 'Try now'), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-            _dismissContextMenu({ collapseHover: true });
+            _dismissContextMenu();
             _tryWaitingLxmfMessage(msgData);
             _restoreLxmfComposerKeyboard(shouldRestoreComposer);
         });
         add(_messageMenuButton(itemClass + ' msg-ctx-stop-trying', 'stop-trying', 'x', 'Stop trying'), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-            _dismissContextMenu({ collapseHover: true });
+            _dismissContextMenu();
             _stopWaitingLxmfMessage(msgData);
             _restoreLxmfComposerKeyboard(shouldRestoreComposer);
         });
@@ -5977,7 +5808,7 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         hasTop = true;
         add(_messageMenuButton(itemClass + ' msg-ctx-retry', 'retry', 'refresh', 'Retry…'), function() {
             var anchorBubble = state.bubble;
-            _dismissContextMenu({ restoreFocus: false, collapseHover: true });
+            _dismissContextMenu({ restoreFocus: false });
             _openRetryMethodPopover(msgData, anchorBubble);
         });
     }
@@ -5986,7 +5817,7 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         hasTop = true;
         add(_messageMenuButton(itemClass + ' msg-ctx-activity', 'show-activity', 'activity', 'Show in Activity'), function(e) {
             var focusChip = _messageActivationExpectsFocus(e);
-            _dismissContextMenu({ restoreFocus: false, collapseHover: true });
+            _dismissContextMenu({ restoreFocus: false });
             showMessageInActivity(msgData.id, {
                 retryable: _messageCanRetry(msgData),
                 focusChip: focusChip
@@ -6002,7 +5833,7 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     }
 
     add(_messageMenuButton(itemClass + ' msg-ctx-reply', 'reply', 'reply', 'Reply'), function() {
-        _dismissContextMenu({ collapseHover: true });
+        _dismissContextMenu();
         setReplyTarget(msgData);
         if (typeof haptic === 'function') haptic('light');
     });
@@ -6013,7 +5844,7 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     if (hasText) {
         add(_messageMenuButton(itemClass + ' msg-ctx-copy', 'copy-message', 'copy', 'Copy'), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-            _dismissContextMenu({ collapseHover: true });
+            _dismissContextMenu();
             _copyToClipboard(messageText).then(function(ok) {
                 if (typeof showToast === 'function') {
                     showToast(ok ? 'Message copied' : 'Could not copy', ok ? 'toast-success' : 'toast-error', 1600);
@@ -6033,7 +5864,7 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     if (_messageSelectable(msgData)) {
         var isSelected = _messageSelectionActive() && _msgSelection.ids.indexOf(msgData.id) !== -1;
         add(_messageMenuButton(itemClass + ' msg-ctx-select', 'select', 'square-check', isSelected ? 'Deselect' : 'Select'), function() {
-            _dismissContextMenu({ restoreFocus: false, collapseHover: true });
+            _dismissContextMenu({ restoreFocus: false });
             if (isSelected) _toggleMessageSelection(msgData);
             else _selectMessage(msgData);
             if (typeof haptic === 'function') haptic('light');
@@ -6042,12 +5873,12 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
 
     if (msgData.direction === 'outbound' && _messageIsPaper(msgData)) {
         add(_messageMenuButton(itemClass + ' msg-ctx-paper-qr', 'paper-qr', 'qr', 'Show QR code'), function() {
-            _dismissContextMenu({ restoreFocus: false, collapseHover: true });
+            _dismissContextMenu({ restoreFocus: false });
             _openPaperMessageShare(msgData);
         });
         add(_messageMenuButton(itemClass + ' msg-ctx-paper-link', 'copy-paper-link', 'copy', 'Copy paper link'), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-            _dismissContextMenu({ collapseHover: true });
+            _dismissContextMenu();
             _paperUriForMessage(msgData).then(function(uri) {
                 return _copyToClipboard(uri);
             }).then(function(ok) {
@@ -6064,7 +5895,7 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         var linkUrl = opts.linkUrl;
         add(_messageMenuButton(itemClass + ' msg-ctx-copy-link', 'copy-link', 'copy', 'Copy link'), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-            _dismissContextMenu({ collapseHover: true });
+            _dismissContextMenu();
             _copyToClipboard(linkUrl).then(function(ok) {
                 showToast(ok ? 'Link copied' : 'Could not copy', ok ? 'toast-success' : 'toast-error', 1600);
                 if (typeof haptic === 'function') haptic(ok ? 'success' : 'warning');
@@ -6080,7 +5911,7 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
     if (mediaAction) {
         add(_messageMenuButton(itemClass + ' msg-ctx-media', 'media', mediaAction.icon === 'save' ? 'download' : 'copy', mediaAction.label), function() {
             var shouldRestoreComposer = _messageActionShouldPreserveComposer();
-            _dismissContextMenu({ collapseHover: true });
+            _dismissContextMenu();
             mediaAction.run().then(function(ok) {
                 if (typeof haptic === 'function') haptic(ok ? 'success' : 'warning');
                 _restoreLxmfComposerKeyboard(shouldRestoreComposer);
@@ -6095,15 +5926,13 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         });
     }
 
-    if (!opts.reactOnly) {
-        if (!useSheet) {
-            var sep = document.createElement('div');
-            sep.className = 'ui-menu-sep';
-            sep.setAttribute('role', 'separator');
-            menu.appendChild(sep);
-        }
-        menu.appendChild(actions);
+    if (!useSheet) {
+        var sep = document.createElement('div');
+        sep.className = 'ui-menu-sep';
+        sep.setAttribute('role', 'separator');
+        menu.appendChild(sep);
     }
+    menu.appendChild(actions);
     menu.addEventListener('keydown', function(e) {
         if (/^(Arrow(Up|Down|Left|Right)|Home|End|Tab)$/.test(e.key)) menu.classList.add('msg-action-keyboard');
         if (!/^(Arrow(Up|Down|Left|Right)|Home|End)$/.test(e.key)) return;
@@ -6119,7 +5948,7 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
 
     document.body.appendChild(menu);
     if (trigger && trigger.hasAttribute && trigger.hasAttribute('aria-expanded')) trigger.setAttribute('aria-expanded', 'true');
-    var anchorEl = opts.anchor || (opts.reactOnly ? trigger : null);
+    var anchorEl = opts.anchor || null;
     var anchorRect = anchorEl ? anchorEl.getBoundingClientRect()
         : (typeof x === 'number' && typeof y === 'number' && !opts.focusDialog ? { left: x, right: x, top: y, bottom: y } : null);
     var state = {
@@ -6130,8 +5959,6 @@ function _showMsgContextMenu(msgData, x, y, bubble, trigger, opts) {
         row: row,
         container: container,
         trigger: trigger,
-        hoverBar: hoverBar,
-        hoverAct: hoverBar && trigger ? trigger.getAttribute('data-hover-act') : '',
         anchorRect: anchorRect,
         sheet: useSheet,
         msgId: msgData.id,

@@ -183,8 +183,6 @@ function targetWithClasses(classes) {
         'native selection ownership must not leak a staged reaction haptic');
     assert.strictEqual(hold(targetWithClasses(['voice-memo-player-play']), false), 0,
         'direct playback controls must own their touch');
-    assert.strictEqual(hold(targetWithClasses(['msg-hover']), false), 0,
-        'the hover actions own their touch without a duplicate hold action');
     assert.strictEqual(hold(targetWithClasses(['msg-mark']), false), 0,
         'a Not delivered or Waiting mark owns its tap, which opens the same menu');
 
@@ -777,17 +775,11 @@ assert(messagingCss.includes('html[data-input-modality="touch"] .lxmf-messages.i
     'only the pressed message may opt into touch selection');
 assert(/@media \(hover: none\) and \(pointer: coarse\) \{\s*\.msg-text \{[^}]*user-select: none;[\s\S]*?\.lxmf-messages\.is-acting \.msg-row\.is-pressed \.msg-text/.test(messagingCss),
     'coarse mobile input must stage selection before the first touch event');
-assert(/\.msg-hover \{[^}]*position: absolute;[^}]*visibility: hidden;/.test(messagingCss),
-    'the hover actions are absolute and hidden until the message is hovered or focused, so nothing shifts');
-assert(/@media \(hover: hover\) and \(pointer: fine\) and \(min-width: 769px\) \{\s*\.msg-row:hover \.msg-hover, \.msg-col:focus-within \.msg-hover, \.msg-hover\.is-open \{ visibility: visible; \}/.test(messagingCss),
-    'the "+" appears only for a hovered, focused or expanded message on a pointer');
-assert(messagingCss.includes('html[data-input-modality="touch"] .msg-hover:not(.is-open) { visibility: hidden; }') &&
-       messagingCss.includes('@media (hover: none), (pointer: coarse), (max-width: 768px) { .msg-hover { display: none; } }'),
-    'touch never shows the hover actions; a long press opens the sheet');
-var hoverSource = lxmfSource.slice(lxmfSource.indexOf('<div class="msg-hover" role="group"'), lxmfSource.indexOf('function _messageImageHtml('));
-assert(hoverSource.indexOf("'react'") < hoverSource.indexOf("'reply'") && hoverSource.indexOf("'reply'") < hoverSource.indexOf("'more'"),
-    '"+" expands into React, Reply, and More');
-assert(lxmfSource.includes("var MSG_HOVER_LEAVE_GRACE_MS = 280;"), 'leaving the bar collapses it after a 280 ms grace');
+assert(!messagingCss.includes('.msg-hover') && !lxmfSource.includes('msg-hover') && !lxmfSource.includes('reactOnly'),
+    'no hover toolbar: right-click, a long press, or the context-menu key opens the message menu');
+assert(lxmfSource.includes("if (!(e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10'))) return;") &&
+       lxmfSource.includes("(ctx.pointer ? ' tabindex=\"0\"' : '')"),
+    'a focused message opens its menu from the keyboard');
 assert(lxmfSource.includes("reactBar.className = 'msg-quick'") && lxmfSource.includes("menu.className = useSheet ? 'ui-dialog msg-sheet' : 'ui-menu ui-pop msg-menu'"),
     'one menu: the reactions row on top of the kit menu, a sheet on a phone');
 assert(!messagingCss.includes('.msg-text-selection-guide') &&
@@ -796,7 +788,7 @@ assert(!messagingCss.includes('.msg-text-selection-guide') &&
        !lxmfSource.includes("data-message-action', 'select-text"),
     'selection must rely on the elevated bubble without a Select Text command or Done chrome');
 assert(lxmfSource.includes("menu.setAttribute('role', 'dialog')") &&
-       lxmfSource.includes("menu.setAttribute('aria-label', opts.reactOnly ? 'Reactions' : 'Message actions')"),
+       lxmfSource.includes("menu.setAttribute('aria-label', 'Message actions')"),
     'message actions must expose a labelled nonmodal dialog');
 assert(!lxmfSource.includes("menu.setAttribute('role', 'menu')") && !/aria-haspopup="menu"[^>]*msg-|msg-[^>]*aria-haspopup="menu"/.test(lxmfSource),
     'message actions must not expose incomplete menu semantics');

@@ -99,7 +99,7 @@ assert.strictEqual(r.placement, 'above');
 assert.strictEqual(r.menu.top + MENU_H, r.bubble.top - 4);
 insideBand(r);
 
-// Anchored to the hover bar's More: under the button, not the bubble.
+// Anchored to an element (a delivery mark): under it, not the bubble.
 r = scenario(200, 120, { anchor: (b) => rect(b.top + 40, 32, b.right + 8, 32) });
 assert.strictEqual(r.menu.top, 200 + 40 + 32 + 4);
 
