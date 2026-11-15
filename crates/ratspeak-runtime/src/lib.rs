@@ -1945,8 +1945,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                 let lxmf_hash = mgr.lxmf_hash.clone();
                 // Match the default used by setup + identity creation paths
                 // so auto-recovered identities still announce a meaningful name.
-                let default_display_name =
-                    format!("!Ratspeak.org-{}", &lxmf_hash[..6.min(lxmf_hash.len())]);
+                let default_display_name = ratspeak_core::default_display_name(&lxmf_hash);
                 db::spawn_db(state.db.clone(), move |p| {
                     db::save_identity(&p, &id_hash, &lxmf_hash, "Default", &default_display_name);
                 })

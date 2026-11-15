@@ -199,7 +199,7 @@ pub async fn api_setup_complete(
     };
 
     let display_name = if display_name.is_empty() {
-        format!("!Ratspeak.org-{}", &lxmf_hash[..6.min(lxmf_hash.len())])
+        ratspeak_core::default_display_name(&lxmf_hash)
     } else {
         display_name
     };
@@ -1041,7 +1041,7 @@ mod tests {
                         "ok": true,
                         "identity_hash": hash,
                         "lxmf_hash": lxmf_hash,
-                        "display_name": format!("!Ratspeak.org-{}", &lxmf_hash[..6]),
+                        "display_name": ratspeak_core::default_display_name(&lxmf_hash),
                         "mnemonic": phrase,
                     })
                 );

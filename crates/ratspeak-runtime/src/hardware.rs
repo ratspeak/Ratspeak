@@ -546,7 +546,7 @@ fn register(
     crate::lxmf::initialize_identity_storage_namespace(data_dir, hash_hex)
         .map_err(|e| format!("identity namespace: {e}"))?;
     let display_name = if nickname.is_empty() {
-        format!("!Ratspeak.org-{}", &lxmf_hex[..6])
+        ratspeak_core::default_display_name(&lxmf_hex)
     } else {
         nickname.to_string()
     };

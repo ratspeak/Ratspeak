@@ -2539,7 +2539,7 @@ impl LxmfManager {
         identity.to_file(&id_dir.join("identity"))?;
 
         let display_name = if nickname.is_empty() {
-            format!("!Ratspeak.org-{}", &lxmf_hex[..6])
+            ratspeak_core::default_display_name(&lxmf_hex)
         } else {
             nickname.to_string()
         };
@@ -2700,7 +2700,7 @@ impl LxmfManager {
         }
 
         let display_name = if nickname.is_empty() {
-            format!("!Ratspeak.org-{}", &lxmf_hex[..6])
+            ratspeak_core::default_display_name(&lxmf_hex)
         } else {
             nickname.to_string()
         };

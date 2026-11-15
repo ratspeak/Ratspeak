@@ -118,6 +118,8 @@ pub fn ratspeak_core::emitter::NoopEmitter::try_emit(&self, &str, serde_json::va
 pub mod ratspeak_core::errors
 pub enum ratspeak_core::errors::CoreError
 pub ratspeak_core::errors::CoreError::Invalid(alloc::string::String)
+pub mod ratspeak_core::names
+pub fn ratspeak_core::names::default_display_name(&str) -> alloc::string::String
 pub mod ratspeak_core::notification
 pub enum ratspeak_core::notification::NativeNotificationKind
 pub ratspeak_core::notification::NativeNotificationKind::Call
@@ -323,4 +325,5 @@ pub fn ratspeak_core::NativeNotifier::withdraw_all(&self)
 impl ratspeak_core::notification::NativeNotifier for ratspeak_core::notification::NoopNotifier
 pub fn ratspeak_core::notification::NoopNotifier::notify(&self, ratspeak_core::notification::NativeNotification)
 pub fn ratspeak_core::notification::NoopNotifier::withdraw_all(&self)
+pub fn ratspeak_core::default_display_name(&str) -> alloc::string::String
 pub fn ratspeak_core::hex_to_array16(&str) -> core::option::Option<[u8; 16]>

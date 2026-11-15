@@ -1921,6 +1921,15 @@ pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::request_andr
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::request_android_usb_permission_legacy(&self, &str) -> bool
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::set_android_ble_rnode_auto_resume(&self, bool) -> bool
 pub fn ratspeak_runtime::mobile_platform::NoopMobilePlatformBridge::start_or_replace_ble_rnode(&self, ratspeak_runtime::mobile_platform::NativeBleRnodeRequest) -> bool
+pub mod ratspeak_runtime::network_migration
+pub struct ratspeak_runtime::network_migration::Watch
+impl ratspeak_runtime::network_migration::Watch
+pub fn ratspeak_runtime::network_migration::Watch::finish(self, core::result::Result<(), alloc::string::String>)
+impl core::ops::drop::Drop for ratspeak_runtime::network_migration::Watch
+pub fn ratspeak_runtime::network_migration::Watch::drop(&mut self)
+pub const ratspeak_runtime::network_migration::EVENT: &str
+pub fn ratspeak_runtime::network_migration::begin(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, &std::path::Path) -> core::option::Option<ratspeak_runtime::network_migration::Watch>
+pub fn ratspeak_runtime::network_migration::discard_remaining(&ratspeak_runtime::state::AppState) -> core::io::error::Result<()>
 pub mod ratspeak_runtime::network_ownership
 pub enum ratspeak_runtime::network_ownership::LocalEndpoint
 pub ratspeak_runtime::network_ownership::LocalEndpoint::Tcp
@@ -2445,6 +2454,8 @@ pub ratspeak_runtime::state::AppState::msg_id_map: std::sync::poison::mutex::Mut
 pub ratspeak_runtime::state::AppState::native_notifications_enabled: core::sync::atomic::AtomicBool
 pub ratspeak_runtime::state::AppState::network_log_enabled: core::sync::atomic::AtomicBool
 pub ratspeak_runtime::state::AppState::network_log_level: std::sync::poison::rwlock::RwLock<alloc::string::String>
+pub ratspeak_runtime::state::AppState::network_migration: std::sync::poison::mutex::Mutex<core::option::Option<serde_json::value::Value>>
+pub ratspeak_runtime::state::AppState::network_migration_storage: std::sync::poison::mutex::Mutex<core::option::Option<std::path::PathBuf>>
 pub ratspeak_runtime::state::AppState::network_settings: std::sync::poison::rwlock::RwLock<ratspeak_core::types::NetworkSettings>
 pub ratspeak_runtime::state::AppState::network_transition_lock: tokio::sync::mutex::Mutex<()>
 pub ratspeak_runtime::state::AppState::notifier: alloc::sync::Arc<dyn ratspeak_core::notification::NativeNotifier>

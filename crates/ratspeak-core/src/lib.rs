@@ -4,12 +4,14 @@ pub mod config;
 pub mod delivery;
 pub mod emitter;
 pub mod errors;
+pub mod names;
 pub mod notification;
 pub mod radio;
 pub mod types;
 
 pub use emitter::{EmitError, Emitter, NoopEmitter};
 pub use errors::CoreError;
+pub use names::default_display_name;
 pub use notification::{
     NativeNotification, NativeNotificationKind, NativeNotifier, NoopNotifier, NotificationPreview,
 };
