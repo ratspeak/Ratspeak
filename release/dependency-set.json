@@ -36,7 +36,7 @@
       "name": "rsReticulum",
       "repository": "https://github.com/ratspeak/rsReticulum.git",
       "path": "../rsReticulum",
-      "commit": "cce85ec4e37524c05ef6f7a75ef676a7c785f43c",
+      "commit": "0680941fe4d4df1272749544f2e79ed95a45ef01",
       "version": "1.5.0",
       "integrationTag": "ratspeak-v1.1.0"
     },
@@ -45,7 +45,7 @@
       "name": "rsLXMF",
       "repository": "https://github.com/ratspeak/rsLXMF.git",
       "path": "../rsLXMF",
-      "commit": "fa02487ef88cd858a6f04db1e5ec65af02c98950",
+      "commit": "cf56eb3f1f29aa256d936bf2d8f6457a593e9f71",
       "version": "1.5.0",
       "integrationTag": "ratspeak-v1.1.0"
     },
@@ -54,7 +54,7 @@
       "name": "rsLXST",
       "repository": "https://github.com/ratspeak/rsLXST.git",
       "path": "../rsLXST",
-      "commit": "e8a3a6713208db7b172033f927db5126b3eaa871",
+      "commit": "7511e99bf109b25c60ca5f79fc05baaf498ca01c",
       "version": "0.4.0",
       "integrationTag": "ratspeak-v1.1.0"
     },
