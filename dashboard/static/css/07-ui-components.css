@@ -265,8 +265,9 @@ textarea.ui-input { height: auto; min-height: calc(var(--control-h) * 2); paddin
 .ui-avatar > svg { display: block; width: 100%; height: 100%; border-radius: 50%; }
 .ui-avatar--24 { --s: 24px; } .ui-avatar--32 { --s: 32px; } .ui-avatar--40 { --s: 40px; } .ui-avatar--48 { --s: 48px; } .ui-avatar--64 { --s: 64px; }
 .ui-avatar--row { --s: var(--ui-avatar-row); }
-.ui-presence { position: absolute; right: 0; bottom: 0; width: calc(var(--s) * .25); height: calc(var(--s) * .25); border-radius: 50%; background: var(--status-online); box-shadow: 0 0 0 2px var(--ring, var(--peer-presence-ring, var(--surface-panel))); }
-.ui-presence--warning { background: var(--status-warning); }
+/* Active green and Seen recently amber, deepened toward their text inks so each clears 3:1 on its ring in every theme. */
+.ui-presence { position: absolute; right: 0; bottom: 0; width: calc(var(--s) * .25); height: calc(var(--s) * .25); border-radius: 50%; background: color-mix(in srgb, var(--status-online) 35%, var(--status-online-fg)); box-shadow: 0 0 0 2px var(--ring, var(--peer-presence-ring, var(--surface-panel))); }
+.ui-presence--warning { background: color-mix(in srgb, var(--status-warning) 35%, var(--status-warning-fg)); }
 .ui-presence--error { background: var(--status-error); }
 /* Not heard lately is not a problem: a quiet neutral dot (text-muted, ≥ 3:1 on every surface). */
 .ui-presence--older { background: var(--text-muted); }

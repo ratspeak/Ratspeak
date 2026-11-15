@@ -539,12 +539,11 @@ function peerRowHtml(c, unread) {
     var title = named
         ? '<bdi dir="auto">' + escapeHtml(c.display_name) + '</bdi>'
         : '<span class="ui-sr">Unnamed peer, address </span>' + escapeHtml(RS.kit.hash.short(c.hash));
-    var tier = RS.kit.presenceFor(c.last_seen);
     var trail = personRowTrail(c, peersSort);
     var mark = named && typeof ratspeakSupportsFeaturesFor === 'function' && ratspeakSupportsFeaturesFor(c) ? RS.kit.mark() : '';
     return '<button type="button" class="ui-row' + (status ? '' : ' ui-row--one') + (named ? '' : ' is-unnamed') + (unread ? ' is-unread' : '') +
             '" data-hash="' + escapeHtml(c.hash) + '"' + (!isCompactLayout() && peersSelectedHash === c.hash ? ' aria-current="true"' : '') + '>' +
-        RS.kit.avatar(c.hash, 'compact', tier === 'active' ? 'active' : null, c.last_seen) +
+        RS.kit.avatar(c.hash, 'compact', RS.kit.rowPresence(c.last_seen), c.last_seen) +
         '<span class="ui-row-main"><span class="ui-row-top ui-row-top--hug"><span class="ui-row-title">' + title + '</span>' + mark +
             '<span class="ui-row-trail">' + escapeHtml(trail) + '</span>' +
             (unread ? '<span class="ui-count" aria-label="' + unread + ' unread">' + unread + '</span>' : '') + '</span>' +

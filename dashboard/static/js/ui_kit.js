@@ -300,6 +300,12 @@ function identityAvatar(hashValue, size) {
         return 'older';
     }
 
+    // Rows mark Active and Seen recently; Older / unknown gets no dot there, only in detail views.
+    function rowPresence(lastHeard) {
+        var tier = presenceFor(lastHeard);
+        return tier === 'older' ? null : tier;
+    }
+
     var PRESENCE = {
         active: ['', 'Active'],
         recent: [' ui-presence--warning', 'Seen recently'],
@@ -733,6 +739,7 @@ function identityAvatar(hashValue, size) {
     kit.icons = Object.keys(GLYPHS);
     kit.time = time;
     kit.presenceFor = presenceFor;
+    kit.rowPresence = rowPresence;
     kit.avatar = avatar;
     kit.hash = hash;
 })();

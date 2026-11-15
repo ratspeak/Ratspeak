@@ -1348,12 +1348,11 @@ function _peerInfo(hash) {
     return null;
 }
 
-// The chat header's status line: the Contacts sentence, with the route on desktop.
+// The chat header's line under the name: a named peer's short address, then when they were last heard.
 function _peerHeaderStatusHtml(peer) {
-    if (!peer || !peer.last_seen) return 'Not heard yet';
-    var route = peer.route_state === 'direct' || peer.route_state === 'routed' ? peer.route_label : '';
-    return escapeHtml(RS.kit.time.lastHeard(peer.last_seen)) +
-        (route ? '<span class="ui-desk-only"> · ' + escapeHtml(route) + '</span>' : '');
+    var heard = peer && peer.last_seen ? escapeHtml(RS.kit.time.lastHeard(peer.last_seen)) : 'Not heard yet';
+    var named = !!lxmfActiveContact && !_conversationNameInfo(lxmfActiveContact, null, false).isHash;
+    return named ? '<span class="ui-hash">' + escapeHtml(RS.kit.hash.short(lxmfActiveContact)) + '</span> · ' + heard : heard;
 }
 
 // Avatar 40 with presence: active or seen recently; nothing for older.
@@ -1445,10 +1444,10 @@ function _refreshRenderedConversationPresence() {
         var avatar = row.querySelector('.ui-avatar');
         if (!hash || !avatar) return;
         var presence = _conversationPresence(hash);
-        var key = presence.active ? 'active' : '';
+        var key = presence.tier || '';
         if ((row.getAttribute('data-presence') || '') === key) return;
         row.setAttribute('data-presence', key);
-        avatar.outerHTML = RS.kit.avatar(hash, 'row', presence.active ? 'active' : null, presence.heard);
+        avatar.outerHTML = RS.kit.avatar(hash, 'row', presence.tier, presence.heard);
     });
     _applyChatHeaderPresence();
 }
@@ -2511,11 +2510,11 @@ function _mergeOptimisticConversation(convos) {
     return rows;
 }
 
-// Presence on a list avatar marks only people heard in the last two hours.
+// Presence on a list avatar: the kit's row presence, Active or Seen recently.
 function _conversationPresence(hash) {
     var peer = _peerInfo(hash);
-    if (!peer || !peer.last_seen) return { active: false, heard: 0 };
-    return { active: RS.kit.presenceFor(peer.last_seen) === 'active', heard: peer.last_seen };
+    if (!peer || !peer.last_seen) return { tier: null, heard: 0 };
+    return { tier: RS.kit.rowPresence(peer.last_seen), heard: peer.last_seen };
 }
 
 // One conversation row (the kit list row), shared by Messages and Home. opts: { current, ghost }.
@@ -2539,9 +2538,9 @@ function _conversationRowHtml(c, opts) {
     var time = c.timestamp
         ? '<span class="ui-time" title="' + escapeHtml(RS.kit.time.full(c.timestamp)) + '">' + escapeHtml(RS.kit.time.row(c.timestamp)) + '</span>'
         : '';
-    return '<li><button type="button" class="ui-row msg-conv-row' + (unread > 0 ? ' is-unread' : '') + '" data-hash="' + escapeHtml(hash) + '" data-presence="' + (presence.active ? 'active' : '') + '"' +
+    return '<li><button type="button" class="ui-row msg-conv-row' + (unread > 0 ? ' is-unread' : '') + '" data-hash="' + escapeHtml(hash) + '" data-presence="' + (presence.tier || '') + '"' +
         (opts.current ? ' aria-current="true"' : '') + (opts.ghost ? ' data-ghost="true"' : '') + '>' +
-        RS.kit.avatar(hash, 'row', presence.active ? 'active' : null, presence.heard) +
+        RS.kit.avatar(hash, 'row', presence.tier, presence.heard) +
         '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + title + '</span>' + time + '</span>' +
         '<span class="ui-row-sub"><span class="t">' + sub + '</span>' + count + '</span></span></button></li>';
 }
@@ -6542,9 +6541,16 @@ function _newMessagePersonRow(hash, name, sub) {
         ? '<span class="msg-title-hash">' + escapeHtml(nameInfo.name) + '</span>'
         : ratspeakDisplayNameHtml(nameInfo.name, hash);
     return '<li><button type="button" class="ui-row" data-hash="' + escapeHtml(hash) + '">' +
-        RS.kit.avatar(hash, 'row', presence.active ? 'active' : null, presence.heard) +
+        RS.kit.avatar(hash, 'row', presence.tier, presence.heard) +
         '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + title + '</span></span>' +
-        '<span class="ui-row-sub"><span class="t' + (sub ? '' : ' ui-hash') + '">' + escapeHtml(sub || RS.kit.hash.short(hash)) + '</span></span></span></button></li>';
+        _personRowSub(hash, nameInfo.isHash, presence.heard, sub) + '</span></button></li>';
+}
+
+// Under a person's name: their short address; with no name the title is the address, so when they were last heard.
+function _personRowSub(hash, unnamed, heard, sub) {
+    var text = sub || (unnamed ? (heard ? RS.kit.time.lastHeard(heard) : '') : RS.kit.hash.short(hash));
+    if (!text) return '';
+    return '<span class="ui-row-sub"><span class="t' + (sub || unnamed ? '' : ' ui-hash') + '">' + escapeHtml(text) + '</span></span>';
 }
 
 function _newMessageListHtml(query) {

@@ -9855,8 +9855,11 @@ fn conversation_header_presence_uses_peer_cache_status() {
         "var tier = peer && peer.last_seen ? RS.kit.presenceFor(peer.last_seen) : 'older';"
     ));
     assert!(lxmf.contains(
-        "return { active: RS.kit.presenceFor(peer.last_seen) === 'active', heard: peer.last_seen };"
+        "return { tier: RS.kit.rowPresence(peer.last_seen), heard: peer.last_seen };"
     ));
+    // Under the name: a named peer's short address and when they were last heard, never the route.
+    assert!(lxmf.contains("return named ? '<span class=\"ui-hash\">' + escapeHtml(RS.kit.hash.short(lxmfActiveContact)) + '</span> · ' + heard : heard;"));
+    assert!(!lxmf.contains("peer.route_label"));
     assert!(lxmf.contains("_refreshRenderedConversationPresence();"));
     assert!(
         !lxmf.contains("statusOnline") && !lxmf.contains("_peerPresenceClass"),

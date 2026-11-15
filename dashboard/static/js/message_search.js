@@ -73,9 +73,9 @@
     function personRow(p, query) {
         var presence = _conversationPresence(p.hash);
         return '<li><button type="button" class="ui-row" data-hash="' + escapeHtml(p.hash) + '">' +
-            RS.kit.avatar(p.hash, 'row', presence.active ? 'active' : null, presence.heard) +
+            RS.kit.avatar(p.hash, 'row', presence.tier, presence.heard) +
             '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + nameHtml(p.hash, p.info, query) + '</span></span>' +
-            '<span class="ui-row-sub"><span class="t ui-hash">' + escapeHtml(RS.kit.hash.short(p.hash)) + '</span></span></span></button></li>';
+            _personRowSub(p.hash, p.info.isHash, presence.heard) + '</span></button></li>';
     }
 
     function messageRow(message, query) {

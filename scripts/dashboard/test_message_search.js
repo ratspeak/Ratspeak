@@ -27,7 +27,7 @@ const context = {
     escapeHtml: value => String(value).replace(/</g, '&lt;'),
     _conversationNameInfo: hash => ({ name: hash === 'cc' ? 'Cara Lane' : hash, isHash: hash !== 'cc' }),
     _canonicalConversationHash: hash => String(hash || '').toLowerCase(),
-    _conversationPresence: () => ({ active: false, heard: null }),
+    _conversationPresence: () => ({ tier: null, heard: null }),
     lxmfContacts: [{ hash: 'cc', display_name: 'Cara Lane' }],
     lxmfConversations: [],
     ratspeakDisplayNameHtml: name => name,
@@ -53,7 +53,7 @@ const context = {
 };
 vm.runInNewContext(source, context);
 const lxmfSource = fs.readFileSync(path.join(root, 'static/js/lxmf.js'), 'utf8');
-for (const name of ['_messageBodyContent', '_messageDisplayContent', '_messagePlainContent', '_messageIsMarkdown']) {
+for (const name of ['_messageBodyContent', '_messageDisplayContent', '_messagePlainContent', '_messageIsMarkdown', '_personRowSub']) {
     const start = lxmfSource.indexOf('function ' + name + '(');
     vm.runInNewContext(lxmfSource.slice(start, lxmfSource.indexOf('\nfunction ', start + 1)), context);
 }
@@ -110,6 +110,7 @@ function message(content) { return { source: 'aa', destination: 'bb', direction:
     type('cara'); fire(); pending[7].resolve([]); await settle();
     assert(results.innerHTML.includes('aria-label="People"'), 'a name match is grouped under People');
     assert(results.innerHTML.includes('<b class="msg-hit">Cara</b>'), 'the match is in bold');
+    assert(results.innerHTML.includes('<span class="t ui-hash">cc</span>'), 'a named person shows their short address under the name');
     assert(!results.innerHTML.includes('aria-label="Messages"'));
 
     type('nothing'); fire(); pending[8].resolve([]); await settle();

@@ -93,11 +93,11 @@
         return 0;
     }
 
-    // Lists show presence only while it is active.
+    // Lists show Active and Seen recently, the kit's row presence.
     function _avatar(hash, size) {
         var heard = _lastHeard(hash);
-        var active = RS.kit && RS.kit.presenceFor(heard) === 'active' && heard;
-        return RS.kit.avatar(hash, size, active ? 'active' : undefined, active ? heard : undefined);
+        var tier = heard && RS.kit ? RS.kit.rowPresence(heard) : null;
+        return RS.kit.avatar(hash, size, tier || undefined, tier ? heard : undefined);
     }
 
     function _isMe(session, hash) {

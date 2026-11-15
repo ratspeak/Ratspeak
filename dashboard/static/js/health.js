@@ -85,19 +85,17 @@ function renderDashboardPeersList() {
         var hash = p.hash || '';
         var hasName = p.display_name && p.display_name !== '' && p.display_name !== hash;
         var name = hasName ? p.display_name : RS.kit.hash.short(hash);
-        var presence = RS.kit.presenceFor(p.last_seen) === 'active' ? 'active' : null;
-        var meta = [
-            typeof ratspeakProfileStatusText === 'function' ? ratspeakProfileStatusText(p) : '',
-            p.in_path ? p.route_label : '',
-            p.iface && typeof personConnectionKind === 'function' ? personConnectionKind(p.iface) : ''
-        ].filter(Boolean).join(' · ');
+        // Under the name: a named peer's short address (an unnamed one shows it as the title), then a Ratspeak status.
+        var status = typeof ratspeakProfileStatusText === 'function' ? ratspeakProfileStatusText(p) : '';
+        var sub = [hasName ? '<span class="ui-hash">' + escapeHtml(RS.kit.hash.short(hash)) + '</span>' : '', status ? escapeHtml(status) : '']
+            .filter(Boolean).join(' · ');
         var heard = p.last_seen ? '<span class="ui-time" title="' + escapeHtml(RS.kit.time.lastHeard(p.last_seen)) + '">' +
             RS.kit.time.row(p.last_seen) + '</span>' : '';
         return '<li><button type="button" class="ui-row" data-hash="' + escapeHtml(hash) + '">' +
-            RS.kit.avatar(hash, 'row', presence, p.last_seen) +
+            RS.kit.avatar(hash, 'row', RS.kit.rowPresence(p.last_seen), p.last_seen) +
             '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' +
                 ratspeakDisplayNameHtml(name, p) + '</span>' + heard + '</span>' +
-            (meta ? '<span class="ui-row-sub"><span class="t">' + escapeHtml(meta) + '</span></span>' : '') +
+            (sub ? '<span class="ui-row-sub"><span class="t">' + sub + '</span></span>' : '') +
             '</span></button></li>';
     }).join('') + '</ul>';
 }

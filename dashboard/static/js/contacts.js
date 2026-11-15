@@ -54,9 +54,8 @@ function _contactRowHtml(c, current) {
         ? '<span class="ui-time" title="' + escapeHtml(RS.kit.time.full(model.lastSeen)) + '"><span aria-hidden="true">' + escapeHtml(RS.kit.time.row(model.lastSeen)) +
             '</span><span class="ui-sr">, last heard ' + escapeHtml(RS.kit.time.sentence(model.lastSeen)) + '</span></span>'
         : '';
-    var tier = RS.kit.presenceFor(model.lastSeen);
     return '<li><button type="button" class="ui-row' + (unnamed ? ' is-unnamed' : '') + '" data-hash="' + escapeHtml(c.hash) + '"' + (current ? ' aria-current="true"' : '') + '>' +
-        RS.kit.avatar(c.hash, 'row', tier === 'active' ? 'active' : null, model.lastSeen) +
+        RS.kit.avatar(c.hash, 'row', RS.kit.rowPresence(model.lastSeen), model.lastSeen) +
         '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + title + '</span>' + time + '</span>' +
             (unnamed ? '' : '<span class="ui-row-sub"><span class="t ui-hash" aria-hidden="true">' + escapeHtml(RS.kit.hash.short(c.hash)) + '</span></span>') +
         '</span></button></li>';
@@ -232,7 +231,6 @@ function isLxmfAddress(value) {
 function _addContactMetaText(model) {
     var parts = [personHeardLine(model)];
     var peer = model.peer;
-    if (peer && peer.in_path) parts.push(peer.hops != null && peer.hops > 1 ? peer.hops + ' hops' : 'Direct');
     var kind = peer && peer.iface_is_live ? personConnectionKind(peer.iface) : '';
     if (kind) parts.push(kind);
     if (model.ratspeak) parts.push('Ratspeak');
