@@ -308,9 +308,10 @@ function _animateViewSwitch(oldView, newView, transitionType) {
 }
 
 // One selected look: the fill on the sidebar item (and you, on Identity); the accent tab on a phone.
+// The More sheet marks nothing: it opens the same every time.
 function _markNavigation(viewId) {
     var mobileSlot = _mobileTabSlot(viewId);
-    document.querySelectorAll('#sidebar .ui-nav-item[data-view], #bottom-sheet [data-view]').forEach(function(item) {
+    document.querySelectorAll('#sidebar .ui-nav-item[data-view]').forEach(function(item) {
         if (item.dataset.view === viewId) item.setAttribute('aria-current', 'page');
         else item.removeAttribute('aria-current');
     });
@@ -964,6 +965,21 @@ function initBottomSheet() {
         });
     });
 
+    var copy = document.getElementById('more-copy-address');
+    if (copy) copy.addEventListener('click', function() {
+        if (!_shellAddress || typeof RS.copyText !== 'function') return;
+        Promise.resolve(RS.copyText(_shellAddress)).then(function(ok) {
+            if (!ok) {
+                if (typeof showToast === 'function') showToast('Could not copy your LXMF address', 'toast-error', 3000);
+                return;
+            }
+            if (typeof showCopyConfirmationToast === 'function') showCopyConfirmationToast('LXMF address');
+            copy.innerHTML = RS.kit.icon('check');
+            clearTimeout(copy._rsCopiedTimer);
+            copy._rsCopiedTimer = setTimeout(function() { copy.innerHTML = RS.kit.icon('copy'); }, 2000);
+        });
+    });
+
     var share = document.getElementById('more-share-card');
     if (share) share.addEventListener('click', function() {
         _closeMoreSheet();
@@ -979,10 +995,12 @@ function initBottomSheet() {
 }
 
 // You, in the sidebar foot and at the top of the phone More sheet.
+var _shellAddress = '';
 function renderShellIdentity(hash, name) {
     if (!hash) return;
     var label = name || 'Unnamed';
     var short = RS.kit.hash.short(hash);
+    _shellAddress = hash;
     var sidebarIcon = document.getElementById('sidebar-identity-icon');
     if (sidebarIcon) sidebarIcon.innerHTML = identityAvatar(hash, 32);
     var moreIcon = document.getElementById('more-identity-icon');
@@ -991,10 +1009,11 @@ function renderShellIdentity(hash, name) {
         var el = document.getElementById(id);
         if (el) el.textContent = label;
     });
-    ['sidebar-identity-hash', 'more-identity-hash'].forEach(function(id) {
-        var el = document.getElementById(id);
-        if (el) el.textContent = short;
-    });
+    var sidebarHash = document.getElementById('sidebar-identity-hash');
+    if (sidebarHash) sidebarHash.textContent = short;
+    // The sheet has room for 8…8 beside its buttons on any phone.
+    var moreHash = document.getElementById('more-identity-hash');
+    if (moreHash) moreHash.textContent = RS.kit.hash.mid(hash);
     var me = document.getElementById('sidebar-identity');
     if (me) me.setAttribute('aria-label', label + ', open Identity');
     var more = document.getElementById('more-identity');
