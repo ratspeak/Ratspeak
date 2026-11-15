@@ -884,7 +884,12 @@ function openActivityMessageFilter(filter, opts) {
     if (searchInput) searchInput.value = '';
     activitySelectedSequence = null;
     activityStickToBottom = true;
-    if (typeof switchView === 'function') switchView('activity');
+    _activityKeepView = true;
+    try {
+        if (typeof switchView === 'function') switchView('activity');
+    } finally {
+        _activityKeepView = false;
+    }
     renderActivityFilters();
     renderActivityFeed();
     if (opts.focusChip) {
@@ -2435,8 +2440,22 @@ RS.invoke('api_version').then(function(data) {
     syncActivityNewTag();
 }).catch(function() {});
 
+// Activity opens on All, unfiltered, at the newest entry, unless Show in Activity brought a filter.
+var _activityKeepView = false;
+function resetActivityView() {
+    activityAreaFilter = 'all';
+    activityProblemsOnly = false;
+    activitySearchQuery = '';
+    activityMessageFilter = null;
+    activitySelectedSequence = null;
+    activityStickToBottom = true;
+    var searchInput = document.getElementById('activity-search-input');
+    if (searchInput) searchInput.value = '';
+}
+
 if (typeof VIEW_LIFECYCLE !== 'undefined') {
     VIEW_LIFECYCLE.activity = function() {
+        if (!_activityKeepView) resetActivityView();
         markActivityTabSeen();
         updateActivityUI();
         renderActivityFilters();
