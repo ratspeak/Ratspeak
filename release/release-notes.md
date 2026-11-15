@@ -1,25 +1,36 @@
-## v1.0.44
+## v1.1.0
 
 ### Added
 
-- **Retry**: resend a message that wasn't delivered, or that you cancelled, from its menu by Auto, Opportunistic, Direct, or Offline Inbox. The same message goes again, so it's never duplicated.
-- **Show in Activity**: see why a message wasn't delivered, from its menu.
+- **A refreshed design**: buttons, lists, search, switches, and dialogs look and work the same everywhere, on desktop and phone, in every theme. Any address in the app can be copied in full with one tap.
+- **Network at a glance**: the Network tab maps your connections, with every way to connect in one Connectivity panel. Pause all stops them at once, and Resume all brings the same ones back.
+- **Activity**: a new tab shows what Ratspeak is doing on the network and explains problems in plain words.
+- **Contacts and Identity**: on desktop, a contact opens beside the list. Your identities have their own page, with your recovery phrase, PIN, and export in one place.
+- **Games home**: see the games waiting on your move, start a new game, or play again with someone you've played before.
+- **Keep trying to send**: a message that can't be sent now waits, marked with an hourglass, and Ratspeak tries again for up to 24 hours. It goes when the recipient is heard, when your network or Offline Inbox is back, or when you choose Try now from its menu. Stop trying ends it. On by default; turn it off in Settings › General.
+- **Discovered connections**: turn on Discover servers in Network to see the servers and radios others publish, and connect to one or use its radio settings. Join Automatically keeps a number of them connected, and Accept From can limit both to publishers you trust.
+- **Auto-connect to unknown implementations**: in Settings › Network › Discovery, let Join Automatically also join servers running other software. It's off by default, so only servers running Python Reticulum 1.5.7 or later or rsReticulum 1.5.0 or later are joined.
+- **Network stamps**: in Settings › Network › Network Stamps, stamp your announces and path requests so nodes that require stamps pass them on, and require stamps from others. Both are off by default, and requiring stamps means nodes on older software aren't heard.
+- **Link MTU discovery**: transfers over fast links use larger packets and finish sooner. On by default; turn it off in Settings › Network › Links.
+- **More public servers**: the Connect sheet lists six more community servers under Public servers.
+- **Paste a QR code**: the contact QR scanner's Paste button reads a copied QR image or contact link.
 
 ### Fixed and improved
 
-- One check means sent, two mean delivered, and a red ! means not delivered.
-- Messages still sending now survive a restart, and late delivery confirmations are no longer missed.
-- Messages fall back to your Offline Inbox more reliably on slow links.
-- Offline Inbox nodes you've heard stay listed after a restart.
-- The Offline Inbox card shows whether your inbox is working and when it last checked.
-- Activity is on by default and names why a message wasn't delivered. Trace switches back to Normal after 10 minutes.
-- Ratspeak runs more smoothly on busy networks.
-- A message that fails in another chat shows a notice, and deleting a chat stops its pending sends.
-- Ratspeak fits screens down to 640×480.
-- The YubiKey wizard names firmware older than 5.7.0 instead of saying no key was found.
-- Clear Announces is now Clear Peers.
-- The Rejected icon shows again.
+- Ratspeak works with Reticulum 1.6.0, LXMF 1.3.0, and LXST 0.6.0, including nodes and contacts that ask for stamps.
+- Ratspeak starts faster when a server can't be reached, and a message sent while messaging starts waits instead of failing. If messaging stops on an error, it now restarts on its own.
+- Messages to one person that had to wait arrive in the order you sent them, and an Offline Inbox message sent while your inbox is out of reach waits instead of being refused.
+- Delivery marks now show inside a conversation only, not in the conversation list.
+- A message to your own address stays on this device as a note, and deleting that conversation no longer deletes all your other messages.
+- With Transport Mode on, a public server saved as a Backbone connection now counts toward the one-public-server limit.
+- A call no longer ends when a setup packet is lost, and damaged voice packets are skipped. On Android, recording voice messages and making calls work again.
+- Peer and contact panels show the address first and the rest under Details, with a dot for whether they've been heard recently. The sidebar groups chats, people, and this device.
+- Peers you haven't heard from in a day are cleared, so the list and Ratspeak's storage stay small on busy networks. Contacts and anyone you've messaged or played a game with always stay.
+- Messages to someone you've written to before keep using their newest encryption key, even when they haven't announced for a while.
+- On Android, tapping into a message no longer makes the screen jump around for a second or more before you can type, and closing the keyboard no longer freezes the app.
+- In Channels, the first screen follows your network and says what to do next, and Reconnect rejoins the hub you were on.
 
 ### Build and compatibility
 
-- To keep unsent messages across restarts, 1.0.44 updates how messages are stored. Ratspeak 1.0.43 and earlier can't read the updated storage after updating, so backup data if important.
+- Bluetooth Peer uses new Bluetooth identifiers, so 1.1.0 doesn't find devices on 1.0.44 or earlier over Bluetooth Peer until both update. Bluetooth RNodes aren't affected.
+- 1.1.0 updates how messages are stored and moves network data to new files. Ratspeak 1.0.44 and earlier can't open data used by 1.1.0, so back up your data first if you may need to go back.

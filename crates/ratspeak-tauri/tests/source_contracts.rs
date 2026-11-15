@@ -7001,8 +7001,8 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         .as_array()
         .expect("component array");
     let release_note_fragments = [
-        "One check means sent, two mean delivered, and a red ! means not delivered.",
-        "Ratspeak fits screens down to 640×480.",
+        "Ratspeak works with Reticulum 1.6.0, LXMF 1.3.0, and LXST 0.6.0",
+        "Ratspeak 1.0.44 and earlier can't open data used by 1.1.0",
     ];
 
     for workflow_path in [

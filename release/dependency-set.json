@@ -1,23 +1,23 @@
 {
   "schemaVersion": 1,
   "product": {
-    "displayVersion": "1.0.44",
-    "marketingVersion": "1.0.44",
+    "displayVersion": "1.1.0",
+    "marketingVersion": "1.1.0",
     "androidArtifactTargets": [
       "aarch64",
       "armv7",
       "x86_64"
     ],
     "platformBuilds": {
-      "androidVersionCode": 1000074,
-      "iosBundleVersion": "1000074"
+      "androidVersionCode": 1000075,
+      "iosBundleVersion": "1000075"
     },
     "predecessor": {
-      "displayVersion": "1.0.43",
-      "tag": "v1.0.43",
-      "commit": "6837bc169225f07e3c91f27da4171dddc35a98c8",
-      "androidVersionCode": 1000073,
-      "iosBundleVersion": "1000073"
+      "displayVersion": "1.0.44",
+      "tag": "v1.0.44",
+      "commit": "46de8b7f6895317c104e863884a0c1982b283ab6",
+      "androidVersionCode": 1000074,
+      "iosBundleVersion": "1000074"
     }
   },
   "toolchains": {
@@ -38,7 +38,7 @@
       "path": "../rsReticulum",
       "commit": "b8c1446b9397b41e333df59397de328d49311136",
       "version": "1.4.0",
-      "integrationTag": "ratspeak-v1.0.44"
+      "integrationTag": "ratspeak-v1.1.0"
     },
     {
       "id": "rslxmf",
@@ -47,7 +47,7 @@
       "path": "../rsLXMF",
       "commit": "00f439df7e6d14d29e5ca75efc7c694ab4990b3d",
       "version": "1.4.0",
-      "integrationTag": "ratspeak-v1.0.44"
+      "integrationTag": "ratspeak-v1.1.0"
     },
     {
       "id": "rslxst",
@@ -56,7 +56,7 @@
       "path": "../rsLXST",
       "commit": "cb857c69d070615f604cfadbd3579ad20e75b8ca",
       "version": "0.3.1",
-      "integrationTag": "ratspeak-v1.0.44"
+      "integrationTag": "ratspeak-v1.1.0"
     },
     {
       "id": "lrgp",
@@ -65,7 +65,7 @@
       "path": "../lrgp-rs",
       "commit": "f44147a851588948b6faba2640c3baae258ab079",
       "version": "0.4.1",
-      "integrationTag": "ratspeak-v1.0.44"
+      "integrationTag": "ratspeak-v1.1.0"
     }
   ]
 }
