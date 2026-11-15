@@ -30,6 +30,7 @@ changes that materially affect how an artifact is reproduced.
 - Delivery marks now show inside a conversation only, not in the conversation list.
 - A message to your own address stays on this device as a note, and deleting that conversation no longer deletes all your other messages.
 - With Relay for other devices on, a public server saved as a Backbone connection now counts toward the one-public-server limit.
+- Settings use plain names, and the docs at docs.ratspeak.org still give the technical terms for anyone building on Ratspeak or running their own nodes: Relay for other devices is Reticulum's transport mode, and Offline Inbox is an LXMF propagation node.
 - A call no longer ends when a setup packet is lost, and damaged voice packets are skipped. On Android, recording voice messages and making calls work again.
 - Peer and contact panels keep Message, Call, and the contact actions in reach, with the technical details under Details and a dot for whether they've been heard recently. The sidebar groups chats, people, and this device.
 - Peers you haven't heard from in a day are cleared, so the list and Ratspeak's storage stay small on busy networks. Contacts and anyone you've messaged or played a game with always stay.
