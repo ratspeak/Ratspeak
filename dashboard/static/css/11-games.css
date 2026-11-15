@@ -11,8 +11,10 @@
 @media (max-width: 768px) {
     .games-layout.view-game-detail > .games-detail { display: flex; flex: 1; }
     .games-layout.view-game-detail > .games-pane { display: none; }
-    .games-pane.is-first .ui-pane-actions { display: none; }
 }
+/* New game shows only where the landing's tiles don't: a phone's list, or beside an open game. */
+@media (max-width: 768px) { .games-pane.is-first .ui-pane-actions { display: none; } }
+@media (min-width: 769px) { .games-pane.is-home .ui-pane-actions { display: none; } }
 
 /* ---------------------------------------------------------------- Board art (tiles, thumbnails, the gallery) */
 .gp { display: block; flex: none; }
@@ -83,19 +85,16 @@
 
 /* ---------------------------------------------------------------- Landing */
 .game-landing { width: 100%; max-width: 760px; margin: 0 auto; padding: 32px 32px 40px; box-sizing: border-box; display: flex; flex-direction: column; gap: 32px; }
-.game-landing-head { display: flex; align-items: flex-start; gap: 24px; }
-.game-landing-head > div { flex: 1; min-width: 0; }
 .game-lead { margin: 8px 0 0; font-size: var(--text-base); line-height: 1.5; color: var(--text-secondary); max-width: 52ch; }
 .game-section { display: flex; flex-direction: column; gap: 8px; }
 .game-section > .ui-section-title { margin-bottom: 4px; }
 .game-section .ui-list { padding: 0; margin: 0 -12px; }
 .game-tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .game-people { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 2px 8px; margin: 0 -12px; padding: 0; list-style: none; }
-.games-pane .game-landing { padding: 8px 16px 24px; gap: 24px; }
+/* A phone's first run: the tiles start under the pane title, as other tabs' content does. */
+.games-pane .game-landing { padding: 0 16px 24px; gap: 24px; }
 @media (max-width: 768px) {
     .game-landing { padding: 8px 16px 24px; gap: 24px; }
-    .game-landing-head { display: block; }
-    .game-landing-head .game-lead { margin-top: 0; }
     .game-tiles { grid-template-columns: minmax(0, 1fr); gap: 12px; }
     .game-tiles .game-choice .game-art { height: 116px; }
     .game-section .ui-list { margin: 0 -16px; }

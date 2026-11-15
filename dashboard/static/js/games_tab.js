@@ -410,11 +410,16 @@
             '</span></button></li>';
     }
 
+    function _gamesPane() {
+        var list = document.getElementById('games-session-list');
+        return list && list.closest ? list.closest('.games-pane') : null;
+    }
+
     function renderSessionList() {
         var container = document.getElementById('games-session-list');
         if (!container) return;
         var first = _allSessions.length === 0;
-        var pane = container.closest ? container.closest('.games-pane') : null;
+        var pane = _gamesPane();
         if (pane) pane.classList.toggle('is-first', first);
         var filter = document.getElementById('games-filter');
         if (filter) filter.hidden = first;
@@ -571,18 +576,14 @@
     }
 
     // Landing: Your move, Start a new game, and Play again. A first run shows the start only.
+    // Its tiles start New game with the game chosen; a phone's pane title already heads them.
     function _renderLanding(first, phoneFirst) {
         var waiting = _allSessions.filter(_needsMe);
         var html = '<div class="game-landing">';
-        html += '<header class="game-landing-head"><div>' +
-            (phoneFirst ? '' : '<h2 class="ui-detail-title">' + (first ? 'Play a game' : 'Play') + '</h2>') +
-            '<p class="game-lead">' + (first
-                ? 'Challenge a contact to chess, four in a row, or tic-tac-toe. Moves travel over the mesh, so a game can last minutes or days.'
-                : 'Pick up a game, or challenge someone to a new one.') + '</p></div>' +
-            (phoneFirst ? '' : '<button type="button" class="ui-btn ui-btn--primary" data-new-game="">' +
-                _icon('plus') + 'New game</button>') + '</header>';
-        if (phoneFirst) {
-            html += '<button type="button" class="ui-btn ui-btn--primary ui-btn--lg ui-btn--block" data-new-game="">New game</button>';
+        if (!phoneFirst) {
+            html += '<header><h2 class="ui-detail-title">' + (first ? 'Play a game' : 'Play') + '</h2>' +
+                (first ? '<p class="game-lead">Challenge a contact to chess, four in a row, or tic-tac-toe. Moves travel over the mesh, so a game can last minutes or days.</p>' : '') +
+                '</header>';
         }
 
         if (!first && !phoneFirst && waiting.length) {
@@ -909,6 +910,8 @@
         if (!panel) return;
 
         var session = _getSelectedSession();
+        var pane = _gamesPane();
+        if (pane) pane.classList.toggle('is-home', !session);
         if (!session) {
             panel.removeAttribute('data-game');
             panel.classList.remove('is-game');
@@ -2076,7 +2079,8 @@
             focus: false,
             // A challenge on its way keeps the dialog open; it opens the game when it's sent.
             canClose: function() { return !state.sending; },
-            head: '<button type="button" class="ui-icon-btn ng-back" aria-label="Back to games" title="Back">' + _icon('chevron-left') + '</button>' +
+            // A game chosen on the way in (a landing tile) has no Back to a second game picker.
+            head: (state.game ? '' : '<button type="button" class="ui-icon-btn ng-back" aria-label="Back to games" title="Back">' + _icon('chevron-left') + '</button>') +
                 '<span class="ng-head-thumb"></span>' +
                 '<h2 class="ui-dialog-title ng-title" tabindex="-1">New game</h2>',
             sheet: '<form class="ng-form" novalidate>' +
@@ -2179,10 +2183,13 @@
                 root.querySelector('.ng-title').focus();
             });
         });
-        root.querySelector('.ng-back').addEventListener('click', function() {
-            state.game = null;
-            update();
-        });
+        var back = root.querySelector('.ng-back');
+        if (back) {
+            back.addEventListener('click', function() {
+                state.game = null;
+                update();
+            });
+        }
         root.querySelector('.ng-cancel').addEventListener('click', function() { sheet.close(); });
         if (search) {
             search.addEventListener('input', function() { setQuery(search.value); update(); });
