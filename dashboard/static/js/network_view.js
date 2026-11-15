@@ -850,12 +850,13 @@
     function deviceSwitch(kind, on) {
         var M = model(), lst = byKind(M, kind);
         if (!lst.length) {
-            if (!on) return;
+            // Off while setup is still open: the switch goes off now, whatever setup does next.
+            if (!on) { NV.setupFor = null; render(true); return; }
             NV.setupFor = kind; render(true);
-            var done = function() { NV.setupFor = null; render(true); };
+            var done = function() { if (NV.setupFor === kind) { NV.setupFor = null; render(true); } };
             if (kind === 'lora') { if (typeof openRnodeModal === 'function') openRnodeModal('ble'); }
             else if (typeof openHostModal === 'function') openHostModal();
-            watchSetupClose(done);
+            watchSetupClose(kind, done);
             return;
         }
         switchAll(lst, on);
@@ -898,12 +899,15 @@
         render(true);
     }
     // Setup dialogs are app sheets; when the last one closes, the switch follows what was added.
-    function watchSetupClose(done) {
+    // Only a shown sheet counts: the More sheet's modal stays in the page, hidden.
+    function watchSetupClose(kind, done) {
         var seen = false, tries = 0;
         var timer = setInterval(function() {
-            var open = document.querySelector('.bottom-sheet.open, .rs-sheet-shell.open, .ui-modal');
+            var open = Array.prototype.some.call(document.querySelectorAll('.bottom-sheet.open, .rs-sheet-shell.open, .ui-modal'), function(el) {
+                return !el.hidden && getComputedStyle(el).display !== 'none';
+            });
             if (open) seen = true;
-            if ((seen && !open) || ++tries > 600) { clearInterval(timer); done(); }
+            if (NV.setupFor !== kind || (seen && !open) || ++tries > 600) { clearInterval(timer); done(); }
         }, 250);
     }
     // A running host's discovery switches save as they change. Turning on Show in discovery waits for the
