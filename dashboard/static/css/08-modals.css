@@ -1,6 +1,5 @@
 .bottom-sheet,
 .bottom-sheet-overlay,
-.conn-sort-btn,
 .danger-sheet-overlay {
     display: none;
 }
@@ -72,50 +71,7 @@
     color: var(--text-secondary);
     letter-spacing: var(--tracking-tight);
 }
-.bottom-sheet-title-with-icon {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-3);
-    min-width: 0;
-}
-.bottom-sheet-title-icon {
-    width: 22px;
-    height: 22px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    color: var(--text-secondary);
-}
-.bottom-sheet-title-icon svg {
-    width: 22px;
-    height: 22px;
-    display: block;
-    stroke: currentColor;
-    fill: none;
-}
-.bottom-sheet-title-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.bottom-sheet-title-with-icon[data-sheet-icon="tcp"] .bottom-sheet-title-icon,
-.bottom-sheet-title-with-icon[data-sheet-icon="backbone"] .bottom-sheet-title-icon {
-    color: var(--status-info-fg);
-}
-.bottom-sheet-title-with-icon[data-sheet-icon="host"] .bottom-sheet-title-icon {
-    color: var(--text-secondary);
-}
-.bottom-sheet-title-with-icon[data-sheet-icon="lora"] .bottom-sheet-title-icon {
-    color: var(--status-online-fg);
-}
-.bottom-sheet-title-with-icon[data-sheet-icon="local"] .bottom-sheet-title-icon {
-    color: var(--status-warning-fg);
-}
-.bottom-sheet-title-with-icon[data-sheet-icon="ble"] .bottom-sheet-title-icon {
-    color: var(--status-purple-fg);
-}
+
 .bottom-sheet-close {
     background: none;
     border: none;
@@ -360,15 +316,6 @@
 /* A menu opened from a dialog (a Select field, Import) shows above it. */
 .ui-modal ~ .ui-pop { z-index: var(--z-modal); }
 
-/* The Ratspeak servers' tones, for their gem marks on the Network screen. */
-.public-server-card--ruby { --public-server-accent: var(--status-error); }
-.public-server-card--emerald { --public-server-accent: var(--status-online); }
-.public-server-card--diamond { --public-server-accent: var(--status-info); }
-
-.interface-card-ble {
-    border-left: 3px solid var(--ble-accent);
-}
-
 .hub-iface-status {
     width: 8px;
     height: 8px;
@@ -386,13 +333,6 @@
 }
 .hub-iface-status.unknown {
     background: var(--text-muted);
-}
-
-.interface-flow-active {
-    color: var(--accent);
-    font-size: var(--type-badge-size);
-    animation: pulse-flow 2s ease-in-out infinite;
-    margin-left: var(--space-2);
 }
 
 .shortcut-row {

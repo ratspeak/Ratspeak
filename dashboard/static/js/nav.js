@@ -436,13 +436,6 @@ function switchView(viewId, opts) {
 // `dirty`: the view's layout changed while hidden, so it re-measures on entry.
 var VIEW_LIFECYCLE = {
     dashboard: function(dirty) {
-        if (dirty && typeof _resetConnectionRowMetric === 'function') _resetConnectionRowMetric();
-        if (typeof _connectionsThrottleTimer !== 'undefined' && _connectionsThrottleTimer) clearTimeout(_connectionsThrottleTimer);
-        if (typeof _connectionsRenderScheduled !== 'undefined') _connectionsRenderScheduled = false;
-        if (typeof _connectionsThrottleTimer !== 'undefined') _connectionsThrottleTimer = null;
-        requestAnimationFrame(function() {
-            if (typeof refreshConnectionsTable === 'function') refreshConnectionsTable();
-        });
         if (typeof renderDashboardRecentMessages === 'function') renderDashboardRecentMessages();
         if (typeof loadConversations === 'function') loadConversations();
         if (typeof renderDashboardSummaries === 'function' && typeof lastStats !== 'undefined' && lastStats) renderDashboardSummaries(lastStats);
@@ -453,13 +446,11 @@ var VIEW_LIFECYCLE = {
         requestAnimationFrame(function() {
             if (typeof lastStats !== 'undefined' && lastStats) {
                 if (typeof renderNetworkOverview === 'function') renderNetworkOverview(lastStats);
-                if (typeof renderNetworkPulse === 'function') renderNetworkPulse(lastStats);
             }
             if (typeof loadSettingsInterfacesWithRetry === 'function') loadSettingsInterfacesWithRetry(1);
         });
         if (typeof loadIdentities === 'function') loadIdentities();
         if (typeof renderMergedConnections === 'function') renderMergedConnections();
-        if (typeof renderPropagationStatus === 'function') renderPropagationStatus('net-propagation-status');
     },
 
     settings: function() {
@@ -1754,20 +1745,6 @@ document.addEventListener('DOMContentLoaded', function() {
     initDrillDownSwipeBack();
     initSettingsDetailSwipeBack();
     initTabSwipe();
-
-    [
-        { id: 'conn-detail-sheet', overlayId: 'conn-detail-sheet-overlay', closeFn: function() {
-            if (typeof closeConnectionDetailSheet === 'function') closeConnectionDetailSheet();
-        } },
-        { id: 'conn-sort-sheet', overlayId: 'conn-sort-sheet-overlay', closeFn: function() {
-            if (typeof closeSortSheet === 'function') closeSortSheet();
-        } },
-        { id: 'iface-action-sheet', overlayId: 'iface-action-overlay', closeFn: function() {
-            if (typeof closeInterfaceActionSheet === 'function') closeInterfaceActionSheet();
-        } }
-    ].forEach(function(cfg) {
-        initSheetSwipeDismiss(cfg.id, cfg.overlayId, cfg.closeFn);
-    });
 
     bindFirstRunAnnounceListener();
     // Delay so initial layout settles; actual display waits for an online interface.

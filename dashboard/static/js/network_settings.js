@@ -418,7 +418,8 @@
 
     function connect(e) {
         RS.invoke('connect_discovered_interface', { id: e.id }).then(function() {
-            toast('Connecting to ' + (e.name || 'the server') + '…', 'toast-info', 3000);
+            var name = e.name || 'the server';
+            toast(e.own_network && e.private_network ? 'Joining ' + name + ', with its passphrase filled in…' : 'Connecting to ' + name + '…', 'toast-info', 3000);
             setTimeout(refreshDiscovered, 1500);
         }).catch(function(err) {
             toast(errorText(err, 'Could not add this connection'), 'toast-error', 8000);
@@ -432,6 +433,7 @@
             bw: e.bandwidth,
             sf: e.spreading_factor,
             cr: e.coding_rate,
+            name: e.name,
         });
     }
 

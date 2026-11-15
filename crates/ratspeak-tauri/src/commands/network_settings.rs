@@ -305,11 +305,12 @@ fn usable(entry: &DiscoveredEntry) -> bool {
     }
 }
 
-/// Available first, then trusted, usable, the higher stamp, fewer hops, more
-/// sightings, and the most recently heard.
+/// Available first, then this device's own network, trusted, usable, the higher
+/// stamp, fewer hops, more sightings, and the most recently heard.
 fn ranking(a: &DiscoveredEntry, b: &DiscoveredEntry) -> std::cmp::Ordering {
     status_rank(a)
         .cmp(&status_rank(b))
+        .then(b.own_network.cmp(&a.own_network))
         .then(b.trusted.cmp(&a.trusted))
         .then(usable(b).cmp(&usable(a)))
         .then(b.stamp_value.total_cmp(&a.stamp_value))
@@ -833,6 +834,20 @@ mod tests {
         assert!(!entry(&record, &[], &ours).own_network);
         // Publishing an IFAC is a separate flag.
         assert!(!entry(&record, &[], &ours).private_network);
+    }
+
+    #[test]
+    fn own_network_entries_rank_before_trusted_ones() {
+        let mut ours = server("Ours", "ours.example.org", 10);
+        ours.network_id = [7; 16];
+        let trusted = server("Trusted", "trusted.example.org", 10);
+        let saved = Saved {
+            network: Some([7; 16]),
+            ..trusting()
+        };
+        let entries = listed(&[trusted, ours], &[], &saved, 100);
+        assert_eq!(names(&entries), ["Ours", "Trusted"]);
+        assert!(entries[0].own_network && entries[1].trusted);
     }
 
     #[test]

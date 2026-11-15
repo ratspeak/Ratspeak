@@ -24,6 +24,17 @@ var _peersCacheGen = 0;
 var _peersRenderRaf = null;
 var _peersPendingScrollOnly = false;
 
+function hasRealDisplayName(c) {
+    var name = c.display_name;
+    var hash = c.hash || '';
+    if (!name || name === '') return false;
+    if (name === hash) return false;
+    if (name.length >= 12 && hash.startsWith(name)) return false;
+    // Reject JSON/script payloads masquerading as display names.
+    if (name.charAt(0) === '{') return false;
+    return true;
+}
+
 function normalizePeersSort(sort) {
     sort = String(sort || '').trim();
     return PEERS_SORT_OPTIONS[sort] ? sort : PEERS_SORT_DEFAULT;

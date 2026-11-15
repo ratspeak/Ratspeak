@@ -1537,7 +1537,10 @@ fn android_ble_product_state_waits_for_exact_protocol_readiness() {
     );
     assert!(health.contains("waiting_for_radio: 'Waiting for radio'"));
     assert!(health.contains("initializing: 'Initializing'"));
-    assert!(health.contains("label: 'Retry Connection'"));
+    // A failed radio offers Retry in its detail.
+    let network_view =
+        read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
+    assert!(network_view.contains("retry: state === 'failed' || (ble && state === 'disabled')"));
     // A retrying or conflicting radio can always be paused, which releases its
     // native owner; no BLE state replaces Pause with a disabled label.
     assert!(!health.contains("label: 'Connecting…'"));
@@ -1669,9 +1672,13 @@ fn android_ble_retry_reasons_reach_the_user_and_bond_loss_stops_retries() {
     assert!(events.contains("window._onBleConnectProgress = function(progress)"));
     assert!(events.contains("pd.bleRnode && pd.isOpen()"));
     assert!(modals.contains("window._activeProgressDialog.bleRnode = true;"));
-    // Live-stat ticks never repaint a paused or stat-less row as up.
-    assert!(events.contains("row.classList.contains('is-paused')"));
-    assert!(events.contains("liveData && liveData.online !== false ? 'up' : 'down'"));
+    // A paused or stat-less radio never reads as connected.
+    let network_view =
+        read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
+    assert!(network_view.contains("var online = live ? live.online !== false : false;"));
+    assert!(network_view.contains(
+        "var status = a.paused ? (off.indexOf(name) !== -1 ? 'off' : 'paused') : (online ? 'up' : 'pending');"
+    ));
 }
 
 #[test]
@@ -2449,7 +2456,9 @@ fn rnode_public_map_is_edit_only_and_privacy_gated() {
         .and_then(|tail| tail.split("\nfunction ").next())
         .expect("public map section");
     assert!(public_map.contains(r#"id="rnode-public-map-section""#));
-    assert!(public_map.contains("_netdlgSwitch('rnode-public-map-enabled', 'Display on public map'"));
+    assert!(
+        public_map.contains("_netdlgSwitch('rnode-public-map-enabled', 'Display on public map'")
+    );
     assert!(public_map.contains("'rnode-public-map-latitude'"));
     assert!(public_map.contains("'rnode-public-map-longitude'"));
     assert!(public_map.contains(r#"id="rnode-public-map-use-current""#));
@@ -2582,10 +2591,7 @@ fn frontend_shared_helpers_are_adopted() {
             "{file} must use the shared sheet shell"
         );
     }
-    for file in [
-        "dashboard/static/js/peers.js",
-        "dashboard/static/js/connections.js",
-    ] {
+    for file in ["dashboard/static/js/peers.js"] {
         let source = read_source(root.join(file)).expect(file);
         assert!(
             source.contains("RS.buildPeerGroupItems("),
@@ -2641,9 +2647,10 @@ fn contact_list_renders_are_gated() {
     // Reactions map resets on conversation switch.
     assert!(lxmf_js.contains("_msgReactions = {};"));
 
-    let connections_js =
-        read_source(root.join("dashboard/static/js/connections.js")).expect("connections js");
-    assert!(connections_js.contains("if (container._rsLastHtml === mobileHtml) return;"));
+    assert!(
+        !root.join("dashboard/static/js/connections.js").exists(),
+        "the old peer table is gone"
+    );
 
     // The live Contacts view heals gated skips on activation.
     let nav_js = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
@@ -4802,16 +4809,16 @@ fn ble_peer_network_rows_are_identity_deduped() {
     assert!(health_js.contains("var byIdentity = {};"));
     assert!(health_js.contains("peer.addresses = group.addresses.slice();"));
     assert!(health_js.contains("window._bleVisiblePeersFromCache = _bleVisiblePeersFromCache;"));
-    assert!(health_js.contains("data-peer-addresses"));
 
     let tauri_events =
         read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events js");
     assert!(tauri_events.contains("return window._bleVisiblePeersFromCache().length;"));
-    assert!(tauri_events.contains("peerCount === 0 && typeof window._blePeerCount === 'number'"));
+    assert!(tauri_events.contains("function _deriveBlePeerState()"));
 
-    let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
-    assert!(modals_js.contains("getAttribute('data-peer-addresses')"));
-    assert!(modals_js.contains("addresses.forEach(function(address)"));
+    let network_view =
+        read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
+    // Disconnecting a peer drops every address it is heard on.
+    assert!(network_view.contains("c.peer.addresses.forEach(function(address) { RS.invoke('disconnect_ble_peer', { address: address })"));
 }
 
 #[test]
@@ -5069,8 +5076,12 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
     );
 
     let health_js = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
-    assert!(health_js.contains("networkAnnounceBtn.dataset.announcePending = '1'"));
-    assert!(!health_js.contains("networkAnnounceBtn.dataset.announcePending !== '1'"));
+    // Network's Announce goes through the same cooldown and shows Announced while it lands.
+    let network_view =
+        read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
+    assert!(network_view.contains(
+        "if (el.disabled || NV.announcing || typeof tryTriggerAnnounce !== 'function' || !tryTriggerAnnounce()) return;"
+    ));
     assert!(health_js.contains("function interfaceStatsWithoutAutoPeerDoubleCount"));
     assert!(health_js.contains("AutoInterfacePeer["));
 
@@ -5084,9 +5095,10 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
     assert!(host_announce.contains("tryTriggerAnnounce()"));
     assert!(!host_announce.contains("RS.invoke('trigger_announce')"));
 
-    let connections_js =
-        read_source(root.join("dashboard/static/js/connections.js")).expect("connections js");
-    assert!(connections_js.contains("interfaceStatsTotals(ifaces)"));
+    let network_view =
+        read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
+    assert!(network_view.contains("interfaceStatsTotals(stats.interface_stats.interfaces || [])"));
+    assert!(network_view.contains("var word = { bluetooth_off: 'Bluetooth is off', permission_needed: 'Bluetooth permission needed',"));
 
     let network_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/network.rs"))
         .expect("network command source");
@@ -5222,21 +5234,17 @@ fn lxmf_persistence_and_announce_dispatch_do_not_conflate_ownership_boundaries()
 #[test]
 fn interface_add_flows_cannot_be_misclassified_as_edits() {
     let root = repo_root();
-    let settings_js =
-        read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
-    assert!(
-        settings_js
-            .contains("connAddTcp.addEventListener('click', function() { openConnectModal(); });")
-    );
-    assert!(!settings_js.contains("connAddTcp.addEventListener('click', openConnectModal);"));
+    let network_view =
+        read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
+    assert!(network_view.contains(
+        "case 'own': if (typeof openConnectModal === 'function') openConnectModal(); return;"
+    ));
 
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
     assert!(modals_js.contains("function _normaliseConnectEditContext(editContext)"));
     assert!(modals_js.contains("function _normaliseHostEditContext(editContext, ifaceType)"));
-    // The interface action sheet keeps its typed title icon.
-    assert!(modals_js.contains("var INTERFACE_SHEET_ICONS = {"));
-    assert!(modals_js.contains("function setBottomSheetTitleWithIcon(titleEl, title, iconType)"));
-    assert!(modals_js.contains("function interfaceSheetIconTypeForInterface(ifaceType)"));
+    // Kit dialogs carry their own titles; the old sheet title icons are gone.
+    assert!(!modals_js.contains("var INTERFACE_SHEET_ICONS = {"));
     // An add opens with no edit context; only a valid one makes it an edit.
     assert!(modals_js.contains("_connectEditContext = _normaliseConnectEditContext(editContext);"));
     assert!(modals_js.contains("title: isEdit ? 'Edit server' : 'Add your own server',"));
@@ -5245,9 +5253,11 @@ fn interface_add_flows_cannot_be_misclassified_as_edits() {
     assert!(
         modals_js.contains("var editContext = _normaliseConnectEditContext(_connectEditContext);")
     );
-    assert!(modals_js.contains(
-        "_openHostDialog('tcp', _normaliseHostEditContext(editContext, 'tcp_server'));"
-    ));
+    assert!(
+        modals_js.contains(
+            "_openHostDialog('tcp', _normaliseHostEditContext(editContext, 'tcp_server'));"
+        )
+    );
     assert!(modals_js.contains(
         "_openHostDialog('backbone', _normaliseHostEditContext(editContext, 'backbone_server'));"
     ));
@@ -5326,12 +5336,12 @@ fn public_servers_are_curated_and_joined_from_the_network_screen() {
     );
 
     // The marks on the Network screen take each server's tone.
-    let modals_css =
-        read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
+    let network_css = read_source(root.join("dashboard/static/css/10-network-settings.css"))
+        .expect("network css");
     for tone in ["ruby", "emerald", "diamond"] {
-        assert!(modals_css.contains(&format!(".public-server-card--{tone} {{")));
+        assert!(network_css.contains(&format!(".public-server-card--{tone} {{")));
     }
-    assert!(!modals_css.contains(".public-server-card {"));
+    assert!(!network_css.contains(".public-server-card {"));
 
     // Community servers: listed under Unofficial, with no tag and no favourite.
     for (id, name, host, port, place) in [
@@ -5395,8 +5405,8 @@ fn public_servers_are_curated_and_joined_from_the_network_screen() {
     }
     assert_eq!(modals_js.matches("group: 'community'").count(), 8);
     assert!(!modals_js.contains("UNOFFICIAL"));
-    assert!(!modals_css.contains(".public-server-card--beleth"));
-    assert!(!modals_css.contains(".public-server-card--rmap"));
+    assert!(!network_css.contains(".public-server-card--beleth"));
+    assert!(!network_css.contains(".public-server-card--rmap"));
 
     // The transport limits count the same servers, from one list in the
     // runtime that the commands and the startup check both read.
@@ -5439,16 +5449,19 @@ fn ifac_is_available_ungated_on_client_and_server_sheets() {
     // One switch, "Network name and passphrase", on Add your own server and Host setup alike;
     // only the size override is developer-only.
     assert_eq!(
-        modals_js
-            .matches("'Network name and passphrase'")
-            .count(),
+        modals_js.matches("'Network name and passphrase'").count(),
         2
     );
-    assert!(modals_js.contains("_ifacFieldsHtml('connect', iface, ifac, 'From the server’s operator')"));
-    assert!(modals_js.contains("_ifacFieldsHtml('host', iface, _hostForm.ifac, 'Devices enter this to connect', true)"));
+    assert!(
+        modals_js.contains("_ifacFieldsHtml('connect', iface, ifac, 'From the server’s operator')")
+    );
     assert!(modals_js.contains(
-        "attrs: ' data-netdlg-dev' + (_developerModeEnabled() ? '' : ' hidden')"
+        "_ifacFieldsHtml('host', iface, _hostForm.ifac, 'Devices enter this to connect', true)"
     ));
+    assert!(
+        modals_js
+            .contains("attrs: ' data-netdlg-dev' + (_developerModeEnabled() ? '' : ' hidden')")
+    );
     assert!(modals_js.contains("document.querySelectorAll('.netdlg [data-netdlg-dev]')"));
     assert!(!modals_js.contains("Use IFAC"));
     // Use Backbone is a desktop switch on Add your own server, not a developer-mode one.
@@ -5628,18 +5641,17 @@ fn interface_pause_resume_is_config_backed_and_visible() {
     let root = repo_root();
 
     let health_js = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
-    assert!(health_js.contains("Pause Interface"));
-    assert!(health_js.contains("Resume Interface"));
-    assert!(health_js.contains("label: 'Rename'"));
     assert!(health_js.contains("pause_interface"));
     assert!(health_js.contains("resume_interface"));
-    assert!(health_js.contains(r#"conn-iface-status-text">Paused"#));
-    assert!(!health_js.contains("conn-iface-pill-paused"));
+    let network_view =
+        read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
+    assert!(network_view.contains("{ label: 'Resume', icon: 'play', op: 'resume' } : { label: 'Pause', icon: 'pause', op: 'pause' }"));
+    assert!(network_view.contains("if (c.status === 'paused') return 'Paused';"));
+    assert!(network_view.contains("health: au && au.interface === name ? 'Multicast unavailable' : a.mobileHealth ? a.mobileHealth.label : (a.waitingForDevice ? 'Waiting for USB' : '')"));
     assert!(health_js.contains("function _configuredInterfaceFallback"));
     assert!(health_js.contains("var fallback = _configuredInterfaceFallback"));
     assert!(health_js.contains("Waiting for USB"));
     assert!(health_js.contains("connecting: fallback.connecting"));
-    assert!(health_js.contains("else if (connecting)"));
     assert!(!health_js.contains("waitingForAndroidUsb"));
     assert!(!health_js.contains("Display Name"));
     assert!(!health_js.contains("dangerDivider"));
@@ -5787,7 +5799,9 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(!modals_js.contains("type=\"number\""));
     assert!(modals_js.contains("_netdlgDisclosure('rnode-advanced', 'Advanced radio settings'"));
     assert!(modals_js.contains("_netdlgTextField('rnode-tcp-endpoint', 'Radio address'"));
-    assert!(modals_js.contains("' id=\"rnode-mode-field\" data-netdlg-dev' + (_developerModeEnabled() ? '' : ' hidden')"));
+    assert!(modals_js.contains(
+        "' id=\"rnode-mode-field\" data-netdlg-dev' + (_developerModeEnabled() ? '' : ' hidden')"
+    ));
     for choice in [
         "{ key: 'full', label: 'Full' }",
         "{ key: 'gateway', label: 'Gateway' }",
@@ -5795,7 +5809,10 @@ fn rnode_radio_catalog_has_single_runtime_source() {
         "{ key: 'boundary', label: 'Boundary' }",
         "{ key: 'roaming', label: 'Roaming (recommended)' }",
     ] {
-        assert!(modals_js.contains(choice), "missing interface mode {choice}");
+        assert!(
+            modals_js.contains(choice),
+            "missing interface mode {choice}"
+        );
     }
     assert!(modals_js.contains("Best for mobile radios."));
     // Adding a USB radio no longer replaces a Bluetooth one (#84), so the dialog warns of no handoff.
@@ -5855,8 +5872,16 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(responsive_css.contains(".bottom-sheet .rs-dialog-field-label"));
     assert!(responsive_css.contains(".bottom-sheet .hub-iface-detail"));
     assert!(responsive_css.contains("font-size: var(--mobile-list-detail-size);"));
-    for gone in ["#connect-modal", "#rnode-modal", ".sheet-segmented-tabs", ".rs-dialog-checkbox"] {
-        assert!(!responsive_css.contains(gone), "{gone} styled a retired sheet");
+    for gone in [
+        "#connect-modal",
+        "#rnode-modal",
+        ".sheet-segmented-tabs",
+        ".rs-dialog-checkbox",
+    ] {
+        assert!(
+            !responsive_css.contains(gone),
+            "{gone} styled a retired sheet"
+        );
     }
 }
 
@@ -7392,7 +7417,9 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
 
     let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
     assert!(!health.contains("Pending Apple approval"));
-    assert!(health.contains("Multicast unavailable"));
+    let network_view =
+        read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
+    assert!(network_view.contains("'Multicast unavailable'"));
     let tauri_events =
         read_source(root.join("dashboard/static/js/tauri_events.js")).expect("tauri events js");
     assert!(tauri_events.contains("if (recoveredUnavailable) window._autoUnavailable = null;"));
@@ -7713,20 +7740,9 @@ fn mobile_primary_lists_share_readable_row_scale() {
     assert!(responsive_css.contains("--mobile-list-meta-size: var(--text-xs);"));
     // Conversation rows are kit rows (ui-row), which carry their own touch scale.
     assert!(!responsive_css.contains(".conv-row,"));
-    assert!(responsive_css.contains(".conn-section-label,\n    .conn-iface-name"));
-    assert!(responsive_css.contains(".conn-iface-empty,"));
-    assert!(
-        responsive_css
-            .contains(".conn-card-label {\n        font-size: var(--mobile-list-title-size);")
-    );
-    assert!(responsive_css.contains("font-size: var(--mobile-list-meta-size);"));
-    assert!(
-        responsive_css.contains(
-            ".pulse-throughput-value {\n        font-size: var(--mobile-list-detail-size);"
-        )
-    );
-    assert!(responsive_css.contains(".pulse-announce-btn {\n        min-height: 38px;"));
-    assert!(responsive_css.contains(".pulse-announce-btn svg {\n        width: 16px;"));
+    // Network's rows are kit rows too; the old connection rows and pulse strip are gone.
+    assert!(!responsive_css.contains(".conn-iface-name"));
+    assert!(!responsive_css.contains(".pulse-announce-btn"));
     assert!(
         !responsive_css.contains(".games-session-"),
         "Games rows are kit rows with their own touch sizes"
@@ -7735,7 +7751,6 @@ fn mobile_primary_lists_share_readable_row_scale() {
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
     assert!(index.contains("class=\"lxmf-messages ui-scroll\" id=\"lxmf-messages\""));
     assert!(index.contains("<div class=\"ui-pane-scroll\" id=\"msg-pane-scroll\">"));
-    assert!(responsive_css.contains(".conn-group-header {\n        font-size: var(--text-sm);"));
     assert!(
         !responsive_css.contains("#bottom-sheet .bottom-sheet-item"),
         "More is a kit menu sheet"
@@ -7746,34 +7761,23 @@ fn mobile_primary_lists_share_readable_row_scale() {
 #[test]
 fn network_interface_sections_scroll_without_compressing_rows() {
     let root = repo_root();
+    let css = read_source(root.join("dashboard/static/css/10-network-settings.css"))
+        .expect("network css");
+    // The screen never scrolls as a whole: the side panel and, on a phone, the page scroll inside.
+    assert!(css.contains("#view-network { padding: 0; overflow: hidden; }"));
+    assert!(css.contains(
+        "#view-network > .network-layout { display: flex; flex-direction: column; height: 100%; min-height: 0; padding: 0; gap: 0; }"
+    ));
+    assert!(css.contains(".netmap-insp-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain;"));
+    assert!(
+        css.contains(".netmap-root > .netmap-scroll { flex: 1; min-height: 0; overflow-y: auto; }")
+    );
+    assert!(css.contains(".netmap-insp-head {"));
     let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    let responsive_css =
-        read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
-
-    assert!(views_css.contains(".network-layout {\n    display: flex;"));
-    assert!(views_css.contains("box-sizing: border-box;\n    overflow: hidden;"));
-    assert!(views_css.contains(".network-main {\n    display: grid;"));
-    assert!(views_css.contains("min-height: 0;\n    min-width: 0;\n    overflow: hidden;"));
-    assert!(views_css.contains(".network-connections {\n    display: flex;"));
-    assert!(views_css.contains("min-height: 0;\n    min-width: 0;\n    overflow-y: auto;"));
-    assert!(views_css.contains("overscroll-behavior: contain;"));
-    assert!(views_css.contains("scrollbar-gutter: stable;"));
-    assert!(views_css.contains(".conn-section {\n    background: var(--surface-panel);"));
-    assert!(views_css.contains("flex-shrink: 0;"));
-    assert!(views_css.contains(".conn-section-body {\n    max-height: min(44vh, 420px);"));
-    assert!(views_css.contains("overflow-y: auto;"));
-    assert!(views_css.contains(
-        ".conn-section.collapsed .conn-section-body {\n    max-height: 0;\n    overflow: hidden;"
-    ));
-
-    assert!(responsive_css.contains(".network-main {\n        display: flex;"));
-    assert!(responsive_css.contains("padding-bottom: calc(62px + var(--sab) + var(--space-5));"));
-    assert!(responsive_css.contains(
-        ".conn-section:not(.collapsed) .conn-section-body {\n        max-height: none;\n        overflow: visible;"
-    ));
-    assert!(responsive_css.contains(
-        ".network-layout {\n        grid-template-columns: 1fr;\n        overflow: hidden;"
-    ));
+    assert!(
+        !views_css.contains(".conn-section"),
+        "the old connection sections are gone"
+    );
 }
 
 #[test]
@@ -8782,8 +8786,7 @@ fn identity_management_is_first_class_tab() {
 
     let modals_css =
         read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
-    assert!(modals_css.contains(".bottom-sheet-title-with-icon"));
-    assert!(modals_css.contains(".bottom-sheet-title-icon"));
+    assert!(!modals_css.contains(".bottom-sheet-title-with-icon"));
     assert!(modals_css.contains("flex-direction: column;"));
 
     let android_activity = read_source(
@@ -9381,7 +9384,10 @@ fn mobile_native_ownership_and_usb_recovery_remain_closed_and_single_flight() {
     assert!(health.contains("_androidUsbResumePermission.cancel("));
     assert!(health.contains("window._onUsbSelectorPermissionResult === ownedCallback"));
     assert!(health.contains("function applyMobileHardwareState(data)"));
-    assert!(health.contains("if (online) mobileHealth = null;"));
+    // Ambient USB or Bluetooth state explains only a connection that isn't online.
+    let network_view =
+        read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
+    assert!(network_view.contains("if (c.status === 'pending') return c.health || 'Connecting…';"));
 }
 
 #[test]
@@ -9712,8 +9718,10 @@ fn apple_generated_native_sources_do_not_emit_direct_logs() {
 fn peer_reachability_uses_uncapped_path_index() {
     let root = repo_root();
     let state = read_source(root.join("dashboard/static/js/state.js")).expect("state js");
-    assert!(state.contains("function pathCountSummary"));
-    assert!(state.contains("path_table_total"));
+    assert!(
+        !state.contains("function pathCountSummary"),
+        "the old path table is gone"
+    );
 
     let runtime = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime");
     assert!(runtime.contains("\"path_index\": path_index"));
@@ -9735,12 +9743,14 @@ fn peer_reachability_uses_uncapped_path_index() {
     assert!(peers.contains("voice_route_label: voiceInfo.route_label"));
     assert!(peers.contains("route_service: primaryInfo.service"));
 
-    let connections =
-        read_source(root.join("dashboard/static/js/connections.js")).expect("connections");
-    assert!(connections.contains("pathCountSummary(data)"));
-
-    let health = read_source(root.join("dashboard/static/js/health.js")).expect("health");
-    assert!(health.contains("renderPathTable(data.path_table || [], data)"));
+    // Network's Routes known is the transport's own count, never the capped table.
+    let network_view =
+        read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
+    assert!(
+        network_view.contains(
+            "paths: stats ? stats.path_table_total || (stats.path_table || []).length : 0,"
+        )
+    );
 }
 
 #[test]
@@ -9958,17 +9968,12 @@ fn interface_warning_statuses_use_plain_text() {
     let health = read_source(root.join("dashboard/static/js/health.js")).expect("health js");
     assert!(health.contains("connecting: 'Connecting'"));
     assert!(health.contains("reconnecting: 'Waiting for radio'"));
-    assert!(health.contains("conn-iface-status-text is-warning"));
-    assert!(!health.contains("conn-iface-pill"));
-
-    let css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(css.contains(".conn-iface-status-text.is-warning"));
-    assert!(css.contains("color: var(--status-warning-fg);"));
-    assert!(!css.contains(".conn-iface-pill"));
-
-    let events = read_source(root.join("dashboard/static/js/tauri_events.js")).expect("events js");
-    assert!(events.contains("conn-iface-status-text is-warning"));
-    assert!(!events.contains("conn-iface-pill"));
+    // A connection that needs attention reads as plain text beside a warning dot.
+    let network_view =
+        read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
+    assert!(network_view.contains("dot('warning') + esc(rowStatus(c))"));
+    assert!(network_view.contains("if (c.status === 'pending') return c.health || 'Connecting…';"));
+    assert!(!network_view.contains("conn-iface-pill"));
 }
 
 #[test]
@@ -11091,7 +11096,6 @@ fn discovery_settings_use_the_network_settings_commands() {
     let read = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
     let index = read("dashboard/index.html");
     let ns = read("dashboard/static/js/network_settings.js");
-    let health = read("dashboard/static/js/health.js");
     let shell = read("src-tauri/src/lib.rs");
     let commands = read("crates/ratspeak-tauri/src/commands/network_settings.rs");
     let gate = read("crates/ratspeak-tauri/src/invoke_gate.rs");
@@ -11125,10 +11129,10 @@ fn discovery_settings_use_the_network_settings_commands() {
         }
     }
     assert!(ns.contains("title: 'Restart the network?'"));
-    assert!(ns.contains("toast('Network restarted'"));
+    assert!(ns.contains("toast(opts.done || 'Network restarted'"));
     assert!(ns.contains("setBadge(opts.value, 'Restarting…')"));
-    assert!(index.contains(r#"id="conn-section-discovered" hidden"#));
-    assert!(ns.contains("Published servers and radios appear here"));
+    assert!(index.contains(r#"<div class="netmap-root" id="network-root"></div>"#));
+    assert!(ns.contains("RS.networkView.render()"));
     // Restart consequences and the current choice.
     assert!(ns.contains("connected devices will disconnect for a moment."));
     assert!(ns.contains("checked: c.value === currentValue"));
@@ -11155,7 +11159,9 @@ fn discovery_settings_use_the_network_settings_commands() {
         "var GROUPS = ['discovery-settings-body', 'stamp-settings-body', 'link-settings-body'];"
     ));
     assert_eq!(ns.matches("placeholder: 'Paste an address'").count(), 1);
-    assert!(health.contains("RS.discovery.keep(ifaceName)"));
+    let network_view =
+        read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
+    assert!(network_view.contains("RS.discovery.keep(c.id)"));
 
     // A change reaches its consumer: saved, written into the config, then one restart.
     let set = rust_function_block(&commands, "set_network_settings");

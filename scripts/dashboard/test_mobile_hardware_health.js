@@ -129,25 +129,31 @@ assert.deepStrictEqual(
     },
     'a paused configured radio must remain visible without live stats'
 );
-assert(source.includes('if (online) mobileHealth = null;'),
-    'ambient USB/BLE state must never override exact online transport evidence');
+var networkView = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'dashboard', 'static', 'js', 'network_view.js'),
+    'utf8'
+);
+assert(networkView.includes("if (c.status === 'pending') return c.health || 'Connecting…';"),
+    'ambient USB/BLE state explains only a connection that is not online');
 assert(source.includes('function applyMobileHardwareState(data)'),
     'live native state must update the retained interface projection');
 
-var actionStart = source.indexOf('function buildIfaceActionItems');
-var actionEnd = source.indexOf('\nfunction setInterfacePaused', actionStart);
-assert(actionStart >= 0 && actionEnd > actionStart, 'interface action reducer must exist');
-var actionCalls = [];
+function inner(src, name) {
+    var start = src.indexOf('    function ' + name + '(');
+    assert(start >= 0, name + ' must exist');
+    var end = src.indexOf('\n    }\n', start);
+    return src.slice(start, end + 6);
+}
+var helpStart = source.indexOf('// Guidance for BLE RNode failures');
+var helpEnd = source.indexOf('\nfunction setInterfacePaused', helpStart);
+assert(helpStart >= 0 && helpEnd > helpStart, 'radio help must exist');
 var dialogs = [];
 var androidCalls = [];
-var actionRecord = {
-    ifaceType: 'rnode',
-    iface: { port: 'ble://00:11:22:33:44:55', enabled: true }
-};
-var actionContext = {
-    ICON_PLAY: 'play', ICON_PAUSE: 'pause', ICON_RADIO: 'radio',
-    ICON_PENCIL: 'pencil', ICON_TRASH: 'trash', ICON_INFO: 'info',
+var permissionCalls = [];
+var edits = [];
+var ctx = {
     window: {
+        _cachedConfigIfaces: { mobile_hardware: {} },
         RatspeakAndroid: {
             openBluetoothSettings: function() { androidCalls.push('bluetooth'); return true; },
             openAppPermissionSettings: function() { androidCalls.push('app'); return true; },
@@ -156,182 +162,105 @@ var actionContext = {
     hasAndroidBridge: function() { return true; },
     rsAlert: function(opts) { dialogs.push(['alert', opts.title]); return Promise.resolve(); },
     rsConfirm: function(opts) { dialogs.push(['confirm', opts.title]); return Promise.resolve(true); },
-    _ensureBlePermissions: function() {
-        actionCalls.push(['ble-permission']);
-        return Promise.resolve(actionContext.permissionGranted);
-    },
+    _ensureBlePermissions: function() { permissionCalls.push(true); return Promise.resolve(ctx.permissionGranted); },
     permissionGranted: true,
-    _cachedConfigIfaces: { mobile_hardware: {} },
-    getConfiguredInterfaceRecord: function() { return actionRecord; },
-    getInterfaceLiveStatus: function() { return actionContext.liveStatus; },
+    getInterfaceLiveStatus: function() { return ctx.liveStatus; },
     liveStatus: null,
-    lastStats: null,
-    isInterfaceConfigEnabled: function(iface) { return iface.enabled !== false; },
-    isLoraInterfaceType: function() { return true; },
-    isTcpInterfaceType: function() { return false; },
-    setInterfacePaused: function(type, name, paused) { actionCalls.push([type, name, paused]); },
-    openInterfaceEdit: function(type, name) { actionCalls.push(['edit', type, name]); },
-    openRenameInterfaceDialog: function() {},
-    confirmRemoveInterface: function() {},
+    _rnodeIsTcpPort: function(port) { return /^tcp:\/\//.test(port); },
 };
-vm.runInNewContext(source.slice(actionStart, actionEnd), actionContext, {
-    filename: 'interface-action-items.js'
-});
+vm.runInNewContext(source.slice(helpStart, helpEnd) + '\n' +
+    ['radioVia', 'radioMhz', 'radioTrouble', 'editable', 'leaveWord', 'menuItems'].map(function(n) { return inner(networkView, n); }).join('\n'),
+    ctx, { filename: 'network-radio-help.js' });
 
-// Pause releases the supervisor's retry loop so another radio can be added.
-['waiting_for_radio', 'reconnecting', 'connecting', 'initializing', 'conflict'].forEach(function(state) {
-    actionContext._cachedConfigIfaces.mobile_hardware.ble_rnode = { state: state };
-    var item = actionContext.buildIfaceActionItems('rnode', 'Radio')[0];
-    assert.strictEqual(item.label, 'Pause Interface', state);
-    assert.notStrictEqual(item.disabled, true, state);
-    item.onSelect();
-    assert.deepStrictEqual(actionCalls.pop(), ['rnode', 'Radio', true]);
-});
-
-actionContext._cachedConfigIfaces.mobile_hardware.ble_rnode = { state: 'failed' };
-var retry = actionContext.buildIfaceActionItems('rnode', 'Radio')[0];
-assert.strictEqual(retry.label, 'Retry Connection');
-retry.onSelect();
-assert.deepStrictEqual(actionCalls.pop(), ['rnode', 'Radio', false]);
-
-actionContext._cachedConfigIfaces.mobile_hardware.ble_rnode = { state: 'connected' };
-var pause = actionContext.buildIfaceActionItems('rnode', 'Radio')[0];
-assert.strictEqual(pause.label, 'Pause Interface');
-pause.onSelect();
-assert.deepStrictEqual(actionCalls.pop(), ['rnode', 'Radio', true]);
-
-actionRecord.iface.enabled = false;
-var resume = actionContext.buildIfaceActionItems('rnode', 'Radio')[0];
-assert.strictEqual(resume.label, 'Resume Interface');
-resume.onSelect();
-assert.deepStrictEqual(actionCalls.pop(), ['rnode', 'Radio', false]);
-
-function labels(items) {
-    // Copy into this realm so deepStrictEqual compares values, not prototypes.
-    return Array.from(items).filter(function(item) { return !item.separator; })
-        .map(function(item) { return item.label; });
+function radio(port, status) {
+    return { id: 'Radio', kind: 'lora', ifaceType: 'rnode', status: status || 'pending', iface: { port: port, frequency: 915000000 } };
 }
-function help(items) {
-    return Array.from(items).find(function(item) { return item.label === 'Connection Help'; });
-}
-function bleState(state, reason) {
-    actionContext._cachedConfigIfaces.mobile_hardware.ble_rnode = { state: state, reason: reason };
-    return actionContext.buildIfaceActionItems('rnode', 'Radio');
+function ops(c) { return Array.from(ctx.menuItems(c)).filter(function(x) { return !x.separator; }).map(function(x) { return x.op; }); }
+function trouble(state, reason, port) {
+    ctx.window._cachedConfigIfaces.mobile_hardware = { ble_rnode: { state: state, reason: reason } };
+    return ctx.radioTrouble(radio(port || 'ble://00:11:22:33:44:55'));
 }
 
-actionContext._cachedConfigIfaces.mobile_hardware.ble_rnode = { state: 'failed', reason: 'stale_bond' };
-assert(!labels(actionContext.buildIfaceActionItems('rnode', 'Radio')).includes('Connection Help'),
-    'a paused radio has nothing to troubleshoot');
-actionRecord.iface.enabled = true;
+// #86: the detail reads the frequency and how the radio is connected.
+assert.strictEqual(ctx.radioVia({ port: 'ble://00:11:22:33:44:55' }), 'Bluetooth');
+assert.strictEqual(ctx.radioVia({ port: 'androidusb://opaque' }), 'USB');
+assert.strictEqual(ctx.radioVia({ port: '/dev/cu.usbmodem4101' }), 'USB');
+assert.strictEqual(ctx.radioVia({ port: 'tcp://10.0.0.5:7633' }), 'Wi-Fi');
+assert.strictEqual(ctx.radioMhz({ frequency: 915000000 }), '915.000 MHz');
 
-var unreachable = bleState('waiting_for_radio', 'not_reachable');
-assert.deepStrictEqual(labels(unreachable).slice(0, 2), ['Pause Interface', 'Connection Help']);
-assert.deepStrictEqual(labels(bleState('connecting', 'link_lost')).slice(0, 2),
-    ['Pause Interface', 'Connection Help']);
-var unresponsive = bleState('waiting_for_radio', 'radio_unresponsive');
-assert.deepStrictEqual(labels(unresponsive).slice(0, 2), ['Pause Interface', 'Connection Help']);
-var startFailed = bleState('initializing', 'radio_start_failed');
-assert.deepStrictEqual(labels(startFailed).slice(0, 2), ['Pause Interface', 'Connection Help']);
-var linkLimited = bleState('initializing', 'link_limited');
-assert.deepStrictEqual(labels(linkLimited).slice(0, 2), ['Pause Interface', 'Connection Help']);
-assert.deepStrictEqual(labels(bleState('failed', 'link_limited')).slice(0, 3),
-    ['Retry Connection', 'Pause Interface', 'Connection Help']);
-var pinRejected = bleState('failed', 'pin_rejected');
-assert.deepStrictEqual(labels(pinRejected).slice(0, 3),
-    ['Retry Connection', 'Pause Interface', 'Connection Help']);
-var windowClosed = bleState('failed', 'pairing_window_closed');
-assert.deepStrictEqual(labels(windowClosed).slice(0, 3),
-    ['Retry Connection', 'Pause Interface', 'Connection Help']);
-var grant = bleState('connecting', 'permission_needed')[0];
-assert.strictEqual(grant.label, 'Grant Bluetooth Permission');
-var stale = bleState('failed', 'stale_bond');
-assert.deepStrictEqual(labels(stale).slice(0, 3),
-    ['Retry Connection', 'Pause Interface', 'Connection Help']);
-assert.deepStrictEqual(labels(bleState('failed', 'bond_timeout')).slice(0, 3),
-    ['Retry Connection', 'Pause Interface', 'Connection Help']);
-var rejected = bleState('failed', 'rejected_tx_power');
-assert.deepStrictEqual(labels(rejected).slice(0, 3),
-    ['Retry Connection', 'Pause Interface', 'Connection Help']);
-[['connected', ''], ['initializing', ''], ['waiting_for_radio', 'radio_disconnected'],
-    ['failed', 'connect_failed']].forEach(function(row) {
-    assert(!labels(bleState(row[0], row[1])).includes('Connection Help'), row.join('/'));
+// #80: an enabled radio that is not connected yet still offers Pause; a paused one offers Resume.
+['pending', 'up'].forEach(function(status) {
+    assert(ops(radio('ble://00:11:22:33:44:55', status)).indexOf('pause') !== -1, status + ' radios offer Pause');
 });
+assert(ops(radio('/dev/cu.usbmodem4101', 'paused')).indexOf('resume') !== -1);
+assert.strictEqual(ops(radio('/dev/cu.usbmodem4101', 'off')).indexOf('pause'), -1, 'a radio that is off is not paused');
 
+// What a struggling radio needs from the person.
+var unreachable = trouble('waiting_for_radio', 'not_reachable');
+assert.strictEqual(unreachable.help.title, 'Radio not found');
+assert(!unreachable.retry && !unreachable.permission);
+[['radio_unresponsive', 'Radio not answering'], ['link_lost', 'Connection dropped']].forEach(function(row) {
+    assert.strictEqual(trouble('connecting', row[0]).help.title, row[1], row[0]);
+});
+assert.strictEqual(trouble('initializing', 'radio_start_failed').help.title, 'Radio failed to start');
+assert.strictEqual(trouble('initializing', 'link_limited').help.title, 'Bluetooth link too small');
+[['link_limited', 'Bluetooth link too small'], ['pin_rejected', 'Pairing not accepted'],
+    ['pairing_window_closed', 'Pairing interrupted'], ['stale_bond', 'Pair again'],
+    ['bond_timeout', 'Pairing needed'], ['rejected_tx_power', 'TX power not supported']].forEach(function(row) {
+    var t = trouble('failed', row[0]);
+    assert.strictEqual(t.help.title, row[1], row[0]);
+    assert(t.retry, row[0] + ' offers Retry');
+});
+var grant = trouble('connecting', 'permission_needed');
+assert(grant.permission, 'a missing Bluetooth permission offers Allow Bluetooth');
+[['connected', ''], ['initializing', ''], ['waiting_for_radio', 'radio_disconnected'], ['failed', 'connect_failed']].forEach(function(row) {
+    var t = trouble(row[0], row[1]);
+    assert(!t || !t.help, row.join('/'));
+});
+var pausedRadio = radio('ble://00:11:22:33:44:55', 'paused');
+ctx.window._cachedConfigIfaces.mobile_hardware = { ble_rnode: { state: 'failed', reason: 'stale_bond' } };
+assert.strictEqual(ctx.radioTrouble(pausedRadio), null, 'a paused radio has nothing to troubleshoot');
 // A desktop serial RNode has no Android hardware state; its driver explains it.
-actionContext._cachedConfigIfaces.mobile_hardware = {};
-actionRecord.iface.port = '/dev/cu.usbmodem4101';
-function runtimeState(state, reason) {
-    actionContext.liveStatus = { online: false, rnode_state: { state: state, reason: reason } };
-    return actionContext.buildIfaceActionItems('rnode', 'Radio');
+ctx.window._cachedConfigIfaces.mobile_hardware = {};
+function serial(state, reason) {
+    ctx.liveStatus = { online: false, rnode_state: { state: state, reason: reason } };
+    return ctx.radioTrouble(radio('/dev/cu.usbmodem4101'));
 }
-var serialRejected = runtimeState('failed', 'rejected_tx_power');
-assert.deepStrictEqual(labels(serialRejected).slice(0, 3),
-    ['Retry Connection', 'Pause Interface', 'Connection Help']);
-var serialAway = runtimeState('waiting_for_radio', 'not_reachable');
-assert.deepStrictEqual(labels(serialAway).slice(0, 2), ['Pause Interface', 'Connection Help'],
-    'a retrying driver is paused, never replaced by Resume');
-assert.deepStrictEqual(labels(runtimeState('initializing', null)).slice(0, 1), ['Pause Interface']);
-var serialDenied = runtimeState('waiting_for_radio', 'port_access_denied');
-var serialBusy = runtimeState('waiting_for_radio', 'port_in_use');
-// Desktop Bluetooth radios use the same driver state.
-actionRecord.iface.port = 'ble://00:11:22:33:44:55';
-assert.deepStrictEqual(labels(runtimeState('failed', 'rejected_tx_power')).slice(0, 3),
-    ['Retry Connection', 'Pause Interface', 'Connection Help']);
-actionContext.liveStatus = null;
+var serialRejected = serial('failed', 'rejected_tx_power');
+assert(serialRejected.retry && serialRejected.help.title === 'TX power not supported');
+var serialAway = serial('waiting_for_radio', 'not_reachable');
+assert(!serialAway.retry && serialAway.help.title === 'Radio not found', 'wired radios get wired guidance');
+assert.strictEqual(serial('waiting_for_radio', 'port_access_denied').help.title, 'Port access denied');
+assert.strictEqual(serial('waiting_for_radio', 'port_in_use').help.title, 'Port in use');
+ctx.liveStatus = null;
 
 function flush() { return new Promise(function(resolve) { setImmediate(resolve); }); }
 
 (async function() {
-    help(unreachable).onSelect();
+    ctx.showBleRnodeHelp(unreachable.help, function() { edits.push(true); });
     await flush();
     assert.deepStrictEqual(dialogs.pop(), ['alert', 'Radio not found']);
 
-    [[unresponsive, 'Radio not answering'], [startFailed, 'Radio failed to start'],
-        [linkLimited, 'Bluetooth link too small'], [pinRejected, 'Pairing not accepted'],
-        [windowClosed, 'Pairing interrupted']].forEach(function(row) {
-        help(row[0]).onSelect();
-    });
-    await flush();
-    assert.deepStrictEqual(dialogs.splice(-5).map(function(d) { return d[1]; }),
-        ['Radio not answering', 'Radio failed to start', 'Bluetooth link too small',
-            'Pairing not accepted', 'Pairing interrupted']);
-
-    help(stale).onSelect();
+    ctx.showBleRnodeHelp(trouble('failed', 'stale_bond').help, function() {});
     await flush();
     assert.deepStrictEqual(dialogs.pop(), ['confirm', 'Pair again']);
     assert.strictEqual(androidCalls.pop(), 'bluetooth');
 
-    grant.onSelect();
+    // A rejected setting is fixed by editing the interface, not by retrying.
+    ctx.showBleRnodeHelp(serialRejected.help, function() { edits.push(true); });
     await flush();
-    assert.deepStrictEqual(actionCalls.pop(), ['ble-permission']);
+    assert.deepStrictEqual(dialogs.pop(), ['confirm', 'TX power not supported']);
+    assert.strictEqual(edits.length, 1);
+
+    ctx.requestBleRnodePermission();
+    await flush();
+    assert.strictEqual(permissionCalls.length, 1);
     assert.strictEqual(dialogs.length, 0, 'a granted permission needs no settings detour');
 
-    // A rejected setting is fixed by editing the interface, not by retrying.
-    help(rejected).onSelect();
-    await flush();
-    assert.deepStrictEqual(dialogs.pop(), ['confirm', 'TX power not supported']);
-    assert.deepStrictEqual(actionCalls.pop(), ['edit', 'rnode', 'Radio']);
-    help(serialRejected).onSelect();
-    await flush();
-    assert.deepStrictEqual(dialogs.pop(), ['confirm', 'TX power not supported']);
-    assert.deepStrictEqual(actionCalls.pop(), ['edit', 'rnode', 'Radio']);
-    // Wired radios get wired guidance, without Bluetooth steps.
-    help(serialAway).onSelect();
-    await flush();
-    assert.deepStrictEqual(dialogs.pop(), ['alert', 'Radio not found']);
-    // A port the OS refuses, or another program holds, says so.
-    help(serialDenied).onSelect();
-    await flush();
-    assert.deepStrictEqual(dialogs.pop(), ['alert', 'Port access denied']);
-    help(serialBusy).onSelect();
-    await flush();
-    assert.deepStrictEqual(dialogs.pop(), ['alert', 'Port in use']);
-
     // Android stops prompting after repeated denials; Settings is the only path.
-    actionContext.permissionGranted = false;
-    grant.onSelect();
+    ctx.permissionGranted = false;
+    ctx.requestBleRnodePermission();
     await flush();
-    assert.deepStrictEqual(actionCalls.pop(), ['ble-permission']);
     assert.deepStrictEqual(dialogs.pop(), ['confirm', 'Bluetooth permission needed']);
     assert.strictEqual(androidCalls.pop(), 'app');
 

@@ -202,6 +202,10 @@
 .net-mark { display: inline-grid; place-items: center; flex: 0 0 auto; width: 24px; height: 24px; color: var(--text-secondary); }
 .net-mark .ui-ico { width: 20px; height: 20px; stroke-width: 1.8; }
 .net-mark.is-gem { color: var(--public-server-accent, var(--accent)); }
+/* The Ratspeak servers' tones, for their gem marks. */
+.public-server-card--ruby { --public-server-accent: var(--status-error); }
+.public-server-card--emerald { --public-server-accent: var(--status-online); }
+.public-server-card--diamond { --public-server-accent: var(--status-info); }
 .net-mark.is-initial { width: 24px; height: 24px; border-radius: 50%; background: var(--fill-control); font-size: var(--text-2xs); font-weight: 600; color: var(--text-secondary); }
 /* Discovered freshness dot: filled when heard today, a ring within 3 days, a faint ring after that. */
 .net-ddot { display: inline-block; flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; background: var(--status-discovered); }

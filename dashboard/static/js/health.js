@@ -1,5 +1,4 @@
 var announceCache = [];
-var interfaceHistory = {};  // name -> [{t, txb, rxb}, ...]
 
 function isAutoInterfacePeer(iface) {
     var name = (iface && iface.name) || '';
@@ -145,44 +144,9 @@ function renderDashboardSummaries(data) {
     renderDashboardPeersList();
 }
 
-function toggleSubPanel(id) {
-    var panel = document.getElementById(id);
-    if (panel) panel.classList.toggle('collapsed');
-}
-
-document.addEventListener('DOMContentLoaded', function() {
-    var pathToggle = document.getElementById('toggle-subpanel-paths');
-    if (pathToggle) pathToggle.addEventListener('click', function() { toggleSubPanel('subpanel-paths'); });
-    var announceToggle = document.getElementById('toggle-subpanel-announces');
-    if (announceToggle) announceToggle.addEventListener('click', function() { toggleSubPanel('subpanel-announces'); });
-});
-
 function getInterfaceAlias(name) {
     try { return localStorage.getItem('iface_alias_' + name); } catch (e) { return null; }
 }
-function setInterfaceAlias(name, alias) {
-    try { localStorage.setItem('iface_alias_' + name, alias); } catch (e) {}
-}
-function clearInterfaceAlias(name) {
-    try { localStorage.removeItem('iface_alias_' + name); } catch (e) {}
-}
-
-// Section collapse: per-section, session-scoped. Default = section with a
-// running interface starts open. User toggles win within the session
-// (sessionStorage clears on WebView restart, default rule re-applies).
-function getConnSectionPref(key) {
-    try { return sessionStorage.getItem('conn_section_' + key + '_state'); } catch (e) { return null; }
-}
-function setConnSectionPref(key, state) {
-    try { sessionStorage.setItem('conn_section_' + key + '_state', state); } catch (e) {}
-}
-function shouldSectionBeCollapsed(key, hasInterfaces) {
-    var pref = getConnSectionPref(key);
-    if (pref === 'closed') return true;
-    if (pref === 'open') return false;
-    return !hasInterfaces;
-}
-
 function sharedInterfaceLabel(role) {
     if (role === 'shared_instance_peer') return 'Shared instance';
     if (role === 'shared_server') return 'Shared instance server';
@@ -248,129 +212,6 @@ function getConfiguredInterfaceRecord(ifaceName) {
 function isConfiguredInterfacePaused(ifaceName) {
     var record = getConfiguredInterfaceRecord(ifaceName);
     return !!(record && record.iface && !isInterfaceConfigEnabled(record.iface));
-}
-
-function openRenameInterfaceDialog(ifaceName) {
-    var current = getInterfaceAlias(ifaceName) || '';
-    rsPrompt({
-        message: 'Rename interface',
-        placeholder: 'Display name (leave blank to reset)',
-        defaultValue: current
-    }).then(function(newName) {
-        if (newName === null) return;
-        var trimmed = newName.trim();
-        if (trimmed) setInterfaceAlias(ifaceName, trimmed);
-        else clearInterfaceAlias(ifaceName);
-        if (typeof renderConnections === 'function') renderConnections();
-        else if (typeof _renderConnectionsFromCache === 'function') _renderConnectionsFromCache();
-    });
-}
-
-var ICON_PENCIL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>';
-var ICON_RADIO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49m11.31-2.82a10 10 0 0 1 0 14.14m-14.14 0a10 10 0 0 1 0-14.14"/></svg>';
-var ICON_TRASH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
-var ICON_PAUSE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>';
-var ICON_PLAY = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="6 3 20 12 6 21 6 3"/></svg>';
-var ICON_KEEP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>';
-var ICON_INFO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>';
-
-function buildIfaceActionItems(ifaceType, ifaceName) {
-    var items = [];
-    if (ifaceType === 'joined') {
-        items.push({ label: 'Keep', icon: ICON_KEEP, onSelect: function() {
-            if (RS.discovery) RS.discovery.keep(ifaceName);
-        } });
-        return items;
-    }
-    var record = getConfiguredInterfaceRecord(ifaceName);
-    var supportsPause = !!(record && record.iface && ifaceType !== 'ble_peer');
-    var paused = supportsPause && !isInterfaceConfigEnabled(record.iface);
-    var live = supportsPause ? getInterfaceLiveStatus(ifaceName) : null;
-    var statusKnown = !!(lastStats && lastStats.interface_stats);
-    var unavailable = supportsPause && statusKnown && !paused && (!live || live.online === false);
-    var port = supportsPause ? String(record.iface.port || '') : '';
-    var isBleRnode = ifaceType === 'rnode' && port.indexOf('ble://') === 0;
-    var bleState = isBleRnode && _cachedConfigIfaces && _cachedConfigIfaces.mobile_hardware
-        ? _cachedConfigIfaces.mobile_hardware.ble_rnode
-        : null;
-    var bleStateName = bleState && typeof bleState.state === 'string' ? bleState.state : '';
-    var bleReason = bleState && typeof bleState.reason === 'string' ? bleState.reason : '';
-    var bleInFlight = bleStateName === 'waiting_for_radio' ||
-        bleStateName === 'reconnecting' ||
-        bleStateName === 'connecting' ||
-        bleStateName === 'initializing';
-    var bleHelp = isBleRnode && !paused ? bleRnodeHelp(bleStateName, bleReason) : null;
-    // Without an Android hardware state the driver's own state explains the row.
-    var runtimeState = ifaceType === 'rnode' && !bleState && !paused && live ? live.rnode_state : null;
-    var runtimeStateName = runtimeState && typeof runtimeState.state === 'string' ? runtimeState.state : '';
-    var runtimeReason = runtimeState && typeof runtimeState.reason === 'string' ? runtimeState.reason : '';
-    var runtimeWaiting = runtimeStateName === 'waiting_for_radio' ||
-        runtimeStateName === 'connecting' ||
-        runtimeStateName === 'initializing';
-    var help = bleHelp || (runtimeStateName ? rnodeConnectionHelp(runtimeStateName, runtimeReason, port) : null);
-    if (supportsPause) {
-        if (paused) {
-            items.push({
-                label: 'Resume Interface',
-                icon: ICON_PLAY,
-                onSelect: function() { setInterfacePaused(ifaceType, ifaceName, false); }
-            });
-        } else if (isBleRnode && bleInFlight && bleReason === 'permission_needed') {
-            // The supervisor keeps retrying; a grant wakes it immediately.
-            items.push({
-                label: 'Grant Bluetooth Permission',
-                icon: ICON_RADIO,
-                onSelect: function() { requestBleRnodePermission(); }
-            });
-        } else if ((isBleRnode && (bleStateName === 'failed' || bleStateName === 'disabled')) ||
-            runtimeStateName === 'failed') {
-            items.push({
-                label: 'Retry Connection',
-                icon: ICON_PLAY,
-                onSelect: function() { setInterfacePaused(ifaceType, ifaceName, false); }
-            });
-            items.push({
-                label: 'Pause Interface',
-                icon: ICON_PAUSE,
-                onSelect: function() { setInterfacePaused(ifaceType, ifaceName, true); }
-            });
-        } else if (isBleRnode || runtimeWaiting) {
-            // Enabled configuration remains owned by its runtime even while
-            // live stats are absent or offline. Missing stats alone must never
-            // turn Pause into the destructive Resume/replacement path. Pause
-            // stays offered while the native supervisor retries: it releases
-            // that owner instead of replacing it.
-            items.push({
-                label: 'Pause Interface',
-                icon: ICON_PAUSE,
-                onSelect: function() { setInterfacePaused(ifaceType, ifaceName, true); }
-            });
-        } else {
-            items.push({
-                label: unavailable ? 'Resume Interface' : 'Pause Interface',
-                icon: unavailable ? ICON_PLAY : ICON_PAUSE,
-                onSelect: function() { setInterfacePaused(ifaceType, ifaceName, !unavailable); }
-            });
-        }
-        if (help) {
-            items.push({
-                label: 'Connection Help',
-                icon: ICON_INFO,
-                onSelect: function() {
-                    showBleRnodeHelp(help, function() { openInterfaceEdit(ifaceType, ifaceName); });
-                }
-            });
-        }
-        items.push({ separator: true });
-    }
-    if (isLoraInterfaceType(ifaceType)) {
-        items.push({ label: 'Edit', icon: ICON_RADIO, onSelect: function() { openInterfaceEdit(ifaceType, ifaceName); } });
-    } else if (isTcpInterfaceType(ifaceType)) {
-        items.push({ label: 'Edit', icon: ICON_PENCIL, onSelect: function() { openInterfaceEdit(ifaceType, ifaceName); } });
-    }
-    items.push({ label: 'Rename', icon: ICON_PENCIL, onSelect: function() { openRenameInterfaceDialog(ifaceName); } });
-    items.push({ label: 'Remove', icon: ICON_TRASH, danger: true, onSelect: function() { confirmRemoveInterface(ifaceType, ifaceName); } });
-    return items;
 }
 
 // Guidance for BLE RNode failures only a person at the radio or phone can fix.
@@ -675,272 +516,9 @@ function openInterfaceEdit(ifaceType, ifaceName) {
     }
 }
 
-// Runs on every stats_update — rates need a continuous series even off-tab.
-function updateInterfaceHistory(stats) {
-    var ifaces = interfaceStatsWithoutAutoPeerDoubleCount((stats && stats.interfaces) ? stats.interfaces : []);
-    if (ifaces.length === 0) return;
-    var currentIfaceNames = {};
-    ifaces.forEach(function(iface) {
-        var name = iface.name || 'unknown';
-        currentIfaceNames[name] = true;
-        if (!interfaceHistory[name]) interfaceHistory[name] = [];
-        interfaceHistory[name].push({
-            t: Date.now() / 1000,
-            txb: iface.txb || 0,
-            rxb: iface.rxb || 0,
-        });
-        if (interfaceHistory[name].length > 60) {
-            interfaceHistory[name] = interfaceHistory[name].slice(-60);
-        }
-    });
-    Object.keys(interfaceHistory).forEach(function(key) {
-        if (!currentIfaceNames[key]) delete interfaceHistory[key];
-    });
-}
-
-function renderInterfaceCards(stats) {
-    var container = document.getElementById('interfaces-container');
-    if (!container) return;
-    var settingsView = document.getElementById('view-settings');
-    if (settingsView && !settingsView.classList.contains('active')) return;
-
-    var ifaces = interfaceStatsWithoutAutoPeerDoubleCount((stats && stats.interfaces) ? stats.interfaces : []);
-    if (ifaces.length === 0) {
-        var msg = (lastStats && lastStats.connected === false)
-            ? '<div class="inline-warning">Connecting to hub node...</div>'
-            : '<div class="inline-hint">No interfaces detected.</div>';
-        container.innerHTML = msg;
-        return;
-    }
-
-    container.innerHTML = ifaces.map(function(iface) {
-        var name = iface.name || 'unknown';
-        var status = iface.online !== undefined ? (iface.online ? 'up' : 'down') : 'up';
-        var statusLabel = status.toUpperCase();
-        var typeName = iface.type || '';
-        var role = iface.role || 'normal';
-        var displayType = interfaceTypeLabel(typeName, role);
-
-        var hist = interfaceHistory[name] || [];
-        var txRate = 0, rxRate = 0;
-        if (hist.length >= 2) {
-            var last = hist[hist.length - 1];
-            var prev = hist[hist.length - 2];
-            var dt = last.t - prev.t;
-            if (dt > 0) {
-                txRate = ((last.txb - prev.txb) * 8) / dt;
-                rxRate = ((last.rxb - prev.rxb) * 8) / dt;
-            }
-        }
-
-        var isLora = typeName.indexOf('RNode') >= 0;
-        var isBle = isLora && typeof iface.port === 'string' && iface.port.indexOf('ble://') === 0;
-        var isAuto = typeName.indexOf('AutoInterface') >= 0;
-        var isTcp = typeName.indexOf('TCPClient') >= 0 || typeName.indexOf('TCPServer') >= 0;
-        var extraClass = isBle ? ' interface-card-ble' : (isLora ? ' interface-card-lora' : (isAuto ? ' interface-card-auto' : (isTcp ? ' interface-card-tcp' : '')));
-        var cardClass = 'interface-card' + extraClass;
-
-        var flowIndicator = '';
-        if (isTcp && (txRate > 0 || rxRate > 0)) {
-            flowIndicator = '<span class="interface-flow-active" title="Data flowing">&#9679;</span>';
-        }
-
-        var loraStatsHtml = '';
-        if (isLora) {
-            var loraParts = [];
-            if (iface.frequency) {
-                loraParts.push('<span class="lora-stat">' + (iface.frequency / 1000000).toFixed(2) + ' MHz</span>');
-            }
-            if (iface.bandwidth) {
-                loraParts.push('<span class="lora-stat">BW ' + (iface.bandwidth / 1000).toFixed(0) + 'k</span>');
-            }
-            if (iface.spreading_factor || iface.spreadingfactor) {
-                loraParts.push('<span class="lora-stat">SF' + (iface.spreading_factor || iface.spreadingfactor) + '</span>');
-            }
-            if (iface.coding_rate || iface.codingrate) {
-                loraParts.push('<span class="lora-stat">CR' + (iface.coding_rate || iface.codingrate) + '</span>');
-            }
-            if (iface.airtime_short !== undefined) {
-                var airtimePct = (iface.airtime_short * 100).toFixed(1);
-                var airtimeWarn = airtimePct > 50;
-                var airtimeClass = airtimeWarn ? ' lora-stat-warn' : '';
-                loraParts.push('<span class="lora-stat' + airtimeClass + '">Airtime ' + airtimePct + '%' + (airtimeWarn ? ' (high)' : '') + '</span>');
-            }
-            if (iface.airtime_long !== undefined) {
-                var airtimeLong = (iface.airtime_long * 100).toFixed(1);
-                loraParts.push('<span class="lora-stat" title="60-minute rolling airtime">1h: ' + airtimeLong + '%</span>');
-            }
-            if (iface.channel_load_short !== undefined) {
-                var loadPct = (iface.channel_load_short * 100).toFixed(1);
-                var loadWarn = loadPct > 50;
-                var loadClass = loadWarn ? ' lora-stat-warn' : '';
-                loraParts.push('<span class="lora-stat' + loadClass + '">Ch.Load ' + loadPct + '%' + (loadWarn ? ' (high)' : '') + '</span>');
-            }
-            if (iface.channel_load_long !== undefined) {
-                var channelLoadLong = (iface.channel_load_long * 100).toFixed(1);
-                loraParts.push('<span class="lora-stat" title="60-minute rolling channel load">1h: ' + channelLoadLong + '%</span>');
-            }
-            if (iface.noise_floor !== undefined && iface.noise_floor !== null) {
-                var noiseClass = '';
-                var noiseText = '';
-                if (iface.noise_floor > -60) {
-                    noiseClass = ' lora-stat-warn';
-                    noiseText = ' (high)';
-                } else if (iface.noise_floor <= -90) {
-                    noiseClass = ' lora-stat-good';
-                    noiseText = ' (good)';
-                }
-                loraParts.push('<span class="lora-stat' + noiseClass + '">Noise ' + iface.noise_floor + ' dBm' + noiseText + '</span>');
-            }
-            if (iface.bitrate !== undefined && iface.bitrate !== null) {
-                var brStr = iface.bitrate >= 1000 ? (iface.bitrate / 1000).toFixed(1) + ' Kbps' : iface.bitrate + ' bps';
-                loraParts.push('<span class="lora-stat" title="Effective link capacity">' + brStr + '</span>');
-            }
-            if (iface.battery_state !== undefined && iface.battery_state) {
-                var batteryPct = iface.battery_percent !== undefined ? iface.battery_percent + '%' : '';
-                var batteryClass = '';
-                if (iface.battery_percent !== undefined && iface.battery_percent < 20) batteryClass = ' lora-stat-warn';
-                loraParts.push('<span class="lora-stat' + batteryClass + '">Bat ' + iface.battery_state + (batteryPct ? ' ' + batteryPct : '') + '</span>');
-            }
-            if (iface.cpu_temp !== undefined && iface.cpu_temp !== null) {
-                var tempClass = iface.cpu_temp > 75 ? ' lora-stat-warn' : '';
-                loraParts.push('<span class="lora-stat' + tempClass + '" title="RNode CPU temperature">' + iface.cpu_temp.toFixed(0) + '°C</span>');
-            }
-            if (loraParts.length > 0) {
-                var freqMhz = iface.frequency ? (iface.frequency / 1000000) : null;
-                var guidanceText = 'Airtime and channel load below 50% are normal.';
-                if (freqMhz && freqMhz >= 900 && freqMhz <= 930) {
-                    guidanceText = 'Noise: -67 to -72 dBm typical for 915 MHz. ' + guidanceText;
-                } else if (freqMhz && freqMhz >= 860 && freqMhz <= 870) {
-                    guidanceText = 'Noise: -72 to -80 dBm typical for 868 MHz. ' + guidanceText;
-                } else {
-                    guidanceText = 'Lower noise floor (more negative) is better. ' + guidanceText;
-                }
-                loraStatsHtml = '<div class="interface-lora-stats">' + loraParts.join('') + '</div>' +
-                    '<div class="lora-guidance">' + guidanceText + '</div>';
-            }
-        }
-
-        return '<div class="' + cardClass + '">' +
-            '<div class="interface-card-header">' +
-                '<span class="interface-card-name" title="' + escapeHtml(name) + '">' + escapeHtml(friendlyInterfaceName(name, typeName, role)) + '</span>' +
-                '<span class="interface-card-status ' + status + '">' + statusLabel + '</span>' +
-                flowIndicator +
-            '</div>' +
-            '<div class="interface-card-stats">' +
-                '<span class="interface-stat-label">TX</span>' +
-                '<span class="interface-stat-val">' + prettySize(iface.txb || 0) + '</span>' +
-                '<span class="interface-stat-label">RX</span>' +
-                '<span class="interface-stat-val">' + prettySize(iface.rxb || 0) + '</span>' +
-                '<span class="interface-stat-label">TX Rate</span>' +
-                '<span class="interface-stat-val">' + prettySpeed(txRate) + '</span>' +
-                '<span class="interface-stat-label">RX Rate</span>' +
-                '<span class="interface-stat-val">' + prettySpeed(rxRate) + '</span>' +
-            '</div>' +
-            loraStatsHtml +
-            '<div class="interface-card-type">' + escapeHtml(displayType) + '</div>' +
-        '</div>';
-    }).join('');
-}
-
-function renderPathTable(pathTable, stats) {
-    var tbody = document.getElementById('path-table-body');
-    var countEl = document.getElementById('path-table-count');
-    if (!tbody || !pathTable) return;
-
-    var summary = typeof pathCountSummary === 'function'
-        ? pathCountSummary(stats || { path_table: pathTable })
-        : { visible: pathTable.length, total: pathTable.length, truncated: false, label: String(pathTable.length) };
-    countEl.textContent = summary.label + ' paths';
-    countEl.title = summary.truncated ? 'Visible table rows of total known paths' : 'Known paths';
-
-    if (pathTable.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" class="text-muted-color">No known paths.</td></tr>';
-        return;
-    }
-
-    pathTable.sort(function(a, b) {
-        return (b.timestamp || 0) - (a.timestamp || 0);
-    });
-
-    tbody.innerHTML = pathTable.map(function(p) {
-        var destHash = p.hash || p.destination_hash || '';
-        var viaHash = p.via || p.next_hop || '';
-        var hops = p.hops !== undefined ? p.hops : '?';
-        var age = '';
-        if (p.timestamp || p.expires) {
-            var elapsed = Date.now() / 1000 - (p.timestamp || 0);
-            age = prettyTime(elapsed);
-        }
-        var ageClass = '';
-        if (p.timestamp) {
-            var secs = Date.now() / 1000 - p.timestamp;
-            if (secs > 600) ageClass = ' class="text-status-error"';
-            else if (secs > 120) ageClass = ' class="text-status-warning"';
-            else ageClass = ' class="text-status-online"';
-        }
-
-        return '<tr>' +
-            '<td>' + copyableHash(destHash) + '</td>' +
-            '<td>' + (viaHash ? copyableHash(viaHash) : 'direct') + '</td>' +
-            '<td>' + hops + '</td>' +
-            '<td' + ageClass + '>' + age + '</td>' +
-        '</tr>';
-    }).join('');
-}
-
-function renderAnnounceList() {
-    var container = document.getElementById('announce-list');
-    var countEl = document.getElementById('announce-count');
-    if (!container) return;
-
-    if (countEl) countEl.textContent = announceCache.length;
-
-    var subCountEl = document.getElementById('announce-sub-count');
-    if (subCountEl) subCountEl.textContent = announceCache.length;
-
-    var netAnnouncesEl = document.getElementById('net-stat-announces');
-    if (netAnnouncesEl) netAnnouncesEl.textContent = announceCache.length;
-
-    var dashAnnounceCount = document.getElementById('stat-announces');
-    if (dashAnnounceCount) dashAnnounceCount.textContent = announceCache.length;
-
-    if (announceCache.length === 0) {
-        container.innerHTML = '<div class="inline-hint">No announces received yet.</div>';
-        return;
-    }
-
-    container.innerHTML = announceCache.slice(0, 50).map(function(a) {
-        var aspect = a.app_data || '';
-        var ts = a.timestamp ? formatTime(a.timestamp) : '';
-        var node = a.node ? friendlyNode(a.node) : '';
-        var hops = a.hops !== null && a.hops !== undefined ? a.hops + 'h' : '';
-
-        return '<div class="announce-entry">' +
-            '<span class="announce-hash">' + copyableHash(a.hash || '') + '</span>' +
-            '<span class="announce-aspect">' + escapeHtml(aspect.substring(0, 40)) + '</span>' +
-            (node ? '<span class="announce-node">' + escapeHtml(node) + '</span>' : '') +
-            (hops ? '<span class="announce-hops">' + hops + '</span>' : '') +
-            '<span class="announce-time">' + ts + '</span>' +
-        '</div>';
-    }).join('');
-}
-
 function renderNetworkOverview(data) {
     if (RS.networkView && typeof RS.networkView.onStats === 'function') RS.networkView.onStats(data);
 }
-
-function renderNetworkPulse(data) {
-    renderNetworkOverview(data);
-}
-
-var _connSectionMap = {
-    lora: { types: ['RNodeInterface', 'RNodeMultiInterface'], isSerial: true },
-    ble: { types: ['RNodeInterface', 'RNodeMultiInterface'], isBle: true },
-    tcp: { types: ['TCPClientInterface'] },
-    host: { types: ['TCPServerInterface'] },
-    local: { types: ['AutoInterface'] }
-};
 
 function isUserFacingInterface(iface) {
     var name = iface.name || '';
@@ -1242,19 +820,8 @@ function clearNetworkInterfaceCaches(opts) {
     window._autoUnavailable = null;
     _cachedConfigIfaces = empty;
     _cachedConfigByName = {};
-    interfaceHistory = {};
     lastStats = null;
     _anyInterfaceOnline = null;
-    _connectionsHasRendered = false;
-    _connectionsRenderScheduled = false;
-    if (_connectionsThrottleTimer) {
-        clearTimeout(_connectionsThrottleTimer);
-        _connectionsThrottleTimer = null;
-    }
-    if (_connectionsFirstLoadTimer) {
-        clearTimeout(_connectionsFirstLoadTimer);
-        _connectionsFirstLoadTimer = null;
-    }
     if (opts.render) {
         _renderConnectionsFromCache();
         if (typeof refreshConnectPublicServers === 'function') refreshConnectPublicServers(empty);
@@ -1352,120 +919,15 @@ function confirmRemoveInterface(ifaceType, ifaceName) {
     });
 }
 
-function showInterfaceActionSheet(ifaceType, ifaceName) {
-    var overlay = document.getElementById('iface-action-overlay');
-    var sheet = document.getElementById('iface-action-sheet');
-    var titleEl = document.getElementById('iface-action-title');
-    var itemsEl = document.getElementById('iface-action-items');
-    if (!overlay || !sheet || !titleEl || !itemsEl) return;
-
-    var displayName = (typeof friendlyInterfaceName === 'function')
-        ? friendlyInterfaceName(ifaceName, '')
-        : ifaceName;
-    if (typeof setBottomSheetTitleWithIcon === 'function' && typeof interfaceSheetIconTypeForInterface === 'function') {
-        setBottomSheetTitleWithIcon(titleEl, displayName, interfaceSheetIconTypeForInterface(ifaceType));
-    } else {
-        titleEl.textContent = displayName;
-    }
-
-    var items = buildIfaceActionItems(ifaceType, ifaceName);
-    itemsEl.innerHTML = '';
-    items.forEach(function(item, idx) {
-        if (item.separator) {
-            var divider = document.createElement('div');
-            divider.className = 'bottom-sheet-divider';
-            itemsEl.appendChild(divider);
-            return;
-        }
-        var btn = document.createElement('button');
-        btn.className = 'bottom-sheet-item' + (item.danger ? ' bottom-sheet-danger' : '');
-        if (item.disabled) {
-            btn.disabled = true;
-            btn.classList.add('disabled');
-        }
-        btn.innerHTML = item.icon + '<span>' + item.label + '</span>';
-        if (!item.disabled) {
-            btn.onclick = function() {
-                closeInterfaceActionSheet();
-                setTimeout(function() {
-                    if (typeof item.onSelect === 'function') item.onSelect();
-                }, 150);
-            };
-        }
-        itemsEl.appendChild(btn);
-    });
-
-    RS.ui.openExistingSheet(sheet, overlay);
-    overlay.onclick = function() { closeInterfaceActionSheet(); };
-}
-
-function closeInterfaceActionSheet() {
-    var overlay = document.getElementById('iface-action-overlay');
-    var sheet = document.getElementById('iface-action-sheet');
-    if (sheet) RS.ui.closeExistingSheet(sheet, overlay);
-}
-
-function renderTrafficTable(rateTable) {
-    var container = document.getElementById('traffic-container');
-    var countEl = document.getElementById('traffic-count');
-    if (!container) return;
-
-    if (!rateTable || rateTable.length === 0) {
-        container.innerHTML = '<div class="inline-hint">No rate limit entries.</div>';
-        if (countEl) countEl.textContent = '0 entries';
-        return;
-    }
-
-    if (countEl) countEl.textContent = rateTable.length + ' entr' + (rateTable.length !== 1 ? 'ies' : 'y');
-
-    var html = '<div class="traffic-table-wrapper"><table class="traffic-table">' +
-        '<thead><tr><th>Destination</th><th>Status</th><th>Last Seen</th></tr></thead><tbody>';
-
-    for (var i = 0; i < rateTable.length; i++) {
-        var entry = rateTable[i];
-        var destHash = entry.hash || entry.destination_hash || '';
-        var rate = entry.rate !== undefined ? entry.rate : (entry.traffic_rate !== undefined ? entry.traffic_rate : 0);
-        var isActive = rate > 0;
-        var badgeClass = isActive ? 'active' : 'idle';
-        var rateText = isActive ? prettySpeed(rate * 8) : 'Idle';
-        var lastActivity = '';
-        if (entry.last !== undefined) {
-            lastActivity = prettyTime(Date.now() / 1000 - entry.last);
-        } else if (entry.last_activity !== undefined) {
-            lastActivity = prettyTime(Date.now() / 1000 - entry.last_activity);
-        }
-
-        html += '<tr>' +
-            '<td>' + copyableHash(destHash) + '</td>' +
-            '<td><span class="traffic-rate-badge ' + badgeClass + '">' + rateText + '</span></td>' +
-            '<td>' + (lastActivity || '&mdash;') + '</td>' +
-        '</tr>';
-    }
-
-    html += '</tbody></table></div>';
-    container.innerHTML = html;
-}
-
 function renderAlert(alert) {
     var colorClass = alert.level === 'critical' ? 'toast-error' : 'toast-warning';
     var duration = 5000;
     showToast(alert.message, colorClass, duration);
 }
 
-var _announceRenderScheduled = false;
-function _scheduleAnnounceRender() {
-    if (_announceRenderScheduled) return;
-    _announceRenderScheduled = true;
-    requestAnimationFrame(function() {
-        _announceRenderScheduled = false;
-        renderAnnounceList();
-    });
-}
 RS.listen('announce_received', function(data) {
     announceCache.unshift(data);
     if (announceCache.length > 200) announceCache.length = 200;
-    // rAF coalesce — a busy hub floods hundreds of announces per second.
-    _scheduleAnnounceRender();
 });
 
 RS.listen('alert', function(data) {
@@ -1478,23 +940,9 @@ RS.listen('alert', function(data) {
 var _origRenderStats = renderStats;
 renderStats = function(data) {
     _origRenderStats(data);
-    updateInterfaceHistory(data.interface_stats || data);
-    renderPathTable(data.path_table || [], data);
     renderNetworkOverview(data);
-    renderTrafficTable(data.rate_table || []);
     // Re-render from cached config so online status + bytes stay in sync.
     if (isViewActive('network') && typeof _renderConnectionsFromCache === 'function') {
         _renderConnectionsFromCache();
     }
 };
-
-['stat-paths', 'stat-announces'].forEach(function(id) {
-    var el = document.getElementById(id);
-    if (el && el.parentElement) {
-        el.parentElement.style.cursor = 'pointer';
-        el.parentElement.addEventListener('click', function() {
-            if (typeof switchView === 'function') switchView('network');
-        });
-    }
-});
-

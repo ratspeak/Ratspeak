@@ -99,11 +99,14 @@
             var online = live ? live.online !== false : false;
             var status = a.paused ? (off.indexOf(name) !== -1 ? 'off' : 'paused') : (online ? 'up' : 'pending');
             var display = typeof friendlyInterfaceName === 'function' ? friendlyInterfaceName(name, iface.type || '', iface.role || 'normal') : name;
+            // iOS without the multicast entitlement: Local Network can't hear anyone.
+            var au = a.section === 'local' && !a.paused ? window._autoUnavailable : null;
+            if (au && au.interface === name) status = 'pending';
             return {
                 id: name, name: display, kind: a.section, ifaceType: a.ifaceType, iface: iface, status: status,
                 tx: live ? live.txb || 0 : 0, rx: live ? live.rxb || 0 : 0,
                 pub: a.section === 'tcp' ? publicServerFor(iface) : null, joined: a.ifaceType === 'joined',
-                health: a.mobileHealth ? a.mobileHealth.label : (a.waitingForDevice ? 'Waiting for USB' : '')
+                health: au && au.interface === name ? 'Multicast unavailable' : a.mobileHealth ? a.mobileHealth.label : (a.waitingForDevice ? 'Waiting for USB' : '')
             };
         }).filter(function(c) { return c.kind !== 'ble'; });
         var bleOn = !!window._blePeerEnabled || !!window._blePeerPaused;
@@ -123,12 +126,13 @@
         var settings = Object.assign({ discover: false, autojoin: 0, trusted_publishers: [] }, ns.settings || {});
         return {
             phone: compact(), conns: conns, life: life, pausedAll: !!life.paused_all,
-            ble: { on: bleOn, starting: NV.bleStarting, duration: window._blePeerDuration, expiresAt: window._blePeerExpiresAt || 0 },
+            ble: { on: bleOn, starting: NV.bleStarting, duration: window._blePeerDuration, expiresAt: window._blePeerExpiresAt || 0,
+                state: typeof _deriveBlePeerState === 'function' ? _deriveBlePeerState() : '' },
             disc: { on: !!settings.discover, settings: settings, entries: ((ns.discovered || {}).entries || []) },
             tx: totals.txb || 0, rx: totals.rxb || 0,
-            paths: stats && stats.transport ? stats.transport.path_count || 0 : 0,
+            paths: stats ? stats.path_table_total || (stats.path_table || []).length : 0,
             peersHeard: typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.enriched === 'function' ? PeersCache.enriched().length : 0,
-            lastAnnounce: NV.lastAnnounce || (typeof _lastAnnounceTime !== 'undefined' ? _lastAnnounceTime : 0),
+            lastAnnounce: Math.max(NV.lastAnnounce || 0, stats && stats.last_announce_at ? stats.last_announce_at * 1000 : 0),
             me: activeMe()
         };
     }
@@ -210,6 +214,12 @@
             (o.foot ? '<div class="net-way-foot">' + o.foot + '</div>' : '') + '</section>';
     }
     function onLine(text) { return dot('online') + esc(text); }
+    // What keeps Bluetooth Peer from working fully, from the platform's own state.
+    function bleNote(M) {
+        var word = { bluetooth_off: 'Bluetooth is off', permission_needed: 'Bluetooth permission needed',
+            unavailable: 'Not available on this device', central_only: 'On · others can’t find this device' }[M.ble.state];
+        return word ? dot('warning') + esc(word) : '';
+    }
     function pausedLine() { return dot('') + 'Paused'; }
     function mark(c) {
         if (c.kind === 'tcp' && c.pub && c.pub.group === 'official') return '<span class="net-mark is-gem public-server-card--' + c.pub.tone + '" aria-hidden="true">' + icon('gem') + '</span>';
@@ -291,12 +301,12 @@
         var bles = byKind(M, 'ble');
         if (M.ble.on) {
             out += way('ble', {
-                title: 'Bluetooth Peer', on: true, status: allPaused(bles) ? pausedLine() : onLine('On · ' + bleLeft(M)),
+                title: 'Bluetooth Peer', on: true, status: allPaused(bles) ? pausedLine() : (bleNote(M) || onLine('On · ' + bleLeft(M))),
                 ctl: sw({ act: 'ble', on: true, label: 'Bluetooth Peer' }), body: crows(bles, M),
                 full: '<div class="net-seg-row"><span class="ui-label">Stay on for</span>' + seg(DURS, M.ble.duration == null ? BLE_DEFAULT_SECS : M.ble.duration, 'Stay on for', 'ble-dur') + '</div>'
             });
         } else {
-            out += way('ble', { title: 'Bluetooth Peer', status: M.ble.starting ? 'Turning on…' : 'People nearby, no internet.',
+            out += way('ble', { title: 'Bluetooth Peer', status: M.ble.starting ? 'Turning on…' : (bleNote(M) || 'People nearby, no internet.'),
                 ctl: sw({ act: 'ble', on: M.ble.starting, busy: M.ble.starting, label: 'Bluetooth Peer' }) });
         }
         var locals = byKind(M, 'local'), localOn = locals.length > 0;
@@ -317,14 +327,34 @@
     }
 
     // ------------------------------------------------------------------ detail, discovered list, menu
+    function radioVia(i) {
+        var port = String(i.port || '');
+        if (port.indexOf('ble://') === 0) return 'Bluetooth';
+        if (typeof _rnodeIsTcpPort === 'function' && _rnodeIsTcpPort(port)) return 'Wi-Fi';
+        return port ? 'USB' : '';
+    }
+    function radioMhz(i) { var f = Number(i.frequency) || 0; return f ? (f / 1e6).toFixed(3) + ' MHz' : ''; }
     function sub(c) {
         var i = c.iface || {};
         if (c.kind === 'tcp') return c.pub && c.pub.group === 'official' ? 'Ratspeak server' : (i.target_host || '');
         if (c.kind === 'ble') return 'Nearby by Bluetooth';
         if (c.kind === 'local') return 'This Wi-Fi or wired network';
-        if (c.kind === 'lora') return typeof getIfaceDetailText === 'function' ? getIfaceDetailText(i, c.ifaceType) : '';
+        if (c.kind === 'lora') return [radioMhz(i), radioVia(i)].filter(Boolean).join(' · ');
         if (c.kind === 'host') return i.listen_port ? 'Port ' + i.listen_port : '';
         return '';
+    }
+    // What a radio that isn't connecting needs from the person, in its detail.
+    function radioTrouble(c) {
+        if (c.kind !== 'lora' || c.status === 'paused' || c.status === 'off') return null;
+        var i = c.iface || {}, port = String(i.port || ''), ble = port.indexOf('ble://') === 0;
+        var hw = ble && window._cachedConfigIfaces && window._cachedConfigIfaces.mobile_hardware ? window._cachedConfigIfaces.mobile_hardware.ble_rnode : null;
+        var live = !hw && typeof getInterfaceLiveStatus === 'function' ? getInterfaceLiveStatus(c.id) : null;
+        var st = (hw || (live && live.rnode_state)) || {};
+        var state = typeof st.state === 'string' ? st.state : '', reason = typeof st.reason === 'string' ? st.reason : '';
+        if (!state) return null;
+        var help = typeof rnodeConnectionHelp === 'function' ? rnodeConnectionHelp(state, reason, port) : null;
+        var inFlight = /^(waiting_for_radio|reconnecting|connecting|initializing)$/.test(state);
+        return { help: help, permission: ble && inFlight && reason === 'permission_needed', retry: state === 'failed' || (ble && state === 'disabled') };
     }
     function leaveWord(c) { return c.kind === 'local' ? 'Turn off' : 'Disconnect'; }
     function facts(rows) { return '<dl class="ui-dl">' + rows.map(function(x) { return '<dt>' + x[0] + '</dt><dd>' + x[1] + '</dd>'; }).join('') + '</dl>'; }
@@ -335,14 +365,21 @@
         if (c.kind === 'ble') f.push(['Turns off', M.ble.expiresAt ? 'In ' + bleLeft(M).replace(' left', '') : 'Never']);
         if (c.kind === 'ble' && c.since) f.push(['Connected for', dur(Date.now() - c.since)]);
         if (c.kind === 'local' && i.group_id) f.push(['Network', esc(i.group_id === 'reticulum' ? 'Default' : i.group_id)]);
+        if (c.kind === 'lora' && radioMhz(i)) f.push(['Frequency', radioMhz(i)]);
+        if (c.kind === 'lora' && radioVia(i)) f.push(['Connected by', radioVia(i)]);
         if (c.kind === 'host' && i.listen_port) f.push(['Port', esc(i.listen_port)]);
+        if (c.kind === 'host') { var nn = typeof _ifaceIfacNetworkName === 'function' ? _ifaceIfacNetworkName(i) : (i.network_name || ''); f.push(['Network name', nn ? esc(nn) : 'None']); }
         if (c.joined) f.push(['Added by', 'Join automatically']);
         var st = c.status === 'up' ? dot('online') + 'Connected' : c.status === 'paused' ? dot('') + 'Paused' : c.status === 'off' ? dot('') + 'Off' : dot('warning') + esc(rowStatus(c));
         var acts = [];
-        if (c.kind !== 'ble' && c.kind !== 'local') {
+        // A joined connection isn't saved, so it has nothing to pause; Keep saves it.
+        if (c.kind !== 'ble' && c.kind !== 'local' && !c.joined) {
             if (c.status === 'paused' || c.status === 'off') acts.push(btn('Resume', { act: 'op', attrs: ' data-op="resume" data-id="' + esc(c.id) + '"' }));
             else if (c.kind === 'tcp' || c.kind === 'lora') acts.push(btn('Pause', { act: 'op', attrs: ' data-op="pause" data-id="' + esc(c.id) + '"' }));
         }
+        var trouble = radioTrouble(c);
+        if (trouble && trouble.permission) acts.push(btn('Allow Bluetooth', { act: 'op', attrs: ' data-op="permission" data-id="' + esc(c.id) + '"' }));
+        if (trouble && trouble.retry) acts.push(btn('Retry', { act: 'op', attrs: ' data-op="resume" data-id="' + esc(c.id) + '"' }));
         if (c.joined) acts.push(btn('Keep', { act: 'op', attrs: ' data-op="keep" data-id="' + esc(c.id) + '"' }));
         if (editable(c)) acts.push(btn('Edit', { act: 'op', attrs: ' data-op="edit" data-id="' + esc(c.id) + '"' }));
         if (c.kind === 'local') acts.push(btn('Options', { act: 'op', attrs: ' data-op="options" data-id="' + esc(c.id) + '"' }));
@@ -353,6 +390,8 @@
             '<p class="ui-status net-dstatus">' + st + '</p>' +
             (c.kind === 'ble' ? '' : '<div class="net-io2"><div class="ui-well"><span>Sent</span><b>' + bytes(c.tx) + '</b></div><div class="ui-well"><span>Received</span><b>' + bytes(c.rx) + '</b></div></div>') +
             (f.length ? facts(f) : '') +
+            (c.kind === 'host' && RS.hostDiscovery ? '<div class="net-hostdisc" data-host="' + esc(c.id) + '"><h4 class="ui-section-title">Discovery</h4>' + RS.hostDiscovery.html(hostDraft(c), 'hc-') + '</div>' : '') +
+            (trouble && trouble.help ? '<div class="ui-notice ui-notice--warning">' + icon('alert') + '<div class="ui-notice-body"><b>' + esc(trouble.help.title) + '.</b> ' + link('Connection help', 'op', ' data-op="help" data-id="' + esc(c.id) + '"') + '</div></div>' : '') +
             '<div class="net-sec">' + link('Open in Activity', 'nav-activity') + '</div>' +
             '<div class="net-acts">' + acts.join('') + '</div></div>';
     }
@@ -368,6 +407,7 @@
         var f = e.kind === 'radio'
             ? [['Frequency', mhz(e.frequency) + ' MHz'], ['Bandwidth', e.bandwidth ? Math.round(e.bandwidth / 1000) + ' kHz' : 'Not shared'], ['Spreading factor', e.spreading_factor || 'Not shared'], ['Coding rate', e.coding_rate || 'Not shared']]
             : [['Address', '<span class="ui-hash" data-hash-off>' + esc((e.address || '') + (e.port ? ':' + e.port : '')) + '</span>']];
+        if (e.own_network) f.push(['Access', e.private_network ? 'Filled in when you join' : 'Open']);
         f.push(['Distance', e.hops + (e.hops === 1 ? ' hop away' : ' hops away')], ['Heard', (e.heard_count || 1) + ((e.heard_count || 1) === 1 ? ' time' : ' times') + ', last ' + heardAgo(e)],
             ['Published by', K().hash.copy(e.publisher, { noun: 'Publisher identity hash' }) + (e.trusted ? ' <span class="ui-tag ui-tag--accent">Trusted</span>' : '')]);
         var heardWord = e.status === 'stale' ? 'Not heard lately' : e.status === 'unknown' ? 'Heard in the last 3 days' : 'Heard today';
@@ -377,22 +417,23 @@
             : e.kind === 'radio' ? btn('Use these radio settings', { act: 'disc-radio', cls: 'ui-btn--primary', attrs: ' data-id="' + esc(e.id) + '"' })
             : btn('Join', { act: 'disc-join', cls: 'ui-btn--primary', attrs: ' data-id="' + esc(e.id) + '"' });
         return '<div class="net-detail"><div class="net-dhead">' + tile('discovered', false, true) + '<div class="net-dhead-text"><h3 class="ui-detail-title">' + esc(e.name || 'Unnamed') + '</h3>' +
-                '<p class="net-dsub">Discovered · ' + kindWord(e) + '</p></div></div>' +
+                '<p class="net-dsub">Discovered · ' + kindWord(e) + (e.own_network ? ' · Private' : '') + '</p></div></div>' +
             '<p class="ui-status net-dstatus">' + ddot(e) + heardWord + '</p>' + facts(f) +
-            (e.kind === 'radio' || !usable(e) || e.added ? '' : '<div class="ui-notice">' + icon('info') + '<div class="ui-notice-body">Its operator can see your IP address once you join.</div></div>') +
-            '<div class="net-acts">' + act + (e.trusted ? '' : link('Trust this publisher', 'disc-trust', ' data-id="' + esc(e.id) + '"')) + '</div></div>';
+            (e.own_network ? '<div class="ui-notice">' + icon('lock') + '<div class="ui-notice-body">From your private network. Joining fills in its network name and passphrase.</div></div>'
+                : e.kind === 'radio' || !usable(e) || e.added ? '' : '<div class="ui-notice">' + icon('info') + '<div class="ui-notice-body">Its operator can see your IP address once you join.</div></div>') +
+            '<div class="net-acts">' + act + (e.trusted || e.own_network ? '' : link('Trust this publisher', 'disc-trust', ' data-id="' + esc(e.id) + '"')) + '</div></div>';
     }
     function drow(M, e) {
         var meta = [{ backbone: 'Backbone', tcp: 'Server', radio: 'Radio', i2p: 'I2P' }[e.kind] || 'Other'];
         meta.push(e.kind === 'radio' ? (Math.round((e.frequency || 0) / 1e3) / 1e3).toFixed(3) + ' MHz' : e.hops + (e.hops === 1 ? ' hop' : ' hops'));
-        meta.push('heard ' + heardAgo(e));
+        if (e.last_heard) meta.push('heard ' + heardAgo(e));
         var act;
         if (e.joined || e.added) act = '<span class="net-joined">' + icon('check') + (e.joined ? 'Joined' : 'Saved') + '</span>';
         else if (!usable(e)) act = '<span class="net-quiet-text">' + (e.kind === 'radio' ? 'Incomplete' : 'Unreachable') + '</span>';
         else if (e.kind === 'radio') act = btn('Use', { cls: 'ui-btn--sm', act: 'disc-radio', attrs: ' data-id="' + esc(e.id) + '" aria-label="Use ' + esc(e.name) + ' radio settings"' });
         else act = btn('Join', { cls: 'ui-btn--sm', act: 'disc-join', attrs: ' data-id="' + esc(e.id) + '" aria-label="Join ' + esc(e.name) + '"' });
         return '<div class="net-drow' + (e.status === 'stale' ? ' is-stale' : '') + '"><button type="button" class="ui-row" data-act="d-sel" data-id="' + esc(e.id) + '"' + (!M.phone && NV.sel === 'd:' + e.id ? ' aria-current="true"' : '') + '>' + ddot(e) +
-            '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + esc(e.name || 'Unnamed') + '</span>' + (e.trusted ? '<span class="ui-tag ui-tag--accent">Trusted</span>' : '') + '</span>' +
+            '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + esc(e.name || 'Unnamed') + '</span>' + (e.own_network ? '<span class="ui-tag ui-tag--accent">Private</span>' : e.trusted ? '<span class="ui-tag ui-tag--accent">Trusted</span>' : '') + '</span>' +
             '<span class="ui-row-sub"><span class="t">' + esc(meta.join(' · ')) + '</span></span></span></button>' + act + '</div>';
     }
     // N1: the runtime sends the list in the agreed ranking; no rank numbers.
@@ -412,7 +453,7 @@
     }
     function menuItems(c) {
         var items = [{ label: 'Details', icon: 'info', op: 'details' }];
-        if ((c.kind === 'tcp' || c.kind === 'lora') && c.status !== 'off') items.push(c.status === 'paused' ? { label: 'Resume', icon: 'play', op: 'resume' } : { label: 'Pause', icon: 'pause', op: 'pause' });
+        if ((c.kind === 'tcp' || c.kind === 'lora') && c.status !== 'off' && !c.joined) items.push(c.status === 'paused' ? { label: 'Resume', icon: 'play', op: 'resume' } : { label: 'Pause', icon: 'pause', op: 'pause' });
         if (c.joined) items.push({ label: 'Keep', icon: 'check', op: 'keep' });
         if (editable(c)) items.push({ label: 'Edit', icon: 'edit', op: 'edit' });
         if (c.kind === 'local') items.push({ label: 'Options', icon: 'sliders', op: 'options' });
@@ -734,6 +775,8 @@
             }
             return;
         }
+        if (op === 'help') { var t = radioTrouble(c); if (t && t.help && typeof showBleRnodeHelp === 'function') showBleRnodeHelp(t.help, function() { connOp('edit', id); }); return; }
+        if (op === 'permission') { if (typeof requestBleRnodePermission === 'function') requestBleRnodePermission(); return; }
         if (op === 'pause' || op === 'resume') { if (typeof setInterfacePaused === 'function') setInterfacePaused(c.ifaceType, c.id, op === 'pause'); return; }
         if (op === 'edit') { if (typeof openInterfaceEdit === 'function') openInterfaceEdit(c.ifaceType, c.id); return; }
         if (op === 'keep') { if (RS.discovery && RS.discovery.keep) RS.discovery.keep(c.id); return; }
@@ -800,14 +843,7 @@
             NV.setupFor = kind; render(true);
             var done = function() { NV.setupFor = null; render(true); };
             if (kind === 'lora') { if (typeof openRnodeModal === 'function') openRnodeModal('ble'); }
-            else if (window.__RATSPEAK_DESKTOP__ && typeof openBackboneHostModal === 'function' && RS.kit) {
-                RS.kit.menu(document.querySelector('#view-network [data-act="dev-host"]').closest('.ui-switch'), {
-                    title: 'Host', items: [
-                        { label: 'Standard', hint: 'TCP, for other Reticulum nodes.', onSelect: function() { openHostModal(); } },
-                        { label: 'Backbone', hint: 'High throughput, for transport nodes.', onSelect: function() { openBackboneHostModal(); } }
-                    ]
-                });
-            } else if (typeof openHostModal === 'function') openHostModal();
+            else if (typeof openHostModal === 'function') openHostModal();
             watchSetupClose(done);
             return;
         }
@@ -829,6 +865,51 @@
             if ((seen && !open) || ++tries > 600) { clearInterval(timer); done(); }
         }, 250);
     }
+    // A running host's discovery switches save as they change. Turning on Show in discovery waits for the
+    // address others use; Private network waits for a network identity.
+    function hostDraft(c) {
+        var saved = RS.hostDiscovery.state(c.iface), d = (NV.hostDrafts || {})[c.id];
+        return d ? Object.assign({}, saved, d) : saved;
+    }
+    function hostReady(d) {
+        var id = RS.networkIdentity && RS.networkIdentity.state();
+        return !(d.disc && !d.reachable) && !(d.disc && d.priv && !(id && id.exists));
+    }
+    function saveHost(c, d) {
+        var i = c.iface || {}, saved = RS.hostDiscovery.state(i), backbone = c.ifaceType === 'backbone_server';
+        var args = { old_name: c.id, name: c.id, listen_port: Number(i.listen_port) || 4242,
+            discoverable: !!d.disc, reachable_on: d.reachable || '', publish_ifac: !!(d.disc && d.share && d.ifac), discovery_encrypt: !!(d.disc && d.priv) };
+        if (i.listen_ip) args.listen_ip = i.listen_ip;
+        if (backbone) { args.prefer_ipv6 = typeof _ifaceBool === 'function' && _ifaceBool(i, 'prefer_ipv6', false); if (i.device) args.device = i.device; }
+        var run = function() { return RS.invoke(backbone ? 'update_backbone_server' : 'update_tcp_server', { args: args }); };
+        var settle = function() { delete NV.hostDrafts[c.id]; refresh(); render(true); };
+        var word = args.discovery_encrypt ? 'Only your private network can find this host now.' : args.discoverable ? 'Anyone with discovery on can find this host now.' : 'This host no longer shows in discovery.';
+        // Reticulum reads a server's discovery settings at start, so a published host restarts the network.
+        if ((saved.disc || d.disc) && RS.networkSettings && typeof RS.networkSettings.commitRestart === 'function') {
+            RS.networkSettings.commitRestart({ run: run, done: word }).then(settle);
+            return;
+        }
+        run().then(function() { toast(word); settle(); }, function(err) { fail(err, 'Couldn’t change discovery'); settle(); });
+    }
+    function hostChange(el) {
+        var box = el.closest('[data-host]'), c = box && byId(model(), box.getAttribute('data-host'));
+        if (!c) return;
+        NV.hostDrafts = NV.hostDrafts || {};
+        var d = NV.hostDrafts[c.id] = hostDraft(c), key = el.getAttribute('data-hd');
+        if (key === 'reachable') d.reachable = el.value.trim();
+        else d[key] = el.checked;
+        if (hostReady(d)) { saveHost(c, d); return; }
+        render(true);
+        var reach = document.getElementById('hc-reachable');
+        if (key === 'disc' && d.disc && reach && !reach.value) reach.focus();
+    }
+    function flushHostDrafts() {
+        var M = model();
+        Object.keys(NV.hostDrafts || {}).forEach(function(id) {
+            var c = byId(M, id), d = NV.hostDrafts[id];
+            if (c && hostReady(d)) saveHost(c, d);
+        });
+    }
     function discEntry(id) { return (model().disc.entries || []).filter(function(e) { return e.id === id; })[0]; }
     function setMapCollapsed(collapsed) {
         NV.mapCollapsed = collapsed;
@@ -838,6 +919,7 @@
     }
 
     function onClick(e) {
+        if (e.target.closest && e.target.closest('.net-hostdisc [data-netid]') && RS.hostDiscovery.handleInline(e)) return;
         var el = e.target.closest && e.target.closest('[data-act]');
         if (!el || el.tagName === 'INPUT') return;
         var a = el.getAttribute('data-act'), id = el.getAttribute('data-id');
@@ -862,7 +944,7 @@
             }
             case 'more-servers': NV.moreOpen = !NV.moreOpen; render(true); return;
             case 'join-toggle': NV.joinOpen = !NV.joinOpen; render(true); return;
-            case 'own': if (typeof openConnectModal === 'function') { openConnectModal(); if (typeof setConnectTab === 'function') setConnectTab('custom'); } return;
+            case 'own': if (typeof openConnectModal === 'function') openConnectModal(); return;
             case 'ble-dur': setBleDuration(parseInt(el.getAttribute('data-v'), 10) || 0, el.textContent); return;
             case 'c-node': openConn(id); return;
             case 'c-ghost':
@@ -897,6 +979,8 @@
         }
     }
     function onChange(e) {
+        var hd = e.target.closest && e.target.closest('.net-hostdisc [data-hd]');
+        if (hd) { hostChange(hd); return; }
         var el = e.target.closest && e.target.closest('input[data-act]');
         if (!el) return;
         var a = el.getAttribute('data-act');
@@ -936,6 +1020,7 @@
             NV.render(true);
         });
         if (typeof watchViewLayout === 'function') watchViewLayout('network', function() { NV.render(true); });
+        if (RS.networkIdentity) RS.networkIdentity.onChange(function() { flushHostDrafts(); NV.render(true); });
         window.addEventListener('ratspeak-theme-changed', function() { NV.render(true); });
         if (document.fonts && document.fonts.ready) document.fonts.ready.then(sizeTotals);
         // Bluetooth Peer's time left counts down on the card while Network shows.

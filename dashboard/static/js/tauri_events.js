@@ -95,7 +95,6 @@ function _rsLoadIdentityViews() {
     RS.invoke('api_announces').then(function(data) {
         if (Array.isArray(data)) {
             announceCache = data;
-            if (typeof renderAnnounceList === 'function') renderAnnounceList();
         }
     }).catch(function() {});
     if (typeof loadConversations === 'function') loadConversations();
@@ -302,65 +301,11 @@ RS.listen('stats_update', function(data) {
         renderDashboardSummaries(data);
     }
 
-    // Throttle to immediate-then-5s after first paint.
-    if (typeof renderConnectionsTable === 'function') {
-        var _peersAvailable = (typeof PeersCache !== 'undefined' && PeersCache && PeersCache.size() > 0);
-        if (!_connectionsHasRendered) {
-            if (_peersAvailable) {
-                _connectionsHasRendered = true;
-                if (_connectionsFirstLoadTimer) {
-                    clearTimeout(_connectionsFirstLoadTimer);
-                    _connectionsFirstLoadTimer = null;
-                }
-                renderConnectionsTable(PeersCache.enriched());
-            } else if (data.connected && !_connectionsFirstLoadTimer) {
-                // Connected but no peers — wait for poll loop, fall back at 5s.
-                _connectionsFirstLoadTimer = setTimeout(function() {
-                    if (!_connectionsHasRendered) {
-                        _connectionsHasRendered = true;
-                        var v = (typeof PeersCache !== 'undefined' && PeersCache) ? PeersCache.enriched() : [];
-                        renderConnectionsTable(v);
-                    }
-                }, 5000);
-            }
-        } else if (!_connectionsRenderScheduled) {
-            _connectionsRenderScheduled = true;
-            _connectionsThrottleTimer = setTimeout(function() {
-                _connectionsRenderScheduled = false;
-                _connectionsThrottleTimer = null;
-                var v = (typeof PeersCache !== 'undefined' && PeersCache) ? PeersCache.enriched() : [];
-                renderConnectionsTable(v);
-            }, 5000);
-        }
-    }
 
     if (document.getElementById('node-modal').classList.contains('open')) {
         if (typeof updateHubModalStatusDots === 'function') updateHubModalStatusDots();
     }
 
-    var networkView = document.getElementById('view-network');
-    if (networkView && networkView.classList.contains('active')) {
-        if (typeof renderNetworkPulse === 'function') renderNetworkPulse(data);
-
-        document.querySelectorAll('.conn-iface-row').forEach(function(row) {
-            var ifaceName = row.dataset.ifaceName;
-            // Same rule as the full render: paused stays muted, no stats is not up.
-            if (!ifaceName || row.classList.contains('is-paused')) return;
-            var dot = row.querySelector('.conn-iface-dot');
-            if (!dot) return;
-            var liveData = (typeof getInterfaceLiveStatus === 'function') ? getInterfaceLiveStatus(ifaceName) : null;
-            var hist = interfaceHistory[ifaceName] || [];
-            var isActive = false;
-            if (hist.length >= 2) {
-                var l = hist[hist.length - 1], p = hist[hist.length - 2];
-                var d = l.t - p.t;
-                isActive = d > 0 && ((l.txb - p.txb) > 0 || (l.rxb - p.rxb) > 0);
-            }
-            dot.className = 'conn-iface-dot';
-            dot.classList.add(liveData && liveData.online !== false ? 'up' : 'down');
-            if (isActive) dot.classList.add('active');
-        });
-    }
 });
 
 // Single batched event per poll keeps WebView JNI global refs flat.
@@ -418,7 +363,6 @@ RS.listen('paths_cleared', function() {
 
 RS.listen('announces_cleared', function() {
     if (typeof announceCache !== 'undefined') announceCache = [];
-    if (typeof renderAnnounceList === 'function') renderAnnounceList();
     _reloadPeersAfterCacheClear();
 });
 
@@ -1203,6 +1147,3 @@ RS.listen('storage_error', function(data) {
     }, 'Copy details');
 });
 
-document.addEventListener('DOMContentLoaded', function() {
-    initConnections();
-});

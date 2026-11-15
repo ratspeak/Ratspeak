@@ -6303,10 +6303,6 @@ RS.listen('lxmf_identity', function(data) {
     _imageCacheIdentityHash = nextIdentityHash;
     lxmfIdentity = data;
     if (typeof syncActiveProfileStatusFromPayload === 'function') syncActiveProfileStatusFromPayload(data);
-    // Re-render so we exclude self from the peer list.
-    if (typeof renderConnectionsTable === 'function' && typeof PeersCache !== 'undefined' && PeersCache) {
-        renderConnectionsTable(PeersCache.enriched());
-    }
 });
 
 // Pre-warmed at startup; re-emitted on every conversation-touching command.

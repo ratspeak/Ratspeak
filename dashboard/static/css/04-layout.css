@@ -89,8 +89,7 @@ html[data-native-mobile] .shell-sidebar [data-view="dashboard"] { display: none;
     display: block;
 }
 
-.conn-card:focus-within,
-.interface-card:focus-within {
+.conn-card:focus-within {
     border-color: var(--focus-ring);
     box-shadow: 0 0 0 2px var(--focus-ring-bg);
 }

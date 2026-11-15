@@ -22,7 +22,7 @@ assert.deepStrictEqual(
 );
 
 var visibleStart = health.indexOf('function _blePeerRepresentativeScore');
-var visibleEnd = health.indexOf('\nfunction renderBlePeerRow', visibleStart);
+var visibleEnd = health.indexOf('\nfunction emptyInterfaceConfigPayload', visibleStart);
 var visibleContext = {
     window: {
         _blePeers: {

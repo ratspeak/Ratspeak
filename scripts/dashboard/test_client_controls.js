@@ -32,25 +32,14 @@ for (const match of html.matchAll(/<script src="\/(static\/js\/(?!vendor\/)[^"?]
     }
 }
 
-// Exercise real layout dispatch for small pointer windows and wide touch tablets.
-const handlers = {}, actions = [];
-const context = {
-    window: { innerWidth: 390, RS: { config: { MOBILE_BREAKPOINT: 768, MOBILE_TOUCH_BREAKPOINT: 1024 } } },
-    navigator: { maxTouchPoints: 0 },
-    document: { querySelector: () => ({ addEventListener: (name, cb) => { handlers[name] = cb; } }) },
-    buildIfaceActionItems: () => [],
-    actionPopover: () => actions.push('popover'),
-    showInterfaceActionSheet: () => actions.push('sheet')
-};
+// Connection rows open the kit menu, which picks a sheet or a popover by layout itself.
+const networkView = read('static/js/network_view.js');
+assert(networkView.includes("case 'c-menu': {") && networkView.includes('RS.kit.menu(el, { title: rowName(c), items: menuItems(c)'),
+    'a connection row menu is the kit menu');
+assert(!health.includes('function buildIfaceActionItems(') && !health.includes('function showInterfaceActionSheet('),
+    'the old interface action sheet is gone');
+const context = { window: {} };
 vm.createContext(context);
-vm.runInContext(['isCompactLayout', 'isTouchDevice', 'isMobile'].map(name => fn(state, name)).join('\n') +
-    '\n' + health.slice(health.lastIndexOf('(function() {')), context);
-const row = { dataset: { ifaceType: 'tcp', ifaceName: 'Test' } };
-for (const [width, touch, expected] of [[390, 0, 'sheet'], [768, 1, 'sheet'], [769, 1, 'popover'], [1024, 1, 'popover'], [1366, 0, 'popover']]) {
-    context.window.innerWidth = width; context.navigator.maxTouchPoints = touch;
-    handlers.click({ target: { closest: () => row } });
-    assert.equal(actions.at(-1), expected, 'interface actions at ' + width + 'px');
-}
 // New message is one sheet: a contact's name or a pasted LXMF address.
 assert(lxmf.includes("title: 'New message',") && lxmf.includes('placeholder="Name or LXMF address"'),
     'New message is one sheet that takes a name or an address');

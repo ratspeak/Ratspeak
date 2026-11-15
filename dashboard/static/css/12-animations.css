@@ -22,7 +22,6 @@
     0%, 100% { opacity: 0.4; }
     50% { opacity: 1; }
 }
-.conn-loading-pulse { animation: loadingPulse 1.5s ease-in-out infinite; }
 
 @keyframes pulse-flow {
     0%, 100% { opacity: 0.4; }
@@ -393,7 +392,6 @@
 
     /* Keep essential state indicators animated for status visibility. */
     .dot.green,
-    .conn-loading-pulse,
     .loading-spinner,
     .ptr-spinner {
         animation-duration: 2s !important;

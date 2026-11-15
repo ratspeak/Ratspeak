@@ -1,53 +1,5 @@
 var _modalPreviousFocus = null;
 
-var INTERFACE_SHEET_ICONS = {
-    tcp: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 4 10 15 15 0 0 1-4 10"/><path d="M12 2a15 15 0 0 0-4 10 15 15 0 0 0 4 10"/></svg>',
-    host: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="6" cy="18" r="1" fill="currentColor" stroke="none"/></svg>',
-    backbone: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><circle cx="6" cy="6" r="1" fill="currentColor" stroke="none"/><circle cx="6" cy="18" r="1" fill="currentColor" stroke="none"/></svg>',
-    lora: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20v-14"/><path d="M12 6l-3 3"/><path d="M12 6l3 3"/><path d="M6 14a6 6 0 0 0 0-6"/><path d="M18 14a6 6 0 0 1 0-6"/><path d="M3 16a10 10 0 0 0 0-10"/><path d="M21 16a10 10 0 0 1 0-10"/></svg>',
-    local: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><circle cx="12" cy="20" r="1" fill="currentColor" stroke="none"/></svg>',
-    ble: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11L12 23V1l5.5 5.5-11 11"/></svg>',
-};
-
-function interfaceSheetIcon(type) {
-    return INTERFACE_SHEET_ICONS[type] || '';
-}
-
-function interfaceSheetIconTypeForInterface(ifaceType) {
-    if (ifaceType === 'rnode') return 'lora';
-    if (ifaceType === 'auto' || ifaceType === 'local') return 'local';
-    if (ifaceType === 'ble_peer' || ifaceType === 'ble') return 'ble';
-    if (ifaceType === 'tcp_server') return 'host';
-    if (ifaceType === 'backbone_client' || ifaceType === 'backbone_server' || ifaceType === 'joined') return 'backbone';
-    if (ifaceType === 'tcp_client' || ifaceType === 'tcp') return 'tcp';
-    return '';
-}
-
-function setBottomSheetTitleWithIcon(titleEl, title, iconType) {
-    if (!titleEl) return;
-    var iconSvg = interfaceSheetIcon(iconType);
-    if (!iconSvg) {
-        titleEl.classList.remove('bottom-sheet-title-with-icon');
-        delete titleEl.dataset.sheetIcon;
-        titleEl.textContent = title;
-        return;
-    }
-
-    titleEl.classList.add('bottom-sheet-title-with-icon');
-    titleEl.dataset.sheetIcon = iconType || '';
-    titleEl.innerHTML = '';
-
-    var icon = document.createElement('span');
-    icon.className = 'bottom-sheet-title-icon';
-    icon.innerHTML = iconSvg;
-    titleEl.appendChild(icon);
-
-    var label = document.createElement('span');
-    label.className = 'bottom-sheet-title-label';
-    label.textContent = title;
-    titleEl.appendChild(label);
-}
-
 // The Network screen lists these: 'official' up front, 'community' under Unofficial.
 var PUBLIC_TCP_SERVERS = [
     { id: 'ratspeak-ruby', group: 'official', name: 'Ruby', host: '1.ratspeak.org', port: 4141, tone: 'ruby' },

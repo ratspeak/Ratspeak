@@ -142,18 +142,17 @@
     // ------------------------------------------------------------------ Settings › Network › Private network
     function sectionHtml() {
         var foot = '<p class="ui-group-foot">Only people with it can find your private connections.</p>';
-        var head = '<h3 class="ui-section-title" id="settings-private-network-heading">Private network</h3>';
         if (!state || !state.exists) {
-            return head + '<div class="ui-group"><div class="ui-prop settings-prop-wrap"><span class="ui-prop-text"><span class="ui-prop-label">Not set up</span></span>' +
+            return '<div class="ui-group"><div class="ui-prop settings-prop-wrap"><span class="ui-prop-text"><span class="ui-prop-label">Not set up</span></span>' +
                 '<div class="settings-btns"><button type="button" class="ui-btn ui-btn--sm" data-netid="create">Create</button>' +
                 '<button type="button" class="ui-btn ui-btn--sm" data-netid="import" aria-haspopup="menu" aria-expanded="false">Import</button></div></div></div>' + foot;
         }
-        return head + '<div class="ui-group"><div class="ui-prop"><span class="ui-prop-text"><span class="ui-prop-label">Network ID</span>' + K().hash.copy(state.hash, { noun: 'Network ID' }) + '</span></div>' +
+        return '<div class="ui-group"><div class="ui-prop"><span class="ui-prop-text"><span class="ui-prop-label">Network ID</span>' + K().hash.copy(state.hash, { noun: 'Network ID' }) + '</span></div>' +
                 '<button type="button" class="ui-prop" data-netid="share">' + K().icon('qr', 'lead') + '<span class="ui-prop-text"><span class="ui-prop-label">Share</span></span>' + K().icon('chevron-right') + '</button></div>' + foot +
             '<div class="ui-group"><button type="button" class="ui-prop ui-prop--danger" data-netid="remove">' + K().icon('trash', 'lead') + '<span class="ui-prop-text"><span class="ui-prop-label">Remove private network</span></span></button></div>';
     }
     function render() {
-        var el = document.getElementById('settings-private-network');
+        var el = document.getElementById('settings-private-network-body');
         if (el && RS.kit) el.innerHTML = sectionHtml();
     }
     function onSectionClick(e) {
@@ -194,7 +193,7 @@
     // Reads a host's saved discovery flags from its config record.
     function hostDiscoveryState(iface) {
         var on = function(k) { return typeof _ifaceBool === 'function' ? _ifaceBool(iface || {}, k, false) : false; };
-        var ifac = !!((iface && (iface.network_name || iface.passphrase)) || on('ifac'));
+        var ifac = typeof _ifaceHasIfac === 'function' ? _ifaceHasIfac(iface || {}) : !!(iface && (iface.network_name || iface.passphrase));
         return { ifac: ifac, disc: on('discoverable'), share: on('publish_ifac'), priv: on('discovery_encrypt'), reachable: (iface && iface.reachable_on) || '' };
     }
     // The add and update server commands take these as they are.

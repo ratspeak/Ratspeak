@@ -73,7 +73,6 @@
     min-width: 20px;
 }
 .bento-card-full .panel-header { border-bottom: 1px solid var(--border-row); }
-.bento-card-full .conn-table-scroll { flex: 1; overflow-y: auto; min-height: 0; }
 
 .panel-header-left {
     display: flex;

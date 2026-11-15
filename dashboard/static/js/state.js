@@ -423,22 +423,6 @@ window.RS.audioPlayback = {
     }
 };
 
-function pathCountSummary(stats) {
-    stats = stats || {};
-    var visible = Array.isArray(stats.path_table) ? stats.path_table.length : 0;
-    var total = typeof stats.path_table_total === 'number' && isFinite(stats.path_table_total)
-        ? stats.path_table_total
-        : visible;
-    if (total < visible) total = visible;
-    var truncated = !!stats.path_table_truncated && total > visible;
-    return {
-        visible: visible,
-        total: total,
-        truncated: truncated,
-        label: truncated ? (visible + ' of ' + total) : String(total),
-    };
-}
-
 // Tauri event bridge. Returns Promise<unlisten-fn>; await before assuming
 // the handler is live. Required subscriptions reject with a static error so
 // callers such as Activity can retry a late iOS bridge instead of mistaking a
@@ -906,10 +890,6 @@ var activeLogFilter = 'all';
 // null = no stats received yet (allow backend gate); false = confirmed zero online.
 var _anyInterfaceOnline = null;
 
-var _connectionsHasRendered = false;
-var _connectionsRenderScheduled = false;
-var _connectionsThrottleTimer = null;
-var _connectionsFirstLoadTimer = null;
 
 // Set when data changes while a view is inactive; consumed on view entry.
 var _viewDirty = {};
@@ -1235,7 +1215,6 @@ function _refreshAfterResume() {
     RS.invoke('api_announces').then(function(data) {
         if (Array.isArray(data) && typeof window !== 'undefined') {
             if (typeof announceCache !== 'undefined') announceCache = data;
-            if (typeof renderAnnounceList === 'function') renderAnnounceList();
         }
     }).catch(function() {});
     if (typeof lxmfActiveContact !== 'undefined' && lxmfActiveContact) {
