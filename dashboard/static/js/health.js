@@ -233,13 +233,13 @@ var BLE_RNODE_HELP = {
     },
     pairing_required: {
         title: 'Pairing needed',
-        message: 'Put the RNode in Bluetooth pairing mode, then choose Retry Connection ' +
+        message: 'Put the RNode in Bluetooth pairing mode, then choose Retry ' +
             'and enter the PIN it shows.'
     },
     stale_bond: {
         title: 'Pair again',
         message: 'The saved Bluetooth pairing did not work. Forget the RNode in Android Bluetooth ' +
-            'settings, put the RNode in pairing mode, then choose Retry Connection and enter the ' +
+            'settings, put the RNode in pairing mode, then choose Retry and enter the ' +
             'PIN it shows.',
         bluetoothSettings: true
     },
@@ -259,7 +259,7 @@ var BLE_RNODE_HELP = {
     unsupported_firmware: {
         title: 'Firmware update needed',
         message: 'This RNode\'s firmware is too old for Ratspeak. Install a supported release using ' +
-            'the instructions for your radio, then choose Retry Connection.'
+            'the instructions for your radio, then choose Retry.'
     },
     unsupported_radio: {
         title: 'Radio not supported',
@@ -280,18 +280,18 @@ var BLE_RNODE_HELP = {
     link_limited: {
         title: 'Bluetooth link too small',
         message: 'The Bluetooth link stayed at its smallest packet size. If the radio does not answer ' +
-            'correctly, turn Bluetooth off and on, then choose Retry Connection. Ratspeak ' +
+            'correctly, turn Bluetooth off and on, then choose Retry. Ratspeak ' +
             'requests a larger size during connection setup.'
     },
     pin_rejected: {
         title: 'Pairing not accepted',
         message: 'Bluetooth pairing authentication failed. Put the RNode in pairing mode, then choose ' +
-            'Retry Connection and enter the PIN it shows.'
+            'Retry and enter the PIN it shows.'
     },
     pairing_window_closed: {
         title: 'Pairing interrupted',
         message: 'Pairing timed out or was cancelled. Put the RNode in pairing mode again, then ' +
-            'choose Retry Connection and enter the PIN soon after it shows.'
+            'choose Retry and enter the PIN soon after it shows.'
     },
 };
 

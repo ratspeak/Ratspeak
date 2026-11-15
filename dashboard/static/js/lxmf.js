@@ -7210,11 +7210,11 @@ RS.listen('unread_total', function(data) {
 
 function showConversationDeleteDialog(hash, name) {
     rsChoice({
-        title: 'Delete Conversation',
+        title: 'Delete conversation',
         message: 'Delete conversation with "' + name + '"?',
         choices: [
-            { label: 'Remove from List', value: 'hide', hint: 'Reappears if they message again.' },
-            { label: 'Delete All Messages', value: 'delete', danger: true, hint: 'Permanently removes all messages.' }
+            { label: 'Remove from list', value: 'hide', hint: 'Reappears if they message again.' },
+            { label: 'Delete all messages', value: 'delete', danger: true, hint: 'Permanently removes all messages.' }
         ],
         cancelText: false
     }).then(function(choice) {

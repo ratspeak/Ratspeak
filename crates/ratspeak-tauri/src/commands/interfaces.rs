@@ -559,9 +559,9 @@ fn default_network_type() -> String {
 }
 
 const PUBLIC_TCP_TRANSPORT_CONNECT_LIMIT_MESSAGE: &str =
-    "Disable Transport Mode before connecting to more than 1 public server.";
+    "Turn off Relay for other devices before connecting to more than 1 public server.";
 const PUBLIC_TCP_TRANSPORT_ENABLE_LIMIT_MESSAGE: &str =
-    "Transport Mode can't be enabled while connected to more than 1 public server.";
+    "Relay for other devices can't be turned on while connected to more than 1 public server.";
 
 fn enabled_public_tcp_server_count(ifaces: &Value) -> usize {
     projected_enabled_public_tcp_server_ids(ifaces, None, None).len()

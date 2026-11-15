@@ -9520,15 +9520,12 @@ fn transport_mode_defaults_and_auto_policy_are_explicit() {
     assert!(interfaces_rs.contains("enabled_public_tcp_server_count"));
     assert!(interfaces_rs.contains("enforce_public_tcp_transport_connect_limit"));
     assert!(interfaces_rs.contains("projected_enabled_public_tcp_server_ids"));
-    assert!(
-        interfaces_rs.contains(
-            "Transport Mode can't be enabled while connected to more than 1 public server."
-        )
-    );
-    assert!(
-        interfaces_rs
-            .contains("Disable Transport Mode before connecting to more than 1 public server.")
-    );
+    assert!(interfaces_rs.contains(
+        "Relay for other devices can't be turned on while connected to more than 1 public server."
+    ));
+    assert!(interfaces_rs.contains(
+        "Turn off Relay for other devices before connecting to more than 1 public server."
+    ));
     // The servers themselves are listed once, in the runtime.
     assert!(interfaces_rs.contains("projected_enabled_public_tcp_server_ids("));
     assert!(interfaces_rs.contains("has_enabled_non_lora_transport_interface"));

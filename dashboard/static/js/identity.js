@@ -588,7 +588,9 @@ function identityDetailHtml(ident) {
                 ? _identityProp('PIN', 'On. Ratspeak asks for it when it opens.', _identitySmallBtn('Change PIN', 'pin-change'))
                 : _identityProp('PIN', 'Not set.', _identitySmallBtn('Set PIN', 'pin-set'))) +
             (ident.has_mnemonic
-                ? _identityProp('Recovery phrase', RECOVERY_PHRASE_WORDS + ' words that restore this identity on any device.', _identitySmallBtn('View', 'phrase'))
+                // Only the identity in use can show its phrase.
+                ? _identityProp('Recovery phrase', RECOVERY_PHRASE_WORDS + ' words that restore this identity on any device.' + (ident.is_active ? '' : ' Switch to it to see them.'),
+                    ident.is_active ? _identitySmallBtn('View', 'phrase') : '')
                 : _identityProp('Recovery phrase', 'This identity has no recovery phrase on this device. Export a backup instead.', '')) +
             _identityProp('Export', 'Save a backup file of your private key.', _identitySmallBtn('Export…', 'export')) +
             autoLock +

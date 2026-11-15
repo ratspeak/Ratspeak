@@ -421,7 +421,7 @@
         var badge = elementRef(elOrId);
         if (typeof rsChoice !== 'function') return Promise.resolve(null);
         return rsChoice({
-            title: 'Transport Mode',
+            title: 'Relay for other devices',
             message: 'Relay packets for other nodes on the network.',
             choices: transportChoices
         }).then(function(mode) {
@@ -443,7 +443,7 @@
                     else badge.removeAttribute('data-value');
                 }
                 if (typeof showToast === 'function') {
-                    showToast((err && err.message) || 'Could not update Transport Mode', 'toast-error', 8000);
+                    showToast((err && err.message) || 'Could not change Relay for other devices', 'toast-error', 8000);
                 }
                 return null;
             });
