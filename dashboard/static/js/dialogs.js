@@ -157,23 +157,16 @@ function _rsCheckRow(labelText, checked) {
     return { row: row, input: input };
 }
 
-// Connection sheets keep their type's tone on the title tile.
-var RS_DIALOG_TILE_TONES = { tcp: 'info', backbone: 'info', host: 'neutral', lora: 'online', local: 'warning', ble: 'purple' };
-
 // The runtime dialogs' shell: RS.kit.dialog (centred on desktop, a sheet on a phone) with the
 // sheet API these helpers and their callers use. opts: title, size ('md' | 'lg'), sheetClass,
-// titleIcon (markup) and titleIconType, showTitle, ariaLabel, role, nativeBackValue, and
-// nativeBackDismissible. Close, Escape, the scrim, and native Back all go through
+// showTitle, ariaLabel, role, nativeBackValue, and nativeBackDismissible. Close, Escape, the scrim, and native Back all go through
 // sheet._ratspeakDismiss, which callers may replace.
 function _rsBuildSheet(opts, onClose) {
     opts = opts || {};
     var resolved = false;
     var locked = opts.nativeBackDismissible === false;
     var titled = !!opts.title && opts.showTitle !== false;
-    var tone = RS_DIALOG_TILE_TONES[opts.titleIconType];
-    var head = (titled && opts.titleIcon
-            ? '<span class="ui-tile' + (tone ? ' ui-tile--' + tone : '') + '" aria-hidden="true">' + opts.titleIcon + '</span>' : '') +
-        '<h2 class="ui-dialog-title' + (titled ? '' : ' ui-sr') + '">' + RS.kit.esc(opts.title || opts.ariaLabel || 'Dialog') + '</h2>';
+    var head = '<h2 class="ui-dialog-title' + (titled ? '' : ' ui-sr') + '">' + RS.kit.esc(opts.title || opts.ariaLabel || 'Dialog') + '</h2>';
 
     function nativeValue() {
         if (typeof opts.nativeBackValue === 'function') return opts.nativeBackValue();
@@ -197,8 +190,6 @@ function _rsBuildSheet(opts, onClose) {
     var sheet = shell.dialog;
     if (opts.role) sheet.setAttribute('role', opts.role);
     if (!titled && opts.ariaLabel) sheet.setAttribute('aria-label', opts.ariaLabel);
-    var glyph = sheet.querySelector('.ui-dialog-head .ui-tile svg');
-    if (glyph) glyph.classList.add('ui-ico');
     // Above any open sheet and the unlock screen (iOS mid-animation sheets bury confirmations otherwise).
     overlay.style.zIndex = 'var(--z-overlay)';
     shell.body.setAttribute('data-sheet-scroll', '');
@@ -449,8 +440,6 @@ function rsChoice(opts) {
     return new Promise(function(resolve) {
         var built = _rsBuildSheet({
             title: opts.title || 'Choose',
-            titleIcon: opts.titleIcon || '',
-            titleIconType: opts.titleIconType || '',
             showTitle: opts.showTitle !== false,
             ariaLabel: opts.ariaLabel || opts.title || 'Choose an action',
             size: opts.size,

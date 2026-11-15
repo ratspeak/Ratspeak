@@ -2431,29 +2431,28 @@ fn rnode_public_map_is_edit_only_and_privacy_gated() {
     let android_gradle = read_source(root.join("src-tauri/gen/android/app/build.gradle.kts"))
         .expect("android gradle");
 
-    assert!(index.contains(r#"id="rnode-public-map-section" style="display:none;""#));
-    assert!(index.contains(r#"id="rnode-public-map-enabled""#));
-    assert!(index.contains(r#"class="rnode-setting-row""#));
-    assert!(index.contains(r#"class="prop-toggle rnode-public-map-toggle""#));
-    assert!(index.contains("Display on public map"));
-    assert!(index.contains(r#"id="rnode-public-map-latitude""#));
-    assert!(index.contains(r#"id="rnode-public-map-longitude""#));
-    assert!(!index.contains("rnode-device-summary"));
-    assert!(!index.contains("rnode-public-map-state"));
-    assert!(!index.contains("id=\"rnode-public-map-help\""));
-    assert!(!index.contains("id=\"rnode-public-map-toggle-wrap\""));
-    assert!(!index.contains("rnode-public-map-height"));
-    let advanced_idx = index
-        .find(r#"id="rnode-advanced""#)
-        .expect("advanced details");
-    let public_map_idx = index
-        .find(r#"id="rnode-public-map-section""#)
-        .expect("public map section");
-    let submit_idx = index
-        .find(r#"id="rnode-submit-btn""#)
-        .expect("submit button");
+    // The radio dialog is built in modals.js; the public map exists only when editing a radio.
+    assert!(!index.contains(r#"id="rnode-public-map-section""#));
+    let step2 = modals_js
+        .split("function _rnodeStep2Html(editIface) {")
+        .nth(1)
+        .and_then(|tail| tail.split("\nfunction ").next())
+        .expect("radio settings step");
+    let advanced_idx = step2.find("'rnode-advanced'").expect("advanced settings");
+    let public_map_idx = step2
+        .find("(editIface ? _rnodePublicMapHtml() : '')")
+        .expect("public map only when editing");
     assert!(advanced_idx < public_map_idx);
-    assert!(public_map_idx < submit_idx);
+    let public_map = modals_js
+        .split("function _rnodePublicMapHtml() {")
+        .nth(1)
+        .and_then(|tail| tail.split("\nfunction ").next())
+        .expect("public map section");
+    assert!(public_map.contains(r#"id="rnode-public-map-section""#));
+    assert!(public_map.contains("_netdlgSwitch('rnode-public-map-enabled', 'Display on public map'"));
+    assert!(public_map.contains("'rnode-public-map-latitude'"));
+    assert!(public_map.contains("'rnode-public-map-longitude'"));
+    assert!(public_map.contains(r#"id="rnode-public-map-use-current""#));
 
     let warning = "This node's approximate location data will be broadcast publicly. The location will be your current approximate location, and only change again if you update it. Location is never live tracked.";
     assert!(modals_js.contains(warning));
@@ -4991,7 +4990,6 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
 
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
     assert!(modals_js.contains("function _handleConnectInvokeError"));
-    assert!(modals_js.contains("function _handleInterfaceButtonError"));
     let start = modals_js.find("function submitConnection()").unwrap();
     let end = modals_js.find("function openHostModal").unwrap();
     let submit_connection = &modals_js[start..end];
@@ -5011,17 +5009,21 @@ fn frontend_ipc_waits_and_connect_errors_are_visible() {
         );
     }
 
-    for checked_invoke in [
-        "RS.invoke(editContext ? 'update_tcp_server' : 'add_tcp_server'",
-        "RS.invoke(editContext ? 'update_backbone_server' : 'add_backbone_server'",
-    ] {
-        let idx = modals_js.find(checked_invoke).unwrap();
-        let tail = &modals_js[idx..idx + 180.min(modals_js.len() - idx)];
-        assert!(
-            !tail.contains("catch(function() {})"),
-            "interface server submit must surface IPC/backend failures"
-        );
-    }
+    // Host setup shows a refusal on the dialog, whether or not the save restarts the network.
+    let host_submit = modals_js
+        .split("function submitHostServer() {")
+        .nth(1)
+        .and_then(|tail| tail.split("\nfunction ").next())
+        .expect("host submit");
+    assert!(host_submit.contains(
+        "RS.invoke(command, { args: args }).catch(function(err) { lastError = err; throw err; })"
+    ));
+    assert!(host_submit.contains("if (lastError) _hostShowError(lastError.message);"));
+    assert!(host_submit.contains("_hostShowError(err && err.message);"));
+    assert!(
+        !host_submit.contains("catch(function() {})"),
+        "interface server submit must surface IPC/backend failures"
+    );
 
     let settings_js =
         read_source(root.join("dashboard/static/js/settings.js")).expect("settings js");
@@ -5225,80 +5227,47 @@ fn interface_add_flows_cannot_be_misclassified_as_edits() {
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
     assert!(modals_js.contains("function _normaliseConnectEditContext(editContext)"));
     assert!(modals_js.contains("function _normaliseHostEditContext(editContext, ifaceType)"));
+    // The interface action sheet keeps its typed title icon.
     assert!(modals_js.contains("var INTERFACE_SHEET_ICONS = {"));
     assert!(modals_js.contains("function setBottomSheetTitleWithIcon(titleEl, title, iconType)"));
     assert!(modals_js.contains("function interfaceSheetIconTypeForInterface(ifaceType)"));
+    // An add opens with no edit context; only a valid one makes it an edit.
     assert!(modals_js.contains("_connectEditContext = _normaliseConnectEditContext(editContext);"));
-    assert!(modals_js.contains("setBottomSheetTitleWithIcon(titleEl, editIface ? 'Edit LoRa Device' : 'Add LoRa Device', 'lora');"));
-    assert!(modals_js.contains("setBottomSheetTitleWithIcon(\n        titleEl,\n        isEdit ? 'Edit Connection' : 'Connect to Network',"));
-    assert!(modals_js.contains(
-        "setBottomSheetTitleWithIcon(titleEl, isEdit ? 'Edit Host' : 'Host Network', 'host');"
-    ));
-    assert!(modals_js.contains("setBottomSheetTitleWithIcon(\n        titleEl,\n        isEdit ? 'Edit Backbone Server' : 'Host Backbone Server',"));
-    assert!(modals_js.contains("titleIcon: interfaceSheetIcon('local')"));
-    assert!(modals_js.contains("titleIcon: interfaceSheetIcon('ble')"));
-    let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
-    assert!(dialogs_js.contains("titleIcon: opts.titleIcon || ''"));
-    assert!(dialogs_js.contains("titleIconType: opts.titleIconType || ''"));
+    assert!(modals_js.contains("title: isEdit ? 'Edit server' : 'Add your own server',"));
+    assert!(modals_js.contains("title: editIface ? 'Edit radio' : 'Set up a radio',"));
+    assert!(modals_js.contains("title: isEdit ? 'Edit host' : 'Host a server',"));
     assert!(
         modals_js.contains("var editContext = _normaliseConnectEditContext(_connectEditContext);")
     );
-    assert!(
-        modals_js
-            .contains("_hostEditContext = _normaliseHostEditContext(editContext, 'tcp_server');")
-    );
     assert!(modals_js.contains(
-        "_backboneHostEditContext = _normaliseHostEditContext(editContext, 'backbone_server');"
+        "_openHostDialog('tcp', _normaliseHostEditContext(editContext, 'tcp_server'));"
     ));
-
-    let quick_start = modals_js
-        .find("function quickConnect(")
-        .expect("quickConnect");
-    let quick_tail = &modals_js[quick_start..];
-    let quick_end = quick_tail
-        .find("\n}\n\nvar _connectTimeout")
-        .expect("quickConnect end");
-    let quick_connect = &quick_tail[..quick_end];
-    assert!(quick_connect.contains("_connectEditContext = null;"));
-    assert!(quick_connect.contains("submitConnection();"));
+    assert!(modals_js.contains(
+        "_openHostDialog('backbone', _normaliseHostEditContext(editContext, 'backbone_server'));"
+    ));
+    assert!(modals_js.contains(
+        "var editContext = _normaliseHostEditContext(_hostEditContext, backbone ? 'backbone_server' : 'tcp_server');"
+    ));
+    // Joining a public server never reuses the dialog, so it can't inherit an edit.
+    let join = modals_js
+        .split("function connectPublicServer(server) {")
+        .nth(1)
+        .and_then(|tail| tail.split("\nfunction ").next())
+        .expect("public join");
+    assert!(join.contains("RS.invoke('add_tcp_connection'"));
+    assert!(!join.contains("_connectEditContext"));
 
     assert!(!modals_js.contains("_connectEditContext.oldName"));
     assert!(!modals_js.contains("_hostEditContext.oldName"));
-    assert!(!modals_js.contains("_backboneHostEditContext.oldName"));
 }
 
 #[test]
-fn tcp_public_connect_sheet_uses_curated_public_servers() {
+fn public_servers_are_curated_and_joined_from_the_network_screen() {
     let root = repo_root();
     let index = read_source(root.join("dashboard/index.html")).expect("index html");
-    assert!(index.contains("id=\"connect-tab-public\""));
-    assert!(index.contains("id=\"connect-tab-custom\""));
-    assert!(index.contains("id=\"public-server-list\""));
-    assert!(index.contains("id=\"connect-name-field\" style=\"display:none;\""));
-
-    let public_panel = index
-        .split("id=\"connect-public-panel\"")
-        .nth(1)
-        .and_then(|tail| tail.split("id=\"connect-custom-panel\"").next())
-        .expect("public connect panel");
-    for hidden_endpoint in [
-        "1.ratspeak.org",
-        "2.ratspeak.org",
-        "3.ratspeak.org",
-        "rns.not-a-number.io",
-        "rns.beleth.net",
-        "rns.michmesh.net",
-        "rns.one-big.network",
-        "rmap.world",
-        "swiss-rns.cl0ud.ch",
-        "rns.utn.lol",
-        "reticulum.washmesh.net",
-    ] {
-        assert!(
-            !public_panel.contains(hidden_endpoint),
-            "public sheet shell should not render endpoint {hidden_endpoint}; JS cards expose friendly names"
-        );
-    }
+    // Joining happens on the Network screen; Add your own server has no public list or tabs.
+    assert!(!index.contains("id=\"connect-modal\""));
+    assert!(!index.contains("public-server-list"));
 
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
     for expected in [
@@ -5318,22 +5287,15 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
             "missing public TCP server token {expected}"
         );
     }
-    assert!(modals_js.contains("function _isPublicTcpServer(host, port)"));
     assert!(modals_js.contains("function _publicServerMatchesEndpoint(server, host, port)"));
     assert!(modals_js.contains("aliases: [{ host: 'rns.ratspeak.org', port: 4242 }]"));
-    assert!(modals_js.contains("tags: ['OFFICIAL']"));
     assert_eq!(modals_js.matches("group: 'official'").count(), 3);
-    assert!(!modals_js.contains("tags: ['Ratspeak', 'Public']"));
-    assert!(!modals_js.contains("tags: ['Community', 'Public']"));
-    assert!(modals_js.contains("var PUBLIC_SERVER_ARROW_ICON"));
-    assert!(modals_js.contains("var PUBLIC_SERVER_CHECK_ICON"));
-    assert!(modals_js.contains("var PUBLIC_SERVER_GEM_ICON"));
-    assert!(modals_js.contains("function _publicServerMarkHtml(server)"));
-    assert!(modals_js.contains("return !_isPublicTcpServer(entry.host, entry.port);"));
-    assert!(modals_js.contains("quickConnect(server.host, server.port, server.name"));
-    assert!(modals_js.contains("if (bbCheckbox && opts.publicServer) bbCheckbox.checked = false;"));
+    assert!(!modals_js.contains("Connect to Network"));
+    assert!(!modals_js.contains("function renderPublicTcpServers"));
+    // A public server always joins as a TCP client, which Backbone servers accept too.
+    assert!(modals_js.contains("args: { host: server.host, port: server.port, name: server.name, ifac_enabled: false, ifac_network_name: '', ifac_passphrase: '' }"));
 
-    // A public server is one however it is saved: the sheet matches a
+    // A public server is one however it is saved: the Network screen matches a
     // Backbone client too, and every way to connect one holds the limit.
     assert!(modals_js.contains("['tcp_client', 'backbone_client'].forEach(function(ifaceType) {"));
     assert!(modals_js.contains("iface_type: match.ifaceType || 'tcp_client'"));
@@ -5357,19 +5319,15 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
             .contains(r#"if group == "tcp_client" || group == "backbone_client" {"#)
     );
 
+    // The marks on the Network screen take each server's tone.
     let modals_css =
         read_source(root.join("dashboard/static/css/08-modals.css")).expect("modals css");
-    assert!(modals_css.contains(".sheet-segmented-tabs"));
-    assert!(modals_css.contains(".public-server-card--ruby"));
-    assert!(modals_css.contains(".public-server-card--emerald"));
-    assert!(modals_css.contains(".public-server-card--diamond"));
-    assert!(modals_css.contains("grid-template-columns: 34px minmax(0, 1fr) 38px"));
-    assert!(modals_css.contains("gap: var(--space-6);"));
-    assert!(modals_css.contains(".public-server-mark--gem"));
-    assert!(modals_css.contains("stroke-linejoin: round;"));
-    assert!(modals_css.contains(".public-server-action svg"));
+    for tone in ["ruby", "emerald", "diamond"] {
+        assert!(modals_css.contains(&format!(".public-server-card--{tone} {{")));
+    }
+    assert!(!modals_css.contains(".public-server-card {"));
 
-    // Community servers: one closed list under the three, with no tag and no favourite.
+    // Community servers: listed under Unofficial, with no tag and no favourite.
     for (id, name, host, port, place) in [
         (
             "apollo-rns",
@@ -5431,19 +5389,8 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
     }
     assert_eq!(modals_js.matches("group: 'community'").count(), 8);
     assert!(!modals_js.contains("UNOFFICIAL"));
-    assert!(modals_js.contains("'<span>Public servers</span>' + PEER_ICON_CHEVRON"));
-    assert!(modals_js.contains(
-        "class=\"public-server-more-toggle\" id=\"public-server-more-toggle\" aria-controls=\"public-server-more-region\""
-    ));
-    assert!(modals_js.contains("Run by the community. Their operators can see your IP address."));
-    assert!(modals_js.contains("_connectCommunityOpen = null;"));
-    assert!(modals_js.contains("a.name.localeCompare(b.name, 'en', { sensitivity: 'base' })"));
-    assert!(modals_css.contains(".public-server-card--community"));
     assert!(!modals_css.contains(".public-server-card--beleth"));
     assert!(!modals_css.contains(".public-server-card--rmap"));
-    let views_css = read_source(root.join("dashboard/static/css/10-views.css")).expect("views css");
-    assert!(views_css.contains(".peer-details-toggle,\n.public-server-more-toggle {"));
-    assert!(views_css.contains(".peer-details-region,\n.public-server-more-region {"));
 
     // The transport limits count the same servers, from one list in the
     // runtime that the commands and the startup check both read.
@@ -5482,54 +5429,38 @@ fn tcp_public_connect_sheet_uses_curated_public_servers() {
 #[test]
 fn ifac_is_available_ungated_on_client_and_server_sheets() {
     let root = repo_root();
-    let index = read_source(root.join("dashboard/index.html")).expect("index html");
-    for expected in [
-        // Backbone stays a developer-mode experiment; IFAC does not.
-        "id=\"connect-backbone-row\" style=\"display:none;\"",
-        "id=\"connect-use-ifac\"",
-        "id=\"connect-ifac-network-name\"",
-        "id=\"connect-ifac-passphrase\"",
-        "id=\"connect-ifac-size\"",
-        "id=\"host-use-ifac\"",
-        "id=\"host-ifac-network-name\"",
-        "id=\"host-ifac-passphrase\"",
-        "id=\"host-ifac-size\"",
-        "id=\"backbone-host-use-ifac\"",
-        "id=\"backbone-host-ifac-network-name\"",
-        "id=\"backbone-host-ifac-passphrase\"",
-        "id=\"backbone-host-ifac-size\"",
-    ] {
-        assert!(index.contains(expected), "missing IFAC UI token {expected}");
-    }
-
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
-    assert!(modals_js.contains("function _syncConnectAdvancedVisibility()"));
-    assert!(modals_js.contains("if (bbRow) bbRow.style.display = dev ? '' : 'none';"));
-    // IFAC row is always visible; only the size override is dev-gated.
-    assert!(modals_js.contains("if (ifacRow) ifacRow.style.display = '';"));
+    // One switch, "Network name and passphrase", on Add your own server and Host setup alike;
+    // only the size override is developer-only.
+    assert_eq!(
+        modals_js
+            .matches("'Network name and passphrase'")
+            .count(),
+        2
+    );
+    assert!(modals_js.contains("_ifacFieldsHtml('connect', iface, ifac, 'From the server’s operator')"));
+    assert!(modals_js.contains("_ifacFieldsHtml('host', iface, _hostForm.ifac, 'Devices enter this to connect', true)"));
     assert!(modals_js.contains(
-        "if (sizeField) sizeField.style.display = _developerModeEnabled() ? '' : 'none';"
+        "attrs: ' data-netdlg-dev' + (_developerModeEnabled() ? '' : ' hidden')"
     ));
+    assert!(modals_js.contains("document.querySelectorAll('.netdlg [data-netdlg-dev]')"));
+    assert!(!modals_js.contains("Use IFAC"));
+    // Use Backbone is a desktop switch on Add your own server, not a developer-mode one.
+    assert!(modals_js.contains(
+        "_netdlgSwitch('connect-backbone', 'Use Backbone', 'Experimental. Faster for always-on servers.', isBackboneEdit, { disabled: isEdit })"
+    ));
+    assert!(modals_js.contains("return !!window.__RATSPEAK_DESKTOP__;"));
     assert!(modals_js.contains("function _ifacSyncFields(prefix)"));
     assert!(modals_js.contains("args.ifac_enabled = v.ifac_enabled;"));
     assert!(modals_js.contains("args.ifac_network_name = v.ifac_network_name;"));
     assert!(modals_js.contains("args.ifac_passphrase = v.ifac_passphrase;"));
-    assert!(modals_js.contains("Enter an IFAC network name or passphrase"));
-    assert!(modals_js.contains("_ifacGuardEmpty('connect')"));
-    assert!(modals_js.contains("_ifacGuardEmpty('host')"));
-    assert!(modals_js.contains("_ifacGuardEmpty('backbone-host')"));
-    assert!(modals_js.contains("_ifacPopulate('connect', iface)"));
-    assert!(modals_js.contains("_ifacPopulate('host', iface)"));
-    assert!(modals_js.contains("_ifacPopulate('backbone-host', iface)"));
-    assert!(modals_js.contains("_ifacApplyArgs('host', {"));
-    assert!(modals_js.contains("_ifacApplyArgs('backbone-host', {"));
-    assert!(modals_js.contains(
-        "window.addEventListener('ratspeak-developer-mode-changed', _syncConnectAdvancedVisibility);"
-    ));
-    assert!(modals_js.contains("if (ifacCheckbox) ifacCheckbox.checked = false;"));
-    assert!(modals_js.contains("if (ifacNetworkName) ifacNetworkName.value = '';"));
-    assert!(modals_js.contains("if (ifacPassphrase) ifacPassphrase.value = '';"));
-    assert!(modals_js.contains("if (ifacSize) ifacSize.value = '';"));
+    assert!(modals_js.contains("'Add a network name or passphrase.'"));
+    assert!(modals_js.contains("if (!_ifacGuardEmpty('connect')) return;"));
+    assert!(modals_js.contains("if (!_ifacGuardEmpty('host')) return;"));
+    assert!(modals_js.contains("RS.invoke(command, { args: _ifacApplyArgs('connect', args) })"));
+    assert!(modals_js.contains("var args = _ifacApplyArgs('host', {"));
+    // A public join sends no network name or passphrase.
+    assert!(modals_js.contains("ifac_enabled: false, ifac_network_name: '', ifac_passphrase: ''"));
 
     let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
         .expect("interfaces commands");
@@ -5709,7 +5640,6 @@ fn interface_pause_resume_is_config_backed_and_visible() {
 
     let modals_js = read_source(root.join("dashboard/static/js/modals.js")).expect("modals js");
     assert!(modals_js.contains("name: name || (host + ':' + port)"));
-    assert!(modals_js.contains("if (!live || live.online === false) continue;"));
     assert!(!modals_js.contains("'TCP to ' + host + ':' + port"));
 
     let interfaces_rs = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
@@ -5829,31 +5759,41 @@ fn rnode_radio_catalog_has_single_runtime_source() {
     assert!(modals_js.contains("var RNODE_TCP_DEFAULT_PORT = 7633;"));
     assert!(modals_js.contains("function _normaliseRnodeTcpEndpoint(raw)"));
     assert!(modals_js.contains("if (_rnodeIsTcpPort(port)) return 'tcp';"));
-    assert!(modals_js.contains("setRnodeConnectionType('tcp')"));
+    assert!(modals_js.contains("types.push(['tcp', 'Wi-Fi']);"));
     assert!(modals_js.contains("function _rnodeNormaliseInterfaceMode(mode)"));
     assert!(modals_js.contains("var _RNODE_NEW_INTERFACE_MODE = 'roaming';"));
     assert!(modals_js.contains("var _RNODE_LEGACY_INTERFACE_MODE = 'full';"));
     assert!(modals_js.contains("if (!editIface) return _RNODE_NEW_INTERFACE_MODE;"));
     assert!(modals_js.contains("mode: _rnodeReadInterfaceMode()"));
     assert!(modals_js.contains("window.ratspeakDeveloperModeEnabled()"));
-    assert!(modals_js.contains("built.sheet.classList.add('local-network-sheet')"));
+    assert!(modals_js.contains("className: 'netdlg netdlg-local',"));
     assert!(
         modals_js.contains("loraArgs.frequency = radioSettings.frequency")
             || modals_js.contains("frequency: radioSettings.frequency")
     );
     assert!(modals_js.contains("loraArgs.custom_params = true"));
-    assert!(index.contains(r#"id="rnode-frequency""#));
-    assert!(index.contains(r#"id="rnode-advanced""#));
-    assert!(index.contains(r#"id="rnode-toggle-tcp""#));
-    assert!(index.contains(r#"id="rnode-tcp-endpoint""#));
-    assert!(index.contains(r#"id="rnode-mode-field" style="display:none;""#));
-    assert!(index.contains(r#"id="rnode-interface-mode""#));
-    assert!(index.contains(r#"<option value="full">Full</option>"#));
-    assert!(index.contains(r#"<option value="gateway">Gateway</option>"#));
-    assert!(index.contains(r#"<option value="access_point">Access Point (AP)</option>"#));
-    assert!(index.contains(r#"<option value="boundary">Boundary</option>"#));
-    assert!(index.contains(r#"<option value="roaming" selected>Roaming (recommended)</option>"#));
-    assert!(index.contains("Best for mobile radios."));
+    // Set up a radio is a kit dialog built in modals.js; the radio settings are kit text
+    // fields with an inputmode, never type="number" (WebKitGTK spin buttons, #85).
+    assert!(!index.contains(r#"id="rnode-modal""#));
+    assert!(modals_js.contains("_netdlgTextField('rnode-frequency', 'Frequency', { placeholder: '915.000', mode: 'decimal', unit: 'MHz' })"));
+    assert!(modals_js.contains("_netdlgTextField('rnode-spreading-factor', 'Spreading factor', { placeholder: '9', mode: 'numeric', max: 2 })"));
+    assert!(modals_js.contains("_netdlgTextField('rnode-airtime-short', 'Airtime limit, short term', { placeholder: 'No limit', mode: 'decimal', unit: '%' })"));
+    assert!(!modals_js.contains("type=\"number\""));
+    assert!(modals_js.contains("_netdlgDisclosure('rnode-advanced', 'Advanced radio settings'"));
+    assert!(modals_js.contains("_netdlgTextField('rnode-tcp-endpoint', 'Radio address'"));
+    assert!(modals_js.contains("' id=\"rnode-mode-field\" data-netdlg-dev' + (_developerModeEnabled() ? '' : ' hidden')"));
+    for choice in [
+        "{ key: 'full', label: 'Full' }",
+        "{ key: 'gateway', label: 'Gateway' }",
+        "{ key: 'access_point', label: 'Access point (AP)' }",
+        "{ key: 'boundary', label: 'Boundary' }",
+        "{ key: 'roaming', label: 'Roaming (recommended)' }",
+    ] {
+        assert!(modals_js.contains(choice), "missing interface mode {choice}");
+    }
+    assert!(modals_js.contains("Best for mobile radios."));
+    // Adding a USB radio no longer replaces a Bluetooth one (#84), so the dialog warns of no handoff.
+    assert!(!modals_js.contains("Connecting will disconnect your active"));
     assert!(
         rns_config_rs.contains(r#"pub const RNODE_NEW_INTERFACE_DEFAULT_MODE: &str = "roaming";"#)
     );
@@ -5907,19 +5847,11 @@ fn rnode_radio_catalog_has_single_runtime_source() {
         read_source(root.join("dashboard/static/css/13-responsive.css")).expect("responsive css");
     assert!(responsive_css.contains(".bottom-sheet .modal-field label"));
     assert!(responsive_css.contains(".bottom-sheet .rs-dialog-field-label"));
-    assert!(responsive_css.contains(".bottom-sheet .sheet-segmented-tabs button"));
-    assert!(responsive_css.contains(".bottom-sheet .rs-dialog-checkbox-label"));
     assert!(responsive_css.contains(".bottom-sheet .hub-iface-detail"));
-    assert!(responsive_css.contains("#connect-modal .connect-tab-toggle button"));
-    assert!(responsive_css.contains("#connect-modal .quick-connect-btn"));
-    assert!(responsive_css.contains("#connect-modal .quick-connect-detail"));
-    assert!(responsive_css.contains("#connect-modal .public-server-name"));
-    assert!(responsive_css.contains("#connect-modal .public-server-tag"));
-    assert!(responsive_css.contains("#rnode-modal .rnode-pairing-tip"));
-    assert!(responsive_css.contains("#rnode-modal .rnode-frequency-unit"));
-    assert!(responsive_css.contains("#rnode-modal .ble-device-meta"));
-    assert!(responsive_css.contains(".bottom-sheet .rs-dialog-field-help"));
     assert!(responsive_css.contains("font-size: var(--mobile-list-detail-size);"));
+    for gone in ["#connect-modal", "#rnode-modal", ".sheet-segmented-tabs", ".rs-dialog-checkbox"] {
+        assert!(!responsive_css.contains(gone), "{gone} styled a retired sheet");
+    }
 }
 
 #[test]
@@ -8806,7 +8738,6 @@ fn identity_management_is_first_class_tab() {
     let dialogs_js = read_source(root.join("dashboard/static/js/dialogs.js")).expect("dialogs js");
     assert!(dialogs_js.contains("built.sheet.addEventListener('keydown'"));
     assert!(!dialogs_js.contains("built.overlay.addEventListener('keydown'"));
-    assert!(dialogs_js.contains("'<span class=\"ui-tile' + (tone ? ' ui-tile--' + tone : '')"));
     assert!(dialogs_js.contains("glyph.classList.add('ui-ico');"));
     assert!(dialogs_js.contains("text.appendChild(_rsText('small', '', choice.hint));"));
 

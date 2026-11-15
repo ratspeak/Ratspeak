@@ -48,11 +48,11 @@ function setBottomSheetTitleWithIcon(titleEl, title, iconType) {
     titleEl.appendChild(label);
 }
 
-// group 'official' is shown up front; 'community' sits in the closed Public servers list.
+// The Network screen lists these: 'official' up front, 'community' under Unofficial.
 var PUBLIC_TCP_SERVERS = [
-    { id: 'ratspeak-ruby', group: 'official', name: 'Ruby', host: '1.ratspeak.org', port: 4141, tone: 'ruby', mark_icon: 'gem', tags: ['OFFICIAL'] },
-    { id: 'ratspeak-emerald', group: 'official', name: 'Emerald', host: '2.ratspeak.org', port: 4242, tone: 'emerald', mark_icon: 'gem', tags: ['OFFICIAL'], aliases: [{ host: 'rns.ratspeak.org', port: 4242 }] },
-    { id: 'ratspeak-diamond', group: 'official', name: 'Diamond', host: '3.ratspeak.org', port: 4343, tone: 'diamond', mark_icon: 'gem', tags: ['OFFICIAL'] },
+    { id: 'ratspeak-ruby', group: 'official', name: 'Ruby', host: '1.ratspeak.org', port: 4141, tone: 'ruby' },
+    { id: 'ratspeak-emerald', group: 'official', name: 'Emerald', host: '2.ratspeak.org', port: 4242, tone: 'emerald', aliases: [{ host: 'rns.ratspeak.org', port: 4242 }] },
+    { id: 'ratspeak-diamond', group: 'official', name: 'Diamond', host: '3.ratspeak.org', port: 4343, tone: 'diamond' },
     { id: 'apollo-rns', group: 'community', name: 'Apollo RNS', host: 'rns.not-a-number.io', port: 4242, place: 'Belgium' },
     { id: 'beleth', group: 'community', name: 'Beleth', host: 'rns.beleth.net', port: 4242 },
     { id: 'michmesh', group: 'community', name: 'MichMesh', host: 'rns.michmesh.net', port: 7822, place: 'Michigan, US' },
@@ -79,41 +79,12 @@ function _publicServerEndpointKeys(server) {
     });
 }
 
-var PUBLIC_TCP_SERVER_KEYS = PUBLIC_TCP_SERVERS.reduce(function(acc, server) {
-    _publicServerEndpointKeys(server).forEach(function(key) {
-        acc[key] = true;
-    });
-    return acc;
-}, {});
+// The public server a Join on the Network screen is waiting for.
 var _connectPendingPublicServerKey = null;
-// null follows the saved state; a tap decides until the sheet next opens.
-var _connectCommunityOpen = null;
-
-function _isPublicTcpServer(host, port) {
-    return !!PUBLIC_TCP_SERVER_KEYS[_tcpServerKey(host, port)];
-}
 
 function _publicServerMatchesEndpoint(server, host, port) {
     var endpointKey = _tcpServerKey(host, port);
     return _publicServerEndpointKeys(server).indexOf(endpointKey) >= 0;
-}
-
-var PUBLIC_SERVER_ARROW_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></svg>';
-var PUBLIC_SERVER_CHECK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>';
-var PUBLIC_SERVER_GEM_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.2 3h9.6L22 8.8 12 21 2 8.8 7.2 3Z"/><path d="M7.2 3 9.5 8.8 12 21"/><path d="M16.8 3 14.5 8.8 12 21"/><path d="M2 8.8h20"/><path d="M9.5 8.8 12 3l2.5 5.8"/></svg>';
-
-function _publicServerMarkHtml(server) {
-    if (server.mark_icon === 'gem') {
-        return '<span class="public-server-mark public-server-mark--gem" aria-hidden="true">' + PUBLIC_SERVER_GEM_ICON + '</span>';
-    }
-    return '<span class="public-server-mark" aria-hidden="true">' + escapeHtml(server.mark || server.name.charAt(0)) + '</span>';
-}
-
-function _setConnectSubmitBase(btn, text) {
-    if (!btn) return;
-    btn.textContent = text || 'Connect';
-    btn.className = 'nr-btn w-full mt-4';
-    btn.disabled = false;
 }
 
 function _trapFocus(modalEl) {
@@ -413,14 +384,282 @@ function removeHubInterface(ifaceType, ifaceName) {
     });
 }
 
+// ------------------------------------------------------------------ connection dialogs
+// Add your own server, Host setup, Set up a radio, and Local Network options: one kit Dialog
+// each (a Sheet on a phone), Medium, with a Quiet Cancel on desktop and one Primary.
+
+function _netdlgEsc(value) {
+    return escapeHtml(value == null ? '' : String(value));
+}
+
+function _netdlgIcon(name) {
+    return RS.kit.icon(name);
+}
+
+// A kit text field with its help and an error slot. Numbers are text with an inputmode, never a
+// number input (#85: WebKitGTK draws oversized spin buttons).
+// o: { type, value, placeholder, mode, max, unit, mono, help, aria, attrs }.
+function _netdlgTextField(id, label, o) {
+    o = o || {};
+    var input = '<input class="ui-input' + (o.mono ? ' ui-input--mono' : '') + '" id="' + id + '" type="' + (o.type || 'text') + '"' +
+        (o.mode ? ' inputmode="' + o.mode + '"' : '') + (o.max ? ' maxlength="' + o.max + '"' : '') +
+        ' value="' + _netdlgEsc(o.value) + '" placeholder="' + _netdlgEsc(o.placeholder) + '"' +
+        (o.help ? ' aria-describedby="' + id + '-help"' : '') + (label ? '' : ' aria-label="' + _netdlgEsc(o.aria) + '"') +
+        ' autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false">';
+    if (o.unit) input = '<div class="ui-input-wrap">' + input + '<span class="ui-unit">' + o.unit + '</span></div>';
+    return '<div class="ui-field"' + (o.attrs || '') + '>' + (label ? '<label class="ui-label" for="' + id + '">' + label + '</label>' : '') + input +
+        (o.help ? '<p class="ui-help" id="' + id + '-help">' + o.help + '</p>' : '') +
+        '<p class="ui-error" id="' + id + '-error" role="alert" hidden></p></div>';
+}
+
+function _netdlgSwitch(id, label, desc, on, o) {
+    o = o || {};
+    return '<div class="ui-prop"' + (o.attrs || '') + '><span class="ui-prop-text"><span class="ui-prop-label" id="' + id + '-label">' + label + '</span>' +
+        (desc ? '<span class="ui-prop-desc" id="' + id + '-desc">' + desc + '</span>' : '') + '</span>' +
+        '<label class="ui-switch"><input type="checkbox" role="switch" id="' + id + '"' + (on ? ' checked' : '') + (o.disabled ? ' disabled' : '') +
+        ' aria-labelledby="' + id + '-label"' + (desc ? ' aria-describedby="' + id + '-desc"' : '') + '><span class="track"></span></label></div>';
+}
+
+function _netdlgSeg(name, items, current, label, disabled) {
+    return '<div class="ui-seg ui-seg--block" role="radiogroup" aria-label="' + label + '" data-netdlg-seg="' + name + '">' + items.map(function(item) {
+        return '<button type="button" role="radio" aria-checked="' + (item[0] === current) + '" data-v="' + item[0] + '"' + (disabled ? ' disabled' : '') + '>' +
+            _netdlgEsc(item[1]) + '</button>';
+    }).join('') + '</div>';
+}
+
+function _netdlgSegSet(root, name, value) {
+    root.querySelectorAll('[data-netdlg-seg="' + name + '"] [role="radio"]').forEach(function(btn) {
+        btn.setAttribute('aria-checked', btn.getAttribute('data-v') === value ? 'true' : 'false');
+    });
+}
+
+// A chevron row that shows or hides the stacked row after it (id + '-body').
+function _netdlgDisclosure(id, label, desc, open) {
+    return '<button type="button" class="ui-prop" id="' + id + '" data-netdlg="disclose" aria-expanded="' + !!open + '" aria-controls="' + id + '-body">' +
+        '<span class="ui-prop-text"><span class="ui-prop-label">' + label + '</span><span class="ui-prop-desc">' + desc + '</span></span>' +
+        _netdlgIcon(open ? 'chevron-down' : 'chevron-right') + '</button>';
+}
+
+function _netdlgSetDisclosure(id, open) {
+    var btn = document.getElementById(id);
+    var body = document.getElementById(id + '-body');
+    if (btn) {
+        btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        var chevron = btn.querySelector('.ui-ico');
+        if (chevron) chevron.outerHTML = _netdlgIcon(open ? 'chevron-down' : 'chevron-right');
+    }
+    if (body) body.hidden = !open;
+}
+
+// Kit Select fields: a button that opens a menu. Each keeps its value and choices here, so a
+// catalog loaded before any dialog opens still fills them.
+var _netdlgSelects = {};
+
+function _netdlgSelect(id) {
+    return _netdlgSelects[id] || (_netdlgSelects[id] = { value: '', options: [], onPick: null });
+}
+
+function _netdlgSelectGet(id) {
+    return _netdlgSelect(id).value;
+}
+
+function _netdlgSelectLabel(id) {
+    var select = _netdlgSelect(id);
+    var match = select.options.filter(function(option) { return option.key === select.value; })[0];
+    return match ? match.label : '';
+}
+
+function _netdlgSelectSet(id, value) {
+    _netdlgSelect(id).value = value;
+    var el = document.getElementById(id);
+    var shown = el && el.querySelector('.v');
+    if (shown) shown.textContent = _netdlgSelectLabel(id);
+}
+
+function _netdlgSelectOptions(id, options) {
+    _netdlgSelect(id).options = options;
+    _netdlgSelectSet(id, _netdlgSelectGet(id));
+}
+
+function _netdlgSelectField(id, label, help, attrs) {
+    return '<div class="ui-field"' + (attrs || '') + '><span class="ui-label" id="' + id + '-label">' + label + '</span>' +
+        '<button type="button" class="ui-select ui-select--field" id="' + id + '" data-netdlg="select" aria-haspopup="menu" aria-expanded="false" aria-labelledby="' + id + '-label ' + id + '"' +
+            (help ? ' aria-describedby="' + id + '-help"' : '') + '><span class="v">' + _netdlgEsc(_netdlgSelectLabel(id)) + '</span>' + _netdlgIcon('updown') + '</button>' +
+        (help ? '<p class="ui-help" id="' + id + '-help">' + help + '</p>' : '') + '</div>';
+}
+
+function _netdlgSelectOpen(el) {
+    var id = el.id;
+    var select = _netdlgSelect(id);
+    var label = document.getElementById(id + '-label');
+    RS.kit.menu(el, {
+        title: label ? label.textContent : '',
+        hints: true,
+        items: select.options.map(function(option) {
+            return {
+                label: option.label,
+                hint: option.hint,
+                checked: option.key === select.value,
+                onSelect: function() {
+                    _netdlgSelectSet(id, option.key);
+                    if (typeof select.onPick === 'function') select.onPick(option.key);
+                }
+            };
+        })
+    });
+}
+
+function _netdlgFoot(primary, o) {
+    o = o || {};
+    return (o.back
+        ? '<button type="button" class="ui-btn ui-btn--quiet" data-netdlg="back">Back</button>'
+        : '<button type="button" class="ui-btn ui-btn--quiet ui-desk-only" data-ui-close>Cancel</button>') +
+        '<button type="button" class="ui-btn ui-btn--primary" data-netdlg="submit"' + (o.disabled ? ' disabled' : '') + '>' + _netdlgEsc(primary) + '</button>';
+}
+
+function _netdlgPrimary(dlg) {
+    return dlg && dlg.foot ? dlg.foot.querySelector('[data-netdlg="submit"]') : null;
+}
+
+// A spinner and a short label while the Primary waits; null puts it back.
+function _netdlgBusy(btn, label) {
+    if (!btn) return;
+    if (label) {
+        if (!btn.hasAttribute('data-rest')) btn.setAttribute('data-rest', btn.textContent);
+        btn.disabled = true;
+        btn.innerHTML = '<span class="ui-spin" aria-hidden="true"></span>' + _netdlgEsc(label);
+    } else if (btn.hasAttribute('data-rest')) {
+        btn.textContent = btn.getAttribute('data-rest');
+        btn.removeAttribute('data-rest');
+        btn.disabled = false;
+    }
+}
+
+function _netdlgNoticeSlot() {
+    return '<div class="ui-notice ui-notice--error" data-netdlg-notice role="alert" hidden>' + _netdlgIcon('alert') + '<div class="ui-notice-body"></div></div>';
+}
+
+// A refusal that belongs to no one field: the notice at the end of the dialog, in view.
+function _netdlgNotice(dlg, message) {
+    var notice = dlg && dlg.body && dlg.isOpen() ? dlg.body.querySelector('[data-netdlg-notice]') : null;
+    if (!notice) {
+        if (message) showToast(message, 'toast-error', 8000);
+        return;
+    }
+    notice.hidden = !message;
+    notice.querySelector('.ui-notice-body').textContent = message || '';
+    if (message && typeof notice.scrollIntoView === 'function') notice.scrollIntoView({ block: 'nearest' });
+}
+
+function _netdlgSetError(id, message) {
+    var input = document.getElementById(id);
+    var slot = document.getElementById(id + '-error');
+    // A field another module renders gets its slot on first use.
+    if (!slot && message && input) {
+        slot = document.createElement('p');
+        slot.className = 'ui-error';
+        slot.id = id + '-error';
+        slot.setAttribute('role', 'alert');
+        var after = input.closest('.ui-input-wrap') || input;
+        after.parentNode.insertBefore(slot, after.nextSibling);
+    }
+    if (slot) {
+        slot.hidden = !message;
+        slot.innerHTML = message ? _netdlgIcon('alert') + '<span>' + _netdlgEsc(message) + '</span>' : '';
+    }
+    if (input) {
+        var help = document.getElementById(id + '-help');
+        var described = [help ? help.id : '', message && slot ? slot.id : ''].filter(Boolean).join(' ');
+        input.classList.toggle('is-invalid', !!message);
+        if (message) input.setAttribute('aria-invalid', 'true');
+        else input.removeAttribute('aria-invalid');
+        if (described) input.setAttribute('aria-describedby', described);
+        else input.removeAttribute('aria-describedby');
+    }
+    return !message;
+}
+
+// Shows a field's error and takes the user to it.
+function _netdlgFieldError(id, message) {
+    _netdlgSetError(id, message);
+    var input = document.getElementById(id);
+    if (input) {
+        try { input.focus({ preventScroll: true }); } catch (_) {}
+        if (typeof input.scrollIntoView === 'function') input.scrollIntoView({ block: 'nearest' });
+    }
+    return false;
+}
+
+function _netdlgClearErrors(dlg) {
+    if (!dlg || !dlg.dialog) return;
+    dlg.dialog.querySelectorAll('.ui-input.is-invalid').forEach(function(input) { _netdlgSetError(input.id, ''); });
+    _netdlgNotice(dlg, '');
+}
+
+// A blank port is the default; anything else must be a whole number from 1 to 65535.
+function _netdlgPort(id, fallback) {
+    var el = document.getElementById(id);
+    var raw = el ? String(el.value).trim() : '';
+    if (!raw) return fallback;
+    if (!/^\d+$/.test(raw)) return null;
+    var port = parseInt(raw, 10);
+    return port >= 1 && port <= 65535 ? port : null;
+}
+
+function _netdlgValue(id) {
+    var el = document.getElementById(id);
+    return el ? String(el.value).trim() : '';
+}
+
+// Backbone clients and servers are desktop only.
+function _netdlgBackboneAvailable() {
+    return !!window.__RATSPEAK_DESKTOP__;
+}
+
+// A re-render keeps keyboard focus on the control that held it.
+function _netdlgRerender(container, html) {
+    if (!container) return;
+    var active = document.activeElement;
+    var key = null;
+    if (active && container.contains(active)) {
+        key = active.id ? '#' + active.id
+            : active.getAttribute('data-netdlg') ? '[data-netdlg="' + active.getAttribute('data-netdlg') + '"]' + (active.hasAttribute('data-i') ? '[data-i="' + active.getAttribute('data-i') + '"]' : '')
+            : active.getAttribute('data-v') ? '[data-v="' + active.getAttribute('data-v') + '"]'
+            : active.getAttribute('data-hd') ? '[data-hd="' + active.getAttribute('data-hd') + '"]' : null;
+    }
+    container.innerHTML = html;
+    var again = key ? container.querySelector(key) : null;
+    if (again && !again.disabled) {
+        try { again.focus({ preventScroll: true }); } catch (_) {}
+    }
+}
+
+function _netdlgOpError(data) {
+    var detail = data && typeof data.error === 'string' ? data.error : '';
+    if (!detail) return (data && data.step) || 'That didn’t work. Try again.';
+    return data.step && data.step !== detail ? data.step + ': ' + detail : detail;
+}
+
+// Developer-only fields follow the setting while a dialog is open.
+window.addEventListener('ratspeak-developer-mode-changed', function() {
+    var dev = _developerModeEnabled();
+    document.querySelectorAll('.netdlg [data-netdlg-dev]').forEach(function(el) { el.hidden = !dev; });
+});
+
+// Network identity changes redraw Host setup's discovery switches (the inline offer leaves).
+var _netdlgIdentityBound = false;
+function _netdlgBindIdentity() {
+    if (_netdlgIdentityBound || !RS.networkIdentity || typeof RS.networkIdentity.onChange !== 'function') return;
+    _netdlgIdentityBound = true;
+    RS.networkIdentity.onChange(function() { _hostRenderDiscovery(); });
+}
+
 var _rnodeConnectionType = 'serial';
 var RNODE_TCP_DEFAULT_PORT = 7633;
 var _bleSelectedDevice = null;
 var _androidUsbSelectedDevice = null;
+var _selectedSerialPort = null;
 var _rnodeEditContext = null;
-var _connectEditContext = null;
-var _hostEditContext = null;
-var _backboneHostEditContext = null;
 var _RNODE_CUSTOM_REGION_KEY = 'custom';
 var _RNODE_CUSTOM_PRESET_KEY = 'custom';
 
@@ -557,13 +796,11 @@ function _rnodeApplyRegionToFrequency(regionKey) {
 }
 
 function _rnodeSelectedRegionKey() {
-    var select = document.getElementById('rnode-region');
-    return select ? select.value : (_rnodeCatalogDefaults.region || 'americas');
+    return _netdlgSelectGet('rnode-region') || _rnodeCatalogDefaults.region || 'americas';
 }
 
 function _rnodeSelectedPresetKey() {
-    var select = document.getElementById('rnode-preset');
-    return select ? select.value : (_rnodeCatalogDefaults.preset || 'medium_fast');
+    return _netdlgSelectGet('rnode-preset') || _rnodeCatalogDefaults.preset || 'medium_fast';
 }
 
 // Empty input = no duty-cycle limit; returns null for empty, NaN for garbage.
@@ -589,27 +826,27 @@ function _rnodeReadRadioSettings() {
     var tx = parseInt(document.getElementById('rnode-tx-power').value, 10);
     var limits = _rnodeRadioLimits || {};
     if (!freq || freq < limits.frequencyMin || freq > limits.frequencyMax) {
-        return { error: 'Frequency must be between ' + _rnodeFormatMhz(limits.frequencyMin) + ' and ' + _rnodeFormatMhz(limits.frequencyMax) + ' MHz' };
+        return { field: 'rnode-frequency', error: 'Frequency must be between ' + _rnodeFormatMhz(limits.frequencyMin) + ' and ' + _rnodeFormatMhz(limits.frequencyMax) + ' MHz' };
     }
     if (!bw || bw < limits.bandwidthMin || bw > limits.bandwidthMax) {
-        return { error: 'Bandwidth must be between ' + _rnodeFormatKhz(limits.bandwidthMin) + ' and ' + _rnodeFormatKhz(limits.bandwidthMax) + ' kHz' };
+        return { field: 'rnode-bandwidth', error: 'Bandwidth must be between ' + _rnodeFormatKhz(limits.bandwidthMin) + ' and ' + _rnodeFormatKhz(limits.bandwidthMax) + ' kHz' };
     }
     if (isNaN(sf) || sf < limits.sfMin || sf > limits.sfMax) {
-        return { error: 'Spreading factor must be between ' + limits.sfMin + ' and ' + limits.sfMax };
+        return { field: 'rnode-spreading-factor', error: 'Spreading factor must be between ' + limits.sfMin + ' and ' + limits.sfMax };
     }
     if (isNaN(cr) || cr < limits.crMin || cr > limits.crMax) {
-        return { error: 'Coding rate must be between ' + limits.crMin + ' and ' + limits.crMax };
+        return { field: 'rnode-coding-rate', error: 'Coding rate must be between ' + limits.crMin + ' and ' + limits.crMax };
     }
     if (isNaN(tx) || tx < limits.txMin || tx > limits.txMax) {
-        return { error: 'TX power must be between ' + limits.txMin + ' and ' + limits.txMax + ' dBm' };
+        return { field: 'rnode-tx-power', error: 'TX power must be between ' + limits.txMin + ' and ' + limits.txMax + ' dBm' };
     }
     var airtimeShort = _rnodeParseAirtimePercent('rnode-airtime-short');
     var airtimeLong = _rnodeParseAirtimePercent('rnode-airtime-long');
     if (airtimeShort !== null && (isNaN(airtimeShort) || airtimeShort < 0 || airtimeShort > 100)) {
-        return { error: 'Short-term airtime limit must be between 0 and 100 %' };
+        return { field: 'rnode-airtime-short', error: 'Short-term airtime limit must be between 0 and 100 %' };
     }
     if (airtimeLong !== null && (isNaN(airtimeLong) || airtimeLong < 0 || airtimeLong > 100)) {
-        return { error: 'Long-term airtime limit must be between 0 and 100 %' };
+        return { field: 'rnode-airtime-long', error: 'Long-term airtime limit must be between 0 and 100 %' };
     }
 
     var regionKey = _rnodeSelectedRegionKey();
@@ -653,13 +890,8 @@ function _rnodePublicMapElements() {
 function _rnodeSetPublicMapError(message) {
     var error = document.getElementById('rnode-public-map-error');
     if (!error) return;
-    if (message) {
-        error.textContent = message;
-        error.style.display = '';
-    } else {
-        error.textContent = '';
-        error.style.display = 'none';
-    }
+    error.hidden = !message;
+    error.innerHTML = message ? RS.kit.icon('alert') + '<span>' + escapeHtml(message) + '</span>' : '';
 }
 
 function _rnodeSetPublicMapStatus() {
@@ -681,7 +913,7 @@ function _rnodeSetPublicMapStatus() {
 function _rnodeSetPublicMapEnabled(enabled) {
     var els = _rnodePublicMapElements();
     if (els.checkbox) els.checkbox.checked = !!enabled;
-    if (els.controls) els.controls.style.display = enabled ? '' : 'none';
+    if (els.controls) els.controls.hidden = !enabled;
     if (!enabled) {
         _rnodeSetPublicMapError('');
     } else {
@@ -691,17 +923,16 @@ function _rnodeSetPublicMapEnabled(enabled) {
 
 function _rnodeResetPublicMap() {
     var els = _rnodePublicMapElements();
-    if (els.section) els.section.style.display = 'none';
     if (els.latitude) els.latitude.value = '';
     if (els.longitude) els.longitude.value = '';
     _rnodeSetPublicMapError('');
     _rnodeSetPublicMapEnabled(false);
 }
 
+// The public map is offered only when editing a radio, so its section exists only then.
 function _rnodeLoadPublicMap(editIface) {
     var els = _rnodePublicMapElements();
     if (!els.section) return;
-    els.section.style.display = editIface ? '' : 'none';
     if (!editIface) {
         _rnodeSetPublicMapEnabled(false);
         return;
@@ -746,7 +977,7 @@ function _rnodeActiveIdentityDisplayName() {
 
 function _rnodeReadPublicMapSettings() {
     var els = _rnodePublicMapElements();
-    if (!els.section || els.section.style.display === 'none' || !els.checkbox || !els.checkbox.checked) {
+    if (!els.section || !els.checkbox || !els.checkbox.checked) {
         return { enabled: false };
     }
     if (!_rnodeActiveIdentityDisplayName()) {
@@ -817,52 +1048,28 @@ function _rnodeEnablePublicMapWithWarning() {
     });
 }
 
+// The design carries no frequency or preset hint lines; the out-of-band warning stays.
 function _rnodeUpdateRadioHints() {
-    var freq = _rnodeParseFrequencyHz(document.getElementById('rnode-frequency').value);
-    var regionKey = _rnodeSelectedRegionKey();
-    var presetKey = _rnodeSelectedPresetKey();
-    var region = _rnodeRegions && _rnodeRegions[regionKey];
-    var preset = _rnodePresets && _rnodePresets[presetKey];
-    var freqHint = document.getElementById('rnode-frequency-hint');
+    var input = document.getElementById('rnode-frequency');
     var warn = document.getElementById('rnode-frequency-warning');
-    var presetHint = document.getElementById('rnode-preset-hint');
-
-    if (freqHint) {
-        freqHint.textContent = region
-            ? 'Default ' + _rnodeFormatMhz(region.freq) + ' MHz. Config is written as ' + (freq || region.freq) + ' Hz.'
-            : 'Custom center frequency. Config is written in Hz.';
-    }
-    if (warn) {
-        if (freq && region && !_rnodeRegionContainsFrequency(regionKey, freq)) {
-            warn.textContent = 'This frequency is outside the selected band range of ' +
-                _rnodeFormatMhz(region.min) + '-' + _rnodeFormatMhz(region.max) +
-                ' MHz. Check hardware support and local regulations before transmitting.';
-            warn.style.display = '';
-        } else {
-            warn.style.display = 'none';
-            warn.textContent = '';
-        }
-    }
-    if (presetHint) {
-        presetHint.textContent = preset
-            ? 'SF' + preset.sf + ', BW ' + _rnodeFormatKhz(preset.bw) + ' kHz, CR ' + preset.cr + ', TX ' + preset.tx + ' dBm.'
-            : 'Custom radio parameters.';
-    }
+    if (!input || !warn) return;
+    var freq = _rnodeParseFrequencyHz(input.value);
+    var regionKey = _rnodeSelectedRegionKey();
+    var region = _rnodeRegions && _rnodeRegions[regionKey];
+    var outside = !!(freq && region && !_rnodeRegionContainsFrequency(regionKey, freq));
+    warn.hidden = !outside;
+    warn.querySelector('.ui-notice-body').textContent = outside
+        ? 'This frequency is outside the selected band range of ' + _rnodeFormatMhz(region.min) + '-' + _rnodeFormatMhz(region.max) +
+            ' MHz. Check hardware support and local regulations before transmitting.'
+        : '';
 }
 
 function _rnodeRefreshRegionFromFrequency() {
     var freq = _rnodeParseFrequencyHz(document.getElementById('rnode-frequency').value);
-    var select = document.getElementById('rnode-region');
-    if (!freq || !select) {
-        _rnodeUpdateRadioHints();
-        return;
+    var current = _netdlgSelectGet('rnode-region');
+    if (freq && !(current !== _RNODE_CUSTOM_REGION_KEY && _rnodeRegionContainsFrequency(current, freq))) {
+        _netdlgSelectSet('rnode-region', _rnodeRegionForFrequency(freq));
     }
-    var current = select.value;
-    if (current !== _RNODE_CUSTOM_REGION_KEY && _rnodeRegionContainsFrequency(current, freq)) {
-        _rnodeUpdateRadioHints();
-        return;
-    }
-    select.value = _rnodeRegionForFrequency(freq);
     _rnodeUpdateRadioHints();
 }
 
@@ -871,24 +1078,16 @@ function _rnodeRefreshPresetFromAdvanced() {
     var sf = parseInt(document.getElementById('rnode-spreading-factor').value, 10);
     var cr = parseInt(document.getElementById('rnode-coding-rate').value, 10);
     var tx = parseInt(document.getElementById('rnode-tx-power').value, 10);
-    var select = document.getElementById('rnode-preset');
-    if (!bw || isNaN(sf) || isNaN(cr) || isNaN(tx) || !select) {
-        _rnodeUpdateRadioHints();
-        return;
-    }
-    select.value = _rnodePresetForParams(bw, sf, cr, tx);
+    if (bw && !isNaN(sf) && !isNaN(cr) && !isNaN(tx)) _netdlgSelectSet('rnode-preset', _rnodePresetForParams(bw, sf, cr, tx));
     _rnodeUpdateRadioHints();
 }
 
 function _rnodeApplyRadioControls(regionKey, presetKey, freq, bw, sf, cr, tx, openAdvanced) {
-    var regionSelect = document.getElementById('rnode-region');
-    var presetSelect = document.getElementById('rnode-preset');
-    var advanced = document.getElementById('rnode-advanced');
-    if (regionSelect) regionSelect.value = regionKey || _rnodeCatalogDefaults.region || 'americas';
-    if (presetSelect) presetSelect.value = presetKey || _rnodeCatalogDefaults.preset || 'medium_fast';
+    _netdlgSelectSet('rnode-region', regionKey || _rnodeCatalogDefaults.region || 'americas');
+    _netdlgSelectSet('rnode-preset', presetKey || _rnodeCatalogDefaults.preset || 'medium_fast');
     _rnodeSetFrequency(freq);
     _rnodeSetAdvancedParams(bw, sf, cr, tx);
-    if (advanced) advanced.open = !!openAdvanced;
+    _netdlgSetDisclosure('rnode-advanced', !!openAdvanced);
     _rnodeUpdateRadioHints();
 }
 
@@ -997,14 +1196,11 @@ function _rnodeNormaliseInterfaceMode(mode) {
 }
 
 function _rnodeSetInterfaceMode(mode) {
-    var select = document.getElementById('rnode-interface-mode');
-    if (!select) return;
-    select.value = _rnodeNormaliseInterfaceMode(mode);
+    _netdlgSelectSet('rnode-interface-mode', _rnodeNormaliseInterfaceMode(mode));
 }
 
 function _rnodeReadInterfaceMode() {
-    var select = document.getElementById('rnode-interface-mode');
-    return _rnodeNormaliseInterfaceMode(select ? select.value : 'full');
+    return _rnodeNormaliseInterfaceMode(_netdlgSelectGet('rnode-interface-mode') || 'full');
 }
 
 function _rnodeInitialInterfaceMode(editIface) {
@@ -1021,103 +1217,290 @@ function _developerModeEnabled() {
     return _rnodeDeveloperModeEnabled();
 }
 
-function _rnodeSyncInterfaceModeVisibility() {
-    var field = document.getElementById('rnode-mode-field');
-    if (field) field.style.display = _rnodeDeveloperModeEnabled() ? '' : 'none';
+// ------------------------------------------------------------------ Set up a radio
+// Two steps: how the radio is connected (Bluetooth, USB, or Wi-Fi), then its radio settings.
+var _rnodeDialog = null;
+var _rnodeStep = 1;
+var _rnodePrefill = null;
+var _rnodePrefillName = '';
+var _rnodeTcpDraft = '';
+// Radios found per connection: { state: 'idle' | 'scanning' | 'done' | 'error', devices, message }.
+var _rnodeFound = {};
+
+_netdlgSelectOptions('rnode-interface-mode', [
+    { key: 'full', label: 'Full' },
+    { key: 'gateway', label: 'Gateway' },
+    { key: 'access_point', label: 'Access point (AP)' },
+    { key: 'boundary', label: 'Boundary' },
+    { key: 'roaming', label: 'Roaming (recommended)' }
+]);
+_netdlgSelect('rnode-region').onPick = function(key) {
+    if (key !== _RNODE_CUSTOM_REGION_KEY) _rnodeApplyRegionToFrequency(key);
+    else _rnodeUpdateRadioHints();
+};
+_netdlgSelect('rnode-preset').onPick = function(key) {
+    if (key !== _RNODE_CUSTOM_PRESET_KEY) {
+        _rnodeApplyPresetToAdvanced(key);
+    } else {
+        _netdlgSetDisclosure('rnode-advanced', true);
+        _rnodeUpdateRadioHints();
+    }
+};
+
+// iOS MFi blocks USB serial; Android uses USB-OTG JNI; desktop uses serialport.
+function _rnodeConnectionTypes() {
+    var types = [['ble', 'Bluetooth']];
+    if (isAndroid() && hasAndroidBridge()) types.push(['android-usb', 'USB']);
+    else if (!isIOS()) types.push(['serial', 'USB']);
+    types.push(['tcp', 'Wi-Fi']);
+    return types;
 }
 
-window.addEventListener('ratspeak-developer-mode-changed', _rnodeSyncInterfaceModeVisibility);
-window.addEventListener('ratspeak-developer-mode-changed', _syncConnectAdvancedVisibility);
+function _rnodeCanScanBle() {
+    return !!(window._bleAvailable || window._blePromptPending || hasAndroidBridge());
+}
 
-function openRnodeModal(mode, editIface) {
+function _rnodeBleNoticeHtml() {
+    if (_rnodeConnectionType !== 'ble' || _rnodeCanScanBle()) return '';
+    var denied = window._bleAuthState === 'denied' || window._bleAuthState === 'restricted';
+    var reason = denied ? 'Ratspeak isn’t allowed to use Bluetooth.'
+        : ((window._bleMissing || [])[0] || 'Bluetooth isn’t available on this device.');
+    return '<div class="ui-notice ui-notice--warning">' + _netdlgIcon('alert') + '<div class="ui-notice-body">' + _netdlgEsc(reason) + '</div>' +
+        (denied ? '<button type="button" class="ui-btn ui-btn--sm" data-netdlg="ble-settings">Open Settings</button>' : '') + '</div>';
+}
+
+function _rnodeSelected(type) {
+    if (type === 'ble') return _bleSelectedDevice;
+    if (type === 'android-usb') return _androidUsbSelectedDevice;
+    return _selectedSerialPort;
+}
+
+function _rnodeDeviceKey(type, dev) {
+    if (!dev) return '';
+    if (type === 'ble') return dev.address || '';
+    if (type === 'android-usb') return dev.device_name || '';
+    return dev.device || '';
+}
+
+// A scan keeps the radio already chosen, even when it is out of range this time.
+function _rnodeKeepSelected(type, devices) {
+    var selected = _rnodeSelected(type);
+    var key = _rnodeDeviceKey(type, selected);
+    if (!key || devices.some(function(dev) { return _rnodeDeviceKey(type, dev) === key; })) return devices;
+    return [selected].concat(devices);
+}
+
+function _rnodeSignal(rssi) {
+    if (rssi === null || rssi === undefined) return '';
+    return rssi > -64 ? 'Strong signal' : (rssi > -82 ? 'Good signal' : 'Weak signal');
+}
+
+function _rnodeDeviceText(type, dev, devices) {
+    if (type === 'ble') {
+        var sub = [_rnodeSignal(dev.rssi)];
+        if (_bondBadgeReliable() && typeof dev.bonded === 'boolean') sub.push(dev.bonded ? 'Paired' : 'Not paired');
+        var twin = devices.some(function(other) { return other !== dev && other.name === dev.name; });
+        if (twin || !sub.filter(Boolean).length) sub.push(dev.address);
+        return { title: dev.name || 'RNode', sub: sub.filter(Boolean).join(' · ') };
+    }
+    if (type === 'android-usb') {
+        var hex = function(n) { return Number(n).toString(16).toUpperCase().padStart(4, '0'); };
+        return {
+            title: dev.product || dev.manufacturer || dev.device_name,
+            sub: typeof dev.vid === 'number' ? 'VID ' + hex(dev.vid) + ' · PID ' + hex(dev.pid) : ''
+        };
+    }
+    var described = !!dev.description && dev.description !== dev.device;
+    return {
+        title: described ? dev.description : dev.device,
+        sub: [described ? dev.device : '', dev.permission_denied ? 'Permission denied' : ''].filter(Boolean).join(' · ')
+    };
+}
+
+function _rnodeFoundHtml(type) {
+    var found = _rnodeFound[type] || { state: 'idle', devices: [] };
+    if (found.state === 'scanning') {
+        return '<div class="ui-empty ui-empty--inline" role="status"><span class="ui-spin ui-spin--ring" aria-hidden="true"></span><span>Looking for radios…</span></div>';
+    }
+    if (found.state === 'error') {
+        return '<div class="ui-empty ui-empty--inline" role="status">' + _netdlgIcon('alert') + '<span>' + _netdlgEsc(found.message) + '</span></div>';
+    }
+    if (!found.devices.length) {
+        var empty = found.state !== 'done' ? 'Scan to find radios nearby.'
+            : type === 'ble' ? 'No radios found. Turn on pairing mode, then scan again.' : 'No radios found. Check the cable, then scan again.';
+        return '<div class="ui-empty ui-empty--inline" role="status">' + _netdlgIcon('tower') + '<span>' + empty + '</span></div>';
+    }
+    var selectedKey = _rnodeDeviceKey(type, _rnodeSelected(type));
+    return '<div class="netdlg-radios" role="radiogroup" aria-label="Radios found"><ul class="ui-list">' + found.devices.map(function(dev, i) {
+        var on = !!selectedKey && _rnodeDeviceKey(type, dev) === selectedKey;
+        var text = _rnodeDeviceText(type, dev, found.devices);
+        return '<li><button type="button" class="ui-row ui-row--one" role="radio" aria-checked="' + on + '"' + (on ? ' aria-current="true"' : '') +
+                ' data-netdlg="radio-pick" data-i="' + i + '">' +
+            '<span class="netdlg-mark" aria-hidden="true">' + _netdlgIcon(type === 'ble' ? 'bluetooth' : 'usb') + '</span>' +
+            '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + _netdlgEsc(text.title) + '</span></span>' +
+                (text.sub ? '<span class="ui-row-sub"><span class="t">' + _netdlgEsc(text.sub) + '</span></span>' : '') + '</span>' +
+            (on ? _netdlgIcon('check') : '') + '</button></li>';
+    }).join('') + '</ul></div>';
+}
+
+function _rnodeScanRowHtml(type) {
+    var found = _rnodeFound[type] || { state: 'idle' };
+    var scanning = found.state === 'scanning';
+    var help = type === 'ble' ? 'Not listed? Turn on pairing mode on the radio.'
+        : (type === 'android-usb' ? 'Not listed? Check the OTG cable and that the radio is on.' : 'Not listed? Check the cable.');
+    return '<div class="netdlg-scanrow"><p class="ui-help">' + help + '</p>' +
+        '<button type="button" class="ui-btn ui-btn--sm" data-netdlg="radio-scan"' + (scanning ? ' disabled' : '') + '>' +
+            (scanning ? '<span class="ui-spin" aria-hidden="true"></span>Scanning…' : _netdlgIcon('refresh') + (found.state === 'idle' ? 'Scan' : 'Scan again')) +
+        '</button></div>';
+}
+
+function _rnodeStep1Html() {
+    var type = _rnodeConnectionType;
+    var body = type === 'tcp'
+        ? _netdlgTextField('rnode-tcp-endpoint', 'Radio address', {
+            value: _rnodeTcpDraft, placeholder: '192.168.1.50:7633', mode: 'url', mono: true,
+            help: 'Host or host:port. Port 7633 if you leave it out.'
+        })
+        : _rnodeBleNoticeHtml() + _rnodeFoundHtml(type) + _rnodeScanRowHtml(type);
+    return '<p>Step 1 of 2 · How is the radio connected?</p>' +
+        _netdlgSeg('rnode-type', _rnodeConnectionTypes(), type, 'How the radio is connected') + body;
+}
+
+function _rnodeStep2Html(editIface) {
+    return '<p id="rnode-step-2-intro">Step 2 of 2 · Radio settings.</p>' +
+        _netdlgTextField('rnode-iface-name', 'Name', { placeholder: 'My LoRa Radio', max: 32 }) +
+        _netdlgSelectField('rnode-region', 'Region') +
+        _netdlgTextField('rnode-frequency', 'Frequency', { placeholder: '915.000', mode: 'decimal', unit: 'MHz' }) +
+        '<div class="ui-notice ui-notice--warning" id="rnode-frequency-warning" hidden>' + _netdlgIcon('alert') + '<div class="ui-notice-body"></div></div>' +
+        _netdlgSelectField('rnode-preset', 'Preset', 'Every radio you talk to needs the same settings.') +
+        _netdlgSelectField('rnode-interface-mode', 'Interface mode',
+            'Best for mobile radios. Choose another mode only when this RNode has a fixed routing role.',
+            ' id="rnode-mode-field" data-netdlg-dev' + (_developerModeEnabled() ? '' : ' hidden')) +
+        '<div class="ui-group">' +
+            _netdlgDisclosure('rnode-advanced', 'Advanced radio settings', 'Bandwidth, spreading factor, coding rate, power, and airtime.', false) +
+            '<div class="ui-prop settings-prop-stack" id="rnode-advanced-body" hidden><div class="netdlg-two">' +
+                _netdlgTextField('rnode-bandwidth', 'Bandwidth', { placeholder: '250', mode: 'decimal', unit: 'kHz' }) +
+                _netdlgTextField('rnode-spreading-factor', 'Spreading factor', { placeholder: '9', mode: 'numeric', max: 2 }) +
+                _netdlgTextField('rnode-coding-rate', 'Coding rate', { placeholder: '5', mode: 'numeric', max: 1 }) +
+                _netdlgTextField('rnode-tx-power', 'Transmit power', { placeholder: '17', mode: 'numeric', max: 2, unit: 'dBm' }) +
+                _netdlgTextField('rnode-airtime-short', 'Airtime limit, short term', { placeholder: 'No limit', mode: 'decimal', unit: '%' }) +
+                _netdlgTextField('rnode-airtime-long', 'Airtime limit, long term', { placeholder: 'No limit', mode: 'decimal', unit: '%' }) +
+            '</div><p class="ui-help">Change these only when every radio on the link uses the same values.</p></div>' +
+        '</div>' +
+        (editIface ? _rnodePublicMapHtml() : '') +
+        _netdlgNoticeSlot();
+}
+
+function _rnodePublicMapHtml() {
+    return '<div class="ui-group" id="rnode-public-map-section">' +
+        _netdlgSwitch('rnode-public-map-enabled', 'Display on public map', 'Broadcasts this radio’s approximate location.', false) +
+        '<div class="ui-prop settings-prop-stack" id="rnode-public-map-controls" hidden><div class="netdlg-two">' +
+            _netdlgTextField('rnode-public-map-latitude', 'Latitude', { placeholder: '39.7392' }) +
+            _netdlgTextField('rnode-public-map-longitude', 'Longitude', { placeholder: '-104.9903' }) +
+        '</div><div class="netdlg-scanrow"><p class="ui-help" id="rnode-public-map-status" aria-live="polite"></p>' +
+            '<button type="button" class="ui-btn ui-btn--sm" id="rnode-public-map-use-current">Use current location</button></div>' +
+        '<p class="ui-error" id="rnode-public-map-error" role="alert" hidden></p></div></div>';
+}
+
+function _rnodeRenderStep1() {
+    if (!_rnodeDialog || !_rnodeDialog.isOpen()) return;
+    _netdlgRerender(document.getElementById('rnode-step-1'), _rnodeStep1Html());
+    rnodeUpdateNextBtn();
+}
+
+function _rnodeRenderFoot() {
+    if (!_rnodeDialog || !_rnodeDialog.foot) return;
+    _rnodeDialog.foot.innerHTML = _rnodeStep === 1
+        ? _netdlgFoot('Next', { disabled: true })
+        : _netdlgFoot(_rnodeEditContext ? 'Save' : 'Connect radio', { back: true });
+    rnodeUpdateNextBtn();
+}
+
+function _rnodeShowStep(step) {
+    _rnodeStep = step;
+    document.getElementById('rnode-step-1').hidden = step !== 1;
+    document.getElementById('rnode-step-2').hidden = step !== 2;
+    if (step === 1) _rnodeRenderStep1();
+    _rnodeRenderFoot();
+    if (_rnodeDialog.body) _rnodeDialog.body.scrollTop = 0;
+}
+
+// The foot is redrawn per step, so focus moves into the step instead of falling to the page.
+function _rnodeFocusStep() {
+    if (!_rnodeDialog || !_rnodeDialog.isOpen()) return;
+    var target = !RS.kit.compact() && document.getElementById(_rnodeStep === 2 ? 'rnode-iface-name' : 'rnode-tcp-endpoint');
+    target = target || _rnodeDialog.dialog;
+    try { target.focus({ preventScroll: true }); } catch (_) {}
+}
+
+// Serial and USB lists refresh each time they show; a Bluetooth scan runs once on its own.
+function _rnodeEnsureScan(type) {
+    if (type === 'serial') refreshRnodeSerialPorts();
+    else if (type === 'android-usb') refreshAndroidUsbDevices();
+    else if (type === 'ble' && !_rnodeFound.ble && _rnodeCanScanBle()) scanBleDevices();
+}
+
+function _rnodeScan(type) {
+    if (type === 'ble') scanBleDevices();
+    else if (type === 'serial') refreshRnodeSerialPorts();
+    else if (type === 'android-usb') refreshAndroidUsbDevices();
+}
+
+function openRnodeModal(mode, editIface, prefill) {
+    if (_rnodeDialog && _rnodeDialog.isOpen()) _rnodeDialog.close();
     mode = mode || 'ble';
-    _rnodeEditContext = null;
-    // iOS MFi blocks USB serial; Android uses USB-OTG JNI; desktop uses serialport.
-    var serialToggle = document.getElementById('rnode-toggle-serial');
-    var androidUsbToggle = document.getElementById('rnode-toggle-android-usb');
-    var tcpToggle = document.getElementById('rnode-toggle-tcp');
-    if (serialToggle) {
-        var hideSerial = isIOS() || (isAndroid() && hasAndroidBridge());
-        serialToggle.style.display = hideSerial ? 'none' : '';
-    }
-    if (androidUsbToggle) {
-        androidUsbToggle.style.display = (isAndroid() && hasAndroidBridge()) ? '' : 'none';
-    }
-    if (tcpToggle) tcpToggle.style.display = '';
     if (isIOS() && mode !== 'tcp') mode = 'ble';
     if (isAndroid() && hasAndroidBridge() && mode === 'serial') mode = 'android-usb';
     _rnodeConnectionType = mode;
+    _rnodeEditContext = null;
     _bleSelectedDevice = null;
     _androidUsbSelectedDevice = null;
-
-    var step1 = document.getElementById('rnode-step-1');
-    var step2 = document.getElementById('rnode-step-2');
-    if (step1) step1.style.display = '';
-    if (step2) step2.style.display = 'none';
-
-    var titleEl = document.querySelector('#rnode-modal .bottom-sheet-title');
-    setBottomSheetTitleWithIcon(titleEl, editIface ? 'Edit LoRa Device' : 'Add LoRa Device', 'lora');
-    document.getElementById('rnode-iface-name').value = '';
-    var tcpInput = document.getElementById('rnode-tcp-endpoint');
-    if (tcpInput) tcpInput.value = '';
-    var catalogReady = loadRnodePresetCatalog();
-    _rnodeApplyDefaultRadioControls();
-    _rnodeSetAirtimeLimits(null, null);
-    _rnodeSetInterfaceMode(_rnodeInitialInterfaceMode(editIface));
-    _rnodeSyncInterfaceModeVisibility();
-    _rnodeResetPublicMap();
-    _bleSelectedDevice = null;
     _selectedSerialPort = null;
-
-    var bleList = document.getElementById('ble-device-list');
-    if (bleList) bleList.innerHTML = '<div class="ble-scan-placeholder">Click "Scan" to find nearby RNode devices.</div>';
-
-    var bleHint = document.getElementById('rnode-ble-hint');
-    if (bleHint) {
-        if (window._bleAvailable) {
-            bleHint.textContent = '';
-        } else if (window._bleAuthState === 'denied' || window._bleAuthState === 'restricted') {
-            bleHint.innerHTML = 'denied — <a href="#" id="ble-open-settings" style="text-decoration:underline;">Open Settings</a>';
-            var settingsLink = document.getElementById('ble-open-settings');
-            if (settingsLink) settingsLink.addEventListener('click', function(e) {
-                e.preventDefault();
-                openIosBluetoothSettings();
-            });
-        } else {
-            bleHint.textContent = 'unavailable';
-        }
-    }
-    var bleToggleBtn = document.getElementById('rnode-toggle-ble');
-    if (bleToggleBtn) bleToggleBtn.classList.toggle('needs-install', !window._bleAvailable);
-
-    setRnodeConnectionType(mode);
+    _rnodePrefill = editIface ? null : (prefill || null);
+    _rnodePrefillName = '';
+    _rnodeTcpDraft = '';
+    _rnodeFound = {};
+    _rnodeStep = editIface ? 2 : 1;
 
     if (editIface) {
         var port = _ifaceString(editIface, 'port', '');
         _rnodeEditContext = { oldName: editIface.name || '', port: port };
         if (port.indexOf('ble://') === 0) {
-            var addr = port.substring(6);
-            _bleSelectedDevice = { name: editIface.name || 'LoRa Radio', address: addr };
-            if (bleList) {
-                bleList.innerHTML = '<button type="button" class="ble-device-btn selected">' +
-                    '<span class="ble-device-name">' + escapeHtml(editIface.name || 'LoRa Radio') + '</span>' +
-                    '<span class="ble-device-meta"><span class="ble-device-addr">' + escapeHtml(addr) + '</span></span>' +
-                    '</button>';
-            }
+            _bleSelectedDevice = { name: editIface.name || 'LoRa Radio', address: port.substring(6) };
+            _rnodeFound.ble = { state: 'done', devices: [_bleSelectedDevice] };
         } else if (port.indexOf('androidusb://') === 0) {
-            var dev = port.substring('androidusb://'.length);
-            _androidUsbSelectedDevice = { device_name: dev, product: editIface.name || 'LoRa Radio' };
+            _androidUsbSelectedDevice = { device_name: port.substring('androidusb://'.length), product: editIface.name || 'LoRa Radio' };
+            _rnodeFound['android-usb'] = { state: 'done', devices: [_androidUsbSelectedDevice] };
         } else if (_rnodeIsTcpPort(port)) {
-            if (tcpInput) tcpInput.value = _rnodeTcpInputValue(port);
+            _rnodeTcpDraft = _rnodeTcpInputValue(port);
         } else {
             _selectedSerialPort = { device: port, description: port };
-            var serialSel = document.getElementById('rnode-port');
-            if (serialSel) {
-                serialSel.innerHTML = '<option value="' + escapeHtml(port) + '">' + escapeHtml(port) + '</option>';
-                serialSel.value = port;
-            }
+            _rnodeFound.serial = { state: 'done', devices: [_selectedSerialPort] };
         }
+    }
 
+    var catalogReady = loadRnodePresetCatalog();
+    var dlg = _rnodeDialog = RS.kit.dialog({
+        title: editIface ? 'Edit radio' : 'Set up a radio',
+        size: 'md',
+        className: 'netdlg netdlg-radio',
+        body: '<div class="netdlg-step" id="rnode-step-1"' + (editIface ? ' hidden' : '') + '>' + _rnodeStep1Html() + '</div>' +
+            '<div class="netdlg-step" id="rnode-step-2"' + (editIface ? '' : ' hidden') + '>' + _rnodeStep2Html(editIface) + '</div>',
+        foot: ' ',
+        focus: false,
+        onClose: function() { if (_rnodeDialog === dlg) _rnodeDialogClosed(); }
+    });
+    dlg.dialog.addEventListener('click', _rnodeDialogClick);
+    dlg.dialog.addEventListener('input', _rnodeDialogInput);
+    dlg.dialog.addEventListener('change', _rnodeDialogChange);
+    dlg.dialog.addEventListener('keydown', _rnodeDialogKeydown);
+    _rnodeRenderFoot();
+
+    _rnodeApplyDefaultRadioControls();
+    _rnodeSetAirtimeLimits(null, null);
+    _rnodeSetInterfaceMode(_rnodeInitialInterfaceMode(editIface));
+    _rnodeResetPublicMap();
+    if (editIface) {
         var freq = _ifaceInt(editIface, 'frequency', 915000000);
         var bw = _ifaceInt(editIface, 'bandwidth', 250000);
         var sf = _ifaceInt(editIface, 'spreadingfactor', 9);
@@ -1130,6 +1513,7 @@ function openRnodeModal(mode, editIface) {
         document.getElementById('rnode-iface-name').value = editIface.name || '';
         _rnodeLoadPublicMap(editIface);
         var applyRadioSelection = function() {
+            if (_rnodeDialog !== dlg) return;
             var regionKey = _rnodeRegionForInterface(editIface, freq);
             var presetKey = _rnodePresetForInterface(editIface, bw, sf, cr, tx);
             _rnodeApplyRadioControls(
@@ -1147,89 +1531,110 @@ function openRnodeModal(mode, editIface) {
         };
         applyRadioSelection();
         catalogReady.then(applyRadioSelection).catch(function() {});
-        if (step1) step1.style.display = 'none';
-        if (step2) step2.style.display = '';
-        var submit = document.getElementById('rnode-submit-btn');
-        if (submit) submit.textContent = 'Save Changes';
-        rnodeUpdateNextBtn();
     } else {
-        _rnodeResetPublicMap();
-        var submitBtn = document.getElementById('rnode-submit-btn');
-        if (submitBtn) submitBtn.textContent = 'Add Radio';
-        catalogReady.then(_rnodeApplyDefaultRadioControls).catch(function() {});
+        catalogReady.then(function() { if (_rnodeDialog === dlg && _rnodeStep === 1) _rnodeApplyDefaultRadioControls(); }).catch(function() {});
+        _rnodeEnsureScan(mode);
     }
-
-    RS.ui.openExistingSheet('rnode-modal', 'rnode-modal-overlay');
+    _rnodeFocusStep();
 }
 
-function closeRnodeModal() {
-    RS.ui.closeExistingSheet('rnode-modal', 'rnode-modal-overlay');
+function _rnodeDialogClosed() {
+    _rnodeDialog = null;
     _bleSelectedDevice = null;
     _selectedSerialPort = null;
     _androidUsbSelectedDevice = null;
     _rnodeEditContext = null;
-    _rnodeResetPublicMap();
-    var tcpInput = document.getElementById('rnode-tcp-endpoint');
-    if (tcpInput) tcpInput.value = '';
-    var titleEl = document.querySelector('#rnode-modal .bottom-sheet-title');
-    setBottomSheetTitleWithIcon(titleEl, 'Add LoRa Device', 'lora');
+    _rnodePrefill = null;
+}
+
+function closeRnodeModal() {
+    if (_rnodeDialog && _rnodeDialog.isOpen()) _rnodeDialog.close();
+}
+
+function _rnodeDialogClick(e) {
+    var seg = e.target.closest('[data-netdlg-seg="rnode-type"] [role="radio"]');
+    if (seg) {
+        var type = seg.getAttribute('data-v');
+        if (type !== _rnodeConnectionType) setRnodeConnectionType(type);
+        return;
+    }
+    if (e.target.closest('#rnode-public-map-use-current')) {
+        _rnodeSetPublicMapEnabled(true);
+        _rnodeRequestPublicMapLocation();
+        return;
+    }
+    var el = e.target.closest('[data-netdlg]');
+    if (!el || el.disabled) return;
+    switch (el.getAttribute('data-netdlg')) {
+        case 'radio-pick': _rnodePick(parseInt(el.getAttribute('data-i'), 10)); return;
+        case 'radio-scan': _rnodeScan(_rnodeConnectionType); return;
+        case 'ble-settings': openIosBluetoothSettings(); return;
+        case 'select': _netdlgSelectOpen(el); return;
+        case 'disclose': _netdlgSetDisclosure(el.id, el.getAttribute('aria-expanded') !== 'true'); return;
+        case 'back': rnodeWizardBack(); return;
+        case 'submit':
+            if (_rnodeStep === 1) rnodeWizardNext();
+            else submitRnodeInterface();
+            return;
+    }
+}
+
+function _rnodeDialogInput(e) {
+    var id = e.target.id;
+    if (e.target.classList.contains('is-invalid')) _netdlgSetError(id, '');
+    if (id === 'rnode-tcp-endpoint') {
+        _rnodeTcpDraft = e.target.value;
+        rnodeUpdateNextBtn();
+    } else if (id === 'rnode-frequency') {
+        _rnodeRefreshRegionFromFrequency();
+    } else if (id === 'rnode-bandwidth' || id === 'rnode-spreading-factor' || id === 'rnode-coding-rate' || id === 'rnode-tx-power') {
+        _rnodeRefreshPresetFromAdvanced();
+    } else if (id === 'rnode-public-map-latitude' || id === 'rnode-public-map-longitude') {
+        _rnodeSetPublicMapError('');
+        _rnodeSetPublicMapStatus();
+    }
+}
+
+function _rnodeDialogChange(e) {
+    if (e.target.id !== 'rnode-public-map-enabled') return;
+    if (e.target.checked) {
+        e.target.checked = false;
+        _rnodeEnablePublicMapWithWarning();
+    } else {
+        _rnodeSetPublicMapEnabled(false);
+    }
+}
+
+function _rnodeDialogKeydown(e) {
+    if (e.key !== 'Enter' || e.shiftKey || !e.target || e.target.tagName !== 'INPUT' || e.target.type === 'checkbox') return;
+    e.preventDefault();
+    if (_rnodeStep === 2) {
+        submitRnodeInterface();
+    } else {
+        var next = _netdlgPrimary(_rnodeDialog);
+        if (next && !next.disabled) rnodeWizardNext();
+    }
 }
 
 function setRnodeConnectionType(type) {
     _rnodeConnectionType = type;
-
-    var serialBtn = document.getElementById('rnode-toggle-serial');
-    var bleBtn = document.getElementById('rnode-toggle-ble');
-    var usbBtn = document.getElementById('rnode-toggle-android-usb');
-    var tcpBtn = document.getElementById('rnode-toggle-tcp');
-    if (serialBtn) serialBtn.classList.toggle('active', type === 'serial');
-    if (bleBtn) bleBtn.classList.toggle('active', type === 'ble');
-    if (usbBtn) usbBtn.classList.toggle('active', type === 'android-usb');
-    if (tcpBtn) tcpBtn.classList.toggle('active', type === 'tcp');
-
-    var serialSection = document.getElementById('rnode-serial-section');
-    var bleSection = document.getElementById('rnode-ble-section');
-    var usbSection = document.getElementById('rnode-android-usb-section');
-    var tcpSection = document.getElementById('rnode-tcp-section');
-    if (serialSection) serialSection.style.display = type === 'serial' ? '' : 'none';
-    if (bleSection) bleSection.style.display = type === 'ble' ? '' : 'none';
-    if (usbSection) usbSection.style.display = type === 'android-usb' ? '' : 'none';
-    if (tcpSection) tcpSection.style.display = type === 'tcp' ? '' : 'none';
-
     _bleSelectedDevice = null;
     _selectedSerialPort = null;
     _androidUsbSelectedDevice = null;
-
-    if (type === 'serial') {
-        document.getElementById('rnode-port').value = '';
-        refreshRnodeSerialPorts();
-    } else if (type === 'android-usb') {
-        refreshAndroidUsbDevices();
-    }
-
-    updateRnodeHandoffHints();
-    rnodeUpdateNextBtn();
+    _rnodeRenderStep1();
+    _rnodeEnsureScan(type);
 }
 
-// Mirrors `commands/interfaces.rs::teardown_rnode_handoff_broadcast`.
-function updateRnodeHandoffHints() {
-    var data = window._hubInterfacesData;
-    var rnodes = (data && Array.isArray(data.rnode)) ? data.rnode : [];
-    var hasBle = false, hasUsb = false;
-    for (var i = 0; i < rnodes.length; i++) {
-        var p = rnodes[i].port || '';
-        var live = getInterfaceLiveStatus(rnodes[i].name || '');
-        if (!live || live.online === false) continue;
-        if (p.indexOf('ble://') === 0) hasBle = true;
-        else if (p.indexOf('androidusb://') === 0) hasUsb = true;
-    }
-    var bleHint = document.getElementById('rnode-handoff-hint-ble');
-    var usbHint = document.getElementById('rnode-handoff-hint-usb');
-    if (bleHint) bleHint.style.display = (_rnodeConnectionType === 'ble' && hasUsb) ? '' : 'none';
-    if (usbHint) usbHint.style.display = (_rnodeConnectionType === 'android-usb' && hasBle) ? '' : 'none';
+function _rnodePick(index) {
+    var type = _rnodeConnectionType;
+    var found = _rnodeFound[type];
+    var dev = found && found.devices[index];
+    if (!dev) return;
+    if (type === 'ble') _bleSelectedDevice = dev;
+    else if (type === 'android-usb') _androidUsbSelectedDevice = dev;
+    else _selectedSerialPort = dev;
+    _rnodeRenderStep1();
 }
-
-var _selectedSerialPort = null;
 
 function _rnodeDefaultInterfaceName(deviceName) {
     var value = String(deviceName || '').trim();
@@ -1239,7 +1644,7 @@ function _rnodeDefaultInterfaceName(deviceName) {
 }
 
 function rnodeUpdateNextBtn() {
-    var btn = document.getElementById('rnode-next-btn');
+    var btn = _rnodeStep === 1 ? _netdlgPrimary(_rnodeDialog) : null;
     if (!btn) return;
     var hasDevice = false;
     if (_rnodeConnectionType === 'ble') {
@@ -1247,8 +1652,7 @@ function rnodeUpdateNextBtn() {
     } else if (_rnodeConnectionType === 'android-usb') {
         hasDevice = !!_androidUsbSelectedDevice;
     } else if (_rnodeConnectionType === 'tcp') {
-        var tcpInput = document.getElementById('rnode-tcp-endpoint');
-        hasDevice = !!(tcpInput && _normaliseRnodeTcpEndpoint(tcpInput.value).port);
+        hasDevice = !!_rnodeTcpDraft.trim();
     } else {
         hasDevice = !!_selectedSerialPort;
     }
@@ -1256,10 +1660,7 @@ function rnodeUpdateNextBtn() {
 }
 
 function rnodeWizardNext() {
-    var step1 = document.getElementById('rnode-step-1');
-    var step2 = document.getElementById('rnode-step-2');
-    if (!step1 || !step2) return;
-
+    if (!_rnodeDialog || !_rnodeDialog.isOpen()) return;
     var nameInput = document.getElementById('rnode-iface-name');
 
     if (_rnodeConnectionType === 'ble' && _bleSelectedDevice) {
@@ -1269,13 +1670,13 @@ function rnodeWizardNext() {
     } else if (_rnodeConnectionType === 'android-usb' && _androidUsbSelectedDevice) {
         if (!nameInput.value.trim()) nameInput.value = 'LoRa Radio';
     } else if (_rnodeConnectionType === 'tcp') {
-        var tcpInput = document.getElementById('rnode-tcp-endpoint');
-        var tcpEndpoint = _normaliseRnodeTcpEndpoint(tcpInput ? tcpInput.value : '');
+        var tcpEndpoint = _normaliseRnodeTcpEndpoint(_rnodeTcpDraft);
         if (tcpEndpoint.error) {
-            showPreConditionToast(tcpEndpoint.error);
-            rnodeUpdateNextBtn();
+            _netdlgFieldError('rnode-tcp-endpoint', tcpEndpoint.error);
             return;
         }
+        _rnodeTcpDraft = tcpEndpoint.label;
+        var tcpInput = document.getElementById('rnode-tcp-endpoint');
         if (tcpInput) tcpInput.value = tcpEndpoint.label;
         if (!nameInput.value.trim()) nameInput.value = 'LoRa Radio';
     } else if (_selectedSerialPort) {
@@ -1285,12 +1686,15 @@ function rnodeWizardNext() {
             // protocol. Do not substitute the unrelated EEPROM serial here.
             nameInput.value = 'RNode';
         }
+    } else {
+        return;
     }
 
     // A discovered radio's published settings, from "Use these radio settings".
     if (_rnodePrefill && !_rnodeEditContext) {
         var pre = _rnodePrefill;
         _rnodePrefill = null;
+        _rnodePrefillName = pre.name || 'the discovered radio';
         var preTx = pre.tx || 17;
         _rnodeApplyRadioControls(
             _rnodeRegionForFrequency(pre.freq),
@@ -1298,100 +1702,167 @@ function rnodeWizardNext() {
             pre.freq, pre.bw, pre.sf, pre.cr, preTx, true
         );
     }
+    var intro = document.getElementById('rnode-step-2-intro');
+    if (intro) intro.textContent = 'Step 2 of 2 · Radio settings' + (_rnodePrefillName ? '. Filled in from ' + _rnodePrefillName + '.' : '.');
 
     // Bonding happens implicitly during add_lora_interface; OS pair dialog
     // pops mid-connect (Linux uses ble_rnode_passkey_prompt instead).
-    step1.style.display = 'none';
-    step2.style.display = '';
+    _rnodeShowStep(2);
+    _rnodeFocusStep();
 }
 
-var _rnodePrefill = null;
+// From a discovered radio: its published settings fill in step 2.
 function openRnodeModalWithSettings(settings) {
-    _rnodePrefill = settings || null;
-    openRnodeModal('ble');
+    openRnodeModal('ble', null, settings || null);
 }
 
 function rnodeWizardBack() {
-    var step1 = document.getElementById('rnode-step-1');
-    var step2 = document.getElementById('rnode-step-2');
-    if (step1) step1.style.display = '';
-    if (step2) step2.style.display = 'none';
+    _rnodeShowStep(1);
+    _rnodeEnsureScan(_rnodeConnectionType);
+    _rnodeFocusStep();
 }
 
 function refreshRnodeSerialPorts() {
-    var sel = document.getElementById('rnode-port');
-    if (!sel) return;
-    sel.innerHTML = '<option value="">Scanning...</option>';
+    _rnodeFound.serial = { state: 'scanning', devices: [] };
+    _rnodeRenderStep1();
     RS.invoke('api_serial_ports').then(function(ports) {
-        if (ports.length === 0) {
-            sel.innerHTML = '<option value="">No devices found</option>';
-        } else {
-            sel.innerHTML = '<option value="">Select device...</option>' +
-                ports.map(function(p) {
-                    var base = p.description !== p.device ? p.description + ' (' + p.device + ')' : p.device;
-                    var label = p.permission_denied ? base + ' — permission denied' : base;
-                    return '<option value="' + escapeHtml(p.device) + '">' + escapeHtml(label) + '</option>';
-                }).join('');
-            if (ports.some(function(p) { return p.permission_denied; })) {
-                showToast(
-                    'USB-Serial radio found, but permission was denied. Install Ratspeak\'s udev rule (with the AppImage, as /etc/udev/rules.d/70-ratspeak.rules, and delete an older 99-ratspeak.rules there) or join the dialout or uucp group, then reconnect it.',
-                    'toast-warning',
-                    8000
-                );
-            }
+        ports = ports || [];
+        _rnodeFound.serial = { state: 'done', devices: _rnodeKeepSelected('serial', ports) };
+        _rnodeRenderStep1();
+        if (ports.some(function(p) { return p.permission_denied; })) {
+            showToast(
+                'USB-Serial radio found, but permission was denied. Install Ratspeak\'s udev rule (with the AppImage, as /etc/udev/rules.d/70-ratspeak.rules, and delete an older 99-ratspeak.rules there) or join the dialout or uucp group, then reconnect it.',
+                'toast-warning',
+                8000
+            );
         }
     }).catch(function() {
-        showToast('Could not scan serial ports', 'toast-error', 3000);
-        sel.innerHTML = '<option value="">Error scanning ports</option>';
+        _rnodeFound.serial = { state: 'error', devices: [], message: 'Couldn’t scan the USB ports. Try again.' };
+        _rnodeRenderStep1();
     });
 }
 
 // Enumeration via Kotlin bridge so list populates before USB permission;
 // Rust claims the device only after user picks it.
 function refreshAndroidUsbDevices() {
-    var list = document.getElementById('android-usb-device-list');
-    if (!list) return;
     if (!hasAndroidBridge() || typeof window.RatspeakAndroid.listUsbDevices !== 'function') {
-        list.innerHTML = '<div class="ble-scan-placeholder">USB not available on this platform.</div>';
+        _rnodeFound['android-usb'] = { state: 'error', devices: [], message: 'USB isn’t available on this device.' };
+        _rnodeRenderStep1();
         return;
     }
-    list.innerHTML = '<div class="ble-scan-placeholder"><span class="loading-spinner"></span> Searching for USB devices...</div>';
     var devices = [];
     try {
-        var raw = window.RatspeakAndroid.listUsbDevices();
-        devices = JSON.parse(raw || '[]');
+        devices = JSON.parse(window.RatspeakAndroid.listUsbDevices() || '[]');
     } catch (e) {
-        list.innerHTML = '<div class="ble-scan-placeholder inline-error">' +
-            'Failed to enumerate USB devices: ' + escapeHtml(String(e && e.message || e)) + '</div>';
+        _rnodeFound['android-usb'] = { state: 'error', devices: [], message: 'Failed to enumerate USB devices: ' + String(e && e.message || e) };
+        _rnodeRenderStep1();
         return;
     }
-    if (!devices.length) {
-        list.innerHTML = '<div class="ble-scan-placeholder">No USB devices detected. Check the OTG cable and that the RNode is powered.</div>';
+    _rnodeFound['android-usb'] = { state: 'done', devices: _rnodeKeepSelected('android-usb', devices) };
+    _rnodeRenderStep1();
+}
+
+function scanBleDevices() {
+    _rnodeFound.ble = { state: 'scanning', devices: [] };
+    _rnodeRenderStep1();
+    if (hasAndroidBridge()) {
+        window._onBlePermissionResult = function(granted) {
+            window._onBlePermissionResult = null;
+            if (granted) {
+                _doBleScan();
+            } else {
+                _rnodeFound.ble = { state: 'error', devices: [], message: 'Bluetooth permission denied. Grant permission in system settings to scan for LoRa radios.' };
+                _rnodeRenderStep1();
+            }
+        };
+        try {
+            window.RatspeakAndroid.requestBlePermissions();
+        } catch (e) {
+            window._onBlePermissionResult = null;
+            _rnodeFound.ble = { state: 'idle', devices: [] };
+            _rnodeRenderStep1();
+        }
         return;
     }
-    list.innerHTML = devices.map(function(d, idx) {
-        var title = d.product || d.manufacturer || d.device_name;
-        var hex = 'VID ' + d.vid.toString(16).toUpperCase().padStart(4, '0') +
-                  '  PID ' + d.pid.toString(16).toUpperCase().padStart(4, '0');
-        return '<button type="button" class="ble-device-btn" data-usb-idx="' + idx + '">' +
-               '<span class="ble-device-name">' + escapeHtml(title) + '</span>' +
-               '<span class="ble-device-meta">' +
-                   '<span class="ble-device-addr">' + escapeHtml(hex) + '</span>' +
-                   '<span class="ble-badge bonded">USB</span>' +
-               '</span>' +
-               '</button>';
-    }).join('');
-    Array.prototype.forEach.call(list.querySelectorAll('.ble-device-btn'), function(row) {
-        row.addEventListener('click', function() {
-            var idx = parseInt(row.getAttribute('data-usb-idx'), 10);
-            _androidUsbSelectedDevice = devices[idx] || null;
-            Array.prototype.forEach.call(list.querySelectorAll('.ble-device-btn'), function(r) {
-                r.classList.remove('selected');
-            });
-            row.classList.add('selected');
-            rnodeUpdateNextBtn();
-        });
+    _doBleScan();
+}
+
+function _bleScanFailed(message) {
+    _rnodeFound.ble = { state: 'error', devices: [], message: message };
+    _rnodeRenderStep1();
+}
+
+function _doBleScan() {
+    _rnodeFound.ble = { state: 'scanning', devices: [] };
+    _rnodeRenderStep1();
+    // Watchdog for dropped callbacks / bridge crashes.
+    var watchdog = setTimeout(function() {
+        if (_rnodeFound.ble && _rnodeFound.ble.state === 'scanning') _bleScanFailed('Scan timed out. Try again.');
+    }, 8000);
+    var clearWatchdog = function() { clearTimeout(watchdog); };
+
+    // btleplug fails on Android 14+; route through native Kotlin scanner.
+    if (hasAndroidBridge() && typeof window.RatspeakAndroid.scanBleDevices === 'function') {
+        window._onNativeBleScanResult = function(data) {
+            window._onNativeBleScanResult = null;
+            clearWatchdog();
+            bleScanFinished(data);
+        };
+        try {
+            window.RatspeakAndroid.scanBleDevices(5000);
+        } catch (e) {
+            window._onNativeBleScanResult = null;
+            clearWatchdog();
+            _bleScanFailed('Failed to start BLE scan.');
+        }
+        return;
+    }
+
+    // Desktop/iOS: invoke returns scan results synchronously.
+    RS.invoke('scan_ble_devices').then(function(result) {
+        clearWatchdog();
+        renderBleDeviceList(result && Array.isArray(result.devices) ? result.devices : []);
+    }).catch(function() {
+        clearWatchdog();
+        renderBleDeviceList([]);
     });
+}
+
+// Native scan results, and the runtime's ble_scan_results event.
+function bleScanFinished(data) {
+    if (!data || typeof data !== 'object') {
+        if (_rnodeFound.ble && _rnodeFound.ble.state === 'scanning') renderBleDeviceList([]);
+        return;
+    }
+    if (data.error) {
+        _bleScanFailed(String(data.error));
+        return;
+    }
+    renderBleDeviceList((data.devices || []).filter(function(d) {
+        return d.device_type === 'rnode';
+    }));
+}
+
+// Bond state is ground-truth on Android + Linux only; Apple/Windows always
+// report bonded:false so the badge is hidden there.
+//   TODO(ble-bonded-apple): retrievePeripheralsWithIdentifiers(_:) via objc2.
+//   TODO(ble-bonded-windows): bind BluetoothLEDevice.…Pairing.IsPaired.
+function _bondBadgeReliable() {
+    if (hasAndroidBridge()) return true;
+    var ua = (navigator.userAgent || '').toLowerCase();
+    if (ua.indexOf('linux') >= 0 && ua.indexOf('android') < 0) return true;
+    return false;
+}
+
+function renderBleDeviceList(devices) {
+    var showBondBadge = _bondBadgeReliable();
+    // Bonded-first only when the bond flag is meaningful; else RSSI-only.
+    devices = (devices || []).slice().sort(function(a, b) {
+        if (showBondBadge && a.bonded !== b.bonded) return b.bonded ? 1 : -1;
+        return (b.rssi || -100) - (a.rssi || -100);
+    });
+    _rnodeFound.ble = { state: 'done', devices: _rnodeKeepSelected('ble', devices) };
+    _rnodeRenderStep1();
 }
 
 var _rnodePresets = {};
@@ -1421,23 +1892,31 @@ function _catalogArray(value) {
     });
 }
 
+function _rnodeShortMhz(hz) {
+    return String(Math.round((parseInt(hz, 10) || 0) / 1000) / 1000);
+}
+
+// Region and Preset are kit Select fields; their menus carry each choice's band or parameters.
 function _populateRnodeSelect(selectId, entries, defaultKey) {
-    var select = document.getElementById(selectId);
-    if (!select) return;
-    var previous = select.value || defaultKey || '';
-    var choices = entries.slice();
+    var previous = _netdlgSelectGet(selectId) || defaultKey || '';
+    var choices = entries.map(function(entry) {
+        var hint = '';
+        if (selectId === 'rnode-region' && entry.min && entry.max) {
+            hint = _rnodeShortMhz(entry.min) + '–' + _rnodeShortMhz(entry.max) + ' MHz';
+        } else if (selectId === 'rnode-preset' && entry.bandwidth) {
+            hint = 'SF' + entry.spreading_factor + ' · ' + _rnodeFormatKhz(entry.bandwidth) + ' kHz · CR ' + entry.coding_rate + ' · ' + entry.tx_power + ' dBm';
+        }
+        return { key: entry.key, label: entry.label || entry.key, hint: hint };
+    });
     if (selectId === 'rnode-region') {
         choices.push({ key: _RNODE_CUSTOM_REGION_KEY, label: 'Custom frequency' });
     } else if (selectId === 'rnode-preset') {
         choices.push({ key: _RNODE_CUSTOM_PRESET_KEY, label: 'Custom radio parameters' });
     }
-    select.innerHTML = choices.map(function(entry) {
-        return '<option value="' + escapeHtml(entry.key) + '">' +
-            escapeHtml(entry.label || entry.key) + '</option>';
-    }).join('');
-    select.value = choices.some(function(entry) { return entry.key === previous; })
+    _netdlgSelectOptions(selectId, choices);
+    _netdlgSelectSet(selectId, choices.some(function(entry) { return entry.key === previous; })
         ? previous
-        : (defaultKey || (choices[0] && choices[0].key) || '');
+        : (defaultKey || (choices[0] && choices[0].key) || ''));
 }
 
 function _applyRnodePresetCatalog(data) {
@@ -1508,172 +1987,12 @@ if (document.readyState === 'loading') {
     loadRnodePresetCatalog().catch(function() {});
 }
 
-function scanBleDevices() {
-    var list = document.getElementById('ble-device-list');
-    var scanBtn = document.getElementById('ble-scan-btn');
-
-    if (hasAndroidBridge()) {
-        scanBtn.textContent = 'Preparing...';
-        scanBtn.disabled = true;
-        window._onBlePermissionResult = function(granted) {
-            window._onBlePermissionResult = null;
-            if (granted) {
-                _doBleScan(list, scanBtn);
-            } else {
-                scanBtn.textContent = 'Start Scan';
-                scanBtn.disabled = false;
-                list.innerHTML = '<div class="ble-scan-placeholder inline-error">' +
-                    'Bluetooth permission denied. Grant permission in system settings to scan for LoRa radios.</div>';
-            }
-        };
-        try {
-            window.RatspeakAndroid.requestBlePermissions();
-        } catch (e) {
-            window._onBlePermissionResult = null;
-            scanBtn.textContent = 'Start Scan';
-            scanBtn.disabled = false;
-        }
-        return;
-    }
-
-    _doBleScan(list, scanBtn);
-}
-
-function _doBleScan(list, scanBtn) {
-    scanBtn.textContent = 'Scanning...';
-    scanBtn.disabled = true;
-    list.innerHTML = '<div class="ble-scan-placeholder"><span class="loading-spinner"></span> Scanning...</div>';
-
-    var resetScanBtn = function() {
-        scanBtn.textContent = 'Scan Again';
-        scanBtn.disabled = false;
-    };
-    // Watchdog for dropped callbacks / bridge crashes.
-    var watchdog = setTimeout(function() {
-        resetScanBtn();
-        if (list.querySelector('.loading-spinner')) {
-            list.innerHTML = '<div class="ble-scan-placeholder">Scan timed out. Try again.</div>';
-        }
-    }, 8000);
-    var clearWatchdog = function() { clearTimeout(watchdog); };
-
-    // btleplug fails on Android 14+; route through native Kotlin scanner.
-    if (hasAndroidBridge() && typeof window.RatspeakAndroid.scanBleDevices === 'function') {
-        window._onNativeBleScanResult = function(data) {
-            window._onNativeBleScanResult = null;
-            clearWatchdog();
-            resetScanBtn();
-
-            if (data.error) {
-                list.innerHTML = '<div class="ble-scan-placeholder inline-error">' +
-                    escapeHtml(data.error) + '</div>';
-                return;
-            }
-
-            var rnodeDevices = (data.devices || []).filter(function(d) {
-                return d.device_type === 'rnode';
-            });
-            if (typeof renderBleDeviceList === 'function') {
-                renderBleDeviceList(rnodeDevices);
-            }
-        };
-        try {
-            window.RatspeakAndroid.scanBleDevices(5000);
-        } catch (e) {
-            window._onNativeBleScanResult = null;
-            clearWatchdog();
-            resetScanBtn();
-            list.innerHTML = '<div class="ble-scan-placeholder inline-error">Failed to start BLE scan.</div>';
-        }
-        return;
-    }
-
-    // Desktop/iOS: invoke returns scan results synchronously.
-    RS.invoke('scan_ble_devices').then(function(result) {
-        clearWatchdog();
-        resetScanBtn();
-        if (result && Array.isArray(result.devices)) {
-            renderBleDeviceList(result.devices);
-        } else if (result && result.error) {
-            renderBleDeviceList([]);
-        }
-    }).catch(function() {
-        clearWatchdog();
-        resetScanBtn();
-        renderBleDeviceList([]);
-    });
-}
-
-// Bond state is ground-truth on Android + Linux only; Apple/Windows always
-// report bonded:false so the badge is hidden there.
-//   TODO(ble-bonded-apple): retrievePeripheralsWithIdentifiers(_:) via objc2.
-//   TODO(ble-bonded-windows): bind BluetoothLEDevice.…Pairing.IsPaired.
-function _bondBadgeReliable() {
-    if (hasAndroidBridge()) return true;
-    var ua = (navigator.userAgent || '').toLowerCase();
-    if (ua.indexOf('linux') >= 0 && ua.indexOf('android') < 0) return true;
-    return false;
-}
-
-function renderBleDeviceList(devices) {
-    var list = document.getElementById('ble-device-list');
-
-    if (devices.length === 0) {
-        list.innerHTML = '<div class="ble-scan-placeholder">No RNode devices found. Make sure your device is powered on and paired.</div>';
-        return;
-    }
-
-    var showBondBadge = _bondBadgeReliable();
-
-    // Bonded-first only when the bond flag is meaningful; else RSSI-only.
-    devices.sort(function(a, b) {
-        if (showBondBadge && a.bonded !== b.bonded) return b.bonded ? 1 : -1;
-        return (b.rssi || -100) - (a.rssi || -100);
-    });
-
-    list.innerHTML = '';
-    devices.forEach(function(dev) {
-        var btn = document.createElement('button');
-        btn.className = 'ble-device-btn' + (showBondBadge && !dev.bonded ? ' unbonded' : '');
-        btn.type = 'button';
-
-        var rssiText = '';
-        if (dev.rssi !== null && dev.rssi !== undefined) {
-            var strength = Math.min(Math.max((dev.rssi + 100) / 60 * 100, 5), 100);
-            var rssiColor = strength > 60 ? 'var(--status-online)' : (strength > 30 ? 'var(--status-warning)' : 'var(--status-error)');
-            rssiText = '<span class="ble-rssi" style="color:' + rssiColor + ';">' + dev.rssi + ' dBm</span>';
-        }
-
-        var bondBadge = '';
-        if (showBondBadge) {
-            bondBadge = dev.bonded
-                ? '<span class="ble-badge bonded">Paired</span>'
-                : '<span class="ble-badge unbonded">Not Paired</span>';
-        }
-
-        btn.innerHTML = '<span class="ble-device-name">' + escapeHtml(dev.name) + '</span>' +
-            '<span class="ble-device-meta">' +
-                '<span class="ble-device-addr">' + escapeHtml(dev.address) + '</span>' +
-                rssiText + bondBadge +
-            '</span>';
-
-        btn.addEventListener('click', function() {
-            _bleSelectedDevice = dev;
-            list.querySelectorAll('.ble-device-btn').forEach(function(b) {
-                b.classList.remove('selected');
-            });
-            btn.classList.add('selected');
-            rnodeUpdateNextBtn();
-        });
-
-        list.appendChild(btn);
-    });
-}
-
 function submitRnodeInterface() {
+    if (!_rnodeDialog || !_rnodeDialog.isOpen()) return;
+    _netdlgClearErrors(_rnodeDialog);
     var name = document.getElementById('rnode-iface-name').value.trim();
     if (!name) {
-        showPreConditionToast('Please enter a name');
+        _netdlgFieldError('rnode-iface-name', 'Add a name.');
         return;
     }
 
@@ -1683,9 +2002,10 @@ function submitRnodeInterface() {
     } else if (_rnodeConnectionType === 'android-usb' && _androidUsbSelectedDevice) {
         port = 'androidusb://' + _androidUsbSelectedDevice.device_name;
     } else if (_rnodeConnectionType === 'tcp') {
-        var tcpEndpoint = _normaliseRnodeTcpEndpoint(document.getElementById('rnode-tcp-endpoint').value);
+        var tcpEndpoint = _normaliseRnodeTcpEndpoint(_rnodeTcpDraft);
         if (tcpEndpoint.error) {
-            showPreConditionToast(tcpEndpoint.error);
+            _rnodeShowStep(1);
+            _netdlgFieldError('rnode-tcp-endpoint', tcpEndpoint.error);
             return;
         }
         port = tcpEndpoint.port;
@@ -1693,13 +2013,16 @@ function submitRnodeInterface() {
         port = _selectedSerialPort.device;
     }
     if (!port) {
-        showPreConditionToast('No device selected. Go back and select a device');
+        _netdlgNotice(_rnodeDialog, 'No device selected. Go back and select a device.');
         return;
     }
 
     var radioSettings = _rnodeReadRadioSettings();
     if (radioSettings.error) {
-        showPreConditionToast(radioSettings.error);
+        if (document.getElementById('rnode-advanced-body').contains(document.getElementById(radioSettings.field))) {
+            _netdlgSetDisclosure('rnode-advanced', true);
+        }
+        _netdlgFieldError(radioSettings.field, radioSettings.error);
         return;
     }
 
@@ -1708,12 +2031,13 @@ function submitRnodeInterface() {
         publicMapSettings = _rnodeReadPublicMapSettings();
         if (publicMapSettings.error) {
             _rnodeSetPublicMapError(publicMapSettings.error);
-            showPreConditionToast(publicMapSettings.error);
             return;
         }
         _rnodeSetPublicMapError('');
     }
 
+    var submitBtn = _netdlgPrimary(_rnodeDialog);
+    _netdlgBusy(submitBtn, _rnodeEditContext ? 'Saving…' : 'Connecting…');
     // Prompt for USB permission before Rust opens the device.
     var proceed = Promise.resolve(true);
     if (_rnodeConnectionType === 'android-usb' && _androidUsbSelectedDevice && hasAndroidBridge()) {
@@ -1740,7 +2064,10 @@ function submitRnodeInterface() {
     }
 
     proceed.then(function(permOk) {
-        if (!permOk) return;
+        if (!permOk) {
+            _netdlgBusy(submitBtn, null);
+            return;
+        }
         var isEdit = !!_rnodeEditContext;
         var loraCommand = isEdit ? 'update_lora_interface' : 'add_lora_interface';
         var loraArgs = {
@@ -1826,26 +2153,7 @@ function _normaliseHostEditContext(editContext, ifaceType) {
     };
 }
 
-function setConnectTab(tab) {
-    tab = tab === 'custom' ? 'custom' : 'public';
-    var buttons = document.querySelectorAll('#connect-tab-toggle [data-connect-tab]');
-    buttons.forEach(function(btn) {
-        var active = btn.dataset.connectTab === tab;
-        btn.classList.toggle('active', active);
-        btn.setAttribute('aria-selected', active ? 'true' : 'false');
-    });
-    var publicPanel = document.getElementById('connect-public-panel');
-    var customPanel = document.getElementById('connect-custom-panel');
-    if (publicPanel) publicPanel.classList.toggle('active', tab === 'public');
-    if (customPanel) customPanel.classList.toggle('active', tab === 'custom');
-    if (tab === 'custom' && !_connectEditContext) {
-        var nameEl = document.getElementById('connect-name');
-        if (nameEl) nameEl.value = '';
-    }
-    var body = document.querySelector('#connect-modal .bottom-sheet-body');
-    if (body) body.scrollTop = 0;
-}
-
+// ------------------------------------------------------------------ public servers (joined on the Network screen)
 // A public server is reached by a TCP client or a Backbone client alike. Of
 // several saved interfaces to one server, one that is online is the match.
 function _connectMatchingPublicInterface(server, ifaces) {
@@ -1877,119 +2185,25 @@ function _publicServerState(server, ifaces) {
     };
 }
 
-function _buildPublicServerCard(server, ifaces) {
-    var state = _publicServerState(server, ifaces);
-    var community = server.group === 'community';
-    var action = state.pending ? 'Connecting...' : (state.connected ? 'Connected' : 'Connect');
-    var actionIcon = state.connected ? PUBLIC_SERVER_CHECK_ICON : PUBLIC_SERVER_ARROW_ICON;
-
-    var btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'public-server-card public-server-card--' + (community ? 'community' : server.tone) +
-        (state.pending ? ' is-pending' : '') +
-        (state.connected ? ' is-connected' : '') +
-        (state.configured ? ' is-added' : '');
-    btn.dataset.publicServer = server.id;
-    btn.disabled = state.connected || state.pending;
-    btn.setAttribute('aria-label', action + ' ' + server.name);
-    btn.title = action + ' ' + server.name;
-
-    // The community group names what its servers are; a card adds only its place.
-    var detail = community
-        ? (server.place ? '<span class="public-server-place">' + escapeHtml(server.place) + '</span>' : '')
-        : '<span class="public-server-tags">' + (server.tags || []).map(function(tag) {
-            return '<span class="public-server-tag">' + escapeHtml(tag) + '</span>';
-        }).join('') + '</span>';
-
-    btn.innerHTML =
-        _publicServerMarkHtml(server) +
-        '<span class="public-server-main">' +
-            '<span class="public-server-name">' + escapeHtml(server.name) + '</span>' +
-            detail +
-        '</span>' +
-        '<span class="public-server-action" aria-hidden="true">' + actionIcon + '</span>';
-
-    if (!state.connected && !state.pending) {
-        btn.addEventListener('click', function() {
-            if (state.match) resumePublicServerInterface(server, state.match);
-            else connectPublicServer(server);
-        });
-    }
-    return btn;
+function _redrawPublicServers() {
+    if (RS.networkView && typeof RS.networkView.render === 'function') RS.networkView.render(true);
 }
 
-function _syncCommunityServers(box, open) {
-    box.setAttribute('data-open', open ? 'true' : 'false');
-    box.querySelector('.public-server-more-toggle').setAttribute('aria-expanded', open ? 'true' : 'false');
-    // Closed cards stay in the DOM for the slide; inert keeps them out of the tab order.
-    box.querySelector('.public-server-more-region').inert = !open;
-}
-
-function _buildCommunityServers(servers, ifaces) {
-    var inUse = servers.some(function(server) {
-        var state = _publicServerState(server, ifaces);
-        return !!state.match || state.pending;
-    });
-    var box = document.createElement('div');
-    box.className = 'public-server-more';
-    box.innerHTML =
-        '<button type="button" class="public-server-more-toggle" id="public-server-more-toggle" aria-controls="public-server-more-region">' +
-            '<span>Public servers</span>' + PEER_ICON_CHEVRON +
-        '</button>' +
-        '<div class="public-server-more-region" id="public-server-more-region" role="region" aria-labelledby="public-server-more-toggle">' +
-            '<div class="public-server-more-body">' +
-                '<p class="public-server-more-note">Run by the community. Their operators can see your IP address.</p>' +
-            '</div>' +
-        '</div>';
-    var body = box.querySelector('.public-server-more-body');
-    servers.forEach(function(server) {
-        body.appendChild(_buildPublicServerCard(server, ifaces));
-    });
-    // A saved or connected community server must not hide behind a closed row.
-    _syncCommunityServers(box, _connectCommunityOpen === null ? inUse : _connectCommunityOpen);
-    box.querySelector('.public-server-more-toggle').addEventListener('click', function() {
-        _connectCommunityOpen = box.getAttribute('data-open') !== 'true';
-        _syncCommunityServers(box, _connectCommunityOpen);
-    });
-    return box;
-}
-
-function renderPublicTcpServers(ifaces) {
-    var container = document.getElementById('public-server-list');
-    if (!container) return;
-    // A rebuild must not drop keyboard focus from the control that held it.
-    var focused = document.activeElement && container.contains(document.activeElement)
-        ? (document.activeElement.id || document.activeElement.dataset.publicServer || '')
-        : '';
-    container.innerHTML = '';
-
-    PUBLIC_TCP_SERVERS.filter(function(server) {
-        return server.group !== 'community';
-    }).forEach(function(server) {
-        container.appendChild(_buildPublicServerCard(server, ifaces));
-    });
-    container.appendChild(_buildCommunityServers(PUBLIC_TCP_SERVERS.filter(function(server) {
-        return server.group === 'community';
-    }).sort(function(a, b) {
-        return a.name.localeCompare(b.name, 'en', { sensitivity: 'base' });
-    }), ifaces));
-
-    if (focused) {
-        var again = container.querySelector('#' + focused) ||
-            container.querySelector('[data-public-server="' + focused + '"]');
-        if (again && !again.disabled) again.focus();
-    }
-}
-
+// A public server is always joined as a TCP client, which Backbone servers accept too.
 function connectPublicServer(server) {
     _connectPendingPublicServerKey = _tcpServerKey(server.host, server.port);
-    renderPublicTcpServers(window._hubInterfacesData || window._cachedConfigIfaces || {});
-    quickConnect(server.host, server.port, server.name, { publicServer: true });
+    _redrawPublicServers();
+    RS.invoke('add_tcp_connection', {
+        args: { host: server.host, port: server.port, name: server.name, ifac_enabled: false, ifac_network_name: '', ifac_passphrase: '' }
+    }).catch(function(err) {
+        clearConnectPublicPending();
+        showToast((err && err.message) || 'Could not join ' + server.name, 'toast-error', 8000);
+    });
 }
 
 function clearConnectPublicPending() {
     _connectPendingPublicServerKey = null;
-    refreshConnectPublicServers();
+    _redrawPublicServers();
 }
 
 function resumePublicServerInterface(server, match) {
@@ -2000,7 +2214,7 @@ function resumePublicServerInterface(server, match) {
     }
 
     _connectPendingPublicServerKey = _tcpServerKey(server.host, server.port);
-    renderPublicTcpServers(window._hubInterfacesData || window._cachedConfigIfaces || {});
+    _redrawPublicServers();
     RS.invoke('resume_interface', {
         args: {
             name: iface.name,
@@ -2014,24 +2228,21 @@ function resumePublicServerInterface(server, match) {
     });
 }
 
+// Applied interfaces already redraw the Network screen; a forced refresh reads them again first.
 function refreshConnectPublicServers(ifaces, opts) {
     opts = opts || {};
-    if (ifaces && !opts.force) {
-        renderPublicTcpServers(ifaces);
-        return;
-    }
+    if (ifaces && !opts.force) return;
     if (!opts.force && (window._hubInterfacesData || window._cachedConfigIfaces)) {
-        renderPublicTcpServers(window._hubInterfacesData || window._cachedConfigIfaces);
+        _redrawPublicServers();
         return;
     }
     RS.invoke('api_hub_interfaces').then(function(data) {
         window._hubInterfacesData = data || {};
-        renderPublicTcpServers(data);
-    }).catch(function() {
-        renderPublicTcpServers({});
-    });
+        _redrawPublicServers();
+    }).catch(_redrawPublicServers);
 }
 
+// ------------------------------------------------------------------ network name and passphrase (IFAC)
 function _ifaceIfacNetworkName(iface) {
     return _ifaceString(iface, 'network_name', _ifaceString(iface, 'networkname', ''));
 }
@@ -2044,46 +2255,37 @@ function _ifaceHasIfac(iface) {
     return !!(_ifaceIfacNetworkName(iface) || _ifaceIfacPassphrase(iface));
 }
 
-// Shared IFAC form helpers. Each modal uses ids `<prefix>-use-ifac`,
-// `<prefix>-ifac-fields`, `<prefix>-ifac-network-name`, `<prefix>-ifac-passphrase`
-// and `<prefix>-ifac-size(-field)`. IFAC itself is a normal end-user feature;
-// only the size override stays behind developer mode (backend preserves the
-// stored value when the field is omitted).
-function _ifacSyncFields(prefix) {
-    var checkbox = document.getElementById(prefix + '-use-ifac');
-    var fields = document.getElementById(prefix + '-ifac-fields');
-    var sizeField = document.getElementById(prefix + '-ifac-size-field');
-    if (fields) fields.style.display = (checkbox && checkbox.checked) ? '' : 'none';
-    if (sizeField) sizeField.style.display = _developerModeEnabled() ? '' : 'none';
+// The fields under the "Network name and passphrase" switch (<prefix>-ifac). Only the size
+// override stays behind developer mode; the runtime keeps a stored size the form leaves out.
+function _ifacFieldsHtml(prefix, iface, on, passphraseHint, twoUp) {
+    var fields = _netdlgTextField(prefix + '-ifac-network-name', 'Network name', {
+        value: iface ? _ifaceIfacNetworkName(iface) : '', placeholder: 'Optional', max: 128
+    }) + _netdlgTextField(prefix + '-ifac-passphrase', 'Passphrase', {
+        type: 'password', value: iface ? _ifaceIfacPassphrase(iface) : '', placeholder: passphraseHint, max: 256
+    });
+    return '<div class="ui-prop settings-prop-stack" id="' + prefix + '-ifac-fields"' + (on ? '' : ' hidden') + '>' +
+        (twoUp ? '<div class="netdlg-two">' + fields + '</div>' : fields) +
+        _netdlgTextField(prefix + '-ifac-size', 'IFAC size', {
+            value: iface ? _ifaceString(iface, 'ifac_size', '') : '', placeholder: '16', mode: 'numeric', max: 2, unit: 'bytes',
+            attrs: ' data-netdlg-dev' + (_developerModeEnabled() ? '' : ' hidden')
+        }) +
+    '</div>';
 }
 
-function _ifacPopulate(prefix, iface) {
-    var checkbox = document.getElementById(prefix + '-use-ifac');
-    var network = document.getElementById(prefix + '-ifac-network-name');
-    var pass = document.getElementById(prefix + '-ifac-passphrase');
-    var size = document.getElementById(prefix + '-ifac-size');
-    if (checkbox) checkbox.checked = _ifaceHasIfac(iface);
-    if (network) network.value = iface ? _ifaceIfacNetworkName(iface) : '';
-    if (pass) pass.value = iface ? _ifaceIfacPassphrase(iface) : '';
-    if (size) size.value = iface ? _ifaceString(iface, 'ifac_size', '') : '';
-    if (checkbox && !checkbox.dataset.bound) {
-        checkbox.dataset.bound = '1';
-        checkbox.addEventListener('change', function() { _ifacSyncFields(prefix); });
-    }
-    _ifacSyncFields(prefix);
+function _ifacSyncFields(prefix) {
+    var toggle = document.getElementById(prefix + '-ifac');
+    var fields = document.getElementById(prefix + '-ifac-fields');
+    if (fields) fields.hidden = !(toggle && toggle.checked);
 }
 
 function _ifacReadValues(prefix) {
-    var useIfac = !!(document.getElementById(prefix + '-use-ifac') || {}).checked;
-    var networkEl = document.getElementById(prefix + '-ifac-network-name');
-    var passEl = document.getElementById(prefix + '-ifac-passphrase');
-    var sizeEl = document.getElementById(prefix + '-ifac-size');
+    var useIfac = !!(document.getElementById(prefix + '-ifac') || {}).checked;
     var values = {
         ifac_enabled: useIfac,
-        ifac_network_name: useIfac && networkEl ? networkEl.value.trim() : '',
-        ifac_passphrase: useIfac && passEl ? passEl.value.trim() : ''
+        ifac_network_name: useIfac ? _netdlgValue(prefix + '-ifac-network-name') : '',
+        ifac_passphrase: useIfac ? _netdlgValue(prefix + '-ifac-passphrase') : ''
     };
-    var sizeText = sizeEl ? sizeEl.value.trim() : '';
+    var sizeText = _netdlgValue(prefix + '-ifac-size');
     var size = /^\d+$/.test(sizeText) ? Number(sizeText) : NaN;
     if (useIfac && size >= 1 && size <= 64) values.ifac_size = size;
     return values;
@@ -2098,192 +2300,73 @@ function _ifacApplyArgs(prefix, args) {
     return args;
 }
 
-// IFAC on with neither field filled is always a mistake; block the submit.
+// The switch on with neither field filled is always a mistake; the submit stops at the field.
 function _ifacGuardEmpty(prefix) {
     var v = _ifacReadValues(prefix);
-    var sizeEl = document.getElementById(prefix + '-ifac-size');
-    if (v.ifac_enabled && sizeEl && sizeEl.value.trim() && v.ifac_size === undefined) {
-        showPreConditionToast('IFAC size must be a whole number from 1 to 64 bytes');
-        return false;
+    if (v.ifac_enabled && _netdlgValue(prefix + '-ifac-size') && v.ifac_size === undefined) {
+        return _netdlgFieldError(prefix + '-ifac-size', 'Use a size from 1 to 64 bytes.');
     }
     if (v.ifac_enabled && !v.ifac_network_name && !v.ifac_passphrase) {
-        showPreConditionToast('Enter an IFAC network name or passphrase');
-        return false;
+        return _netdlgFieldError(prefix + '-ifac-network-name', 'Add a network name or passphrase.');
     }
     return true;
 }
 
-function _applyConnectIfacValuesToArgs(args) {
-    return _ifacApplyArgs('connect', args);
-}
-
-function _syncConnectAdvancedVisibility() {
-    var dev = _developerModeEnabled();
-    var editContext = _normaliseConnectEditContext(_connectEditContext);
-    var isEdit = !!editContext;
-    var isBackboneEdit = isEdit && editContext.ifaceType === 'backbone_client';
-    var bbRow = document.getElementById('connect-backbone-row');
-    var bbCheckbox = document.getElementById('connect-use-backbone');
-    if (bbCheckbox) {
-        bbCheckbox.disabled = isEdit;
-        if (!dev && !isBackboneEdit) bbCheckbox.checked = false;
-    }
-    if (bbRow) bbRow.style.display = dev ? '' : 'none';
-
-    var ifacRow = document.getElementById('connect-ifac-row');
-    if (ifacRow) ifacRow.style.display = '';
-    _ifacSyncFields('connect');
-}
-
-window.addEventListener('ratspeak-developer-mode-changed', function() {
-    _ifacSyncFields('host');
-    _ifacSyncFields('backbone-host');
-});
+// ------------------------------------------------------------------ Add your own server
+var _connectEditContext = null;
+var _connectDialog = null;
+// While the dialog waits for its operation: { edit }.
+var _connectAwaiting = null;
+var _connectTimeout = null;
 
 function openConnectModal(editContext) {
+    if (_connectDialog && _connectDialog.isOpen()) _connectDialog.close();
     _connectEditContext = _normaliseConnectEditContext(editContext);
-    _connectPendingPublicServerKey = null;
-    _connectCommunityOpen = null;
-    var iface = _connectEditContext && _connectEditContext.iface ? _connectEditContext.iface : null;
+    _connectAwaiting = null;
+    var iface = _connectEditContext ? _connectEditContext.iface : null;
     var isEdit = !!_connectEditContext;
     var isBackboneEdit = isEdit && _connectEditContext.ifaceType === 'backbone_client';
-    var titleEl = document.querySelector('#connect-modal .bottom-sheet-title');
-    setBottomSheetTitleWithIcon(
-        titleEl,
-        isEdit ? 'Edit Connection' : 'Connect to Network',
-        isBackboneEdit ? 'backbone' : 'tcp'
-    );
-    document.getElementById('connect-host').value = iface ? _ifaceString(iface, 'target_host', '') : '';
-    // Empty so the placeholder shows; submit falls back to 4242.
-    document.getElementById('connect-port').value = iface ? _ifaceString(iface, 'target_port', '') : '';
-    document.getElementById('connect-name').value = iface ? _ifaceString(iface, 'name', '') : '';
-    var tabToggle = document.getElementById('connect-tab-toggle');
-    var nameField = document.getElementById('connect-name-field');
-    var quickField = document.getElementById('connect-quick-field');
-    if (tabToggle) tabToggle.style.display = isEdit ? 'none' : '';
-    if (nameField) nameField.style.display = isEdit ? '' : 'none';
-    if (quickField) quickField.style.display = isEdit ? 'none' : '';
-    setConnectTab(isEdit ? 'custom' : 'public');
-    var submitBtn = document.getElementById('connect-submit-btn');
-    if (submitBtn) {
-        submitBtn.textContent = isEdit ? 'Save Changes' : 'Connect';
-        submitBtn.className = 'nr-btn w-full mt-4';
-        submitBtn.disabled = false;
-    }
-    var bbCheckbox = document.getElementById('connect-use-backbone');
-    if (bbCheckbox) {
-        bbCheckbox.checked = isBackboneEdit;
-    }
-    _ifacPopulate('connect', iface);
-    _syncConnectAdvancedVisibility();
-    loadConnectionHistory();
-    refreshConnectPublicServers();
-    RS.ui.openExistingSheet('connect-modal', 'connect-modal-overlay');
-    var body = document.querySelector('#connect-modal .bottom-sheet-body');
-    if (body) body.scrollTop = 0;
-}
-
-function loadConnectionHistory() {
-    var container = document.getElementById('quick-connect-list');
-    if (!container) return;
-
-    container.querySelectorAll('.qc-history').forEach(function(el) { el.remove(); });
-
-    var emptyMsg = document.getElementById('qc-empty');
-
-    RS.invoke('api_connection_history').then(function(entries) {
-        var customEntries = (entries || []).filter(function(entry) {
-            return !_isPublicTcpServer(entry.host, entry.port);
-        });
-
-        if (customEntries.length === 0) {
-            if (emptyMsg) emptyMsg.style.display = '';
-            return;
+    var ifac = _ifaceHasIfac(iface);
+    var dlg = _connectDialog = RS.kit.dialog({
+        title: isEdit ? 'Edit server' : 'Add your own server',
+        size: 'md',
+        className: 'netdlg netdlg-server',
+        body: '<p>Connect to a server someone gave you, or one you run.</p>' +
+            _netdlgTextField('connect-host', 'Address', { value: iface ? _ifaceString(iface, 'target_host', '') : '', placeholder: 'rns.example.org', mode: 'url', max: 253 }) +
+            _netdlgTextField('connect-port', 'Port', { value: iface ? _ifaceString(iface, 'target_port', '') : '', placeholder: '4242', mode: 'numeric', max: 5 }) +
+            _netdlgTextField('connect-name', 'Name', { value: iface ? _ifaceString(iface, 'name', '') : '', placeholder: 'Shown in Connectivity', max: 32, help: 'Optional.' }) +
+            '<div class="ui-group">' +
+                _netdlgSwitch('connect-ifac', 'Network name and passphrase', 'Use the ones the server’s operator gave you.', ifac) +
+                _ifacFieldsHtml('connect', iface, ifac, 'From the server’s operator') +
+                (_netdlgBackboneAvailable() || isBackboneEdit
+                    ? _netdlgSwitch('connect-backbone', 'Use Backbone', 'Experimental. Faster for always-on servers.', isBackboneEdit, { disabled: isEdit })
+                    : '') +
+            '</div>' + _netdlgNoticeSlot(),
+        foot: _netdlgFoot(isEdit ? 'Save' : 'Connect'),
+        onClose: function() {
+            if (_connectDialog !== dlg) return;
+            _connectDialog = null;
+            _connectEditContext = null;
+            _connectAwaiting = null;
+            _clearConnectTimeout();
         }
-
-        if (emptyMsg) emptyMsg.style.display = 'none';
-
-        customEntries.forEach(function(entry) {
-            var wrapper = document.createElement('div');
-            wrapper.className = 'qc-history';
-
-            var btn = document.createElement('button');
-            btn.className = 'quick-connect-btn';
-            btn.type = 'button';
-            btn.style.flex = '1';
-            btn.innerHTML = '<span>' + escapeHtml(entry.name || entry.host) + '</span>' +
-                '<span class="quick-connect-detail">' + escapeHtml(entry.host + ':' + entry.port) + '</span>';
-            btn.addEventListener('click', function() {
-                quickConnect(entry.host, entry.port, entry.name || '');
-            });
-
-            var delBtn = document.createElement('button');
-            delBtn.className = 'danger-btn-sm';
-            delBtn.textContent = '\u00d7';
-            delBtn.title = 'Remove from history';
-            delBtn.classList.add('qc-delete-btn');
-            delBtn.addEventListener('click', function(e) {
-                e.stopPropagation();
-                RS.invoke('api_delete_connection_history', { id: entry.id }).then(function() {
-                    wrapper.remove();
-                    if (!container.querySelector('.qc-history') && emptyMsg) {
-                        emptyMsg.style.display = '';
-                    }
-                }).catch(function() {});
-            });
-
-            wrapper.appendChild(btn);
-            wrapper.appendChild(delBtn);
-            container.appendChild(wrapper);
-        });
-    }).catch(function() {});
+    });
+    dlg.dialog.addEventListener('click', function(e) {
+        var el = e.target.closest('[data-netdlg="submit"]');
+        if (el && !el.disabled) submitConnection();
+    });
+    dlg.dialog.addEventListener('change', function(e) {
+        if (e.target.id === 'connect-ifac') _ifacSyncFields('connect');
+    });
+    dlg.dialog.addEventListener('input', function(e) {
+        if (e.target.classList.contains('is-invalid')) _netdlgSetError(e.target.id, '');
+    });
+    dlg.dialog.addEventListener('keydown', function(e) {
+        if (e.key !== 'Enter' || e.shiftKey || e.target.tagName !== 'INPUT' || e.target.type === 'checkbox') return;
+        e.preventDefault();
+        submitConnection();
+    });
 }
-
-function closeConnectModal() {
-    RS.ui.closeExistingSheet('connect-modal', 'connect-modal-overlay');
-    _connectPendingPublicServerKey = null;
-    var submitBtn = document.getElementById('connect-submit-btn');
-    _setConnectSubmitBase(submitBtn, 'Connect');
-    var titleEl = document.querySelector('#connect-modal .bottom-sheet-title');
-    setBottomSheetTitleWithIcon(titleEl, 'Connect to Network', 'tcp');
-    var bbCheckbox = document.getElementById('connect-use-backbone');
-    if (bbCheckbox) bbCheckbox.disabled = false;
-    var tabToggle = document.getElementById('connect-tab-toggle');
-    var nameField = document.getElementById('connect-name-field');
-    var quickField = document.getElementById('connect-quick-field');
-    if (tabToggle) tabToggle.style.display = '';
-    if (nameField) nameField.style.display = 'none';
-    if (quickField) quickField.style.display = '';
-    setConnectTab('public');
-    _connectEditContext = null;
-    _syncConnectAdvancedVisibility();
-}
-
-function quickConnect(host, port, name, opts) {
-    opts = opts || {};
-    _connectEditContext = null;
-    var titleEl = document.querySelector('#connect-modal .bottom-sheet-title');
-    setBottomSheetTitleWithIcon(titleEl, 'Connect to Network', 'tcp');
-    var submitBtn = document.getElementById('connect-submit-btn');
-    _setConnectSubmitBase(submitBtn, 'Connect');
-    var bbCheckbox = document.getElementById('connect-use-backbone');
-    if (bbCheckbox && opts.publicServer) bbCheckbox.checked = false;
-    var ifacCheckbox = document.getElementById('connect-use-ifac');
-    var ifacNetworkName = document.getElementById('connect-ifac-network-name');
-    var ifacPassphrase = document.getElementById('connect-ifac-passphrase');
-    var ifacSize = document.getElementById('connect-ifac-size');
-    if (ifacCheckbox) ifacCheckbox.checked = false;
-    if (ifacNetworkName) ifacNetworkName.value = '';
-    if (ifacPassphrase) ifacPassphrase.value = '';
-    if (ifacSize) ifacSize.value = '';
-    _syncConnectAdvancedVisibility();
-    document.getElementById('connect-host').value = host;
-    document.getElementById('connect-port').value = port;
-    document.getElementById('connect-name').value = name;
-    submitConnection();
-}
-
-var _connectTimeout = null;
 
 function _clearConnectTimeout() {
     if (_connectTimeout) {
@@ -2292,253 +2375,332 @@ function _clearConnectTimeout() {
     }
 }
 
-function _handleConnectInvokeError(err, resetText) {
+function _connectFailed(message) {
     _clearConnectTimeout();
-    clearConnectPublicPending();
-    var btn = document.getElementById('connect-submit-btn');
-    if (btn) {
-        btn.textContent = 'Failed';
-        btn.className = 'nr-btn nr-btn-error w-full mt-4';
-        setTimeout(function() {
-            _setConnectSubmitBase(btn, resetText || 'Connect');
-        }, 3000);
+    _connectAwaiting = null;
+    if (!_connectDialog || !_connectDialog.isOpen()) {
+        showToast(message, 'toast-error', 8000);
+        return;
     }
-    var message = err && err.message ? err.message : 'Connection request failed';
-    showToast(message, 'toast-error', 8000);
+    _netdlgBusy(_netdlgPrimary(_connectDialog), null);
+    _netdlgNotice(_connectDialog, message);
 }
 
-function _handleInterfaceButtonError(err, buttonId, resetText, fallbackMessage) {
-    var btn = document.getElementById(buttonId);
-    if (btn) {
-        btn.textContent = 'Failed';
-        btn.className = 'nr-btn nr-btn-error';
-        setTimeout(function() {
-            btn.textContent = resetText;
-            btn.className = 'nr-btn';
-            btn.disabled = false;
-        }, 3000);
-    }
-    showToast((err && err.message) || fallbackMessage || 'Could not update the interface', 'toast-error', 8000);
+function _handleConnectInvokeError(err) {
+    clearConnectPublicPending();
+    _connectFailed(err && err.message ? err.message : 'Connection request failed');
 }
 
 function submitConnection() {
-    var host = document.getElementById('connect-host').value.trim();
-    var port = parseInt(document.getElementById('connect-port').value) || 4242;
-    var nameEl = document.getElementById('connect-name');
-    var name = nameEl ? nameEl.value.trim() : '';
-
-    if (!host) {
-        showPreConditionToast('Please enter a host address');
+    var dlg = _connectDialog;
+    if (!dlg || !dlg.isOpen() || _connectAwaiting) return;
+    _netdlgClearErrors(dlg);
+    var host = _netdlgValue('connect-host');
+    if (!host || /[\s\/\\]/.test(host)) {
+        _netdlgFieldError('connect-host', 'Enter a full address, like rns.example.org.');
         return;
     }
-
+    var port = _netdlgPort('connect-port', 4242);
+    if (port === null) {
+        _netdlgFieldError('connect-port', 'Use a port from 1 to 65535.');
+        return;
+    }
     if (!_ifacGuardEmpty('connect')) return;
+    var name = _netdlgValue('connect-name');
 
-    var submitBtn = document.getElementById('connect-submit-btn');
-    if (submitBtn) {
-        submitBtn.textContent = 'Connecting...';
-        submitBtn.disabled = true;
+    var editContext = _normaliseConnectEditContext(_connectEditContext);
+    // Backbone routes to add_backbone_connection (desktop only).
+    var useBackbone = !!(document.getElementById('connect-backbone') || {}).checked;
+    var command, args;
+    if (editContext && editContext.ifaceType === 'backbone_client') {
+        var bb = editContext.iface || {};
+        command = 'update_backbone_connection';
+        args = {
+            old_name: editContext.oldName,
+            host: host,
+            port: port,
+            name: name || ('Backbone to ' + host + ':' + port),
+            prefer_ipv6: _ifaceBool(bb, 'prefer_ipv6'),
+            connect_timeout: _ifaceInt(bb, 'connect_timeout', null),
+            max_reconnect_tries: _ifaceInt(bb, 'max_reconnect_tries', null),
+            i2p_tunneled: _ifaceBool(bb, 'i2p_tunneled'),
+        };
+    } else if (editContext) {
+        command = 'update_tcp_connection';
+        args = { old_name: editContext.oldName, host: host, port: port, name: name || (host + ':' + port) };
+    } else if (useBackbone) {
+        command = 'add_backbone_connection';
+        args = { host: host, port: port, name: name || ('Backbone to ' + host + ':' + port) };
+    } else {
+        command = 'add_tcp_connection';
+        args = { host: host, port: port, name: name || (host + ':' + port) };
     }
 
-    // Recover the button if the backend never acks.
+    _connectAwaiting = { edit: !!editContext };
+    _netdlgBusy(_netdlgPrimary(dlg), editContext ? 'Saving…' : 'Connecting…');
+    // The backend acks with an operation status; recover if it never does.
     _clearConnectTimeout();
     _connectTimeout = setTimeout(function() {
         _connectTimeout = null;
-        var btn = document.getElementById('connect-submit-btn');
-        if (btn && btn.disabled) {
-            btn.textContent = 'Timed out';
-            btn.className = 'nr-btn nr-btn-error w-full mt-4';
-            setTimeout(function() {
-                _setConnectSubmitBase(btn, 'Connect');
-            }, 3000);
-        }
+        if (_connectAwaiting) _connectFailed('No answer from the network yet. Try again.');
     }, 30000);
-
-    // Backbone checkbox routes to add_backbone_connection (desktop-only).
-    var useBackbone = !!(document.getElementById('connect-use-backbone') || {}).checked;
-    var editContext = _normaliseConnectEditContext(_connectEditContext);
-    _connectEditContext = editContext;
-    if (editContext && editContext.ifaceType === 'backbone_client') {
-        var bb = editContext.iface || {};
-        RS.invoke('update_backbone_connection', {
-            args: _applyConnectIfacValuesToArgs({
-                old_name: editContext.oldName,
-                host: host,
-                port: port,
-                name: name || ('Backbone to ' + host + ':' + port),
-                prefer_ipv6: _ifaceBool(bb, 'prefer_ipv6'),
-                connect_timeout: _ifaceInt(bb, 'connect_timeout', null),
-                max_reconnect_tries: _ifaceInt(bb, 'max_reconnect_tries', null),
-                i2p_tunneled: _ifaceBool(bb, 'i2p_tunneled'),
-            })
-        }).catch(function(err) { _handleConnectInvokeError(err, 'Save Changes'); });
-    } else if (editContext) {
-        RS.invoke('update_tcp_connection', {
-            args: _applyConnectIfacValuesToArgs({
-                old_name: editContext.oldName,
-                host: host,
-                port: port,
-                name: name || (host + ':' + port),
-            })
-        }).catch(function(err) { _handleConnectInvokeError(err, 'Save Changes'); });
-    } else if (useBackbone) {
-        RS.invoke('add_backbone_connection', {
-            args: _applyConnectIfacValuesToArgs({
-                host: host,
-                port: port,
-                name: name || ('Backbone to ' + host + ':' + port),
-            })
-        }).catch(function(err) { _handleConnectInvokeError(err, 'Connect'); });
-    } else {
-        RS.invoke('add_tcp_connection', {
-            args: _applyConnectIfacValuesToArgs({
-                host: host,
-                port: port,
-                name: name || (host + ':' + port),
-            })
-        }).catch(function(err) { _handleConnectInvokeError(err, 'Connect'); });
-    }
+    RS.invoke(command, { args: _ifacApplyArgs('connect', args) }).catch(_handleConnectInvokeError);
 }
+
+// ------------------------------------------------------------------ Host setup
+// Standard (TCP) or Backbone (desktop only) in one dialog, with the Private networks discovery switches.
+var _hostEditContext = null;
+var _hostDialog = null;
+// While the dialog waits for its operation: { edit }.
+var _hostAwaiting = null;
+// { type: 'tcp' | 'backbone', ifac, disc, share, priv, reachable, published }.
+var _hostForm = null;
 
 function openHostModal(editContext) {
-    _hostEditContext = _normaliseHostEditContext(editContext, 'tcp_server');
-    var iface = _hostEditContext && _hostEditContext.iface ? _hostEditContext.iface : null;
-    var isEdit = !!_hostEditContext;
-    var titleEl = document.querySelector('#host-modal .bottom-sheet-title');
-    setBottomSheetTitleWithIcon(titleEl, isEdit ? 'Edit Host' : 'Host Network', 'host');
-    document.getElementById('host-port').value = iface ? _ifaceString(iface, 'listen_port', '') : '';
-    document.getElementById('host-listen-ip').value = iface ? _ifaceString(iface, 'listen_ip', '0.0.0.0') : '';
-    document.getElementById('host-name').value = iface ? _ifaceString(iface, 'name', '') : '';
-    _ifacPopulate('host', iface);
-    var submitBtn = document.getElementById('host-submit-btn');
-    if (submitBtn) {
-        submitBtn.textContent = isEdit ? 'Save Changes' : 'Start Hosting';
-        submitBtn.className = 'nr-btn';
-        submitBtn.disabled = false;
-    }
-    RS.ui.openExistingSheet('host-modal', 'host-modal-overlay');
+    _openHostDialog('tcp', _normaliseHostEditContext(editContext, 'tcp_server'));
 }
 
-function closeHostModal() {
-    RS.ui.closeExistingSheet('host-modal', 'host-modal-overlay');
-    var submitBtn = document.getElementById('host-submit-btn');
-    if (submitBtn) {
-        submitBtn.textContent = 'Start Hosting';
-        submitBtn.className = 'nr-btn';
-        submitBtn.disabled = false;
+function openBackboneHostModal(editContext) {
+    _openHostDialog('backbone', _normaliseHostEditContext(editContext, 'backbone_server'));
+}
+
+function _hostTypeHelp(type) {
+    return type === 'backbone' ? 'For always-on transport nodes, not mobile networks.' : 'Works for most people.';
+}
+
+function _hostDiscoveryHtml() {
+    if (!_hostForm || !RS.hostDiscovery) return '';
+    return RS.hostDiscovery.html({
+        ifac: _hostForm.ifac, disc: _hostForm.disc, share: _hostForm.share, priv: _hostForm.priv, reachable: _hostForm.reachable
+    }, 'host-');
+}
+
+function _hostRenderDiscovery() {
+    if (!_hostDialog || !_hostDialog.isOpen()) return;
+    var reach = document.getElementById('host-reachable');
+    if (reach) _hostForm.reachable = reach.value;
+    _netdlgRerender(document.getElementById('host-discovery'), _hostDiscoveryHtml());
+}
+
+function _openHostDialog(type, editContext) {
+    if (_hostDialog && _hostDialog.isOpen()) _hostDialog.close();
+    _netdlgBindIdentity();
+    _hostEditContext = editContext;
+    _hostAwaiting = null;
+    var iface = editContext ? editContext.iface : null;
+    var saved = RS.hostDiscovery ? RS.hostDiscovery.state(iface) : { ifac: false, disc: false, share: false, priv: false, reachable: '' };
+    _hostForm = {
+        type: type,
+        ifac: saved.ifac || _ifaceHasIfac(iface),
+        disc: saved.disc,
+        share: saved.share,
+        priv: saved.priv,
+        reachable: saved.reachable,
+        // A save of a server that is or was published restarts the network.
+        published: !!(editContext && saved.disc)
+    };
+    var isEdit = !!editContext;
+    var backbone = type === 'backbone';
+    var listen = !iface ? '' : (backbone ? (_ifaceString(iface, 'listen_on', '') || _ifaceString(iface, 'listen_ip', '')) : _ifaceString(iface, 'listen_ip', ''));
+    var dlg = _hostDialog = RS.kit.dialog({
+        title: isEdit ? 'Edit host' : 'Host a server',
+        size: 'md',
+        className: 'netdlg netdlg-host',
+        body: '<p>Let other Reticulum devices connect to this computer. Keep Ratspeak open while you host.</p>' +
+            (_netdlgBackboneAvailable()
+                ? '<div class="ui-field"><span class="ui-label" id="host-type-label">Server type</span>' +
+                    _netdlgSeg('host-type', [['tcp', 'Standard'], ['backbone', 'Backbone']], type, 'Server type', isEdit) +
+                    '<p class="ui-help" id="host-type-help">' + _hostTypeHelp(type) + '</p></div>'
+                : '') +
+            '<div class="netdlg-two">' +
+                _netdlgTextField('host-port', 'Port', { value: iface ? _ifaceString(iface, 'listen_port', '') : '', placeholder: '4242', mode: 'numeric', max: 5 }) +
+                _netdlgTextField('host-listen-ip', 'Listen on', { value: listen, placeholder: '0.0.0.0', mono: true, max: 64, help: 'All adapters if empty.' }) +
+            '</div>' +
+            _netdlgTextField('host-name', 'Name', { value: iface ? _ifaceString(iface, 'name', '') : '', placeholder: backbone ? 'Backbone server' : 'My server', max: 32, help: 'Optional.' }) +
+            '<div class="ui-group">' +
+                _netdlgSwitch('host-ifac', 'Network name and passphrase', 'Devices need both to connect.', _hostForm.ifac) +
+                _ifacFieldsHtml('host', iface, _hostForm.ifac, 'Devices enter this to connect', true) +
+            '</div>' +
+            '<section class="netdlg-section" aria-labelledby="host-discovery-title"><h3 class="ui-section-title" id="host-discovery-title">Discovery</h3>' +
+                '<div id="host-discovery">' + _hostDiscoveryHtml() + '</div></section>' +
+            '<div class="ui-notice ui-notice--info">' + _netdlgIcon('info') + '<div class="ui-notice-body">Your firewall or router may need to allow this port.</div></div>' +
+            _netdlgNoticeSlot(),
+        foot: _netdlgFoot(isEdit ? 'Save' : 'Start hosting'),
+        onClose: function() {
+            if (_hostDialog !== dlg) return;
+            _hostDialog = null;
+            _hostEditContext = null;
+            _hostAwaiting = null;
+            _hostForm = null;
+        }
+    });
+    dlg.dialog.addEventListener('click', _hostDialogClick);
+    dlg.dialog.addEventListener('change', _hostDialogChange);
+    dlg.dialog.addEventListener('input', function(e) {
+        if (e.target.classList.contains('is-invalid')) _netdlgSetError(e.target.id, '');
+        if (e.target.id === 'host-reachable') _hostForm.reachable = e.target.value;
+    });
+    dlg.dialog.addEventListener('keydown', function(e) {
+        if (e.key !== 'Enter' || e.shiftKey || e.target.tagName !== 'INPUT' || e.target.type === 'checkbox') return;
+        e.preventDefault();
+        submitHostServer();
+    });
+}
+
+function _hostDialogClick(e) {
+    if (e.target.closest('#host-discovery') && RS.hostDiscovery && RS.hostDiscovery.handleInline(e)) return;
+    var seg = e.target.closest('[data-netdlg-seg="host-type"] [role="radio"]');
+    if (seg) {
+        if (seg.disabled) return;
+        _hostForm.type = seg.getAttribute('data-v');
+        _netdlgSegSet(_hostDialog.dialog, 'host-type', _hostForm.type);
+        document.getElementById('host-type-help').textContent = _hostTypeHelp(_hostForm.type);
+        document.getElementById('host-name').placeholder = _hostForm.type === 'backbone' ? 'Backbone server' : 'My server';
+        return;
     }
-    var titleEl = document.querySelector('#host-modal .bottom-sheet-title');
-    setBottomSheetTitleWithIcon(titleEl, 'Host Network', 'host');
-    _hostEditContext = null;
+    var submit = e.target.closest('[data-netdlg="submit"]');
+    if (submit && !submit.disabled) submitHostServer();
+}
+
+// Share access needs the network name and passphrase, so the switches redraw on every change.
+function _hostDialogChange(e) {
+    var key = e.target.getAttribute('data-hd');
+    if (e.target.id === 'host-ifac') {
+        _hostForm.ifac = e.target.checked;
+        if (!_hostForm.ifac) _hostForm.share = false;
+        _ifacSyncFields('host');
+        _hostRenderDiscovery();
+    } else if (key === 'disc' || key === 'share' || key === 'priv') {
+        _hostForm[key] = e.target.checked;
+        _hostRenderDiscovery();
+    }
+}
+
+// The runtime's refusals land on their field when it shows, otherwise in the dialog's notice.
+function _hostShowError(message) {
+    message = message || 'The server couldn’t start. Try again.';
+    var field = /address others/i.test(message) ? 'host-reachable'
+        : (/network name or passphrase/i.test(message) ? 'host-ifac-network-name' : '');
+    var input = field ? document.getElementById(field) : null;
+    if (input && input.offsetParent !== null) _netdlgFieldError(field, message);
+    else _netdlgNotice(_hostDialog, message);
 }
 
 function submitHostServer() {
-    var editContext = _normaliseHostEditContext(_hostEditContext, 'tcp_server');
-    _hostEditContext = editContext;
-    var port = parseInt(document.getElementById('host-port').value) || 4242;
-    var listenIp = document.getElementById('host-listen-ip').value.trim() || '0.0.0.0';
-    var name = document.getElementById('host-name').value.trim();
-
+    var dlg = _hostDialog;
+    if (!dlg || !dlg.isOpen() || _hostAwaiting) return;
+    _netdlgClearErrors(dlg);
+    var backbone = _hostForm.type === 'backbone';
+    var editContext = _normaliseHostEditContext(_hostEditContext, backbone ? 'backbone_server' : 'tcp_server');
+    var port = _netdlgPort('host-port', 4242);
+    if (port === null) {
+        _netdlgFieldError('host-port', 'Use a port from 1 to 65535.');
+        return;
+    }
     if (!_ifacGuardEmpty('host')) return;
 
-    var submitBtn = document.getElementById('host-submit-btn');
-    if (submitBtn) {
-        submitBtn.textContent = editContext ? 'Saving...' : 'Starting...';
-        submitBtn.disabled = true;
+    // Only what the switches show is sent; a hidden setting keeps its saved value.
+    var group = document.getElementById('host-discovery');
+    var discovery = group && RS.hostDiscovery ? RS.hostDiscovery.read(group) : {};
+    var shown = { reachable_on: 'reachable', publish_ifac: 'share', discovery_encrypt: 'priv' };
+    Object.keys(shown).forEach(function(key) {
+        if (!group || !group.querySelector('[data-hd="' + shown[key] + '"]')) delete discovery[key];
+    });
+    if (discovery.discoverable && !discovery.reachable_on) {
+        _netdlgFieldError('host-reachable', 'Add the address others connect to.');
+        return;
+    }
+    var identity = RS.networkIdentity && RS.networkIdentity.state();
+    if (discovery.discoverable && discovery.discovery_encrypt && identity && !identity.exists) {
+        _netdlgNotice(dlg, 'Create or import a network identity first.');
+        return;
     }
 
-    var hostArgs = _ifacApplyArgs('host', {
+    var args = _ifacApplyArgs('host', {
         listen_port: port,
-        listen_ip: listenIp,
-        name: name || ('TCP Server :' + port),
+        listen_ip: _netdlgValue('host-listen-ip') || '0.0.0.0',
+        name: _netdlgValue('host-name') || ((backbone ? 'Backbone Server :' : 'TCP Server :') + port),
     });
-    if (editContext) hostArgs.old_name = editContext.oldName;
-    RS.invoke(editContext ? 'update_tcp_server' : 'add_tcp_server', {
-        args: hostArgs
-    }).catch(function(err) {
-        _handleInterfaceButtonError(
-            err,
-            'host-submit-btn',
-            editContext ? 'Save Changes' : 'Start Hosting',
-            'Failed to start TCP server'
-        );
-    });
-}
-
-// Backbone Server is desktop-only; Backbone Client is the checkbox in TCP modal.
-
-function openBackboneHostModal(editContext) {
-    _backboneHostEditContext = _normaliseHostEditContext(editContext, 'backbone_server');
-    var iface = _backboneHostEditContext && _backboneHostEditContext.iface ? _backboneHostEditContext.iface : null;
-    var isEdit = !!_backboneHostEditContext;
-    var titleEl = document.querySelector('#backbone-host-modal .bottom-sheet-title');
-    setBottomSheetTitleWithIcon(
-        titleEl,
-        isEdit ? 'Edit Backbone Server' : 'Host Backbone Server',
-        'backbone'
-    );
-    document.getElementById('backbone-host-port').value = iface ? _ifaceString(iface, 'listen_port', '') : '';
-    document.getElementById('backbone-host-listen-ip').value = iface ? (_ifaceString(iface, 'listen_on', '') || _ifaceString(iface, 'listen_ip', '0.0.0.0')) : '';
-    document.getElementById('backbone-host-name').value = iface ? _ifaceString(iface, 'name', '') : '';
-    _ifacPopulate('backbone-host', iface);
-    var submitBtn = document.getElementById('backbone-host-submit-btn');
-    if (submitBtn) {
-        submitBtn.textContent = isEdit ? 'Save Changes' : 'Start Hosting';
-        submitBtn.className = 'nr-btn';
-        submitBtn.disabled = false;
-    }
-    RS.ui.openExistingSheet('backbone-host-modal', 'backbone-host-modal-overlay');
-}
-
-function closeBackboneHostModal() {
-    RS.ui.closeExistingSheet('backbone-host-modal', 'backbone-host-modal-overlay');
-    var submitBtn = document.getElementById('backbone-host-submit-btn');
-    if (submitBtn) {
-        submitBtn.textContent = 'Start Hosting';
-        submitBtn.className = 'nr-btn';
-        submitBtn.disabled = false;
-    }
-    var titleEl = document.querySelector('#backbone-host-modal .bottom-sheet-title');
-    setBottomSheetTitleWithIcon(titleEl, 'Host Backbone Server', 'backbone');
-    _backboneHostEditContext = null;
-}
-
-function submitBackboneHost() {
-    var editContext = _normaliseHostEditContext(_backboneHostEditContext, 'backbone_server');
-    _backboneHostEditContext = editContext;
-    var port = parseInt(document.getElementById('backbone-host-port').value) || 4242;
-    var listenIp = document.getElementById('backbone-host-listen-ip').value.trim() || '0.0.0.0';
-    var name = document.getElementById('backbone-host-name').value.trim();
-
-    if (!_ifacGuardEmpty('backbone-host')) return;
-
-    var submitBtn = document.getElementById('backbone-host-submit-btn');
-    if (submitBtn) {
-        submitBtn.textContent = editContext ? 'Saving...' : 'Starting...';
-        submitBtn.disabled = true;
-    }
-
-    var args = _ifacApplyArgs('backbone-host', {
-        listen_port: port,
-        listen_ip: listenIp,
-        name: name || ('Backbone Server :' + port),
-    });
+    Object.keys(discovery).forEach(function(key) { args[key] = discovery[key]; });
     if (editContext) {
-        var iface = editContext.iface || {};
         args.old_name = editContext.oldName;
-        args.prefer_ipv6 = _ifaceBool(iface, 'prefer_ipv6');
-        args.device = _ifaceString(iface, 'device', '') || null;
+        if (backbone) {
+            args.prefer_ipv6 = _ifaceBool(editContext.iface, 'prefer_ipv6');
+            args.device = _ifaceString(editContext.iface, 'device', '') || null;
+        }
     }
-    RS.invoke(editContext ? 'update_backbone_server' : 'add_backbone_server', {
-        args: args
-    }).catch(function(err) {
-        _handleInterfaceButtonError(
-            err,
-            'backbone-host-submit-btn',
-            editContext ? 'Save Changes' : 'Start Hosting',
-            'Failed to start Backbone server'
-        );
+    var command = backbone
+        ? (editContext ? 'update_backbone_server' : 'add_backbone_server')
+        : (editContext ? 'update_tcp_server' : 'add_tcp_server');
+    var submitBtn = _netdlgPrimary(dlg);
+    var lastError = null;
+    var run = function() {
+        return RS.invoke(command, { args: args }).catch(function(err) { lastError = err; throw err; });
+    };
+
+    // A published server's save restarts the network, and the app confirms restarts one way.
+    var ns = RS.networkSettings;
+    if ((discovery.discoverable || _hostForm.published) && ns && typeof ns.commitRestart === 'function') {
+        if (ns.busy) {
+            _netdlgNotice(dlg, 'The network is restarting. Try again in a moment.');
+            return;
+        }
+        _netdlgBusy(submitBtn, editContext ? 'Saving…' : 'Starting…');
+        ns.commitRestart({ run: run, done: 'Network restarted' }).then(function(result) {
+            if (result) {
+                dlg.close();
+                return;
+            }
+            _netdlgBusy(submitBtn, null);
+            if (lastError) _hostShowError(lastError.message);
+        });
+        return;
+    }
+
+    _hostAwaiting = { edit: !!editContext };
+    _netdlgBusy(submitBtn, editContext ? 'Saving…' : 'Starting…');
+    run().then(function(result) {
+        if (!result || !result.restarted) return;
+        _hostAwaiting = null;
+        showToast('Network restarted', 'toast-success', 3000);
+        dlg.close();
+    }, function(err) {
+        _hostAwaiting = null;
+        _netdlgBusy(submitBtn, null);
+        _hostShowError(err && err.message);
     });
+}
+
+// Operation status for the dialog that waits on it. Returns 'added' for a server added from Add
+// your own server, 'handled' when a dialog showed the result, and false otherwise.
+function connectionDialogOperation(data) {
+    if (!data || !data.done) return false;
+    var op = data.operation;
+    if (op === 'add_tcp' || op === 'add_backbone' || op === 'update_tcp' || op === 'update_backbone') {
+        if (data.error) clearConnectPublicPending();
+        if (!_connectAwaiting) return false;
+        var adding = !_connectAwaiting.edit;
+        if (data.error) {
+            _connectFailed(_netdlgOpError(data));
+            return 'handled';
+        }
+        _clearConnectTimeout();
+        _connectAwaiting = null;
+        if (_connectDialog) _connectDialog.close();
+        return adding ? 'added' : 'handled';
+    }
+    if (op === 'add_server' || op === 'update_server' || op === 'add_backbone_server' || op === 'update_backbone_server') {
+        if (!_hostAwaiting) return false;
+        _hostAwaiting = null;
+        if (data.error) {
+            _netdlgBusy(_netdlgPrimary(_hostDialog), null);
+            _hostShowError(_netdlgOpError(data));
+        } else if (_hostDialog) {
+            _hostDialog.close();
+        }
+        return 'handled';
+    }
+    return false;
 }
 
 // A legacy value has no reliable producer marker. Only an explicit choice may
@@ -2588,257 +2750,218 @@ function openInterfaceEditModal(ifaceType, ifaceName, iface) {
     }
 }
 
+// ------------------------------------------------------------------ Local Network options
+// The name up front; the network name and reach behind Advanced, plus ports, address type,
+// adapters, and bitrate on a wide layout (the Python rnsd knobs).
+var _localDialog = null;
+var _localAdaptersLoaded = false;
 
-function toggleLocalNetwork() {
-    var isEnabled = !!window._autoEnabled;
-    if (isEnabled) {
-        rsConfirm({ message: 'Disable Local Network?', danger: true, confirmText: 'Disable' }).then(function(ok) {
-            if (ok) RS.invoke('disable_auto_interface', {}).catch(function(err) {
-                showToast((err && err.message) || 'Could not turn off Local Network', 'toast-error', 8000);
-            });
-        });
-    } else {
-        showAutoInterfaceConfigSheet();
-    }
+_netdlgSelectOptions('local-reach', [
+    { key: 'link', label: 'This Wi-Fi or wired network', hint: 'Link scope' },
+    { key: 'admin', label: 'Administrative boundary', hint: 'Admin scope' },
+    { key: 'site', label: 'Site', hint: 'IPv6 site scope' },
+    { key: 'organisation', label: 'Organisation', hint: 'IPv6 organisation scope' },
+    { key: 'global', label: 'Global', hint: 'IPv6 global scope' }
+]);
+_netdlgSelectOptions('local-address-type', [
+    { key: 'temporary', label: 'Temporary', hint: 'RFC 4291 transient address' },
+    { key: 'permanent', label: 'Permanent', hint: 'Sets the multicast flag' }
+]);
+
+function _localList(value) {
+    if (Array.isArray(value)) return value.map(String);
+    return String(value || '').split(',').map(function(item) { return item.trim(); }).filter(Boolean);
 }
 
-// name + group_id always visible; advanced knobs (Python rnsd parity) are
-// stripped on mobile to keep the sheet under 75% viewport height.
-function showAutoInterfaceConfigSheet() {
-    if (typeof _rsBuildSheet !== 'function') return;
-    var mobile = isCompactLayout();
+function _localCurrent() {
+    var data = window._hubInterfacesData || window._cachedConfigIfaces || {};
+    return (Array.isArray(data.auto) && data.auto[0]) || null;
+}
 
-    var built = _rsBuildSheet({
-        title: 'Local Network',
-        titleIcon: interfaceSheetIcon('local'),
-        titleIconType: 'local'
-    }, function() {});
-    built.sheet.classList.add('local-network-sheet');
-    built.overlay.addEventListener('click', function(e) {
-        if (e.target === built.overlay) built.dismiss(null);
-    });
-
-    function makeLabel(text) {
-        var l = document.createElement('label');
-        l.className = 'rs-dialog-field-label';
-        l.textContent = text;
-        return l;
-    }
-    function makeInput(type, value, placeholder) {
-        var i = document.createElement('input');
-        i.type = type;
-        i.className = 'rs-dialog-input';
-        if (value !== undefined && value !== null) i.value = value;
-        if (placeholder) i.placeholder = placeholder;
-        if (type === 'text' && typeof disableAutoCorrect === 'function') {
-            disableAutoCorrect(i);
-        }
-        return i;
-    }
-    function makeSelect(options, defaultValue) {
-        var s = document.createElement('select');
-        s.className = 'rs-dialog-input';
-        options.forEach(function(opt) {
-            var o = document.createElement('option');
-            o.value = opt.value;
-            o.textContent = opt.label;
-            if (opt.value === defaultValue) o.selected = true;
-            s.appendChild(o);
-        });
-        return s;
-    }
-    function makeHelp(text) {
-        var d = document.createElement('div');
-        d.className = 'rs-dialog-field-help';
-        d.textContent = text;
-        return d;
-    }
-
-    built.body.appendChild(makeLabel('Name'));
-    var nameInput = makeInput('text', 'Local Network', 'Local Network');
-    nameInput.maxLength = 64;
-    built.body.appendChild(nameInput);
-    built.body.appendChild(makeHelp('Display name for this interface.'));
-
-    built.body.appendChild(makeLabel('Group ID'));
-    var groupIdInput = makeInput('text', 'reticulum', 'reticulum');
-    groupIdInput.maxLength = 63;
-    built.body.appendChild(groupIdInput);
-    built.body.appendChild(makeHelp('Use the same Group ID on peers you want to discover. Different IDs select different discovery groups; they are not access controls.'));
-
-    var details = document.createElement('details');
-    details.style.marginTop = 'var(--space-3)';
-    var summary = document.createElement('summary');
-    summary.className = 'rs-dialog-advanced-summary';
-    summary.textContent = 'Advanced';
-    details.appendChild(summary);
-
-    var advBody = document.createElement('div');
-    advBody.style.paddingTop = 'var(--space-2)';
-    details.appendChild(advBody);
-
-    advBody.appendChild(makeLabel('Discovery Scope'));
-    var scopeSelect = makeSelect([
-        { value: 'link', label: 'Link (default — same Wi-Fi / LAN)' },
-        { value: 'admin', label: 'Admin (administrative boundary)' },
-        { value: 'site', label: 'Site (IPv6 scope)' },
-        { value: 'organisation', label: 'Organisation' },
-        { value: 'global', label: 'Global (IPv6 scope)' }
-    ], 'link');
-    advBody.appendChild(scopeSelect);
-    advBody.appendChild(makeHelp('Link is the default for the local network. Other scopes change the multicast address; they do not configure multicast routing.'));
-
-    var addrTypeSelect, discPortInput, dataPortInput, bitrateInput;
-    var nicListContainer = null;
-    var nicCheckboxes = [];
-
-    if (!mobile) {
-        advBody.appendChild(makeLabel('Multicast Address Type'));
-        addrTypeSelect = makeSelect([
-            { value: 'temporary', label: 'Temporary (default — RFC 4291 transient)' },
-            { value: 'permanent', label: 'Permanent (multicast flag)' }
-        ], 'temporary');
-        advBody.appendChild(addrTypeSelect);
-        advBody.appendChild(makeHelp('Use Temporary unless your network requires Permanent. Permanent changes the multicast flag; it does not reserve an address with IANA.'));
-
-        advBody.appendChild(makeLabel('Discovery Port'));
-        discPortInput = makeInput('number', '29716', '29716');
-        discPortInput.min = 1;
-        discPortInput.max = 65535;
-        advBody.appendChild(discPortInput);
-
-        advBody.appendChild(makeLabel('Data Port'));
-        dataPortInput = makeInput('number', '42671', '42671');
-        dataPortInput.min = 1;
-        dataPortInput.max = 65535;
-        advBody.appendChild(dataPortInput);
-        advBody.appendChild(makeHelp('Use different Discovery and Data ports, matching your peers. Port access also depends on the OS and other applications.'));
-
-        advBody.appendChild(makeLabel('Network Interfaces'));
-        nicListContainer = document.createElement('div');
-        nicListContainer.style.display = 'flex';
-        nicListContainer.style.flexDirection = 'column';
-        nicListContainer.style.gap = 'var(--space-1)';
-        nicListContainer.style.marginBottom = 'var(--space-2)';
-        var loadingNote = document.createElement('div');
-        loadingNote.className = 'inline-hint';
-        loadingNote.textContent = 'Loading interfaces…';
-        nicListContainer.appendChild(loadingNote);
-        advBody.appendChild(nicListContainer);
-        advBody.appendChild(makeHelp('Leave all unchecked to use eligible interfaces with link-local IPv6 addresses. Loopback and platform-ignored interfaces are excluded.'));
-
-        RS.invoke('api_list_network_interfaces', {}).then(function(resp) {
-            var ifaces = (resp && resp.interfaces) || [];
-            nicListContainer.innerHTML = '';
-            ifaces.forEach(function(iface) {
-                if (iface.is_loopback) return;
-                var row = document.createElement('label');
-                row.className = 'rs-dialog-checkbox-row';
-                var cb = document.createElement('input');
-                cb.type = 'checkbox';
-                cb.value = iface.name;
-                cb.dataset.ifaceName = iface.name;
-                row.appendChild(cb);
-                var label = document.createElement('span');
-                var addr = iface.addr_v6_link_local || iface.addr_v4 || '(no address)';
-                label.textContent = iface.name + ' — ' + addr;
-                row.appendChild(label);
-                nicListContainer.appendChild(row);
-                nicCheckboxes.push(cb);
-            });
-            if (!nicCheckboxes.length) {
-                var none = document.createElement('div');
-                none.className = 'inline-hint';
-                none.textContent = 'No usable network interfaces detected.';
-                nicListContainer.appendChild(none);
-            }
-        }).catch(function() {
-            nicListContainer.innerHTML = '';
-            var err = document.createElement('div');
-            err.className = 'inline-warning';
-            err.textContent = 'Could not enumerate interfaces.';
-            nicListContainer.appendChild(err);
-        });
-
-        advBody.appendChild(makeLabel('Bitrate Override (Mbps, optional)'));
-        bitrateInput = makeInput('number', '', '10');
-        bitrateInput.min = 1;
-        advBody.appendChild(bitrateInput);
-        advBody.appendChild(makeHelp('Reported bitrate for transport announce-cap calculation. Default 10 Mbps.'));
-    } else {
-        // TODO(mobile-advanced): expose multicast type / ports / NICs / bitrate
-        // via a sub-sheet if demand surfaces.
-    }
-
-    built.body.appendChild(details);
-
-    var cancelBtn = document.createElement('button');
-    cancelBtn.className = 'rs-dialog-cancel';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', function() { built.dismiss(null); });
-
-    var confirmBtn = document.createElement('button');
-    confirmBtn.className = 'rs-dialog-confirm';
-    confirmBtn.textContent = 'Enable';
-    confirmBtn.addEventListener('click', function() {
-        var name = nameInput.value.trim() || 'Local Network';
-        var options = {};
-        var gid = groupIdInput.value.trim();
-        if (gid && gid !== 'reticulum') options.group_id = gid;
-        if (scopeSelect.value && scopeSelect.value !== 'link') options.discovery_scope = scopeSelect.value;
-        if (!mobile) {
-            if (addrTypeSelect.value && addrTypeSelect.value !== 'temporary') {
-                options.multicast_address_type = addrTypeSelect.value;
-            }
-            var dp = parseInt(discPortInput.value, 10);
-            if (!isNaN(dp) && dp !== 29716) options.discovery_port = dp;
-            var dap = parseInt(dataPortInput.value, 10);
-            if (!isNaN(dap) && dap !== 42671) options.data_port = dap;
-            var devices = nicCheckboxes.filter(function(c) { return c.checked; }).map(function(c) { return c.value; });
-            if (devices.length > 0) options.devices = devices;
-            var br = parseFloat(bitrateInput.value);
-            if (!isNaN(br) && br > 0) options.configured_bitrate = Math.round(br * 1_000_000);
-        }
-        built.dismiss({ name: name, options: options });
-    });
-
-    built.footer.appendChild(cancelBtn);
-    built.footer.appendChild(confirmBtn);
-
-    if (typeof RS !== 'undefined' && RS.gestures && typeof RS.gestures.attachDragDismiss === 'function') {
-        RS.gestures.attachDragDismiss(built.sheet, {
-            axis: 'y',
-            blockIfScrolled: true,
-            skipIf: function(e) {
-                var t = e.target;
-                if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.tagName === 'BUTTON' || t.tagName === 'SUMMARY')) return true;
-                return false;
-            },
-            parallaxOverlay: built.overlay,
-            onCommit: function() { built.dismiss(null); }
-        });
-    }
-
-    built.present();
-
-    // present() returns immediately; hook the dismiss callback for results.
-    var origDismiss = built.dismiss;
-    built.dismiss = function(result) {
-        origDismiss(result);
-        if (result && result.name) {
-            window._activeProgressDialog = rsProgress({
-                title: 'Enabling Local Network',
-                message: 'Starting...',
-                timeout: 15000,
-                timeoutMessage: 'Local Network setup timed out. Check your network settings.'
-            });
-            RS.invoke('enable_auto_interface', { name: result.name, options: result.options }).catch(function(err) {
-                if (window._activeProgressDialog && window._activeProgressDialog.error) {
-                    window._activeProgressDialog.error((err && err.message) || 'Failed to enable Local Network');
-                }
-            });
-        }
+function _localValues(cur) {
+    var bitrate = parseFloat(_ifaceString(cur, 'configured_bitrate', ''));
+    return {
+        name: (cur && cur.name) || 'Local Network',
+        group: _ifaceString(cur, 'group_id', 'reticulum'),
+        scope: _ifaceString(cur, 'discovery_scope', 'link').toLowerCase(),
+        addr: _ifaceString(cur, 'multicast_address_type', 'temporary').toLowerCase(),
+        dport: _ifaceString(cur, 'discovery_port', '29716'),
+        aport: _ifaceString(cur, 'data_port', '42671'),
+        devices: cur ? _localList(cur.devices) : [],
+        ignored: cur ? _localList(cur.ignored_devices) : [],
+        bitrate: isNaN(bitrate) ? '' : String(bitrate / 1000000)
     };
+}
+
+// enable_auto_interface's options: only what differs from the defaults.
+function _localOptions(v) {
+    var options = {};
+    if (v.group && v.group !== 'reticulum') options.group_id = v.group;
+    if (v.scope && v.scope !== 'link') options.discovery_scope = v.scope;
+    if (v.addr && v.addr !== 'temporary') options.multicast_address_type = v.addr;
+    var dp = parseInt(v.dport, 10);
+    var ap = parseInt(v.aport, 10);
+    if (!isNaN(dp) && dp !== 29716) options.discovery_port = dp;
+    if (!isNaN(ap) && ap !== 42671) options.data_port = ap;
+    if (v.devices.length) options.devices = v.devices.slice().sort();
+    if (v.ignored.length) options.ignored_devices = v.ignored.slice();
+    var br = parseFloat(v.bitrate);
+    if (!isNaN(br) && br > 0) options.configured_bitrate = Math.round(br * 1000000);
+    return options;
+}
+
+function _localAdapterRow(name, label, checked) {
+    return '<label class="ui-check-row"><input type="checkbox" value="' + _netdlgEsc(name) + '" data-local-adapter' + (checked ? ' checked' : '') + '>' +
+        '<span class="ui-check">' + _netdlgIcon('check') + '</span><span>' + _netdlgEsc(label) + '</span></label>';
+}
+
+function _localLoadAdapters(chosen) {
+    _localAdaptersLoaded = false;
+    RS.invoke('api_list_network_interfaces', {}).then(function(resp) {
+        var box = document.getElementById('local-adapters');
+        if (!box) return;
+        var names = {};
+        var rows = ((resp && resp.interfaces) || []).filter(function(iface) { return !iface.is_loopback; }).map(function(iface) {
+            names[iface.name] = true;
+            return _localAdapterRow(iface.name, iface.name + ' — ' + (iface.addr_v6_link_local || iface.addr_v4 || 'no address'), chosen.indexOf(iface.name) >= 0);
+        });
+        // A chosen adapter that isn't plugged in stays chosen.
+        chosen.forEach(function(name) { if (!names[name]) rows.push(_localAdapterRow(name, name + ' — not found', true)); });
+        box.innerHTML = rows.length ? rows.join('') : '<p class="ui-help">No usable network adapters found.</p>';
+        _localAdaptersLoaded = true;
+    }).catch(function() {
+        var box = document.getElementById('local-adapters');
+        if (box) box.innerHTML = '<p class="ui-error">' + _netdlgIcon('alert') + '<span>Couldn’t list the network adapters.</span></p>';
+    });
+}
+
+function showAutoInterfaceConfigSheet() {
+    if (_localDialog && _localDialog.isOpen()) _localDialog.close();
+    var cur = _localCurrent();
+    var v = _localValues(cur);
+    // Name and network name always show; the rest stay off a phone, as before.
+    var wide = !isCompactLayout();
+    _netdlgSelectSet('local-reach', v.scope);
+    _netdlgSelectSet('local-address-type', v.addr);
+    var dlg = _localDialog = RS.kit.dialog({
+        title: 'Local Network',
+        size: 'md',
+        className: 'netdlg netdlg-local',
+        body: '<p>Ratspeak finds people on the same Wi-Fi or wired network. Most people never change these.</p>' +
+            _netdlgTextField('local-name', 'Name', { value: v.name, placeholder: 'Local Network', max: 64, help: 'Shown in Connectivity.' }) +
+            '<div class="ui-group">' +
+                _netdlgDisclosure('local-advanced', 'Advanced', wide ? 'Network name, reach, ports, and adapters.' : 'Network name and reach.', false) +
+                '<div class="ui-prop settings-prop-stack" id="local-advanced-body" hidden>' +
+                    _netdlgTextField('local-group', 'Network name', { value: v.group, placeholder: 'reticulum', mono: true, max: 63, help: 'Only devices with the same network name find each other.' }) +
+                    _netdlgSelectField('local-reach', 'Reach', 'Other choices change the multicast address. They don’t set up multicast routing.') +
+                    (wide
+                        ? '<div class="ui-field"><span class="ui-label">Ports</span><div class="netdlg-two">' +
+                                _netdlgTextField('local-discovery-port', '', { value: v.dport, placeholder: '29716', mode: 'numeric', max: 5, aria: 'Discovery port' }) +
+                                _netdlgTextField('local-data-port', '', { value: v.aport, placeholder: '42671', mode: 'numeric', max: 5, aria: 'Data port' }) +
+                            '</div><p class="ui-help">Discovery and data ports. Match them on every device.</p></div>' +
+                            _netdlgSelectField('local-address-type', 'Address type', 'Use Temporary unless your network needs Permanent.') +
+                            '<div class="ui-field"><span class="ui-label" id="local-adapters-label">Network adapters</span>' +
+                                '<div class="netdlg-checks" id="local-adapters" role="group" aria-labelledby="local-adapters-label"><p class="ui-status" role="status"><span class="ui-spin ui-spin--ring" aria-hidden="true"></span>Looking for adapters…</p></div>' +
+                                '<p class="ui-help">Leave all off to use every adapter with a link-local IPv6 address.</p></div>' +
+                            _netdlgTextField('local-bitrate', 'Bitrate', { value: v.bitrate, placeholder: '10', mode: 'decimal', unit: 'Mbps', help: 'Sets the announce cap. 10 Mbps if empty.' })
+                        : '') +
+                '</div>' +
+            '</div>' + _netdlgNoticeSlot(),
+        foot: _netdlgFoot(cur ? 'Save' : 'Turn on'),
+        onClose: function() { if (_localDialog === dlg) _localDialog = null; }
+    });
+    var ctx = { cur: cur, saved: v, wide: wide };
+    if (wide) _localLoadAdapters(v.devices);
+    dlg.dialog.addEventListener('click', function(e) {
+        var el = e.target.closest('[data-netdlg]');
+        if (!el || el.disabled) return;
+        var act = el.getAttribute('data-netdlg');
+        if (act === 'disclose') _netdlgSetDisclosure(el.id, el.getAttribute('aria-expanded') !== 'true');
+        else if (act === 'select') _netdlgSelectOpen(el);
+        else if (act === 'submit') _localSubmit(ctx);
+    });
+    dlg.dialog.addEventListener('input', function(e) {
+        if (e.target.classList.contains('is-invalid')) _netdlgSetError(e.target.id, '');
+    });
+    dlg.dialog.addEventListener('keydown', function(e) {
+        if (e.key !== 'Enter' || e.shiftKey || e.target.tagName !== 'INPUT' || e.target.type === 'checkbox') return;
+        e.preventDefault();
+        _localSubmit(ctx);
+    });
+}
+
+function _localFieldError(id, message) {
+    _netdlgSetDisclosure('local-advanced', true);
+    return _netdlgFieldError(id, message);
+}
+
+function _localSubmit(ctx) {
+    var dlg = _localDialog;
+    if (!dlg || !dlg.isOpen()) return;
+    var saved = ctx.saved;
+    var wide = ctx.wide;
+    _netdlgClearErrors(dlg);
+    var form = Object.assign({}, saved, {
+        name: _netdlgValue('local-name') || 'Local Network',
+        group: _netdlgValue('local-group') || 'reticulum',
+        scope: _netdlgSelectGet('local-reach') || 'link'
+    });
+    if (!/^[A-Za-z0-9_-]{1,63}$/.test(form.group)) {
+        _localFieldError('local-group', 'Use letters, numbers, hyphens, and underscores only.');
+        return;
+    }
+    // A phone keeps the wide-layout settings it doesn't show.
+    if (wide) {
+        var dport = _netdlgPort('local-discovery-port', 29716);
+        var aport = _netdlgPort('local-data-port', 42671);
+        if (dport === null) return _localFieldError('local-discovery-port', 'Use a port from 1 to 65535.');
+        if (aport === null) return _localFieldError('local-data-port', 'Use a port from 1 to 65535.');
+        if (dport === aport) return _localFieldError('local-data-port', 'Use a different port from discovery.');
+        var bitrate = _netdlgValue('local-bitrate');
+        if (bitrate && !(parseFloat(bitrate) > 0)) return _localFieldError('local-bitrate', 'Use a number above 0.');
+        form.dport = String(dport);
+        form.aport = String(aport);
+        form.bitrate = bitrate;
+        form.addr = _netdlgSelectGet('local-address-type') || 'temporary';
+        if (_localAdaptersLoaded) {
+            form.devices = Array.prototype.map.call(dlg.dialog.querySelectorAll('[data-local-adapter]:checked'), function(box) { return box.value; });
+        }
+    }
+    var options = _localOptions(form);
+
+    if (!ctx.cur) {
+        dlg.close();
+        window._activeProgressDialog = rsProgress({
+            title: 'Enabling Local Network',
+            message: 'Starting...',
+            timeout: 15000,
+            timeoutMessage: 'Local Network setup timed out. Check your network settings.'
+        });
+        RS.invoke('enable_auto_interface', { name: form.name, options: options }).catch(function(err) {
+            if (window._activeProgressDialog && window._activeProgressDialog.error) {
+                window._activeProgressDialog.error((err && err.message) || 'Failed to enable Local Network');
+            }
+        });
+        return;
+    }
+    if (form.name === saved.name && JSON.stringify(options) === JSON.stringify(_localOptions(saved))) {
+        dlg.close();
+        return;
+    }
+    // There is no in-place update: the interface is replaced, under the runtime's Local Network lock.
+    var submitBtn = _netdlgPrimary(dlg);
+    _netdlgBusy(submitBtn, 'Saving…');
+    RS.invoke('disable_auto_interface', { name: ctx.cur.name }).then(function() {
+        // Removed now: a retry only turns it back on.
+        ctx.cur = null;
+        return RS.invoke('enable_auto_interface', { name: form.name, options: options });
+    }).then(function() {
+        if (dlg.isOpen()) dlg.close();
+        showToast('Local Network updated', 'toast-success', 3000);
+    }).catch(function(err) {
+        _netdlgBusy(submitBtn, null);
+        _netdlgNotice(dlg, (err && err.message) || 'Local Network couldn’t be updated.');
+    });
 }
 
 function updateAutoToggle() {
@@ -2884,82 +3007,6 @@ function _ensureBlePermissions() {
     });
 }
 
-function toggleBlePeer() {
-    RS.invoke('api_ble_peer_available').then(function(data) {
-        window._blePeerAvailable = !!data.available;
-        updateBlePeerToggle();
-
-        if (!data.available) {
-            var missing = data.missing || [];
-            var missingStr = missing.join(', ').toLowerCase();
-
-            // Backend can't see Android runtime perms; rescue them here.
-            if (hasAndroidBridge() &&
-                (missingStr.indexOf('permission') !== -1 || missingStr.indexOf('not initialized') !== -1)) {
-                _ensureBlePermissions().then(function(granted) {
-                    if (granted) {
-                        showToast('Bluetooth access granted. Tap + again to turn on Bluetooth Peer.', 'toast-success', 5000);
-                    } else {
-                        showToast('Bluetooth access is required to use Bluetooth Peer.', 'toast-warning', 5000);
-                    }
-                });
-                return;
-            }
-
-            var msg = missing.length > 0
-                ? 'Bluetooth Peer is not available: ' + missing.join(', ')
-                : 'Bluetooth Peer is not available. No Bluetooth adapter found.';
-            showToast(msg, 'toast-warning', 5000);
-            return;
-        }
-
-        var isEnabled = !!window._blePeerEnabled;
-        if (isEnabled) {
-            rsConfirm({ message: 'Disable Bluetooth Peer? Active peer connections will be dropped.', danger: true, confirmText: 'Disable' }).then(function(ok) {
-                if (ok) RS.invoke('disable_ble_peer_interface').catch(function(err) {
-                    showToast((err && err.message) || 'Could not turn off Bluetooth Peer', 'toast-error', 8000);
-                });
-            });
-        } else {
-            _ensureBlePermissions().then(function(granted) {
-                if (!granted) {
-                    showPreConditionToast('Bluetooth Peer requires Bluetooth permissions');
-                    return;
-                }
-                rsChoice({
-                    title: 'Enable Bluetooth Peer',
-                    titleIcon: interfaceSheetIcon('ble'),
-                    titleIconType: 'ble',
-                    message: 'Discover nearby Ratspeak users via Bluetooth.\n\nConnect for:',
-                    choices: [
-                        { label: '10 minutes', value: '600' },
-                        { label: '30 minutes', value: '1800' },
-                        { label: '60 minutes', value: '3600' },
-                        { label: 'Always on', value: '0' }
-                    ]
-                }).then(function(duration) {
-                    if (duration === null) return;
-                    window._activeProgressDialog = rsProgress({
-                        title: 'Enabling Bluetooth Peer',
-                        message: 'Starting...',
-                        timeout: 15000,
-                        timeoutMessage: 'Bluetooth Peer setup timed out. Check Bluetooth permissions.'
-                    });
-                    RS.invoke('enable_ble_peer_interface', { args: { duration: parseInt(duration, 10) } }).catch(function(err) {
-                        if (window._activeProgressDialog && window._activeProgressDialog.error) {
-                            window._activeProgressDialog.error((err && err.message) || 'Failed to enable Bluetooth Peer');
-                        } else {
-                            showToast((err && err.message) || 'Could not turn on Bluetooth Peer', 'toast-error', 8000);
-                        }
-                    });
-                });
-            });
-        }
-    }).catch(function() {
-        showToast('Could not check Bluetooth Peer availability', 'toast-error', 5000);
-    });
-}
-
 function updateBlePeerToggle() {
     var isEnabled = !!window._blePeerEnabled;
 
@@ -2979,130 +3026,6 @@ function updateBlePeerToggle() {
     if (typeof _refreshBlePeerSectionState === 'function') _refreshBlePeerSectionState();
 }
 
-
-document.getElementById('rnode-modal-close').addEventListener('click', closeRnodeModal);
-document.getElementById('rnode-refresh-btn').addEventListener('click', refreshRnodeSerialPorts);
-document.getElementById('rnode-submit-btn').addEventListener('click', submitRnodeInterface);
-document.getElementById('rnode-next-btn').addEventListener('click', rnodeWizardNext);
-document.getElementById('rnode-back-btn').addEventListener('click', rnodeWizardBack);
-document.getElementById('ble-scan-btn').addEventListener('click', scanBleDevices);
-
-document.getElementById('rnode-port').addEventListener('change', function() {
-    var val = this.value;
-    if (val) {
-        var opt = this.options[this.selectedIndex];
-        _selectedSerialPort = { device: val, description: opt ? opt.textContent : val };
-    } else {
-        _selectedSerialPort = null;
-    }
-    rnodeUpdateNextBtn();
-});
-
-var rnodeRegionSelect = document.getElementById('rnode-region');
-if (rnodeRegionSelect) rnodeRegionSelect.addEventListener('change', function() {
-    if (this.value !== _RNODE_CUSTOM_REGION_KEY) _rnodeApplyRegionToFrequency(this.value);
-    else _rnodeUpdateRadioHints();
-});
-var rnodePresetSelect = document.getElementById('rnode-preset');
-if (rnodePresetSelect) rnodePresetSelect.addEventListener('change', function() {
-    if (this.value !== _RNODE_CUSTOM_PRESET_KEY) _rnodeApplyPresetToAdvanced(this.value);
-    else {
-        var advanced = document.getElementById('rnode-advanced');
-        if (advanced) advanced.open = true;
-        _rnodeUpdateRadioHints();
-    }
-});
-var rnodeFrequencyInput = document.getElementById('rnode-frequency');
-if (rnodeFrequencyInput) rnodeFrequencyInput.addEventListener('input', _rnodeRefreshRegionFromFrequency);
-['rnode-bandwidth', 'rnode-spreading-factor', 'rnode-coding-rate', 'rnode-tx-power'].forEach(function(id) {
-    var input = document.getElementById(id);
-    if (input) input.addEventListener('input', _rnodeRefreshPresetFromAdvanced);
-});
-var rnodePublicMapEnabled = document.getElementById('rnode-public-map-enabled');
-if (rnodePublicMapEnabled) rnodePublicMapEnabled.addEventListener('change', function() {
-    if (this.checked) {
-        this.checked = false;
-        _rnodeEnablePublicMapWithWarning();
-    } else {
-        _rnodeSetPublicMapEnabled(false);
-    }
-});
-var rnodePublicMapUseCurrent = document.getElementById('rnode-public-map-use-current');
-if (rnodePublicMapUseCurrent) rnodePublicMapUseCurrent.addEventListener('click', function() {
-    _rnodeSetPublicMapEnabled(true);
-    _rnodeRequestPublicMapLocation();
-});
-['rnode-public-map-latitude', 'rnode-public-map-longitude'].forEach(function(id) {
-    var input = document.getElementById(id);
-    if (input) input.addEventListener('input', function() {
-        _rnodeSetPublicMapError('');
-        _rnodeSetPublicMapStatus();
-    });
-});
-
-var rnodeToggleSerial = document.getElementById('rnode-toggle-serial');
-var rnodeToggleBle = document.getElementById('rnode-toggle-ble');
-var rnodeToggleAndroidUsb = document.getElementById('rnode-toggle-android-usb');
-var rnodeToggleTcp = document.getElementById('rnode-toggle-tcp');
-if (rnodeToggleSerial) rnodeToggleSerial.addEventListener('click', function() { setRnodeConnectionType('serial'); });
-if (rnodeToggleBle) rnodeToggleBle.addEventListener('click', function() { setRnodeConnectionType('ble'); });
-if (rnodeToggleAndroidUsb) rnodeToggleAndroidUsb.addEventListener('click', function() { setRnodeConnectionType('android-usb'); });
-if (rnodeToggleTcp) rnodeToggleTcp.addEventListener('click', function() { setRnodeConnectionType('tcp'); });
-var rnodeTcpEndpoint = document.getElementById('rnode-tcp-endpoint');
-if (rnodeTcpEndpoint) rnodeTcpEndpoint.addEventListener('input', rnodeUpdateNextBtn);
-var androidUsbRefresh = document.getElementById('android-usb-refresh-btn');
-if (androidUsbRefresh) androidUsbRefresh.addEventListener('click', refreshAndroidUsbDevices);
-
-document.getElementById('rnode-modal').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter' && !e.shiftKey && e.target.tagName === 'INPUT') {
-        e.preventDefault();
-        var step2 = document.getElementById('rnode-step-2');
-        var step1 = document.getElementById('rnode-step-1');
-        if (step2 && step2.style.display !== 'none') submitRnodeInterface();
-        else if (step1 && step1.style.display !== 'none') rnodeWizardNext();
-    }
-});
-
-document.getElementById('connect-modal-close').addEventListener('click', closeConnectModal);
-document.getElementById('connect-submit-btn').addEventListener('click', submitConnection);
-document.querySelectorAll('#connect-tab-toggle [data-connect-tab]').forEach(function(btn) {
-    btn.addEventListener('click', function() {
-        setConnectTab(btn.dataset.connectTab);
-    });
-});
-document.getElementById('connect-modal').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter' && !e.shiftKey && e.target.tagName === 'INPUT') {
-        e.preventDefault();
-        var btn = document.getElementById('connect-submit-btn');
-        if (btn && !btn.disabled) submitConnection();
-    }
-});
-
-document.getElementById('host-modal-close').addEventListener('click', closeHostModal);
-document.getElementById('host-submit-btn').addEventListener('click', submitHostServer);
-document.getElementById('host-modal').addEventListener('keydown', function(e) {
-    if (e.key === 'Enter' && !e.shiftKey && e.target.tagName === 'INPUT') {
-        e.preventDefault();
-        var btn = document.getElementById('host-submit-btn');
-        if (btn && !btn.disabled) submitHostServer();
-    }
-});
-
-(function() {
-    var closeBtn = document.getElementById('backbone-host-modal-close');
-    var submitBtn = document.getElementById('backbone-host-submit-btn');
-    var modal = document.getElementById('backbone-host-modal');
-    if (closeBtn) closeBtn.addEventListener('click', closeBackboneHostModal);
-    if (submitBtn) submitBtn.addEventListener('click', submitBackboneHost);
-    if (modal) modal.addEventListener('keydown', function(e) {
-        if (e.key === 'Enter' && !e.shiftKey && e.target.tagName === 'INPUT') {
-            e.preventDefault();
-            var btn = document.getElementById('backbone-host-submit-btn');
-            if (btn && !btn.disabled) submitBackboneHost();
-        }
-    });
-})();
-
 window._bleAvailable = false;
 window._bleMissing = [];
 window._bleAuthState = null;
@@ -3112,10 +3035,6 @@ RS.invoke('api_ble_available').then(function(data) {
     window._bleMissing = data.missing || [];
     window._bleAuthState = data.auth_state || null;
     window._blePromptPending = data.auth_state === 'not_determined';
-    if (data.install_cmd) {
-        var cmdEl = document.getElementById('ble-install-cmd');
-        if (cmdEl) cmdEl.textContent = data.install_cmd;
-    }
 }).catch(function() {});
 
 // App-Prefs: scheme is undocumented but stable since iOS 8; WKWebView only
@@ -3124,33 +3043,12 @@ function openIosBluetoothSettings() {
     try { window.location.href = 'App-Prefs:'; } catch (e) {}
 }
 
-[
-    { id: 'rnode-modal', overlayId: 'rnode-modal-overlay', closeFn: closeRnodeModal },
-    { id: 'connect-modal', overlayId: 'connect-modal-overlay', closeFn: closeConnectModal },
-    { id: 'host-modal', overlayId: 'host-modal-overlay', closeFn: closeHostModal },
-    { id: 'backbone-host-modal', overlayId: 'backbone-host-modal-overlay', closeFn: closeBackboneHostModal },
-    { id: 'node-modal', overlayId: 'node-modal-overlay', closeFn: closeNodeModal },
-].forEach(function(cfg) {
-    if (typeof initSheetSwipeDismiss === 'function') {
-        initSheetSwipeDismiss(cfg.id, cfg.overlayId, cfg.closeFn);
-    }
-});
+if (typeof initSheetSwipeDismiss === 'function') {
+    initSheetSwipeDismiss('node-modal', 'node-modal-overlay', closeNodeModal);
+}
 
 document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') {
-        var modals = [
-            { id: 'rnode-modal', close: closeRnodeModal },
-            { id: 'connect-modal', close: closeConnectModal },
-            { id: 'host-modal', close: closeHostModal },
-            { id: 'backbone-host-modal', close: closeBackboneHostModal },
-            { id: 'node-modal', close: closeNodeModal },
-        ];
-        for (var i = 0; i < modals.length; i++) {
-            var el = document.getElementById(modals[i].id);
-            if (el && el.classList.contains('open')) {
-                modals[i].close();
-                return;
-            }
-        }
-    }
+    if (e.key !== 'Escape') return;
+    var el = document.getElementById('node-modal');
+    if (el && el.classList.contains('open')) closeNodeModal();
 });

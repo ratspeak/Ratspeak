@@ -8,21 +8,19 @@ var vm = require('vm');
 
 var dashboardRoot = path.join(__dirname, '..', '..', 'dashboard');
 var modalSource = fs.readFileSync(path.join(dashboardRoot, 'static', 'js', 'modals.js'), 'utf8');
-var html = fs.readFileSync(path.join(dashboardRoot, 'index.html'), 'utf8');
 var start = modalSource.indexOf('var _RNODE_INTERFACE_MODE_VALUES');
 var end = modalSource.indexOf('\nfunction _rnodeDeveloperModeEnabled', start);
 assert(start >= 0 && end > start, 'missing RNode interface-mode source');
+// The mode is a kit Select field; its value lives with the dialog's other Select fields.
+var selectStart = modalSource.indexOf('var _netdlgSelects = {};');
+var selectEnd = modalSource.indexOf('\nfunction _netdlgSelectField', selectStart);
+assert(selectStart >= 0 && selectEnd > selectStart, 'missing Select field source');
 
-var select = { value: '' };
 var context = {
     String: String,
-    document: {
-        getElementById: function(id) {
-            return id === 'rnode-interface-mode' ? select : null;
-        }
-    }
+    document: { getElementById: function() { return null; } }
 };
-vm.runInNewContext(modalSource.slice(start, end), context, { filename: 'rnode-interface-mode.js' });
+vm.runInNewContext(modalSource.slice(selectStart, selectEnd) + modalSource.slice(start, end), context, { filename: 'rnode-interface-mode.js' });
 
 assert.strictEqual(context._rnodeNormaliseInterfaceMode(null), 'full',
     'missing legacy values must retain the established Full fallback');
@@ -34,23 +32,24 @@ assert.strictEqual(context._rnodeInitialInterfaceMode({ interface_mode: 'boundar
     'editing must accept the compatibility interface_mode field');
 assert.strictEqual(context._rnodeInitialInterfaceMode({}), 'full',
     'editing legacy data without a mode must preserve the prior Full behavior');
-assert(modalSource.includes('_rnodeSetInterfaceMode(_rnodeInitialInterfaceMode(editIface));'),
+var opener = modalSource.slice(modalSource.indexOf('function openRnodeModal('), modalSource.indexOf('function _rnodeDialogClosed('));
+assert(opener.includes('_rnodeSetInterfaceMode(_rnodeInitialInterfaceMode(editIface));'),
     'the Add/Edit flow must apply the context-aware default before submission');
-assert(modalSource.indexOf('_rnodeSetInterfaceMode(_rnodeInitialInterfaceMode(editIface));') <
-    modalSource.indexOf('_rnodeSyncInterfaceModeVisibility();'),
-    'the selected mode must be initialized even when Developer Mode hides the control');
 assert(modalSource.includes('mode: _rnodeReadInterfaceMode(),'),
     'both visible and hidden mode selections must be included in the submitted interface');
 
 context._rnodeSetInterfaceMode(context._rnodeInitialInterfaceMode(null));
-assert.strictEqual(select.value, 'roaming', 'the new-interface default must reach the form control');
+assert.strictEqual(context._netdlgSelectGet('rnode-interface-mode'), 'roaming', 'the new-interface default must reach the form control');
+assert.strictEqual(context._rnodeReadInterfaceMode(), 'roaming');
 context._rnodeSetInterfaceMode(context._rnodeInitialInterfaceMode({ mode: 'gateway' }));
-assert.strictEqual(select.value, 'gateway', 'an explicit edited mode must reach the form control');
+assert.strictEqual(context._netdlgSelectGet('rnode-interface-mode'), 'gateway', 'an explicit edited mode must reach the form control');
 
-assert(/<option value="roaming" selected>Roaming \(recommended\)<\/option>/.test(html),
-    'the no-script form default and visible recommendation must both be Roaming');
-assert(html.includes('aria-describedby="rnode-interface-mode-hint"'),
-    'the advanced mode control must expose its radio-specific guidance');
+// The control is developer-only, but its value is set either way, so a hidden choice is still sent.
+assert(modalSource.includes("{ key: 'roaming', label: 'Roaming (recommended)' }"),
+    'the visible recommendation must be Roaming');
+assert(modalSource.includes("_netdlgSelectField('rnode-interface-mode', 'Interface mode',\n            'Best for mobile radios. Choose another mode only when this RNode has a fixed routing role.',\n            ' id=\"rnode-mode-field\" data-netdlg-dev' + (_developerModeEnabled() ? '' : ' hidden'))"),
+    'the advanced mode control must expose its radio-specific guidance, behind developer mode');
+var html = fs.readFileSync(path.join(dashboardRoot, 'index.html'), 'utf8');
 assert(html.includes('Shows advanced connection settings.'),
     'Developer Mode settings copy must explain that it reveals interface controls');
 

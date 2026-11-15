@@ -463,6 +463,8 @@ RS.listen('node_operation_status', function(data) {
 
     var progressDialog = window._activeProgressDialog;
     var progressHandling = progressDialog && progressDialog.isOpen();
+    // A connection dialog waiting on this operation shows its result itself.
+    var dialogResult = typeof connectionDialogOperation === 'function' ? connectionDialogOperation(data) : false;
 
     if (progressHandling) {
         if (data.done) {
@@ -481,7 +483,7 @@ RS.listen('node_operation_status', function(data) {
     if (data.done && !progressHandling) {
         // Successful lifecycle changes are reflected by the connection row.
         // Only a failure needs to interrupt the user.
-        if (data.error) showToast(displayStep, 'toast-error', 5000);
+        if (data.error && !dialogResult) showToast(displayStep, 'toast-error', 5000);
 
         if (data.operation === 'add_lora' && !data.error) {
             closeRnodeModal();
@@ -547,127 +549,25 @@ RS.listen('node_operation_status', function(data) {
         }, 2000);
     }
 
-    var hostModalVisible = document.getElementById('host-modal').classList.contains('open');
-    if (hostModalVisible && (data.operation === 'add_server' || data.operation === 'update_server')) {
-        var hostSubmitBtn = document.getElementById('host-submit-btn');
-        if (hostSubmitBtn) {
-            var hostUpdating = data.operation === 'update_server';
-            if (data.done) {
-                if (data.error) {
-                    hostSubmitBtn.textContent = 'Failed';
-                    hostSubmitBtn.className = 'nr-btn nr-btn-error';
-                    setTimeout(function() {
-                        hostSubmitBtn.textContent = hostUpdating ? 'Save Changes' : 'Start Hosting';
-                        hostSubmitBtn.className = 'nr-btn';
-                        hostSubmitBtn.disabled = false;
-                    }, 3000);
-                } else {
-                    hostSubmitBtn.textContent = hostUpdating ? 'Saved!' : 'Started!';
-                    hostSubmitBtn.className = 'nr-btn nr-btn-success';
-                    setTimeout(function() {
-                        closeHostModal();
-                        hostSubmitBtn.textContent = 'Start Hosting';
-                        hostSubmitBtn.className = 'nr-btn';
-                        hostSubmitBtn.disabled = false;
-                    }, 1500);
-                }
-            } else {
-                hostSubmitBtn.textContent = displayStep;
+    if (dialogResult === 'added') {
+        connectionWatcher = {
+            startTime: Date.now(),
+            initialPathCount: lastStats && lastStats.path_table ? lastStats.path_table.length : 0,
+            initialAnnounceCount: typeof announceCache !== 'undefined' ? announceCache.length : 0,
+            shown: false,
+        };
+        setTimeout(function() {
+            if (connectionWatcher && !connectionWatcher.shown) {
+                showConnectionSummary();
             }
-        }
-    }
-
-    var backboneHostVisible = document.getElementById('backbone-host-modal');
-    backboneHostVisible = backboneHostVisible && backboneHostVisible.classList.contains('open');
-    if (backboneHostVisible && (data.operation === 'add_backbone_server' || data.operation === 'update_backbone_server')) {
-        var bbhSubmit = document.getElementById('backbone-host-submit-btn');
-        if (bbhSubmit) {
-            var bbhUpdating = data.operation === 'update_backbone_server';
-            if (data.done) {
-                if (data.error) {
-                    bbhSubmit.textContent = 'Failed';
-                    bbhSubmit.className = 'nr-btn nr-btn-error';
-                    setTimeout(function() {
-                        bbhSubmit.textContent = bbhUpdating ? 'Save Changes' : 'Start Hosting';
-                        bbhSubmit.className = 'nr-btn';
-                        bbhSubmit.disabled = false;
-                    }, 3000);
-                } else {
-                    bbhSubmit.textContent = bbhUpdating ? 'Saved!' : 'Started!';
-                    bbhSubmit.className = 'nr-btn nr-btn-success';
-                    setTimeout(function() {
-                        if (typeof closeBackboneHostModal === 'function') closeBackboneHostModal();
-                        bbhSubmit.textContent = 'Start Hosting';
-                        bbhSubmit.className = 'nr-btn';
-                        bbhSubmit.disabled = false;
-                    }, 1500);
-                }
-            } else {
-                bbhSubmit.textContent = displayStep;
-            }
-        }
-    }
-
-    // Shared connect modal handles add_tcp and add_backbone identically.
-    var connectModalVisible = document.getElementById('connect-modal').classList.contains('open');
-    if (connectModalVisible && (data.operation === 'add_tcp' || data.operation === 'add_backbone' || data.operation === 'update_tcp' || data.operation === 'update_backbone')) {
-        if (typeof _clearConnectTimeout === 'function') _clearConnectTimeout();
-        var submitBtn = document.getElementById('connect-submit-btn');
-        if (submitBtn) {
-            var connectUpdating = data.operation === 'update_tcp' || data.operation === 'update_backbone';
-            if (data.done) {
-                if (data.error) {
-                    if (typeof clearConnectPublicPending === 'function') clearConnectPublicPending();
-                    submitBtn.textContent = 'Failed';
-                    submitBtn.className = 'nr-btn nr-btn-error w-full mt-4';
-                    setTimeout(function() {
-                        if (typeof _setConnectSubmitBase === 'function') {
-                            _setConnectSubmitBase(submitBtn, connectUpdating ? 'Save Changes' : 'Connect');
-                        } else {
-                            submitBtn.textContent = connectUpdating ? 'Save Changes' : 'Connect';
-                            submitBtn.className = 'nr-btn w-full mt-4';
-                            submitBtn.disabled = false;
-                        }
-                    }, 3000);
-                } else {
-                    submitBtn.textContent = connectUpdating ? 'Saved!' : 'Connected!';
-                    submitBtn.className = 'nr-btn nr-btn-success w-full mt-4';
-                    setTimeout(function() {
-                        closeConnectModal();
-                        if (typeof _setConnectSubmitBase === 'function') {
-                            _setConnectSubmitBase(submitBtn, 'Connect');
-                        } else {
-                            submitBtn.textContent = 'Connect';
-                            submitBtn.className = 'nr-btn w-full mt-4';
-                            submitBtn.disabled = false;
-                        }
-                    }, 1500);
-
-                    if (!connectUpdating) {
-                        connectionWatcher = {
-                            startTime: Date.now(),
-                            initialPathCount: lastStats && lastStats.path_table ? lastStats.path_table.length : 0,
-                            initialAnnounceCount: typeof announceCache !== 'undefined' ? announceCache.length : 0,
-                            shown: false,
-                        };
-                        setTimeout(function() {
-                            if (connectionWatcher && !connectionWatcher.shown) {
-                                showConnectionSummary();
-                            }
-                        }, 10000);
-                    }
-                }
-            } else {
-                submitBtn.textContent = displayStep;
-            }
-        }
+        }, 10000);
     }
 
 });
 
 RS.listen('hub_interfaces_update', function(data) {
     window._hubInterfacesCached = true;
-    // Pre-submit UX (handoff hints, duplicate detection) uses the full payload.
+    // Public server matching and duplicate detection use the full payload.
     if (typeof applyNetworkInterfacePayload === 'function') {
         applyNetworkInterfacePayload(data, { render: isViewActive('network') });
     } else {
@@ -924,29 +824,7 @@ RS.listen('ble_peer_status_changed', function(data) {
 });
 
 RS.listen('ble_scan_results', function(data) {
-    var scanBtn = document.getElementById('ble-scan-btn');
-    if (scanBtn) {
-        scanBtn.textContent = 'Scan Again';
-        scanBtn.disabled = false;
-    }
-
-    if (!data || typeof data !== 'object') return;
-
-    if (data.error) {
-        var list = document.getElementById('ble-device-list');
-        if (list) {
-            list.innerHTML = '<div class="ble-scan-placeholder inline-error">' +
-                escapeHtml(data.error) + '</div>';
-        }
-        return;
-    }
-
-    var rnodeDevices = (data.devices || []).filter(function(d) {
-        return d.device_type === 'rnode';
-    });
-    if (typeof renderBleDeviceList === 'function') {
-        renderBleDeviceList(rnodeDevices);
-    }
+    if (typeof bleScanFinished === 'function') bleScanFinished(data);
 });
 
 // AutoInterface JoinFailed; surface the runtime failure on the matching row.

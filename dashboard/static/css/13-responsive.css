@@ -237,8 +237,7 @@
     }
 
     /* Hash displays: select-all so one tap copies the whole value. */
-    .hash-copy,
-    .rnode-ble-unavailable code {
+    .hash-copy {
         -webkit-user-select: all;
         user-select: all;
         -webkit-touch-callout: default;
@@ -1671,29 +1670,10 @@
         font-weight: var(--type-weight-bold);
     }
 
-    .bottom-sheet .sheet-segmented-tabs button {
-        min-height: 44px;
-        font-size: var(--mobile-list-detail-size);
-        font-weight: var(--type-weight-semibold);
-        padding: var(--space-3) var(--space-4);
-    }
-
-    .bottom-sheet .sheet-segmented-tabs button .toggle-hint {
-        font-size: var(--mobile-list-meta-size);
-    }
-
     .bottom-sheet .inline-hint,
     .bottom-sheet .inline-hint-sm,
-    .bottom-sheet .rs-dialog-field-help,
-    .bottom-sheet .rs-dialog-advanced-summary,
-    .bottom-sheet .rs-dialog-checkbox-label,
-    .bottom-sheet .rs-dialog-checkbox-help,
     .bottom-sheet .rs-dialog-field-error,
-    .bottom-sheet .modal-op-status,
-    #rnode-modal .rnode-pairing-tip,
-    #rnode-modal .rnode-handoff-hint,
-    #rnode-modal .rnode-radio-warning,
-    #rnode-modal .ble-scan-placeholder {
+    .bottom-sheet .modal-op-status {
         font-size: var(--mobile-list-detail-size);
         line-height: 1.4;
     }
@@ -1704,82 +1684,6 @@
 
     .bottom-sheet .hub-iface-detail {
         font-size: var(--mobile-list-meta-size);
-    }
-
-    #connect-modal .connect-tab-toggle button {
-        min-height: 48px;
-        font-size: var(--mobile-list-title-size);
-    }
-
-    #connect-modal .quick-connect-btn {
-        min-height: 54px;
-        gap: var(--space-3);
-        padding: var(--space-4) var(--space-5);
-        font-size: var(--mobile-list-detail-size);
-    }
-
-    #connect-modal .quick-connect-btn > span:first-child {
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-size: var(--mobile-list-title-size);
-    }
-
-    #connect-modal .quick-connect-detail {
-        flex-shrink: 0;
-        max-width: 52%;
-        overflow: hidden;
-        text-align: right;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-        font-size: var(--mobile-list-detail-size);
-    }
-
-    #connect-modal .public-server-name {
-        font-size: var(--mobile-list-title-size);
-    }
-
-    #connect-modal .public-server-mark {
-        width: 36px;
-        height: 36px;
-        font-size: var(--mobile-list-detail-size);
-    }
-
-    #connect-modal .public-server-tag {
-        min-height: 18px;
-        font-size: var(--mobile-list-meta-size);
-    }
-
-    #connect-modal .public-server-place,
-    #connect-modal .public-server-more-note {
-        font-size: var(--mobile-list-meta-size);
-    }
-
-    #connect-modal .public-server-more-toggle {
-        font-size: var(--mobile-list-detail-size);
-    }
-
-    #connect-modal .public-server-card {
-        min-height: 58px;
-    }
-
-    #rnode-modal .rnode-frequency-unit,
-    #rnode-modal .ble-device-meta,
-    #rnode-modal .ble-rssi,
-    #rnode-modal .ble-badge {
-        font-size: var(--mobile-list-meta-size);
-    }
-
-    #rnode-modal .rnode-pairing-tip,
-    #rnode-modal .rnode-handoff-hint,
-    #rnode-modal .rnode-radio-warning {
-        padding: var(--space-4) var(--space-5);
-    }
-
-    .bottom-sheet .rs-dialog-field-help {
-        margin-top: var(--space-2);
-        margin-bottom: var(--space-4);
     }
 }
 
