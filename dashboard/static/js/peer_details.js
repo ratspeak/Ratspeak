@@ -1,6 +1,7 @@
 // People views shared by Peers and Contacts: the detail pane (desktop) and the
 // person sheet (phone), with one vocabulary. The legacy helpers further down
-// still serve the conversation About sheet and the Network peer sheet.
+// still serve the conversation About sheet and the Network peer sheet; their Details
+// disclosure also folds the person sheet's facts.
 
 // The person a hash names: the peer row (live route, heard times) and the saved contact.
 function personModel(hash) {
@@ -233,7 +234,7 @@ function wirePersonActions(root, model, idPrefix, opts) {
     });
 }
 
-// The phone person sheet: the same content as the detail, in the kit sheet.
+// The phone person sheet: the detail header, Message and Call, the facts folded under Details, then the relationship actions.
 var _personSheet = null;
 function openPersonSheet(hash, kind) {
     closePersonSheet();
@@ -241,11 +242,12 @@ function openPersonSheet(hash, kind) {
     var idPrefix = 'person-sheet';
     var head = '<div class="person-sheet-head">' + personAvatarHtml(model, 64) +
         '<div class="person-id">' + personNameRowHtml(model, kind, idPrefix + '-name', true) + personStatusHtml(model) + '</div></div>';
+    var facts = '<div class="person-details">' + personFactsHtml(model, idPrefix) + personIdentityHtml(model, idPrefix) + '</div>';
     var built = RS.kit.dialog({
         size: 'md',
         className: 'person-sheet',
         head: head,
-        body: personActionsHtml(model, idPrefix, true) + personFactsHtml(model, idPrefix) + personIdentityHtml(model, idPrefix) + personRelationHtml(model),
+        body: personActionsHtml(model, idPrefix, true) + peerDisclosureHtml(idPrefix + '-details', facts, false) + personRelationHtml(model),
         onClose: function() { if (_personSheet === built) _personSheet = null; }
     });
     _personSheet = built;
@@ -412,22 +414,31 @@ function peerDetailRowsHtml(peer, opts) {
 // The Details disclosure around the technical rows. The markup is always closed;
 // syncPeerDetails applies the remembered state once it is in a container.
 function peerDetailsHtml(id, peer, opts) {
-    return '<div class="peer-details" data-open="false">' +
+    return peerDisclosureHtml(id, peerDetailRowsHtml(peer, opts), true);
+}
+
+// The Details disclosure around any content. Unremembered, it opens closed every time and toggles alone.
+function peerDisclosureHtml(id, contentHtml, remember) {
+    return '<div class="peer-details" data-open="false"' + (remember ? '' : ' data-remember="false"') + '>' +
         '<button type="button" class="peer-details-toggle" aria-expanded="false" aria-controls="' + id + '">' +
             '<span>Details</span>' + PEER_ICON_CHEVRON +
         '</button>' +
         '<div class="peer-details-region" id="' + id + '" role="region" aria-label="Details" inert>' +
-            peerDetailRowsHtml(peer, opts) +
+            contentHtml +
         '</div>' +
     '</div>';
 }
 
+function _setPeerDetailsOpen(box, open) {
+    box.setAttribute('data-open', open);
+    box.querySelector('.peer-details-toggle').setAttribute('aria-expanded', open);
+    // Closed rows stay in the DOM for the slide; inert keeps them out of the tab order.
+    box.querySelector('.peer-details-region').inert = !open;
+}
+
 function syncPeerDetails(root) {
-    root.querySelectorAll('.peer-details').forEach(function(box) {
-        box.setAttribute('data-open', _peerDetailsOpen);
-        box.querySelector('.peer-details-toggle').setAttribute('aria-expanded', _peerDetailsOpen);
-        // Closed rows stay in the DOM for the slide; inert keeps them out of the tab order.
-        box.querySelector('.peer-details-region').inert = !_peerDetailsOpen;
+    root.querySelectorAll('.peer-details:not([data-remember="false"])').forEach(function(box) {
+        _setPeerDetailsOpen(box, _peerDetailsOpen);
     });
 }
 
@@ -524,6 +535,8 @@ document.addEventListener('click', function(e) {
         return;
     }
     if (!e.target.closest('.peer-details-toggle')) return;
+    var own = e.target.closest('.peer-details[data-remember="false"]');
+    if (own) { _setPeerDetailsOpen(own, own.getAttribute('data-open') !== 'true'); return; }
     _peerDetailsOpen = !_peerDetailsOpen;
     try { localStorage.setItem(PEER_DETAILS_OPEN_KEY, _peerDetailsOpen ? '1' : '0'); } catch (err) {}
     syncPeerDetails(document);

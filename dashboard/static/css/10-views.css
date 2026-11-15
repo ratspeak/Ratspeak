@@ -1835,12 +1835,16 @@ body.setup-active .main-content {
     .person-head .person-actions .ui-btn { flex: 1 1 auto; }
     .person-body { padding-top: 20px; gap: 24px; }
 }
-/* The phone person sheet: the detail header inside the kit sheet's head. */
+/* The phone person sheet: the detail header inside the kit sheet's head; the facts fold under Details. */
 .person-sheet-head { display: flex; align-items: center; gap: 12px; flex: 1; min-width: 0; }
 .person-sheet-head .person-id { gap: 2px; }
 .person-sheet .person-actions { margin-top: 4px; }
 .person-sheet .person-actions .ui-btn { flex: 1; }
-.person-sheet section + section, .person-sheet .person-danger { margin-top: 8px; }
+/* The side bleed keeps a copy button's focus ring at the edge from being clipped. */
+.person-sheet .peer-details-region > .person-details { display: flex; flex-direction: column; gap: 24px; min-height: 0; overflow: hidden; margin: 0 -8px; padding: 0 8px; }
+.person-sheet .person-details > :first-child { margin-top: 16px; }
+.person-sheet .person-details > :last-child { margin-bottom: 20px; }
+.person-sheet .person-danger { padding-top: 0; border-top: 0; }
 .person-sheet .person-danger .ui-menu-item { margin-inline: -24px; width: calc(100% + 48px); padding: 0 24px; border-radius: 0; }
 @media (max-width: 768px) { .person-sheet .person-danger .ui-menu-item { margin-inline: -20px; width: calc(100% + 40px); padding: 0 20px; } }
 /* First run in a detail pane: a centred column, wider than the kit empty state. */
