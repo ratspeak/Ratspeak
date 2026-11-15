@@ -554,7 +554,8 @@ function identityAvatar(hashValue, size) {
                 axis: 'y',
                 blockIfScrolled: true,
                 skipIf: function(e) { return !dismissible() || !!(e.target.closest && e.target.closest('button, input, textarea, select, a, video')); },
-                onCommit: function() { close(null); }
+                scrim: modal,
+                onCommit: function() { if (!dismissible()) return false; close(null); }
             });
         }
         if (opts.focus !== false) {

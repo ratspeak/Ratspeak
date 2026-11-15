@@ -376,6 +376,10 @@ RS.gestures = RS.gestures || {};
 
     // Shared drag-dismiss behavior for sheets and modals. Keeps threshold,
     // rubber-band, scroll-blocking, and haptic behavior in one place.
+    // Past the threshold the sheet carries on from the release point to off-screen, onCommit runs
+    // once it is there (false keeps it open), and its inline styles clear only after the owner has
+    // hidden or removed it. Below it, the sheet settles back. `scrim`: an ancestor whose own
+    // background dims the page (a kit .ui-modal); it fades with the exit.
     G.attachDragDismiss = function(el, opts) {
         opts = opts || {};
         var axis = opts.axis || 'y';
@@ -395,6 +399,7 @@ RS.gestures = RS.gestures || {};
         var rubberBand = !!opts.rubberBand;
         var rubberBandFactor = G.PULL_TO_REFRESH_RUBBER_BAND_FACTOR;
         var parallaxOverlay = opts.parallaxOverlay || null;
+        var scrim = opts.scrim || null;
         var skipIf = opts.skipIf || null;
         var snapPoints = opts.snapPoints || [0, 1];
         if (snapPoints.length > 2) {
@@ -407,7 +412,15 @@ RS.gestures = RS.gestures || {};
 
         var startX = 0, startY = 0, currentDelta = 0, tracking = false, dragging = false, startT = 0;
         var scrollOwner = null, scrollLocked = false;
+        var exiting = false, settleSeq = 0, moves = [];
         var DRAG_ACTIVATE_PX = 4;
+        var VELOCITY_WINDOW_MS = 80;
+        var exitMinMs = G.DRAG_DISMISS_EXIT_MIN_MS || 140;
+        var exitMaxMs = G.DRAG_DISMISS_EXIT_MAX_MS || 260;
+        var settleMs = G.DRAG_DISMISS_SETTLE_MS || 220;
+        // Initial slope 3: the exit leaves at 3 * distance / duration, matched to the release speed.
+        var EXIT_EASE = 'cubic-bezier(.2, .6, .4, 1)';
+        var SETTLE_EASE = 'cubic-bezier(.16, 1, .3, 1)';
 
         function _readDelta(t) {
             if (axis === 'y') return t.clientY - startY;
@@ -452,20 +465,139 @@ RS.gestures = RS.gestures || {};
             return _isScrollable(el) ? el : null;
         }
 
-        function _resetVisuals() {
+        function _translate(px) {
+            return (axis === 'y' ? 'translateY(' : 'translateX(') + px + 'px)';
+        }
+
+        function _clearStyles() {
+            el.style.transition = '';
             el.style.transform = '';
             el.style.opacity = '';
-            if (parallaxOverlay) parallaxOverlay.style.opacity = '';
+            if (parallaxOverlay) {
+                parallaxOverlay.style.transition = '';
+                parallaxOverlay.style.opacity = '';
+            }
+            if (scrim) {
+                scrim.style.transition = '';
+                scrim.style.backgroundColor = '';
+            }
+        }
+
+        // What is on screen, so a second handler on the same sheet aims at the same exit.
+        function _renderedTranslate() {
+            var t = window.getComputedStyle ? window.getComputedStyle(el).transform : '';
+            var m = t && /^matrix(3d)?\((.+)\)$/.exec(t);
+            if (!m) return 0;
+            var v = m[2].split(',');
+            return parseFloat(v[m[1] ? (axis === 'y' ? 13 : 12) : (axis === 'y' ? 5 : 4)]) || 0;
+        }
+
+        function _rendered() {
+            if (!el.isConnected || !el.getClientRects().length) return false;
+            return !window.getComputedStyle || window.getComputedStyle(el).visibility !== 'hidden';
+        }
+
+        // Px/ms over the last moments of travel: what the finger was doing as it let go.
+        function _releaseVelocity(now) {
+            var from = moves[0];
+            for (var i = moves.length - 1; i >= 0; i--) {
+                if (now - moves[i].t >= VELOCITY_WINDOW_MS) { from = moves[i]; break; }
+            }
+            var dt = from ? now - from.t : 0;
+            return dt > 0 ? Math.max(0, (currentDelta - from.d) / dt) : 0;
+        }
+
+        // Overlay and scrim can be one element shared with a second handler; add to its transitions.
+        function _addTransition(node, prop, timing) {
+            var keep = (node.style.transition || '').split(/,(?![^(]*\))/).filter(function(part) {
+                part = part.trim();
+                return part && part !== 'none' && part.split(/\s+/)[0] !== prop;
+            });
+            keep.push(prop + ' ' + timing);
+            node.style.transition = keep.join(', ');
+        }
+
+        function _afterTransform(ms, done) {
+            var finished = false;
+            var timer = setTimeout(finish, ms + 80);
+            function finish(e) {
+                if (finished || (e && (e.target !== el || e.propertyName !== 'transform'))) return;
+                finished = true;
+                clearTimeout(timer);
+                el.removeEventListener('transitionend', finish);
+                el.removeEventListener('transitioncancel', finish);
+                done();
+            }
+            el.addEventListener('transitionend', finish);
+            el.addEventListener('transitioncancel', finish);
+        }
+
+        function _settle() {
+            var token = ++settleSeq;
+            if (_prefersReducedMotionNow()) { _clearStyles(); return; }
+            var timing = settleMs + 'ms ' + SETTLE_EASE;
+            el.style.transition = 'transform ' + timing + ', opacity ' + timing;
+            el.style.transform = '';
+            el.style.opacity = '';
+            if (parallaxOverlay) {
+                _addTransition(parallaxOverlay, 'opacity', timing);
+                parallaxOverlay.style.opacity = '';
+            }
+            _afterTransform(settleMs, function() {
+                if (token === settleSeq && !dragging && !exiting) _clearStyles();
+            });
+        }
+
+        // Never clear the exit transform while the sheet is still painted: that is the snap-back.
+        function _releaseWhenGone(deadline) {
+            if (!_rendered()) { exiting = false; _clearStyles(); return; }
+            // The owner kept it on screen; bring it back rather than strand it off-screen.
+            if (Date.now() >= deadline) { exiting = false; _settle(); return; }
+            setTimeout(function() { _releaseWhenGone(deadline); }, 50);
+        }
+
+        function _commit(velocity) {
+            // Already closed some other way (Back, the scrim) while it was leaving.
+            if (_rendered() && onCommit(currentDelta, velocity) === false) {
+                exiting = false;
+                _settle();
+                return;
+            }
+            _releaseWhenGone(Date.now() + 1000);
+        }
+
+        function _exit(velocity) {
+            exiting = true;
+            settleSeq++;
+            var rect = el.getBoundingClientRect();
+            var visual = _renderedTranslate();
+            var base = (axis === 'y' ? rect.top : rect.left) - visual;
+            // Past the far edge, shadow included.
+            var target = Math.round((axis === 'y' ? window.innerHeight : window.innerWidth) - base + 40);
+            var ms = 0;
+            if (!_prefersReducedMotionNow() && target > visual) {
+                ms = Math.round(Math.min(exitMaxMs, Math.max(exitMinMs, 3 * (target - visual) / Math.max(velocity, 0.01))));
+            }
+            if (!ms) { _commit(velocity); return; }
+            var timing = ms + 'ms ' + EXIT_EASE;
+            el.style.transition = 'transform ' + timing;
+            el.style.transform = _translate(target);
+            if (parallaxOverlay) {
+                _addTransition(parallaxOverlay, 'opacity', timing);
+                parallaxOverlay.style.opacity = '0';
+            }
+            if (scrim) {
+                _addTransition(scrim, 'background-color', timing);
+                scrim.style.backgroundColor = 'transparent';
+            }
+            _afterTransform(ms, function() { _commit(velocity); });
         }
 
         function _applyDrag(delta) {
             // Drag-dismiss only commits in positive direction; negative rubber-bands.
             var visual = delta;
             if (delta < 0) visual = rubberBand ? delta / rubberBandFactor : 0;
-            var transform = (axis === 'y')
-                ? 'translateY(' + visual + 'px)'
-                : 'translateX(' + visual + 'px)';
-            el.style.transform = transform;
+            el.style.transform = _translate(visual);
             var op = Math.max(0.5, 1 - Math.max(0, delta) / opacityDenom);
             el.style.opacity = String(op);
             if (parallaxOverlay) parallaxOverlay.style.opacity = String(op);
@@ -473,13 +605,14 @@ RS.gestures = RS.gestures || {};
         }
 
         function _onTouchStart(e) {
-            if (skipIf && skipIf(e)) return;
+            if (exiting || (skipIf && skipIf(e))) return;
             var t = e.touches[0];
             if (!t) return;
             startX = t.clientX;
             startY = t.clientY;
             startT = performance.now();
             currentDelta = 0;
+            moves = [{ t: startT, d: 0 }];
             scrollOwner = _findScrollableOwner(e.target);
             scrollLocked = !!(blockIfScrolled && scrollOwner && _scrollPos(scrollOwner) > 0);
             tracking = true;
@@ -507,11 +640,16 @@ RS.gestures = RS.gestures || {};
                 }
 
                 dragging = true;
+                settleSeq++;
                 el.style.transition = 'none';
+                if (parallaxOverlay) parallaxOverlay.style.transition = '';
             }
 
             if (e.cancelable) e.preventDefault();
             currentDelta = delta;
+            var now = performance.now();
+            moves.push({ t: now, d: delta });
+            while (moves.length > 2 && now - moves[1].t >= VELOCITY_WINDOW_MS) moves.shift();
             _applyDrag(currentDelta);
         }
 
@@ -524,23 +662,17 @@ RS.gestures = RS.gestures || {};
                 return;
             }
             dragging = false;
-            var elapsed = Math.max(1, performance.now() - startT);
-            var velocity = currentDelta / elapsed;
-            el.style.transition = '';
-            if (currentDelta > threshold) {
-                if (hapticAt.commit) _hapticByName(hapticAt.commit);
-                onCommit(currentDelta, velocity);
-                // Clear inline styles AFTER onCommit — clearing before causes a
-                // 1-frame snap-back; never clearing leaves residual transform
-                // on the next open.
-                _resetVisuals();
-            } else {
-                if (hapticAt.snap) _hapticByName(hapticAt.snap);
-                _resetVisuals();
-                onCancel(currentDelta, velocity);
-            }
+            var velocity = _releaseVelocity(performance.now());
             scrollOwner = null;
             scrollLocked = false;
+            if (currentDelta > threshold) {
+                if (hapticAt.commit) _hapticByName(hapticAt.commit);
+                _exit(velocity);
+            } else {
+                if (hapticAt.snap) _hapticByName(hapticAt.snap);
+                _settle();
+                onCancel(currentDelta, velocity);
+            }
         }
 
         function _onTouchCancel() {
@@ -550,8 +682,7 @@ RS.gestures = RS.gestures || {};
             scrollLocked = false;
             if (!dragging) return;
             dragging = false;
-            el.style.transition = '';
-            _resetVisuals();
+            _settle();
             onCancel(currentDelta, 0);
         }
 
@@ -573,7 +704,7 @@ RS.gestures = RS.gestures || {};
             },
             snapTo: function(point) {
                 if (point === 0) {
-                    _resetVisuals();
+                    _clearStyles();
                 } else if (point === 1) {
                     onCommit(threshold + 1);
                 }

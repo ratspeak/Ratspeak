@@ -973,6 +973,7 @@ function initBottomSheet() {
     RS.gestures.attachDragDismiss(sheet, {
         axis: 'y',
         blockIfScrolled: true,
+        scrim: modal,
         onCommit: _closeMoreSheet
     });
 }
