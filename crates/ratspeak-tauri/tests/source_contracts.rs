@@ -6913,7 +6913,8 @@ fn settings_version_display_uses_package_version_api() {
     let settings_js = read_source(root.join("dashboard/static/js/settings.js")).expect("settings");
     assert!(settings_js.contains("function renderSettingsVersion()"));
     assert!(settings_js.contains("RS.invoke('api_version')"));
-    assert!(settings_js.contains("versionEl.textContent = 'Version ' + version;"));
+    assert!(settings_js.contains("_settingsVersionLine = ['Version ' + version,"));
+    assert!(settings_js.contains("data.lxmf ? 'LXMF ' + data.lxmf : ''"));
     assert!(settings_js.contains("RATSPEAK_RELEASE_LATEST_URL"));
     assert!(settings_js.contains("https://api.github.com/repos/ratspeak/Ratspeak/releases/latest"));
     assert!(settings_js.contains("function promptRatspeakUpdateCheck"));

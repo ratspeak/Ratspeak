@@ -15,6 +15,7 @@ function openSettings() {
 }
 
 var _settingsVersionLabel = '';
+var _settingsVersionLine = '';
 var _settingsVersionValue = '';
 var _settingsUpdateCheckInFlight = false;
 var _settingsDeveloperModeBound = false;
@@ -505,7 +506,7 @@ var _settingsLastChecked = 0;
 function renderSettingsVersion() {
     var versionEl = document.getElementById('settings-about-version');
     if (_settingsVersionLabel) {
-        if (versionEl) versionEl.textContent = 'Version ' + _settingsVersionValue;
+        if (versionEl) versionEl.textContent = _settingsVersionLine;
         renderSettingsUpdateRow();
         return;
     }
@@ -516,7 +517,10 @@ function renderSettingsVersion() {
         if (!version) return;
         _settingsVersionValue = version;
         _settingsVersionLabel = name + ' ' + version;
-        if (versionEl) versionEl.textContent = 'Version ' + version;
+        // The protocol releases the bundled stack follows, once the backend reports them.
+        _settingsVersionLine = ['Version ' + version, data.reticulum ? 'Reticulum ' + data.reticulum : '', data.lxmf ? 'LXMF ' + data.lxmf : '']
+            .filter(Boolean).join(' · ');
+        if (versionEl) versionEl.textContent = _settingsVersionLine;
         renderSettingsUpdateRow();
     }).catch(function() {});
 }
