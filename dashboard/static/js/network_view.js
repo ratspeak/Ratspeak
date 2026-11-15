@@ -281,7 +281,9 @@
         var n = act.length, word = kind === 'lora' ? (n === 1 ? ' radio' : ' radios') : '';
         var status = !lst.length ? esc(desc) : !n ? 'Off' : allPaused(act) ? pausedLine()
             : act.some(function(c) { return c.status === 'up'; }) ? onLine(kind === 'lora' ? 'On · ' + n + word : 'On · Hosting') : 'Turning on…';
-        return way(kind, { title: title, on: n > 0, status: status, ctl: sw({ act: 'dev-' + kind, on: n > 0 || NV.setupFor === kind, label: title }), body: crows(lst, M) });
+        // A second radio (USB beside Bluetooth, say) is added from the card that lists the first.
+        var foot = kind === 'lora' && lst.length ? link('Add another radio', 'add-radio') : '';
+        return way(kind, { title: title, on: n > 0, status: status, ctl: sw({ act: 'dev-' + kind, on: n > 0 || NV.setupFor === kind, label: title }), body: crows(lst, M), foot: foot });
     }
     function ways(M) {
         var tcp = byKind(M, 'tcp'), out = '';
@@ -1018,6 +1020,7 @@
                 return;
             case 'map-toggle': setMapCollapsed(!NV.mapCollapsed); return;
             case 'way-fold': foldWay(id); return;
+            case 'add-radio': if (typeof openRnodeModal === 'function') openRnodeModal('ble'); return;
             case 'pause-all': pauseAll(); return;
             case 'resume-all': resumeAll(); return;
             case 'join': {
