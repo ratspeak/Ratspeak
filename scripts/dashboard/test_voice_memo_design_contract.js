@@ -22,6 +22,10 @@ assert(/\.cmp-slot \{[^}]*width: var\(--cmp-slot\);[^}]*height: var\(--cmp-slot\
 assert(/\.cmp \{\s*--cmp-slot: 40px;/.test(messaging) &&
     messaging.includes('@media (max-width: 768px), (pointer: coarse) { .cmp { --cmp-slot: 44px; } }'),
     'the slot is 40px on desktop and the 44px touch target on a phone or coarse pointer');
+assert(messaging.includes('.cmp :is(.ui-icon-btn, .ui-btn--icon, .ui-send) { border-radius: 50%; }') &&
+    messaging.includes('.cmp-slot > .ui-icon-btn { width: var(--cmp-slot); height: var(--cmp-slot); }') &&
+    messaging.includes('.cmp :is(.ui-icon-btn, .ui-btn--icon, .ui-send):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }'),
+    'composer controls are circles filling their slot, so hover, press, and focus follow the pill');
 assert(/\.cmp-row \{[^}]*align-items: flex-end;/.test(messaging),
     'equal-sized composer actions must stay on one bottom rail as text grows');
 var recorder = html.slice(html.indexOf('id="lxmf-voice-recorder"'), html.indexOf('id="lxmf-char-count"'));

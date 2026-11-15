@@ -1254,6 +1254,12 @@ button.msg-mark:focus-visible { outline: 2px solid var(--focus-ring); outline-of
 /* Every control sits in a slot the size of Send, so swapping Record for Send never moves the text. */
 .cmp-slot { display: grid; place-items: center; flex: 0 0 auto; width: var(--cmp-slot); height: var(--cmp-slot); }
 .cmp-slot > * { grid-area: 1 / 1; }
+/* Composer controls are circles that fill their slot, so hover, press, and focus follow the pill's curve. */
+.cmp :is(.ui-icon-btn, .ui-btn--icon, .ui-send) { border-radius: 50%; }
+.cmp-slot > .ui-icon-btn { width: var(--cmp-slot); height: var(--cmp-slot); }
+.cmp .ui-send:not(:disabled):is(:hover, .is-hover) { background: var(--accent-dim); }
+.cmp .ui-send:not(:disabled):is(:active, .is-press) { background: color-mix(in srgb, var(--accent) 80%, var(--text-primary)); }
+.cmp :is(.ui-icon-btn, .ui-btn--icon, .ui-send):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .cmp-input { flex: 1; min-width: 0; height: var(--cmp-slot); max-height: calc(var(--cmp-line) * 6 + var(--cmp-slot) - var(--cmp-line)); padding: calc((var(--cmp-slot) - var(--cmp-line)) / 2) 4px; box-sizing: border-box; border: 0; background: transparent; color: var(--input-text); font: inherit; font-size: var(--text-base); line-height: var(--cmp-line); resize: none; outline: none; overflow-y: auto; scrollbar-width: none; }
 .cmp-input::-webkit-scrollbar { display: none; }
 .cmp-input::placeholder { color: var(--input-placeholder); }
