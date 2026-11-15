@@ -116,6 +116,23 @@ pub async fn init_core(
     app_handle: tauri::AppHandle,
 ) -> Result<Arc<AppState>, StartupFailure> {
     let (config, db_pool) = open_profile(data_dir.clone(), default_root).await?;
+    // Pre-1.1 "!Ratspeak.org-" defaults become Verb Animal before anything loads or announces them.
+    match db::spawn_db(db_pool.clone(), |p| {
+        db::rename_placeholder_identity_names(&p)
+    })
+    .await
+    {
+        Ok(Ok(0)) => {}
+        Ok(Ok(renamed)) => tracing::info!(
+            renamed,
+            reason = "placeholder_names",
+            "renamed default identity names"
+        ),
+        _ => tracing::warn!(
+            reason = "placeholder_names",
+            "could not rename default identity names"
+        ),
+    }
 
     let emitter: Arc<dyn ratspeak_core::Emitter> =
         Arc::new(emitter::TauriEmitter::new(app_handle.clone()));

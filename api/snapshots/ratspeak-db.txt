@@ -495,6 +495,7 @@ pub fn ratspeak_db::db::remove_channel_room_secret(&ratspeak_db::DbPool, &str, &
 pub fn ratspeak_db::db::remove_reaction(&ratspeak_db::DbPool, &str, &str, &str, &str)
 pub fn ratspeak_db::db::rename_conversation_thread(&ratspeak_db::DbPool, &str, &str, &str, core::option::Option<&str>) -> core::result::Result<bool, alloc::string::String>
 pub fn ratspeak_db::db::rename_identity_and_retire_alias(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<ratspeak_db::IdentityRenameOutcome, alloc::string::String>
+pub fn ratspeak_db::db::rename_placeholder_identity_names(&ratspeak_db::DbPool) -> core::result::Result<usize, alloc::string::String>
 pub fn ratspeak_db::db::restart_outbound_message(&ratspeak_db::DbPool, &str, &str, &str, &str) -> core::result::Result<core::option::Option<alloc::string::String>, alloc::string::String>
 pub fn ratspeak_db::db::retryable_outbox_row(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<core::option::Option<ratspeak_db::OutboxRow>, alloc::string::String>
 pub fn ratspeak_db::db::return_woken_to_waiting(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<alloc::string::String>
@@ -979,6 +980,7 @@ pub fn ratspeak_db::remove_channel_room_secret(&ratspeak_db::DbPool, &str, &str,
 pub fn ratspeak_db::remove_reaction(&ratspeak_db::DbPool, &str, &str, &str, &str)
 pub fn ratspeak_db::rename_conversation_thread(&ratspeak_db::DbPool, &str, &str, &str, core::option::Option<&str>) -> core::result::Result<bool, alloc::string::String>
 pub fn ratspeak_db::rename_identity_and_retire_alias(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<ratspeak_db::IdentityRenameOutcome, alloc::string::String>
+pub fn ratspeak_db::rename_placeholder_identity_names(&ratspeak_db::DbPool) -> core::result::Result<usize, alloc::string::String>
 pub fn ratspeak_db::report_write_error(&'static str, impl core::fmt::Display)
 pub fn ratspeak_db::restart_outbound_message(&ratspeak_db::DbPool, &str, &str, &str, &str) -> core::result::Result<core::option::Option<alloc::string::String>, alloc::string::String>
 pub fn ratspeak_db::retryable_outbox_row(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<core::option::Option<ratspeak_db::OutboxRow>, alloc::string::String>

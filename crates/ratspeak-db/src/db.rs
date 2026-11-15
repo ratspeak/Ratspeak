@@ -7345,6 +7345,40 @@ pub fn rename_identity_and_retire_alias(
     })
 }
 
+/// Gives every identity still named with the pre-1.1 default, "!Ratspeak.org-" and the first six
+/// hex of its LXMF address, its Verb Animal default, through the rename that retires the old name.
+/// Run before the identity loads, so nothing has announced or connected under the old name yet.
+pub fn rename_placeholder_identity_names(pool: &DbPool) -> Result<usize, String> {
+    let rows: Vec<(String, String, String)> = {
+        let conn = pool.get().map_err(|error| error.to_string())?;
+        let mut statement = conn
+            .prepare(
+                "SELECT hash, COALESCE(lxmf_hash, ''), COALESCE(display_name, '') FROM identities",
+            )
+            .map_err(|error| error.to_string())?;
+        statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+            .map_err(|error| error.to_string())?
+            .collect::<Result<_, _>>()
+            .map_err(|error| error.to_string())?
+    };
+    let mut renamed = 0;
+    for (hash, lxmf_hash, name) in rows {
+        let placeholder = lxmf_hash
+            .get(..6)
+            .is_some_and(|prefix| name == format!("!Ratspeak.org-{prefix}"));
+        if placeholder {
+            rename_identity_and_retire_alias(
+                pool,
+                &hash,
+                &ratspeak_core::default_display_name(&lxmf_hash),
+            )?;
+            renamed += 1;
+        }
+    }
+    Ok(renamed)
+}
+
 /// One hosted room's durable policy. Grants ride along so a restore is a
 /// single query pair rather than one query per room.
 #[derive(Clone, PartialEq)]
@@ -9066,6 +9100,58 @@ mod channel_bookmark_tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn placeholder_names_become_verb_animal_and_leave_saved_hubs() {
+        let pool = test_pool();
+        let lxmf = "0101ffffffffffffffffffffffffffff";
+        save_identity(&pool, "identity-a", lxmf, "Default", "!Ratspeak.org-0101ff");
+        save_identity(&pool, "identity-b", "abcdef0000000000", "Default", "Mara");
+        save_identity(
+            &pool,
+            "identity-c",
+            "1234560000000000",
+            "Default",
+            "!Ratspeak.org-999999",
+        );
+        save_channel_hub(
+            &pool,
+            "identity-a",
+            "aa",
+            "Relay",
+            "!Ratspeak.org-0101ff",
+            true,
+        )
+        .unwrap();
+        save_channel_hub(&pool, "identity-a", "bb", "Alias relay", "Radio Rat", true).unwrap();
+        assert_eq!(rename_placeholder_identity_names(&pool).unwrap(), 1);
+        let name = |id: &str| -> String {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT display_name FROM identities WHERE hash = ?1",
+                    params![id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(name("identity-a"), "Running Lion");
+        assert_eq!(name("identity-b"), "Mara");
+        assert_eq!(name("identity-c"), "!Ratspeak.org-999999");
+        let hub = |dest: &str| -> String {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT nickname FROM channel_hubs WHERE identity_id = 'identity-a' AND destination_hash = ?1",
+                    params![dest],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(hub("aa"), "Running Lion");
+        assert_eq!(hub("bb"), "Radio Rat");
+        assert_eq!(rename_placeholder_identity_names(&pool).unwrap(), 0);
     }
 
     #[test]
