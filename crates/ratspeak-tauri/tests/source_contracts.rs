@@ -9164,9 +9164,7 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
         .nth(1)
         .and_then(|tail| tail.split("let poll_state = state.clone();").next())
         .expect("periodic auto-announce loop");
-    let periodic_wait = periodic_announce
-        .find("tokio::time::sleep(wait)")
-        .unwrap();
+    let periodic_wait = periodic_announce.find("tokio::time::sleep(wait)").unwrap();
     let periodic_origin = periodic_announce
         .find("periodic_state.activity_request_fence()")
         .unwrap();
