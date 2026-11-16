@@ -5,7 +5,7 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
-## [1.1.0] - 2026-11-13
+## [1.1.0] - 2026-11-15
 
 ### Added
 
