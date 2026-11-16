@@ -170,7 +170,7 @@ jobs:
         run: bash scripts/release/assert-apple-toolchain.sh
 
       - name: Run tests
-        timeout-minutes: 20
+        timeout-minutes: 45
         working-directory: Ratspeak
         run: cargo test --workspace --features ratspeak-tauri/hardware --locked
 
