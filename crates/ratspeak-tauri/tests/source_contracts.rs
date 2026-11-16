@@ -1303,7 +1303,10 @@ fn activity_lxmf_progress_is_typed_and_content_free() {
         .find("db::update_message_delivery_method(")
         .unwrap();
     let state_write = persist_loop.find("db::update_message_state(").unwrap();
-    let accepted = persist_loop.find("persisted.push(").unwrap();
+    // A game move, which has no row, is accepted before the row writes.
+    let game_move = persist_loop.find("A game move has no message row").unwrap();
+    let accepted = persist_loop.rfind("persisted.push(").unwrap();
+    assert!(selected < game_move && game_move < method_write);
     assert!(
         selected < method_write && method_write < state_write && state_write < accepted,
         "persist fallback or actual late-proof method before the accepted UI/Activity emission"
