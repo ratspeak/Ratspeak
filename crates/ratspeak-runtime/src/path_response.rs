@@ -540,10 +540,20 @@ mod tests {
         .expect("inbound processing cannot await path-response transport credit");
         assert_eq!(message_rows(&f.state), 1);
         assert!(raw(&f.outbound.try_recv().unwrap()).is_empty());
-        let response = tokio::time::timeout(Duration::from_secs(30), f.outbound.recv())
-            .await
-            .unwrap()
-            .unwrap();
+        // The sender was never heard, so its path is asked for as well.
+        let mut asked_for_sender = false;
+        let response = tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                match f.outbound.recv().await.unwrap() {
+                    TransportMessage::RequestPath { destination_hash } => {
+                        asked_for_sender |= destination_hash == [0xEE; 16];
+                    }
+                    other => break other,
+                }
+            }
+        })
+        .await
+        .unwrap();
         let (header, _) = rns_wire::header::PacketHeader::unpack(raw(&response)).unwrap();
         assert_eq!(
             header.context,
@@ -558,5 +568,11 @@ mod tests {
         ));
         f.shutdown.trigger();
         worker.await.unwrap();
+        while let Ok(message) = f.outbound.try_recv() {
+            if let TransportMessage::RequestPath { destination_hash } = message {
+                asked_for_sender |= destination_hash == [0xEE; 16];
+            }
+        }
+        assert!(asked_for_sender, "a sender never heard is asked for");
     }
 }
