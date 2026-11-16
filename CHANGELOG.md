@@ -5,6 +5,18 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+### Fixed and improved
+
+- Names and statuses now reach you even when busy servers hold back announces, and a first message from someone new soon shows their name.
+- Peers reached through a named internet connection show Internet again.
+- With Relay for other devices on, phones connected over Bluetooth can reach people this device hasn't heard yet.
+- A message to someone with no known route asks the network three times, spaced so servers can answer, instead of every few seconds.
+- Game moves no longer stay on Sending move, a delivered move is no longer marked not delivered, and moves show in Activity.
+- Ratspeak announces about once an hour by default, at a slightly varied time, and waits a full interval after any announce. Starting the app no longer announces when Auto-announce is off.
+- Local Network no longer lists confusing "wlan0 peer" rows, and turning one off no longer turns Local Network off. A server you host no longer lists each client as a connection of its own.
+- Joining a server no longer spins forever: after 30 seconds the row says why it couldn't connect and offers Retry.
+- The Android app is about 5 MB smaller.
+
 ## [1.1.0] - 2026-11-15
 
 ### Added
