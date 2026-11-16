@@ -11,8 +11,19 @@ pub(super) struct LivePreparation {
 pub(super) struct Discovery {
     pub(super) started: Instant,
     pub(super) limit: Duration,
-    next_request: Instant,
+    requests_sent: usize,
 }
+
+/// When a pathless send asks for a path, from the start of its wait. A hub
+/// batches every request for a destination for 45 s after the first
+/// (Transport.py `PATH_REQUEST_GATE_TIMEOUT`), so closer asks do nothing
+/// there and only spend airtime on every interface. The wait itself ends at
+/// `discovery_limit`, which leaves the last ask time for slow links.
+pub(super) const PATH_REQUEST_SCHEDULE: [Duration; 3] = [
+    Duration::from_secs(0),
+    Duration::from_secs(50),
+    Duration::from_secs(110),
+];
 
 impl LxmfManager {
     pub(super) fn auto_live_method(
@@ -129,15 +140,18 @@ impl LxmfManager {
                     .or_insert(Discovery {
                         started: at,
                         limit,
-                        next_request: at,
+                        requests_sent: 0,
                     });
-                if at.duration_since(wait.started) >= wait.limit {
+                let waited = at.duration_since(wait.started);
+                if waited >= wait.limit {
                     expired.insert(hash);
                     continue;
                 }
-                let request = at >= wait.next_request;
+                let request = PATH_REQUEST_SCHEDULE
+                    .get(wait.requests_sent)
+                    .is_some_and(|offset| waited >= *offset);
                 if request {
-                    wait.next_request = at + Duration::from_secs(PATH_REQUEST_WAIT);
+                    wait.requests_sent += 1;
                 }
                 if let Some(message) = self
                     .router
@@ -300,6 +314,33 @@ mod tests {
         assert!(mgr.live_preparation.discovery.is_empty());
         assert!(!mgr.live_preparation.auto_messages.contains(&hash));
         assert!(!mgr.auto_live_fallback.contains(&hash));
+    }
+
+    #[test]
+    fn a_pathless_send_asks_three_times_past_a_hubs_batching_window() {
+        let mut mgr = test_manager();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        mgr.router.transport_tx = Some(tx);
+        queued(&mut mgr, DeliveryMethod::Direct, true, 12);
+        let at = Instant::now();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64();
+        let mut asked_at = Vec::new();
+        for second in 0..180 {
+            mgr.prepare_live_outbound(now + second as f64, at + Duration::from_secs(second));
+            while let Ok(message) = rx.try_recv() {
+                if matches!(message, TransportMessage::RequestPath { .. }) {
+                    asked_at.push(second);
+                }
+            }
+        }
+        assert_eq!(asked_at, vec![0, 50, 110]);
+        assert!(
+            asked_at.windows(2).all(|pair| pair[1] - pair[0] > 45),
+            "each ask falls outside the previous one's batching window"
+        );
     }
 
     #[test]

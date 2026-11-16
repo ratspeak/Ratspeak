@@ -344,6 +344,13 @@ impl LxmfManager {
             {
                 Ok(result) => {
                     self.path_recovery_refresh_needed = true;
+                    tracing::debug!(
+                        dest = %crate::short_id(&hex::encode(dest)),
+                        request_scheduled = result.request_scheduled,
+                        has_path = result.has_path,
+                        path_dropped = result.path_dropped,
+                        "path recovery answered"
+                    );
                     if result.path_dropped || !result.has_path {
                         // These are only app observations. The atomic actor
                         // operation already preserved any newer real route.
