@@ -723,6 +723,8 @@ pub struct AppState {
     /// Serializes game plans, database commits and publication to the live router.
     pub lrgp_transaction: Arc<tokio::sync::Mutex<()>>,
     pub message_send_times: Mutex<HashMap<String, f64>>,
+    /// When each sender with no stored announce was last asked for.
+    pub sender_path_requests: Mutex<HashMap<[u8; 16], std::time::Instant>>,
     pub seen_announce_hashes: Mutex<std::collections::HashSet<String>>,
     /// False until the first non-empty announce snapshot has seeded
     /// `seen_announce_hashes`; prevents cached announces from replaying as live.
@@ -1139,6 +1141,7 @@ impl AppState {
             lrgp_router,
             lrgp_transaction: Arc::new(tokio::sync::Mutex::new(())),
             message_send_times: Mutex::new(HashMap::new()),
+            sender_path_requests: Mutex::new(HashMap::new()),
             seen_announce_hashes: Mutex::new(std::collections::HashSet::new()),
             announce_activity_baselined: AtomicBool::new(false),
             msg_id_map: Mutex::new(HashMap::new()),

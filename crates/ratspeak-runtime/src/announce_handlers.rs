@@ -239,37 +239,43 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
         state.lxmf_notify.notify_one();
     }
 
+    let mut services = vec![db::PEER_SERVICE_LXMF_DELIVERY.to_string()];
+    if let Some(bytes) = event.app_data.as_deref() {
+        services.extend(
+            crate::lxmf::ratspeak_capability_services_from_app_data(bytes)
+                .into_iter()
+                .map(str::to_string),
+        );
+    }
+    let update = db::IdentityActivityUpdate {
+        dest_hash: hash_hex.clone(),
+        timestamp: now_f64(),
+        display_name,
+        status,
+        last_interface: iface,
+        identity_hash: event.identity_hash.map(hex::encode),
+        services,
+        clear_ratspeak_services: true,
+        lxmf_compression_support,
+        announce_emitted: Some(event.emitted),
+    };
     if should_touch_peer_activity(&event) {
-        let identity_hash_hex = event.identity_hash.map(hex::encode);
-        let mut services = vec![db::PEER_SERVICE_LXMF_DELIVERY.to_string()];
-        if let Some(bytes) = event.app_data.as_deref() {
-            services.extend(
-                crate::lxmf::ratspeak_capability_services_from_app_data(bytes)
-                    .into_iter()
-                    .map(str::to_string),
-            );
-        }
-
-        let pool = state.db.clone();
-        let update = db::IdentityActivityUpdate {
-            dest_hash: hash_hex.clone(),
-            timestamp: now_f64(),
-            display_name,
-            status,
-            last_interface: iface,
-            identity_hash: identity_hash_hex,
-            services,
-            clear_ratspeak_services: true,
-            lxmf_compression_support,
-        };
-        db::spawn_db(pool, move |p| {
+        db::spawn_db(state.db.clone(), move |p| {
             db::touch_identity_activity_updates(&p, &[update]);
         })
         .await
         .expect("db task panicked");
     } else {
+        // Name and status travel in path responses too: hubs answer from
+        // their cache while they rate-limit rebroadcasts of the announce.
+        let applied = db::spawn_db(state.db.clone(), move |p| {
+            db::apply_path_response_app_data(&p, &update)
+        })
+        .await
+        .unwrap_or(false);
         tracing::debug!(
             dest = %crate::short_id(&hash_hex),
+            applied,
             "lxmf.delivery path response refreshed route data without touching peer last_seen"
         );
     }
@@ -559,6 +565,7 @@ mod tests {
             public_key: None,
             ratchet: None,
             name_hash: [0x44; 10],
+            emitted: 1_000,
         }
     }
 
@@ -566,6 +573,62 @@ mod tests {
     fn path_responses_do_not_touch_peer_activity() {
         assert!(!should_touch_peer_activity(&event_with_path_response(true)));
         assert!(should_touch_peer_activity(&event_with_path_response(false)));
+    }
+
+    #[tokio::test]
+    async fn a_newer_path_response_names_a_peer_without_hearing_it() {
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(r2d2_sqlite::SqliteConnectionManager::memory())
+            .unwrap();
+        db::init_schema(&pool).unwrap();
+        let state = state_on(&pool);
+        let peer = [0x5c; 16];
+        let peer_hex = hex::encode(peer);
+        let app_data = |name: &str, status: &str| {
+            crate::lxmf::get_ratspeak_announce_app_data(Some(name), None, Some(status), true)
+        };
+        let announce = |path_response, emitted, name: &str, status: &str| AnnounceHandlerEvent {
+            destination_hash: peer,
+            app_data: Some(app_data(name, status)),
+            emitted,
+            ..event_with_path_response(path_response)
+        };
+        let stored = |pool: &db::DbPool| {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT display_name, status, last_seen, announce_count
+                     FROM identity_activity WHERE dest_hash = ?1",
+                    [&peer_hex],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, f64>(2)?,
+                            row.get::<_, i64>(3)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        };
+
+        // First contact by path response: named, dated at emission, not heard.
+        process_delivery_announce(&state, announce(true, 2_000, "Ruby", "")).await;
+        assert_eq!(stored(&pool), ("Ruby".into(), "".into(), 2_000.0, 0));
+
+        process_delivery_announce(&state, announce(false, 3_000, "Ruby", "at work")).await;
+        let (_, _, heard_at, count) = stored(&pool);
+        assert!(heard_at > 3_000.0);
+        assert_eq!(count, 1);
+
+        // An older cached announce cannot roll the status back.
+        process_delivery_announce(&state, announce(true, 2_500, "Ruby", "")).await;
+        assert_eq!(stored(&pool).1, "at work");
+
+        // A newer one updates name and status, but not the hearing.
+        process_delivery_announce(&state, announce(true, 4_000, "Ruby R", "home")).await;
+        assert_eq!(stored(&pool), ("Ruby R".into(), "home".into(), heard_at, 1));
     }
 
     #[tokio::test]

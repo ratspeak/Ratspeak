@@ -1138,6 +1138,7 @@ mod tests {
                 services: vec![db::PEER_SERVICE_LXMF_DELIVERY.into()],
                 clear_ratspeak_services: false,
                 lxmf_compression_support: None,
+                announce_emitted: None,
             })
             .collect();
         db::touch_identity_activity_updates(&state.db, &updates);

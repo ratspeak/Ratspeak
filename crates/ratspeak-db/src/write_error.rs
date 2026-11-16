@@ -82,6 +82,7 @@ mod tests {
                      last_interface TEXT NOT NULL DEFAULT '',
                      services       TEXT NOT NULL DEFAULT '',
                      lxmf_compression_support TEXT NOT NULL DEFAULT '',
+                     announce_emitted INTEGER NOT NULL DEFAULT 0,
                      PRIMARY KEY (dest_hash, identity_hash)
                  );",
             )
@@ -99,6 +100,7 @@ mod tests {
                 services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
                 clear_ratspeak_services: false,
                 lxmf_compression_support: None,
+                announce_emitted: None,
             }],
         );
 

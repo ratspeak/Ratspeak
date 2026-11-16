@@ -5846,6 +5846,8 @@ async fn process_inbound_lxmf(
         return InboundOutcome::Blocked;
     }
 
+    request_unknown_sender_path(state, msg.source_hash(), sender.public_key.is_some());
+
     if let InboundLxmfSource::Link {
         link_id: Some(link_id),
         ..
@@ -6808,6 +6810,7 @@ async fn poll_stats_loop(
                                     services,
                                     clear_ratspeak_services: true,
                                     lxmf_compression_support,
+                                    announce_emitted: None,
                                 });
                                 peer_activity_hashes.push(hash_hex.clone());
                                 delivery_trigger_hashes.push(a.dest_hash);
@@ -6832,6 +6835,7 @@ async fn poll_stats_loop(
                                     services: vec![db::PEER_SERVICE_LXST_TELEPHONY.to_string()],
                                     clear_ratspeak_services: false,
                                     lxmf_compression_support: None,
+                                    announce_emitted: None,
                                 });
                                 peer_activity_hashes.push(lxmf_dest_hex);
                             }
@@ -8004,6 +8008,62 @@ pub(crate) fn emit_peers_batch(state: &AppState, rows: &[db::PeerRow]) {
         })
         .collect();
     state.emit_to_all("peers_updated", json!({ "peers": arr }));
+}
+
+const SENDER_PATH_REQUEST_INTERVAL: Duration = Duration::from_secs(10 * 60);
+
+/// Asks once for the path of a sender whose announce never reached us, as
+/// NomadNet does for a new conversation. A hub answers from its cache even
+/// while it rate-limits the announce, and the path response carries the
+/// sender's name and status. Paced per sender.
+fn request_unknown_sender_path(state: &Arc<AppState>, source: [u8; 16], identity_known: bool) {
+    let Some(tx) = state
+        .rns
+        .read()
+        .ok()
+        .and_then(|rns| rns.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
+    else {
+        return;
+    };
+    let state = Arc::clone(state);
+    tokio::spawn(async move {
+        let source_hex = hex::encode(source);
+        if identity_known {
+            let hash = source_hex.clone();
+            let stored = db::spawn_db(state.db.clone(), move |p| {
+                db::has_stored_announce(&p, &hash)
+            })
+            .await
+            .unwrap_or(true);
+            if stored {
+                return;
+            }
+        }
+        {
+            let Ok(mut asked) = state.sender_path_requests.lock() else {
+                return;
+            };
+            let now = Instant::now();
+            if asked
+                .get(&source)
+                .is_some_and(|at| now.duration_since(*at) < SENDER_PATH_REQUEST_INTERVAL)
+            {
+                return;
+            }
+            asked.retain(|_, at| now.duration_since(*at) < SENDER_PATH_REQUEST_INTERVAL);
+            asked.insert(source, now);
+        }
+        tracing::debug!(
+            from = %short_id(&source_hex),
+            identity_known,
+            "requesting the path of a sender with no stored announce"
+        );
+        let _ = tx
+            .send(rns_transport::messages::TransportMessage::RequestPath {
+                destination_hash: source,
+            })
+            .await;
+    });
 }
 
 async fn touch_peer_last_heard(

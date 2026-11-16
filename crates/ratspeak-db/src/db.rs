@@ -14,7 +14,7 @@ use crate::write_error::{OrReport, report_write_error};
 
 pub type DbPool = Pool<SqliteConnectionManager>;
 
-pub(crate) const SCHEMA_VERSION: i64 = 53;
+pub(crate) const SCHEMA_VERSION: i64 = 54;
 
 const VOICE_FORMAT_SCHEMA_SQL: &str = "
 CREATE TABLE IF NOT EXISTS conversation_voice_formats (
@@ -570,7 +570,8 @@ CREATE TABLE IF NOT EXISTS identity_activity (
     status         TEXT NOT NULL DEFAULT '',
     last_interface TEXT NOT NULL DEFAULT '',
     services       TEXT NOT NULL DEFAULT '',
-    lxmf_compression_support TEXT NOT NULL DEFAULT ''
+    lxmf_compression_support TEXT NOT NULL DEFAULT '',
+    announce_emitted INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_identity_activity_last_seen ON identity_activity(last_seen);
 CREATE INDEX IF NOT EXISTS idx_identity_activity_identity_hash
@@ -2213,6 +2214,24 @@ fn run_migrations(conn: &Connection, from_version: i64) -> Result<(), rusqlite::
             }
             conn.execute_batch("UPDATE schema_version SET version = 53;")?;
             tracing::info!("Migrated to schema version 53 (sent copies)");
+            Ok(())
+        })?;
+    }
+
+    if from_version < 54 {
+        migration_step(conn, 54, |conn| {
+            if table_exists(conn, "identity_activity")?
+                && !get_column_names(conn, "identity_activity")?
+                    .iter()
+                    .any(|column| column == "announce_emitted")
+            {
+                conn.execute_batch(
+                    "ALTER TABLE identity_activity
+                     ADD COLUMN announce_emitted INTEGER NOT NULL DEFAULT 0;",
+                )?;
+            }
+            conn.execute_batch("UPDATE schema_version SET version = 54;")?;
+            tracing::info!("Migrated to schema version 54 (announce emission time)");
             Ok(())
         })?;
     }
@@ -9544,6 +9563,8 @@ pub struct IdentityActivityUpdate {
     pub services: Vec<String>,
     pub clear_ratspeak_services: bool,
     pub lxmf_compression_support: Option<String>,
+    /// Emission time the announce carried; `None` keeps the stored one.
+    pub announce_emitted: Option<u64>,
 }
 
 /// Same as `touch_identity_activity_for_service`, but merges multiple service
@@ -9573,6 +9594,7 @@ pub fn touch_identity_activity_for_services(
             services: services.clone(),
             clear_ratspeak_services,
             lxmf_compression_support: None,
+            announce_emitted: None,
         })
         .collect();
     touch_identity_activity_updates(pool, &updates)
@@ -9605,9 +9627,10 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
             return 0;
         };
         let Some(mut stmt) = tx.prepare_cached(
-            "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, status, last_interface, services, lxmf_compression_support)
-             VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), COALESCE(?6, ''), ?7, COALESCE(?8, ''))
+            "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, status, last_interface, services, lxmf_compression_support, announce_emitted)
+             VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), COALESCE(?6, ''), ?7, COALESCE(?8, ''), COALESCE(?9, 0))
              ON CONFLICT(dest_hash) DO UPDATE SET
+                 announce_emitted = COALESCE(?9, announce_emitted),
                  last_seen = MAX(excluded.last_seen, last_seen),
                  announce_count = announce_count + 1,
                  identity_hash = CASE
@@ -9668,6 +9691,7 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
                 i,
                 merged_services,
                 lxmf_compression_support,
+                update.announce_emitted.map(|emitted| emitted as i64),
             ]);
             match written {
                 Ok(_) => touched += 1,
@@ -9682,6 +9706,107 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
     }
     tx.commit().or_report("touch_identity_activity_updates");
     touched
+}
+
+/// A path response is a hub's cached announce, not a hearing. Its name,
+/// status, and services replace the stored ones only when its announce is
+/// newer, so an older cache cannot roll them back; last heard, the announce
+/// count, and the interface stay as heard. A destination with no row gets one
+/// dated at the announce's emission. Returns whether anything was written.
+pub fn apply_path_response_app_data(pool: &DbPool, update: &IdentityActivityUpdate) -> bool {
+    let Some(emitted) = update.announce_emitted.filter(|emitted| *emitted > 0) else {
+        return false;
+    };
+    let services = normalized_peer_services(update.services.iter().map(String::as_str));
+    if services.is_empty() {
+        return false;
+    }
+    let Some(mut conn) = pool.get().or_report("apply_path_response_app_data") else {
+        return false;
+    };
+    let Some(tx) = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .or_report("apply_path_response_app_data")
+    else {
+        return false;
+    };
+    let existing_raw: String = tx
+        .query_row(
+            "SELECT COALESCE(services, '') FROM identity_activity WHERE dest_hash = ?1",
+            params![update.dest_hash],
+            |row| row.get(0),
+        )
+        .unwrap_or_default();
+    let mut merged = normalized_peer_services(existing_raw.split(','));
+    if update.clear_ratspeak_services {
+        merged.retain(|service| !service.starts_with("ratspeak."));
+    }
+    for service in services {
+        if !merged.contains(&service) {
+            merged.push(service);
+        }
+    }
+    let heard_at = (emitted as f64).min(update.timestamp);
+    let written = tx
+        .execute(
+            "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, status, services, lxmf_compression_support, announce_emitted)
+             VALUES (?1, ?2, ?3, ?3, 0, COALESCE(?4, ''), COALESCE(?5, ''), ?6, COALESCE(?7, ''), ?8)
+             ON CONFLICT(dest_hash) DO UPDATE SET
+                 announce_emitted = excluded.announce_emitted,
+                 identity_hash = CASE
+                     WHEN excluded.identity_hash != '' THEN excluded.identity_hash
+                     ELSE identity_hash
+                 END,
+                 display_name = CASE
+                     WHEN excluded.display_name != '' THEN excluded.display_name
+                     ELSE display_name
+                 END,
+                 status = CASE
+                     WHEN ?5 IS NOT NULL THEN excluded.status
+                     ELSE status
+                 END,
+                 services = excluded.services,
+                 lxmf_compression_support = CASE
+                     WHEN ?7 IS NOT NULL AND ?7 != '' THEN excluded.lxmf_compression_support
+                     ELSE lxmf_compression_support
+                 END
+             WHERE excluded.announce_emitted > identity_activity.announce_emitted",
+            params![
+                update.dest_hash,
+                update.identity_hash.as_deref().unwrap_or("").trim(),
+                heard_at,
+                update.display_name.as_deref().filter(|s| !s.is_empty()),
+                update.status.as_deref(),
+                merged.join(","),
+                update
+                    .lxmf_compression_support
+                    .as_deref()
+                    .and_then(normalized_lxmf_compression_support),
+                emitted as i64,
+            ],
+        )
+        .or_report("apply_path_response_app_data")
+        .unwrap_or(0);
+    tx.commit().or_report("apply_path_response_app_data");
+    written > 0
+}
+
+/// Whether any announce from `dest_hash` has given us its name or app data.
+pub fn has_stored_announce(pool: &DbPool, dest_hash: &str) -> bool {
+    let Some(conn) = pool.get().or_report("has_stored_announce") else {
+        return false;
+    };
+    conn.query_row(
+        "SELECT 1 FROM identity_activity
+         WHERE dest_hash = ?1
+           AND (announce_count > 0 OR announce_emitted > 0 OR display_name != '')",
+        params![dest_hash],
+        |_| Ok(()),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .is_some()
 }
 
 pub fn get_identity_lxmf_compression_support(pool: &DbPool, dest_hash: &str) -> Option<String> {
@@ -16545,6 +16670,7 @@ mod peers_snapshot_tests {
                     services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
                     clear_ratspeak_services: true,
                     lxmf_compression_support: None,
+                    announce_emitted: None,
                 },
                 IdentityActivityUpdate {
                     dest_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".into(),
@@ -16556,6 +16682,7 @@ mod peers_snapshot_tests {
                     services: vec![PEER_SERVICE_LXST_TELEPHONY.into()],
                     clear_ratspeak_services: false,
                     lxmf_compression_support: None,
+                    announce_emitted: None,
                 },
             ],
         );
@@ -16591,6 +16718,7 @@ mod peers_snapshot_tests {
                 services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
                 clear_ratspeak_services: false,
                 lxmf_compression_support: Some(LXMF_COMPRESSION_SUPPORT_UNSUPPORTED.into()),
+                announce_emitted: None,
             }],
         );
         assert_eq!(
@@ -16610,6 +16738,7 @@ mod peers_snapshot_tests {
                 services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
                 clear_ratspeak_services: false,
                 lxmf_compression_support: None,
+                announce_emitted: None,
             }],
         );
         assert_eq!(
