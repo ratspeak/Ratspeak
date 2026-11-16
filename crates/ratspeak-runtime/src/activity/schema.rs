@@ -112,9 +112,11 @@ impl ActivityOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ActivityAttributeKey {
+    App,
     Attempts,
     ByteLength,
     Capability,
+    Command,
     Count,
     Destination,
     DroppedCount,

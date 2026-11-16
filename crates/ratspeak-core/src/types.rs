@@ -8,6 +8,7 @@ pub struct LrgpMsgMeta {
     pub identity_id: String,
     pub contact_hash: String,
     pub app_id: String,
+    pub command: String,
     pub sent_at: f64,
 }
 

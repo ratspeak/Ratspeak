@@ -1782,10 +1782,10 @@ function activityEventSummary(event) {
         'path_pending': 'waiting for a path',
         'link_establishing': 'establishing a link',
         'link_ready': 'link ready',
-        'link_reused': 'link reused',
+        'link_reused': 'sent over open connection',
         'direct_pending': 'waiting for direct delivery',
         'resource_started': 'resource transfer started',
-        'awaiting_proof': 'awaiting proof',
+        'awaiting_proof': 'waiting for confirmation',
         'delivered': 'delivered',
         'rejected': 'rejected',
         'deferred': 'deferred',
@@ -1966,7 +1966,9 @@ function activityFormatAttributeValue(attribute, event) {
 
 function activityAttributeLabel(key) {
     var labels = {
+        app: 'Game',
         byte_length: 'Size',
+        command: 'Action',
         dropped_count: 'Dropped',
         duplicate: 'Duplicate',
         duration_ms: 'Duration',

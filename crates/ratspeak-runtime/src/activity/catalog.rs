@@ -1977,6 +1977,65 @@ pub fn lxmf_delivery_queued(
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
+pub enum LrgpActionStage {
+    Started,
+    Succeeded,
+    Failed,
+}
+
+/// A game action this device sent. `app` and `command` are the codes the
+/// producer maps from LRGP's own constants.
+pub struct LrgpAction {
+    pub time: ObservationTime,
+    pub stage: LrgpActionStage,
+    pub message: MessageId,
+    pub destination: DestinationHash,
+    pub app: &'static str,
+    pub command: &'static str,
+}
+
+pub fn lrgp_action(input: LrgpAction) -> Result<ActivityDraft, ActivityRejectReason> {
+    let (kind, severity, outcome) = match input.stage {
+        LrgpActionStage::Started => (
+            kinds::LRGP_ACTION_STARTED,
+            ActivitySeverity::Info,
+            ActivityOutcome::Started,
+        ),
+        LrgpActionStage::Succeeded => (
+            kinds::LRGP_ACTION_SUCCEEDED,
+            ActivitySeverity::Info,
+            ActivityOutcome::Success,
+        ),
+        LrgpActionStage::Failed => (
+            kinds::LRGP_ACTION_FAILED,
+            ActivitySeverity::Warning,
+            ActivityOutcome::Failed,
+        ),
+    };
+    ActivityDraft::new(
+        kind,
+        severity,
+        ActivityDirection::Outbound,
+        outcome,
+        input.time.unix_ms,
+        input.time.elapsed_ms,
+        CoalescingPolicy::Never,
+    )
+    .protocol_identifier(
+        ActivityAttributeKey::Message,
+        IdentifierKind::Message,
+        &input.message.0,
+    )?
+    .protocol_identifier(
+        ActivityAttributeKey::Destination,
+        IdentifierKind::Destination,
+        &input.destination.0,
+    )?
+    .operational_code(ActivityAttributeKey::App, input.app)?
+    .operational_code(ActivityAttributeKey::Command, input.command)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum LxmfSubmissionFailureReason {
     RouterUnavailable,
     PreparationFailed,
@@ -3369,6 +3428,59 @@ mod tests {
                     _ => panic!("reason must remain an operational code"),
                 });
             assert_eq!(reason, expected_reason);
+        }
+    }
+
+    #[test]
+    fn a_game_action_names_its_message_contact_game_and_command() {
+        for (stage, expected_kind, expected_outcome) in [
+            (
+                LrgpActionStage::Started,
+                "lrgp.action.started",
+                ActivityOutcome::Started,
+            ),
+            (
+                LrgpActionStage::Succeeded,
+                "lrgp.action.succeeded",
+                ActivityOutcome::Success,
+            ),
+            (
+                LrgpActionStage::Failed,
+                "lrgp.action.failed",
+                ActivityOutcome::Failed,
+            ),
+        ] {
+            let validated = lrgp_action(LrgpAction {
+                time: ObservationTime::new(1, 1),
+                stage,
+                message: MessageId([7; 32]),
+                destination: DestinationHash::new([8; 16]),
+                app: "four_in_a_row",
+                command: "move",
+            })
+            .unwrap()
+            .validate(super::super::classified::DraftContext {
+                capture_session: "11".repeat(16),
+                capture_generation: 1,
+                capture_profile: super::super::schema::CaptureProfile::Normal,
+            })
+            .unwrap();
+            assert_eq!(validated.kind.code(), expected_kind);
+            assert_eq!(validated.outcome, expected_outcome);
+            let keys: Vec<_> = validated
+                .attributes
+                .iter()
+                .map(|attribute| attribute.key)
+                .collect();
+            assert_eq!(
+                keys,
+                [
+                    ActivityAttributeKey::Message,
+                    ActivityAttributeKey::Destination,
+                    ActivityAttributeKey::App,
+                    ActivityAttributeKey::Command,
+                ]
+            );
         }
     }
 

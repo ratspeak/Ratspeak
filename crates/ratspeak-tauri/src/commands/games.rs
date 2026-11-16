@@ -17,6 +17,44 @@ fn short_hex(s: &str) -> &str {
     diagnostic_short_protocol_id(s).unwrap_or("invalid")
 }
 
+/// A move handed to LXMF: its session takes the delivery outcome, and Activity
+/// shows it queued, as a chat message is.
+fn track_sent_game_action(
+    state: &Arc<AppState>,
+    origin: crate::state::ActivityRequestFence,
+    msg_id: &str,
+    meta: crate::state::LrgpMsgMeta,
+) {
+    let method = hex::decode(msg_id).ok().and_then(|id| {
+        let lxmf = state.lxmf.lock().ok()?;
+        lxmf.as_ref()?
+            .router
+            .pending_outbound
+            .iter()
+            .find(|message| message.message_id()[..] == id[..])
+            .map(|message| message.method)
+    });
+    if let Some(method) = method {
+        crate::commands::messaging::record_lxmf_delivery_queued(
+            state,
+            origin,
+            msg_id,
+            &meta.contact_hash,
+            method,
+        );
+    }
+    ratspeak_runtime::record_game_action(
+        state,
+        origin,
+        msg_id,
+        &meta,
+        ratspeak_runtime::activity::producer::LrgpActionStage::Started,
+    );
+    if let Ok(mut map) = state.lrgp_msg_to_session.lock() {
+        map.insert(msg_id.to_string(), meta);
+    }
+}
+
 fn game_action_result_json(
     ok: bool,
     session_id: &str,
@@ -428,22 +466,23 @@ pub async fn send_game_action(
                 &dest_hash,
                 activity_origin,
             );
+            track_sent_game_action(
+                &state_arc,
+                activity_origin,
+                &id,
+                crate::state::LrgpMsgMeta {
+                    session_id: session_id.clone(),
+                    identity_id: identity_id.clone(),
+                    contact_hash: dest_hash.clone(),
+                    app_id: app_id.clone(),
+                    command: command.clone(),
+                    sent_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64(),
+                },
+            );
             state_arc.lxmf_notify.notify_one();
-            if let Ok(mut map) = state_arc.lrgp_msg_to_session.lock() {
-                map.insert(
-                    id.clone(),
-                    crate::state::LrgpMsgMeta {
-                        session_id: session_id.clone(),
-                        identity_id: identity_id.clone(),
-                        contact_hash: dest_hash.clone(),
-                        app_id: app_id.clone(),
-                        sent_at: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs_f64(),
-                    },
-                );
-            }
 
             if let Some(session_state) = state_arc.lrgp_router.with_app(&app_id, |app| {
                 app.get_session_state(&session_id, &identity_id)
@@ -849,22 +888,23 @@ pub async fn resend_last_game_action(
                 &dest_hash,
                 activity_origin,
             );
+            track_sent_game_action(
+                &state_arc,
+                activity_origin,
+                &id,
+                crate::state::LrgpMsgMeta {
+                    session_id: session_id.clone(),
+                    identity_id: identity_id.clone(),
+                    contact_hash: dest_hash.clone(),
+                    app_id: app_id.clone(),
+                    command: command.clone(),
+                    sent_at: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs_f64(),
+                },
+            );
             state_arc.lxmf_notify.notify_one();
-            if let Ok(mut map) = state_arc.lrgp_msg_to_session.lock() {
-                map.insert(
-                    id.clone(),
-                    crate::state::LrgpMsgMeta {
-                        session_id: session_id.clone(),
-                        identity_id: identity_id.clone(),
-                        contact_hash: dest_hash.clone(),
-                        app_id: app_id.clone(),
-                        sent_at: std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs_f64(),
-                    },
-                );
-            }
             if let Some(session_state) = state_arc.lrgp_router.with_app(&app_id, |app| {
                 app.get_session_state(&session_id, &identity_id)
             }) {

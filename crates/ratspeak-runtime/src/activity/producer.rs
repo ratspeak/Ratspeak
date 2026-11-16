@@ -18,9 +18,10 @@ pub use super::catalog::{
     HubModerationAction, HubServiceDegradation, HubSessionCloseReason, HubSessionRejection,
     HubTransition, HubTrustChange, IdentityHash, InboundLxmfMethod, InterfaceClass,
     InterfaceDegradationReason, InterfaceFailureReason, InterfaceRollback, InterfaceTimeoutReason,
-    InterfaceTransition, LinkId, LxmfDeliveryMethod, LxmfDeliveryState, LxmfInboundRejectionReason,
-    LxmfProgressStep, LxmfSubmissionFailureReason, LxstCallReason, LxstTransition, MessageId,
-    PathEvidence, PathRequestMethod, SourceValidation, TcpEndpoint, WakeCause,
+    InterfaceTransition, LinkId, LrgpActionStage, LxmfDeliveryMethod, LxmfDeliveryState,
+    LxmfInboundRejectionReason, LxmfProgressStep, LxmfSubmissionFailureReason, LxstCallReason,
+    LxstTransition, MessageId, PathEvidence, PathRequestMethod, SourceValidation, TcpEndpoint,
+    WakeCause,
 };
 
 /// Opaque timeless event accepted by [`super::ActivityRecorder::record_event`].
@@ -43,6 +44,7 @@ enum Payload {
     ChannelsEnvelopeReceived(ChannelsEnvelopeActivity),
     ChannelsHub(ChannelsHubActivity),
     LxmfDeliveryQueued(LxmfDeliveryQueued),
+    LrgpAction(LrgpAction),
     LxmfSubmissionFailed(LxmfSubmissionFailed),
     LxmfDeliveryStateChanged(LxmfDeliveryStateChanged),
     LxmfDeliveryRetrying(LxmfDeliveryRetrying),
@@ -158,6 +160,14 @@ impl ProducerEvent {
                     method: input.method,
                 })
             }
+            Payload::LrgpAction(input) => catalog::lrgp_action(catalog::LrgpAction {
+                time,
+                stage: input.stage,
+                message: input.message,
+                destination: input.destination,
+                app: input.app,
+                command: input.command,
+            }),
             Payload::LxmfSubmissionFailed(input) => {
                 catalog::lxmf_submission_failed(catalog::LxmfSubmissionFailed {
                     time,
@@ -400,6 +410,45 @@ pub struct LxmfDeliveryQueued {
 
 pub fn lxmf_delivery_queued(input: LxmfDeliveryQueued) -> ProducerEvent {
     ProducerEvent(Payload::LxmfDeliveryQueued(input))
+}
+
+pub struct LrgpAction {
+    pub message: MessageId,
+    pub destination: DestinationHash,
+    pub stage: LrgpActionStage,
+    pub app: &'static str,
+    pub command: &'static str,
+}
+
+pub fn lrgp_action(input: LrgpAction) -> ProducerEvent {
+    ProducerEvent(Payload::LrgpAction(input))
+}
+
+/// The Activity code for an LRGP app; an app this build does not ship reads `other`.
+pub fn lrgp_app_code(app_id: &str) -> &'static str {
+    match app_id {
+        "chess" => "chess",
+        "four_in_a_row" => "four_in_a_row",
+        "ttt" => "tic_tac_toe",
+        _ => "other",
+    }
+}
+
+/// The Activity code for an LRGP command; anything else reads `other`.
+pub fn lrgp_command_code(command: &str) -> &'static str {
+    use lrgp::constants::*;
+    match command {
+        CMD_CHALLENGE => "challenge",
+        CMD_ACCEPT => "accept",
+        CMD_DECLINE => "decline",
+        CMD_MOVE => "move",
+        CMD_RESIGN => "resign",
+        CMD_DRAW_OFFER => "draw_offer",
+        CMD_DRAW_ACCEPT => "draw_accept",
+        CMD_DRAW_DECLINE => "draw_decline",
+        CMD_ERROR => "error",
+        _ => "other",
+    }
 }
 
 pub struct LxmfSubmissionFailed {

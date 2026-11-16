@@ -191,11 +191,11 @@ fn legacy_message(event: &ActivityEventV1) -> Option<&'static str> {
         "lxmf.delivery.path_pending" => "Message path pending",
         "lxmf.delivery.link_establishing" => "Establishing delivery link",
         "lxmf.delivery.link_ready" => "Delivery link ready",
-        "lxmf.delivery.link_reused" => "Direct link reused",
+        "lxmf.delivery.link_reused" => "Sent over open connection",
         "lxmf.delivery.direct_pending" => "Waiting for direct delivery",
         "lxmf.delivery.resource_started" => "Resource transfer advertised",
         "lxmf.delivery.progress" => "Resource transfer progress",
-        "lxmf.delivery.awaiting_proof" => "Waiting for delivery proof",
+        "lxmf.delivery.awaiting_proof" => "Waiting for confirmation",
         "lxmf.delivery.delivered" => "Message delivered",
         "lxmf.delivery.cancelled" => "Message delivery cancelled",
         "lxmf.delivery.rejected" => "Message delivery rejected",
@@ -1779,7 +1779,7 @@ mod tests {
                 Normal,
                 [Message, Method],
                 "message",
-                "Direct link reused",
+                "Sent over open connection",
                 "standard"
             ),
             projection_case!(
@@ -1813,7 +1813,7 @@ mod tests {
                 Normal,
                 [Message, Method],
                 "message",
-                "Waiting for delivery proof",
+                "Waiting for confirmation",
                 "standard"
             ),
             projection_case!(

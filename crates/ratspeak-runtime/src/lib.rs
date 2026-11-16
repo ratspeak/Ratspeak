@@ -383,6 +383,25 @@ where
         .record_event_fenced(|| state.is_current_activity_origin_fence(origin), make);
 }
 
+/// Activity for a game action this device sent.
+pub fn record_game_action(
+    state: &AppState,
+    origin: ActivityRequestFence,
+    msg_id: &str,
+    meta: &crate::state::LrgpMsgMeta,
+    stage: producer::LrgpActionStage,
+) {
+    record_activity_if_current(state, origin, || {
+        Ok(producer::lrgp_action(producer::LrgpAction {
+            message: producer::MessageId::from_hex(msg_id)?,
+            destination: producer::DestinationHash::from_hex(&meta.contact_hash)?,
+            stage,
+            app: producer::lrgp_app_code(&meta.app_id),
+            command: producer::lrgp_command_code(&meta.command),
+        }))
+    });
+}
+
 fn record_lxmf_progress(
     state: &AppState,
     origin: ActivityRequestFence,
@@ -3258,6 +3277,23 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 .map(|update| update.event_method),
                         )
                         .map(str::to_owned);
+                        // A game move has no message row: its session holds
+                        // its delivery state and guards it against regressions.
+                        if tick_state
+                            .lrgp_msg_to_session
+                            .lock()
+                            .is_ok_and(|map| map.contains_key(msg_id))
+                        {
+                            persisted.push((
+                                msg_id.clone(),
+                                step,
+                                delivery_method_for_db,
+                                None,
+                                failure,
+                                failure_reason,
+                            ));
+                            continue;
+                        }
                         // Same blocking-pool hop also reads the method back
                         // for the emit below.
                         match db::spawn_db(tick_state.db.clone(), move |p| {
@@ -3430,12 +3466,26 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 new_state,
                             )
                             .await;
-                            if (*new_state == "delivered"
-                                || *new_state == "failed"
-                                || *new_state == "propagated")
-                                && let Ok(mut map) = tick_state.lrgp_msg_to_session.lock()
-                            {
-                                map.remove(msg_id);
+                            let outcome = match *new_state {
+                                "delivered" | "propagated" => {
+                                    Some(producer::LrgpActionStage::Succeeded)
+                                }
+                                "failed" | "rejected" | "undelivered" => {
+                                    Some(producer::LrgpActionStage::Failed)
+                                }
+                                _ => None,
+                            };
+                            if let Some(stage) = outcome {
+                                record_game_action(
+                                    &tick_state,
+                                    tick_activity_origin,
+                                    msg_id,
+                                    &meta,
+                                    stage,
+                                );
+                                if let Ok(mut map) = tick_state.lrgp_msg_to_session.lock() {
+                                    map.remove(msg_id);
+                                }
                             }
                         }
                     }
@@ -5085,7 +5135,13 @@ async fn complete_authenticated_lxmf_delivery_proof(
     })
     .await
     .expect("db task panicked");
-    if !updated {
+    // A game move has no message row; its session takes the proof.
+    let lrgp_meta = state
+        .lrgp_msg_to_session
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(msg_id));
+    if !updated && lrgp_meta.is_none() {
         tracing::debug!(
             msg_id = %short_id(msg_id),
             reason = "terminal_state_preserved",
@@ -5136,12 +5192,14 @@ async fn complete_authenticated_lxmf_delivery_proof(
     // Proofs do not necessarily reappear in the LXMF manager's polled state
     // changes. Complete the originating game action here as well, so its UI
     // cannot remain stuck on "Sending" after a valid proof.
-    let lrgp_meta = state
-        .lrgp_msg_to_session
-        .lock()
-        .ok()
-        .and_then(|mut map| map.remove(msg_id));
     if let Some(meta) = lrgp_meta {
+        record_game_action(
+            state,
+            activity_origin,
+            msg_id,
+            &meta,
+            producer::LrgpActionStage::Succeeded,
+        );
         update_game_session_delivery_state(
             state,
             &meta.session_id,
@@ -7598,6 +7656,44 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
     if timed_out.is_empty() {
         return;
     }
+    // Game moves have no message row; their sessions settle them.
+    let timed_out_moves: Vec<(String, crate::state::LrgpMsgMeta)> = state
+        .lrgp_msg_to_session
+        .lock()
+        .map(|mut map| {
+            timed_out
+                .iter()
+                .filter_map(|id| map.remove(id).map(|meta| (id.clone(), meta)))
+                .collect()
+        })
+        .unwrap_or_default();
+    if !timed_out_moves.is_empty() {
+        if let Ok(mut lxmf) = state.lxmf.lock()
+            && let Some(manager) = lxmf.as_mut()
+        {
+            for (msg_id, _) in &timed_out_moves {
+                let _ = manager.cancel_outbound_message(msg_id);
+            }
+        }
+        for (msg_id, meta) in &timed_out_moves {
+            tracing::debug!(msg_id = %short_id(msg_id), "Game move timed out");
+            record_game_action(
+                state,
+                activity_origin,
+                msg_id,
+                meta,
+                producer::LrgpActionStage::Failed,
+            );
+            update_game_session_delivery_state(
+                state,
+                &meta.session_id,
+                &meta.identity_id,
+                &meta.contact_hash,
+                "failed",
+            )
+            .await;
+        }
+    }
 
     // One blocking-pool hop for the whole sweep. Only rows that win the
     // one-way terminal-state race may emit timeout or cancel live owners.
@@ -7830,34 +7926,17 @@ fn bounded_protocol_waits(state: &AppState, ids: &[String]) -> std::collections:
 
 async fn sweep_stale_game_deliveries(state: &AppState) {
     let _game_transaction = Arc::new(state.lrgp_transaction.clone().lock_owned().await);
-    let pending = state
+    // A move LXMF still owns settles through its own delivery or timeout; a
+    // failure here would stick even if the move is then delivered.
+    let protected_sessions: std::collections::HashSet<(String, String)> = state
         .lrgp_msg_to_session
         .lock()
-        .ok()
         .map(|map| {
-            map.iter()
-                .map(|(id, meta)| {
-                    (
-                        id.clone(),
-                        meta.session_id.clone(),
-                        meta.identity_id.clone(),
-                    )
-                })
-                .collect::<Vec<_>>()
+            map.values()
+                .map(|meta| (meta.session_id.clone(), meta.identity_id.clone()))
+                .collect()
         })
         .unwrap_or_default();
-    let protected = bounded_protocol_waits(
-        state,
-        &pending
-            .iter()
-            .map(|(id, _, _)| id.clone())
-            .collect::<Vec<_>>(),
-    );
-    let protected_sessions = pending
-        .into_iter()
-        .filter(|(id, _, _)| protected.contains(id))
-        .map(|(_, session, identity)| (session, identity))
-        .collect::<std::collections::HashSet<_>>();
     let pool = state.db.clone();
     let candidates: Vec<(String, String, String)> = db::spawn_db(pool, |p| {
         let now = std::time::SystemTime::now()

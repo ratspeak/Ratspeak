@@ -227,7 +227,7 @@ fn activity_lxmf_delivery_method(
     }
 }
 
-fn record_lxmf_delivery_queued(
+pub(crate) fn record_lxmf_delivery_queued(
     state: &AppState,
     fence: crate::state::ActivityRequestFence,
     message_id: &str,
