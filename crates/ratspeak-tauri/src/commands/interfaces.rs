@@ -685,10 +685,18 @@ fn apply_transport_runtime_update(
             .read()
             .ok()
             .and_then(|r| r.as_ref().map(|mgr| mgr.handle.transport_tx.clone()))
-        {
-            let _ = tx.try_send(
+            && let Err(tokio::sync::mpsc::error::TrySendError::Full(_)) = tx.try_send(
                 rns_transport::messages::TransportMessage::SetTransportEnabled { enabled: enable },
+            )
+        {
+            // Saved, but the running network did not take it; a closed one
+            // reads the saved setting when it starts.
+            tracing::warn!(
+                enable,
+                reason = "transport_busy",
+                "relay change did not reach the running network"
             );
+            return Err("Relay is saved but the network was busy; try again.".to_string());
         }
     }
 

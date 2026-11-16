@@ -2523,6 +2523,15 @@ pub async fn disconnect_ble_rnode(
 mod tests {
     use super::*;
 
+    /// With relay on, the device looks up the paths its Bluetooth peers ask
+    /// for and does not know, instead of dropping the request.
+    #[cfg(feature = "ble")]
+    #[test]
+    fn bluetooth_peer_runs_as_a_gateway() {
+        let config = rns_interface::ble_peer::BlePeerConfig::new("Bluetooth Peer", vec![0; 16]);
+        assert_eq!(config.mode, rns_interface::traits::InterfaceMode::Gateway);
+    }
+
     #[test]
     fn ble_peer_activity_outcomes_have_stable_semantics() {
         assert!(matches!(
