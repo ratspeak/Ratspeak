@@ -439,7 +439,7 @@ RS.listen('node_operation_status', function(data) {
         if (data.operation === 'add_lora' && !data.error) {
             closeRnodeModal();
         }
-        if (data.operation === 'resume_interface' && typeof clearConnectPublicPending === 'function') {
+        if (data.operation === 'resume_interface' && data.error && typeof clearConnectPublicPending === 'function') {
             clearConnectPublicPending();
         }
     }

@@ -104,12 +104,13 @@
             // iOS without the multicast entitlement: Local Network can't hear anyone.
             var au = a.section === 'local' && !a.paused ? window._autoUnavailable : null;
             if (au && au.interface === name) status = 'pending';
+            var trouble = status === 'pending' && typeof connectTroubleText === 'function' ? connectTroubleText(live) : '';
             return {
                 id: name, name: display, kind: a.section, ifaceType: a.ifaceType, iface: iface, status: status,
                 tx: live ? live.txb || 0 : 0, rx: live ? live.rxb || 0 : 0,
                 peers: live && live.peers != null ? live.peers : null, clients: live && live.clients != null ? live.clients : null,
                 pub: a.section === 'tcp' ? publicServerFor(iface) : null, joined: a.ifaceType === 'joined',
-                health: au && au.interface === name ? 'Multicast unavailable' : a.mobileHealth ? a.mobileHealth.label : (a.waitingForDevice ? 'Waiting for USB' : '')
+                health: au && au.interface === name ? 'Multicast unavailable' : a.mobileHealth ? a.mobileHealth.label : (a.waitingForDevice ? 'Waiting for USB' : trouble)
             };
         }).filter(function(c) { return c.kind !== 'ble'; });
         var bleOn = !!window._blePeerEnabled || !!window._blePeerPaused;
@@ -244,14 +245,18 @@
     function serverState(s) {
         return typeof _publicServerState === 'function' ? _publicServerState(s, window._cachedConfigIfaces || {}) : { connected: false, pending: false, match: null };
     }
+    // Joining… lasts until the server is reached or the join's wait runs out; a
+    // saved server that isn't up then says why and offers Retry.
     function srow(s) {
         var st = serverState(s), act;
         if (st.pending) act = btn('Joining…', { cls: 'ui-btn--sm', spin: true, disabled: true });
         else if (st.connected) act = '<span class="net-joined">' + icon('check') + 'Joined</span>';
+        else if (st.configured) act = btn('Retry', { cls: 'ui-btn--sm', act: 'join', attrs: ' data-id="' + esc(s.id) + '" aria-label="Retry ' + esc(s.name) + '"' });
         else act = btn('Join', { cls: 'ui-btn--sm', act: 'join', attrs: ' data-id="' + esc(s.id) + '" aria-label="Join ' + esc(s.name) + '"' });
         var m = s.group === 'official' ? '<span class="net-mark is-gem public-server-card--' + s.tone + '" aria-hidden="true">' + icon('gem') + '</span>'
             : '<span class="net-mark is-initial" aria-hidden="true">' + esc(s.name.charAt(0)) + '</span>';
-        return '<div class="net-srow">' + m + '<span class="net-sname">' + esc(s.name) + (s.place ? '<small>' + esc(s.place) + '</small>' : '') + '</span>' + act + '</div>';
+        var note = st.trouble || s.place;
+        return '<div class="net-srow">' + m + '<span class="net-sname">' + esc(s.name) + (note ? '<small>' + esc(note) + '</small>' : '') + '</span>' + act + '</div>';
     }
     function serverList() {
         var all = typeof PUBLIC_TCP_SERVERS !== 'undefined' ? PUBLIC_TCP_SERVERS : [];

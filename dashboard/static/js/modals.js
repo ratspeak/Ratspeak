@@ -31,8 +31,11 @@ function _publicServerEndpointKeys(server) {
     });
 }
 
-// The public server a Join on the Network screen is waiting for.
-var _connectPendingPublicServerKey = null;
+// Joins on the Network screen, by server key: when each began. One shows as
+// Joining… until its server is reached or the wait runs out, whatever happens
+// to the connection meanwhile (a removal, a refusal, a restart).
+var _publicServerJoins = {};
+var PUBLIC_SERVER_JOIN_WAIT_MS = 30000;
 
 function _publicServerMatchesEndpoint(server, host, port) {
     var endpointKey = _tcpServerKey(host, port);
@@ -2128,15 +2131,40 @@ function _connectMatchingPublicInterface(server, ifaces) {
     return match;
 }
 
+// Why a saved connection isn't up, in words, from its client's last attempt.
+function connectTroubleText(live) {
+    if (!live || live.online !== false || !live.connect_failures) return '';
+    return {
+        closed_by_peer: 'Server closed the connection',
+        refused: 'Server refused the connection',
+        dns: 'Server name not found'
+    }[live.last_connect_error] || 'Can\u2019t reach the server';
+}
+
 function _publicServerState(server, ifaces) {
     var match = _connectMatchingPublicInterface(server, ifaces);
     var connected = !!(match && match.online);
+    var key = _tcpServerKey(server.host, server.port);
+    var began = _publicServerJoins[key];
+    if (began && (connected || Date.now() - began >= PUBLIC_SERVER_JOIN_WAIT_MS)) {
+        delete _publicServerJoins[key];
+        began = null;
+    }
+    var live = match && !connected && typeof getInterfaceLiveStatus === 'function'
+        ? getInterfaceLiveStatus(match.iface.name || '') : null;
     return {
         match: match,
         connected: connected,
-        pending: _connectPendingPublicServerKey === _tcpServerKey(server.host, server.port) && !connected,
-        configured: !!match && !connected
+        pending: !!began,
+        configured: !!match && !connected,
+        trouble: match && !connected && !began ? (connectTroubleText(live) || 'Not connected') : ''
     };
+}
+
+function _beginPublicServerJoin(server) {
+    _publicServerJoins[_tcpServerKey(server.host, server.port)] = Date.now();
+    setTimeout(_redrawPublicServers, PUBLIC_SERVER_JOIN_WAIT_MS + 250);
+    _redrawPublicServers();
 }
 
 function _redrawPublicServers() {
@@ -2145,8 +2173,7 @@ function _redrawPublicServers() {
 
 // A public server is always joined as a TCP client, which Backbone servers accept too.
 function connectPublicServer(server) {
-    _connectPendingPublicServerKey = _tcpServerKey(server.host, server.port);
-    _redrawPublicServers();
+    _beginPublicServerJoin(server);
     RS.invoke('add_tcp_connection', {
         args: { host: server.host, port: server.port, name: server.name, ifac_enabled: false, ifac_network_name: '', ifac_passphrase: '' }
     }).catch(function(err) {
@@ -2156,7 +2183,7 @@ function connectPublicServer(server) {
 }
 
 function clearConnectPublicPending() {
-    _connectPendingPublicServerKey = null;
+    _publicServerJoins = {};
     _redrawPublicServers();
 }
 
@@ -2167,8 +2194,7 @@ function resumePublicServerInterface(server, match) {
         return;
     }
 
-    _connectPendingPublicServerKey = _tcpServerKey(server.host, server.port);
-    _redrawPublicServers();
+    _beginPublicServerJoin(server);
     RS.invoke('resume_interface', {
         args: {
             name: iface.name,

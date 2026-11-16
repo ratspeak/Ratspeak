@@ -5653,7 +5653,9 @@ fn interface_pause_resume_is_config_backed_and_visible() {
         read_source(root.join("dashboard/static/js/network_view.js")).expect("network view");
     assert!(network_view.contains("{ label: 'Resume', icon: 'play', op: 'resume' } : { label: 'Pause', icon: 'pause', op: 'pause' }"));
     assert!(network_view.contains("if (c.status === 'paused') return 'Paused';"));
-    assert!(network_view.contains("health: au && au.interface === name ? 'Multicast unavailable' : a.mobileHealth ? a.mobileHealth.label : (a.waitingForDevice ? 'Waiting for USB' : '')"));
+    assert!(network_view.contains("health: au && au.interface === name ? 'Multicast unavailable' : a.mobileHealth ? a.mobileHealth.label : (a.waitingForDevice ? 'Waiting for USB' : trouble)"));
+    // A connection still trying says why its last attempt failed.
+    assert!(network_view.contains("connectTroubleText(live)"));
     assert!(health_js.contains("function _configuredInterfaceFallback"));
     assert!(health_js.contains("var fallback = _configuredInterfaceFallback"));
     assert!(health_js.contains("Waiting for USB"));
