@@ -1608,7 +1608,7 @@ var _settingsAnnounceSelect = document.getElementById('auto-announce-select');
 if (_settingsAnnounceSelect) {
     _settingsAnnounceSelect.addEventListener('click', function() {
         var current = parseInt(_settingsAnnounceSelect.getAttribute('data-value'), 10);
-        if (isNaN(current)) current = 1800;
+        if (isNaN(current)) current = 3600;
         var preset = [0, 900, 1800, 3600].indexOf(current) !== -1;
         _settingsOpenSelect(_settingsAnnounceSelect, 'Auto-announce', [
             { label: 'Never', value: '0', hint: 'Announce only when you choose.' },

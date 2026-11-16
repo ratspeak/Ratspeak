@@ -169,6 +169,21 @@ fn coordinated_telephony_service_config() -> TelephonyServiceConfig {
 }
 
 pub async fn start_voice_service(state: &Arc<AppState>) -> VoiceResult<()> {
+    start_voice_service_with_presence_update(state, true).await
+}
+
+/// Runtime start: the startup announce, when auto-announce allows one, already
+/// carries the call destination.
+pub(crate) async fn start_voice_service_for_runtime_start(
+    state: &Arc<AppState>,
+) -> VoiceResult<()> {
+    start_voice_service_with_presence_update(state, false).await
+}
+
+async fn start_voice_service_with_presence_update(
+    state: &Arc<AppState>,
+    publish_presence_update: bool,
+) -> VoiceResult<()> {
     if voice_control_tx(state).is_some() {
         return Ok(());
     }
@@ -228,27 +243,20 @@ pub async fn start_voice_service(state: &Arc<AppState>) -> VoiceResult<()> {
     );
     record_lxst_activity(state, activity_origin, LxstTransition::ServiceStarted);
     state.bump_announce_content_revision();
-    crate::send_typed_announce_from_origin(
-        state,
-        crate::announce::AnnounceOrigin::ProfileChanged,
-        activity_origin,
-    )
-    .await;
+    if publish_presence_update {
+        crate::send_typed_announce_from_origin(
+            state,
+            crate::announce::AnnounceOrigin::ProfileChanged,
+            activity_origin,
+        )
+        .await;
+    }
     Ok(())
 }
 
+/// Stopping announces nothing: an announce without the call destination tells
+/// peers nothing, and the next one is built without it.
 pub async fn shutdown_voice_service(state: &Arc<AppState>) {
-    shutdown_voice_service_with_presence_update(state, true).await;
-}
-
-pub(crate) async fn shutdown_voice_service_for_runtime_teardown(state: &Arc<AppState>) {
-    shutdown_voice_service_with_presence_update(state, false).await;
-}
-
-async fn shutdown_voice_service_with_presence_update(
-    state: &Arc<AppState>,
-    publish_presence_update: bool,
-) {
     let activity_origin = state.activity_request_fence();
     let handle = state
         .lxst_voice
@@ -274,15 +282,7 @@ async fn shutdown_voice_service_with_presence_update(
         }),
     );
     record_lxst_activity(state, activity_origin, LxstTransition::ServiceStopped);
-    if publish_presence_update {
-        state.bump_announce_content_revision();
-        crate::send_typed_announce_from_origin(
-            state,
-            crate::announce::AnnounceOrigin::ProfileChanged,
-            activity_origin,
-        )
-        .await;
-    }
+    state.bump_announce_content_revision();
 }
 
 pub fn voice_status(state: &AppState) -> Value {

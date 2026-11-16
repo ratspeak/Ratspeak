@@ -1241,7 +1241,7 @@ async fn finish_shutdown_inner(
     #[cfg(feature = "lxst-voice")]
     voice_memo::cancel_recording(state).await.ok();
     #[cfg(feature = "lxst-voice")]
-    voice::shutdown_voice_service_for_runtime_teardown(state).await;
+    voice::shutdown_voice_service(state).await;
     if let Some(channels) = state.take_channels() {
         channels.shutdown().await;
     }
@@ -2918,7 +2918,10 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
             }
             tracing::info!("RNS runtime initialized");
             #[cfg(feature = "lxst-voice")]
-            if voice::start_voice_service(&state).await.is_err() {
+            if voice::start_voice_service_for_runtime_start(&state)
+                .await
+                .is_err()
+            {
                 tracing::warn!(
                     reason = "startup_failed",
                     "LXST voice service did not start"
@@ -3578,7 +3581,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                 }
             });
 
-            // Auto-announce loop; wakes on timer or interval change.
+            // Auto-announce loop; any announce restarts the wait, as Sideband does.
             let periodic_state = state.clone();
             let periodic_shutdown = state
                 .session_shutdown
@@ -3596,11 +3599,13 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                             _ = announce_rx.changed() => continue,
                         }
                     } else {
+                        let wait = periodic_announce_wait(interval_secs, jitter_unit());
                         tokio::select! {
                             biased;
                             _ = periodic_shutdown.wait() => break,
                             _ = announce_rx.changed() => continue,
-                            _ = tokio::time::sleep(Duration::from_secs(interval_secs)) => {
+                            _ = periodic_state.presence_announced.notified() => continue,
+                            _ = tokio::time::sleep(wait) => {
                                 let activity_origin =
                                     periodic_state.activity_request_fence();
                                 if periodic_shutdown.is_triggered() {
@@ -4223,6 +4228,9 @@ async fn run_announce_lifecycle(
         }
 
         let success = matches!(report.disposition, AnnounceSendDisposition::Queued);
+        if success && report.lxmf_delivery_queued {
+            state.presence_announced.notify_waiters();
+        }
         let follow_up = state
             .announce_coordinator
             .lock()
@@ -4240,6 +4248,35 @@ async fn run_announce_lifecycle(
         tokio::time::sleep(Duration::from_millis(1_050)).await;
         current_correlation_id = follow_up.correlation_id;
         current_activity_origin = state.activity_request_fence();
+    }
+}
+
+/// Fresh installs announce hourly: transport nodes rebroadcast one announce
+/// per destination an hour (Reticulum's `announce_rate_target`), and more
+/// often only gets this node rate-limited at its hubs.
+pub const DEFAULT_AUTO_ANNOUNCE_INTERVAL_SECS: u64 = 3600;
+
+/// The interval plus up to half again, so nodes started together drift apart
+/// and the wait never undercuts the hubs' hourly target. `unit` is in [0, 1).
+fn periodic_announce_wait(interval_secs: u64, unit: f64) -> Duration {
+    let interval = Duration::from_secs(interval_secs);
+    interval + interval.mul_f64(unit.clamp(0.0, 1.0) / 2.0)
+}
+
+fn jitter_unit() -> f64 {
+    let bytes = rns_crypto::random::random_bytes(4);
+    f64::from(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        / (f64::from(u32::MAX) + 1.0)
+}
+
+#[cfg(test)]
+#[test]
+fn periodic_announces_wait_the_interval_plus_up_to_half_again() {
+    assert_eq!(periodic_announce_wait(3600, 0.0), Duration::from_secs(3600));
+    assert_eq!(periodic_announce_wait(3600, 0.5), Duration::from_secs(4500));
+    assert!(periodic_announce_wait(3600, 0.999_999) < Duration::from_secs(5400));
+    for _ in 0..100 {
+        assert!((0.0..1.0).contains(&jitter_unit()));
     }
 }
 

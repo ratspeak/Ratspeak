@@ -1924,6 +1924,17 @@ function activityShortToken(value) {
     return text.slice(0, 9) + '…' + text.slice(-4);
 }
 
+// Operational codes that read better as words than as their code.
+var ACTIVITY_CODE_LABELS = {
+    lxmf_delivery: 'Messages',
+    lxmf_delivery_lxst: 'Messages + calls',
+    lxmf_delivery_propagation: 'Messages + Offline Inbox',
+    lxmf_delivery_propagation_lxst: 'Messages + Offline Inbox + calls',
+    chess: 'Chess',
+    four_in_a_row: 'Four in a Row',
+    tic_tac_toe: 'Tic-Tac-Toe'
+};
+
 function activityFormatAttributeValue(attribute, event) {
     if (!attribute || !attribute.value) return 'Unknown';
     var type = attribute.value.type;
@@ -1941,7 +1952,7 @@ function activityFormatAttributeValue(attribute, event) {
     if (attribute.key === 'reason' && value === 'remote') {
         return 'Remote Link teardown';
     }
-    if (type === 'code') return String(value);
+    if (type === 'code') return ACTIVITY_CODE_LABELS[value] || String(value);
     if (type === 'endpoint') {
         return activityHumanizeCode(value && value.class ? value.class : 'unknown') + ' endpoint';
     }

@@ -6489,7 +6489,9 @@ fn voice_and_capture_paths_preflight_media_permissions() {
     assert!(voice_rs.contains("announce_on_start: false"));
     assert!(voice_rs.contains("announce_interval: None"));
     assert!(voice_rs.contains("startup_announce_retry_interval: None"));
-    assert!(voice_rs.contains("shutdown_voice_service_for_runtime_teardown"));
+    // Only a user turning calls on announces; the runtime's start leaves it to
+    // the startup announce, which auto-announce may turn off.
+    assert!(voice_rs.contains("fn start_voice_service_for_runtime_start("));
     assert!(voice_rs.contains("if publish_presence_update"));
     assert!(!voice_rs.contains("TelephonyRnsEndpoint"));
     assert!(!voice_rs.contains("TelephonyRuntimeCore"));
@@ -6545,7 +6547,8 @@ fn voice_and_capture_paths_preflight_media_permissions() {
         read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime lib");
     assert!(runtime_rs.contains("voice::announce_if_running(state),"));
     assert!(runtime_rs.contains("report.lxst_queued = true"));
-    assert!(runtime_rs.contains("voice::shutdown_voice_service_for_runtime_teardown(state).await"));
+    assert!(runtime_rs.contains("voice::start_voice_service_for_runtime_start(&state)"));
+    assert!(runtime_rs.contains("voice::shutdown_voice_service(state).await"));
     let presence_burst = rust_function_block(&runtime_rs, "execute_announce_burst");
     let presence_build = rust_function_block(&runtime_rs, "try_build_presence_announce_packets");
     let propagation_build = presence_build
@@ -9157,12 +9160,12 @@ fn activity_producers_are_sealed_and_legacy_rows_have_one_masked_source() {
     assert!(lifecycle.contains("record_presence_lifecycle_activity("));
 
     let periodic_announce = runtime
-        .split("// Auto-announce loop; wakes on timer or interval change.")
+        .split("// Auto-announce loop; any announce restarts the wait, as Sideband does.")
         .nth(1)
         .and_then(|tail| tail.split("let poll_state = state.clone();").next())
         .expect("periodic auto-announce loop");
     let periodic_wait = periodic_announce
-        .find("tokio::time::sleep(Duration::from_secs(interval_secs))")
+        .find("tokio::time::sleep(wait)")
         .unwrap();
     let periodic_origin = periodic_announce
         .find("periodic_state.activity_request_fence()")

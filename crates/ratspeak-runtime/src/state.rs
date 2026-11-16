@@ -784,6 +784,8 @@ pub struct AppState {
     /// updating this map, so stale physical generations cannot overwrite it.
     mobile_hardware_state: RwLock<std::collections::BTreeMap<String, serde_json::Value>>,
     pub lxmf_notify: Arc<tokio::sync::Notify>,
+    /// Wakes the periodic announce timer when any presence announce went out.
+    pub presence_announced: tokio::sync::Notify,
     pub discovered_propagation_nodes: Mutex<HashMap<String, serde_json::Value>>,
     /// Last direct radio reading per LXMF destination, for the Peers signal row.
     peer_signals: Mutex<IndexMap<String, PeerSignal>>,
@@ -1037,7 +1039,7 @@ impl AppState {
 
         let initial_interval = crate::db::get_setting(&db, "auto_announce_interval")
             .and_then(|v| v.parse::<u64>().ok())
-            .unwrap_or(1800);
+            .unwrap_or(crate::DEFAULT_AUTO_ANNOUNCE_INTERVAL_SECS);
         let (announce_interval_tx, announce_interval_rx) = watch::channel(initial_interval);
         let initial_announce_ratspeak_usage =
             crate::db::get_setting(&db, "announce_ratspeak_usage")
@@ -1169,6 +1171,7 @@ impl AppState {
             last_hub_interfaces: RwLock::new(None),
             mobile_hardware_state: RwLock::new(std::collections::BTreeMap::new()),
             lxmf_notify: Arc::new(tokio::sync::Notify::new()),
+            presence_announced: tokio::sync::Notify::new(),
             discovered_propagation_nodes: Mutex::new(HashMap::new()),
             peer_signals: Mutex::new(IndexMap::new()),
             network_log_enabled: AtomicBool::new(false),
