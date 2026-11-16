@@ -9755,7 +9755,7 @@ fn peer_reachability_uses_uncapped_path_index() {
 }
 
 #[test]
-fn peer_transport_badges_use_compact_ble_label() {
+fn peer_connection_labels_name_the_kind_and_the_product() {
     let root = repo_root();
     let details =
         read_source(root.join("dashboard/static/js/peer_details.js")).expect("peer details js");
@@ -9764,12 +9764,14 @@ fn peer_transport_badges_use_compact_ble_label() {
     assert!(details.contains(
         "{ lora: 'Radio', ble: 'Bluetooth', tcp: 'Internet', host: 'Internet', local: 'Local' }"
     ));
+    // The stats payload is `{ interfaces: [...] }`.
+    assert!(details.contains("lastStats.interface_stats.interfaces"));
     assert!(details.contains("? 'Bluetooth Peer' : String(name);"));
+    // The About sheet names Bluetooth Peer as the product, like the person views.
+    assert!(details.contains("escapeHtml(personConnectionName(peer.iface)"));
 
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
-    assert!(lxmf.contains("function _peerCompactIfaceLabel(iface)"));
-    assert!(lxmf.contains("return 'BLE';"));
-    assert!(!lxmf.contains("return 'Bluetooth Peer';"));
+    assert!(!lxmf.contains("function _peerCompactIfaceLabel(iface)"));
 }
 
 #[test]

@@ -3360,6 +3360,8 @@ impl AppState {
                     .map(|(state, reason)| serde_json::json!({ "state": state, "reason": reason }));
                 serde_json::json!({
                     "name": entry.name,
+                    "type": entry.identity.as_ref().map(|identity| identity.class_name.as_str()),
+                    "parent": entry.parent_interface_name,
                     "rxb": entry.rx_bytes,
                     "txb": entry.tx_bytes,
                     "online": online,
@@ -3384,6 +3386,8 @@ impl AppState {
                     "ifac_size": entry.ifac_size,
                     "tx_drops": entry.tx_drops,
                     "rnode_state": rnode_state,
+                    "last_connect_error": entry.last_connect_error,
+                    "connect_failures": entry.connect_failures,
                 })
             })
             .collect::<Vec<_>>();
@@ -4061,6 +4065,30 @@ mod tests {
             .insert(74, false);
         let payload = state.interface_stats_payload(&[interface_stat(74, "Online Radio", true)]);
         assert_eq!(payload["interfaces"][0]["online"], false);
+    }
+
+    #[test]
+    fn interface_stats_payload_names_the_interface_type_and_listener() {
+        let state = make_state();
+        let mut texas = interface_stat(80, "Texas", false);
+        texas.identity = Some(rns_transport::messages::InterfaceIdentity::new(
+            "TCPInterface[Texas/1.2.3.4:4242]",
+            "Texas/1.2.3.4:4242",
+            "TCPClientInterface",
+        ));
+        texas.last_connect_error = Some("refused".into());
+        texas.connect_failures = 3;
+        let mut child = interface_stat(81, "Client on Hub", true);
+        child.parent_interface_name = Some("Hub".into());
+
+        let payload = state.interface_stats_payload(&[texas, child]);
+        let rows = &payload["interfaces"];
+        assert_eq!(rows[0]["type"], "TCPClientInterface");
+        assert_eq!(rows[0]["parent"], serde_json::Value::Null);
+        assert_eq!(rows[0]["last_connect_error"], "refused");
+        assert_eq!(rows[0]["connect_failures"], 3);
+        assert_eq!(rows[1]["type"], serde_json::Value::Null);
+        assert_eq!(rows[1]["parent"], "Hub");
     }
 
     #[tokio::test]

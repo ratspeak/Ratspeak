@@ -32,15 +32,22 @@ function personModel(hash) {
     };
 }
 
+var PERSON_CONNECTION_KINDS = { lora: 'Radio', ble: 'Bluetooth', tcp: 'Internet', host: 'Internet', local: 'Local' };
+
 // Radio, Internet, Bluetooth, or Local: the kind of connection an interface name belongs to.
+// The live row's type decides, then the saved entry, then the name.
 function personConnectionKind(name) {
     if (!name) return '';
-    var stats = (typeof lastStats !== 'undefined' && lastStats && Array.isArray(lastStats.interface_stats)) ? lastStats.interface_stats : [];
+    var stats = (typeof lastStats !== 'undefined' && lastStats && lastStats.interface_stats && Array.isArray(lastStats.interface_stats.interfaces))
+        ? lastStats.interface_stats.interfaces : [];
     for (var i = 0; i < stats.length; i++) {
         if (!stats[i] || stats[i].name !== name || typeof classifyInterface !== 'function') continue;
-        var kind = { lora: 'Radio', ble: 'Bluetooth', tcp: 'Internet', host: 'Internet', local: 'Local' }[classifyInterface(stats[i])];
+        var kind = PERSON_CONNECTION_KINDS[classifyInterface(stats[i])];
         if (kind) return kind;
     }
+    var record = typeof getConfiguredInterfaceRecord === 'function' ? getConfiguredInterfaceRecord(name) : null;
+    var saved = record && typeof interfaceSectionForConfigType === 'function' ? PERSON_CONNECTION_KINDS[interfaceSectionForConfigType(record.ifaceType)] : '';
+    if (saved) return saved;
     var lower = String(name).toLowerCase();
     if (/^(ble[ _]?peer|ble mesh|bluetooth peer)/.test(lower)) return 'Bluetooth';
     if (/rnode|^(kiss|ax25|lora|androidusb|android_usb)/.test(lower)) return 'Radio';
@@ -397,9 +404,8 @@ function peerDetailRowsHtml(peer, opts) {
             { rowTitle: 'First relay on the path. Its ID changes when that relay restarts.' });
     }
     if (peer && peer.iface) {
-        var compact = typeof _peerCompactIfaceLabel === 'function' ? _peerCompactIfaceLabel(peer.iface) : null;
         html += _peerDetailRowHtml('Connection',
-            escapeHtml((compact || peer.iface) + (peer.iface_is_live ? '' : ' \u00b7 last known')));
+            escapeHtml(personConnectionName(peer.iface) + (peer.iface_is_live ? '' : ' \u00b7 last known')));
     }
     if (inPath && peer.path_updated) html += _peerTimeRowHtml('Path updated', peer.path_updated);
     html += peer && peer.last_seen

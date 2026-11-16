@@ -1451,13 +1451,6 @@ function _refreshRenderedConversationPresence() {
     _applyChatHeaderPresence();
 }
 
-function _peerCompactIfaceLabel(iface) {
-    if (!iface) return null;
-    var s = String(iface).toLowerCase();
-    if (s.indexOf('ble_peer') >= 0 || s.indexOf('ble mesh') >= 0 || s.indexOf('bluetooth peer') >= 0) return 'BLE';
-    return null;
-}
-
 function _deliveryPrefOrAuto(method) {
     return method || 'auto';
 }

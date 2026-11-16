@@ -535,9 +535,10 @@ function classifyInterface(iface) {
     // The Bluetooth section is reserved for Bluetooth Peer peering only.
     if (typeName.indexOf('RNode') >= 0) return 'lora';
     if (typeName.indexOf('BlePeer') >= 0) return 'ble';
-    if (typeName.indexOf('TCPClient') >= 0) return 'tcp';
-    if (typeName.indexOf('TCPServer') >= 0) return 'host';
     if (typeName.indexOf('AutoInterface') >= 0) return 'local';
+    // A listener's accepted clients stay with the server that hosts them.
+    if (/^(TCPClient|BackboneClient|I2PInterface)/.test(typeName)) return iface.parent ? 'host' : 'tcp';
+    if (typeName === 'TCPServerInterface' || typeName === 'BackboneInterface') return 'host';
     var name = (iface.name || '').toLowerCase();
     if (name === 'ble mesh') return 'ble';
     if (name.indexOf('tcp') >= 0 && name.indexOf('server') >= 0) return 'host';
@@ -861,7 +862,7 @@ function networkConnectionItems() {
                 matchedConfigNames[configMatch.iface.name] = true;
             }
             var section = classifyInterface(li);
-            // Live stats lack 'type'; fall back to config match for dyn ifaces.
+            // Drivers without a class name fall back to the saved entry.
             if (!section && configMatch) {
                 section = interfaceSectionForConfigType(configMatch.ifaceType) || configMatch.ifaceType;
             }
@@ -869,7 +870,7 @@ function networkConnectionItems() {
             var ifaceType = configMatch ? configMatch.ifaceType : (joined ? 'joined' : section);
             var paused = !!(configMatch && configMatch.iface && !isInterfaceConfigEnabled(configMatch.iface));
             var renderIface = configMatch && configMatch.iface
-                ? Object.assign({}, configMatch.iface, { role: li.role || configMatch.iface.role, type: li.type || configMatch.iface.type })
+                ? Object.assign({}, configMatch.iface, { role: li.role || configMatch.iface.role, type: configMatch.iface.type || li.type })
                 : li;
             var mobileHealth = !paused && li.online === false ? _rnodeRuntimeHealth(li.rnode_state) : null;
             allIfaces.push({ iface: renderIface, section: section, ifaceType: ifaceType, paused: paused, mobileHealth: mobileHealth });
