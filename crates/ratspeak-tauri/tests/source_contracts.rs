@@ -7252,7 +7252,7 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     ] {
         let workflow = read_source(root.join(workflow_path)).expect("desktop release workflow");
         assert!(
-            workflow.contains("- name: Run tests\n        timeout-minutes: 20"),
+            workflow.contains("- name: Run tests\n        timeout-minutes: 45"),
             "{workflow_path} must fail a hung test step before the platform build budget expires"
         );
     }
