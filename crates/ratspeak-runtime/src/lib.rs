@@ -1770,19 +1770,19 @@ async fn read_active_identity_for_startup(state: &AppState) -> Result<Option<Val
         })
 }
 
-pub async fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) {
-    // Keep the large startup state machine out of every caller's future and
-    // debug poll frame. Tokio's normal worker stack should remain sufficient.
-    Box::pin(init_rns_lxmf_inner(state, data_dir)).await;
+pub type StartupFuture = std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>;
+
+/// Type-erased so the start-up tree compiles once: a concrete future is
+/// compiled again in every crate that awaits it. Boxing also keeps the large
+/// state machine off callers' stacks.
+pub fn init_rns_lxmf(state: Arc<AppState>, data_dir: std::path::PathBuf) -> StartupFuture {
+    Box::pin(init_rns_lxmf_inner(state, data_dir))
 }
 
 #[cfg(test)]
 #[test]
-fn startup_future_keeps_callers_stack_small() {
-    fn future_size<A, B, F>(_: fn(A, B) -> F) -> usize {
-        std::mem::size_of::<F>()
-    }
-    assert!(future_size(init_rns_lxmf) <= 128);
+fn startup_future_stays_type_erased() {
+    let _: fn(Arc<AppState>, std::path::PathBuf) -> StartupFuture = init_rns_lxmf;
 }
 
 async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf) {
