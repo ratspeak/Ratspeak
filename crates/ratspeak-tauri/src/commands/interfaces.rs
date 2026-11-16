@@ -8020,12 +8020,20 @@ pub async fn disable_auto_interface(
     let state_arc: Arc<AppState> = Arc::clone(&state);
     let activity_fence = state_arc.activity_request_fence();
     let config_dir = active_rns_config_dir(&state_arc);
-    let names = name
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|s| vec![sanitize_text(s, 64)])
-        .unwrap_or_else(|| crate::rns_config::auto_interface_names(&config_dir));
+    let auto_names = crate::rns_config::auto_interface_names(&config_dir);
+    // Only a Local Network entry is removed here, whatever name a row passes.
+    let names = match name.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(name) => {
+            let name = sanitize_text(name, 64);
+            if !auto_names.contains(&name) {
+                return Err(AppError::bad_request(
+                    "That is not a Local Network connection.",
+                ));
+            }
+            vec![name]
+        }
+        None => auto_names,
+    };
     let had_interfaces = !names.is_empty();
 
     if !names.is_empty()

@@ -13,11 +13,23 @@ function isAutoInterfaceAggregate(iface) {
     return name.indexOf('AutoInterface[') === 0 || typeName === 'AutoInterface';
 }
 
+// A client a server accepted, or a device Local Network found: part of that
+// connection, which counts its bytes, not a connection of its own.
+function isSpawnedInterface(iface) {
+    if (isAutoInterfacePeer(iface)) return true;
+    var typeName = (iface && iface.type) || '';
+    return !!(iface && iface.parent) && /^(TCPClient|BackboneClient|I2PInterfacePeer|WeaveInterfacePeer)/.test(typeName);
+}
+
 function interfaceStatsWithoutAutoPeerDoubleCount(ifaces) {
     var list = Array.isArray(ifaces) ? ifaces : [];
     var hasAutoAggregate = list.some(isAutoInterfaceAggregate);
-    if (!hasAutoAggregate) return list;
-    return list.filter(function(iface) { return !isAutoInterfacePeer(iface); });
+    var listed = {};
+    list.forEach(function(iface) { if (iface && iface.name) listed[iface.name] = true; });
+    return list.filter(function(iface) {
+        if (isAutoInterfacePeer(iface)) return !hasAutoAggregate;
+        return !(isSpawnedInterface(iface) && listed[iface.parent]);
+    });
 }
 
 function interfaceStatsTotals(ifaces) {
@@ -851,7 +863,8 @@ function networkConnectionItems() {
     var matchedConfigNames = {};
     if (lastStats && lastStats.interface_stats && lastStats.interface_stats.interfaces) {
         interfaceStatsWithoutAutoPeerDoubleCount(lastStats.interface_stats.interfaces).forEach(function(li) {
-            if (!isUserFacingInterface(li)) return;
+            // The connection that spawned it is the row; Turn off there ends it.
+            if (!isUserFacingInterface(li) || isSpawnedInterface(li)) return;
             var joined = isJoinedInterfaceName(li.name);
             var configMatch = null;
             // A joined connection is no saved one, whatever saved name its own contains.

@@ -187,10 +187,12 @@ function loadHubInterfaces() {
     });
 }
 
+// Python names a row Class[name/…]; Rust names it after its entry. A row whose
+// name merely contains an entry's name (a server's "Client on …") is not that entry.
 function _statsNameMatchesConfig(statsName, configName) {
     var m = statsName.match(/\w+\[([^\/\]]+)/);
     if (m) return m[1].trim() === configName;
-    return statsName.indexOf(configName) !== -1;
+    return statsName === configName;
 }
 
 function getInterfaceLiveStatus(ifaceName) {

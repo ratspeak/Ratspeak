@@ -107,6 +107,7 @@
             return {
                 id: name, name: display, kind: a.section, ifaceType: a.ifaceType, iface: iface, status: status,
                 tx: live ? live.txb || 0 : 0, rx: live ? live.rxb || 0 : 0,
+                peers: live && live.peers != null ? live.peers : null, clients: live && live.clients != null ? live.clients : null,
                 pub: a.section === 'tcp' ? publicServerFor(iface) : null, joined: a.ifaceType === 'joined',
                 health: au && au.interface === name ? 'Multicast unavailable' : a.mobileHealth ? a.mobileHealth.label : (a.waitingForDevice ? 'Waiting for USB' : '')
             };
@@ -367,6 +368,8 @@
         if (c.kind === 'ble') f.push(['Turns off', M.ble.expiresAt ? 'In ' + bleLeft(M).replace(' left', '') : 'Never']);
         if (c.kind === 'ble' && c.since) f.push(['Connected for', dur(Date.now() - c.since)]);
         if (c.kind === 'local' && i.group_id) f.push(['Network', esc(i.group_id === 'reticulum' ? 'Default' : i.group_id)]);
+        if (c.kind === 'local' && c.status === 'up' && c.peers != null) f.push(['Devices nearby', esc(String(c.peers))]);
+        if (c.kind === 'host' && c.status === 'up' && c.clients != null) f.push(['Connected clients', esc(String(c.clients))]);
         if (c.kind === 'lora' && radioMhz(i)) f.push(['Frequency', radioMhz(i)]);
         if (c.kind === 'lora' && radioVia(i)) f.push(['Connected by', radioVia(i)]);
         if (c.kind === 'host' && i.listen_port) f.push(['Port', esc(i.listen_port)]);
@@ -792,7 +795,7 @@
         if (op === 'keep') { if (RS.discovery && RS.discovery.keep) RS.discovery.keep(c.id); return; }
         if (op === 'options') { if (typeof showAutoInterfaceConfigSheet === 'function') showAutoInterfaceConfigSheet(); return; }
         if (op === 'leave') {
-            if (c.kind === 'local') { RS.invoke('disable_auto_interface', {}).then(function() { toast('Local Network is off'); }).catch(function(err) { fail(err, 'Could not turn off Local Network'); }); return; }
+            if (c.kind === 'local') { RS.invoke('disable_auto_interface', c.ifaceType === 'auto' ? { name: c.id } : {}).then(function() { toast('Local Network is off'); }).catch(function(err) { fail(err, 'Could not turn off Local Network'); }); return; }
             if (typeof confirmRemoveInterface === 'function') confirmRemoveInterface(c.ifaceType, c.id);
         }
     }

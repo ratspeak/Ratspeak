@@ -3391,6 +3391,8 @@ impl AppState {
                     "rnode_state": rnode_state,
                     "last_connect_error": entry.last_connect_error,
                     "connect_failures": entry.connect_failures,
+                    "peers": entry.peers,
+                    "clients": entry.clients,
                 })
             })
             .collect::<Vec<_>>();
