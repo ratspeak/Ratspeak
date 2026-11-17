@@ -1165,13 +1165,16 @@ function _visualViewportGeometry(visualHeight, offsetTop, pageTop, bodyTop, scro
     };
 }
 
+// The inset is measured from the full height: as the composer takes focus, WKWebView
+// briefly reports innerHeight at the keyboard-shrunk height and sends no event when it recovers.
 function _keyboardViewportMetrics(innerHeight, visualHeight, offsetTop, maxViewportHeight) {
     var keyboardHeight = innerHeight - visualHeight;
     var heightDrop = maxViewportHeight > 0 ? maxViewportHeight - visualHeight : 0;
     var open = keyboardHeight > 150 || heightDrop > 150;
+    var fullHeight = Math.max(innerHeight, maxViewportHeight || 0);
     return {
         open: open,
-        inset: open ? Math.max(0, innerHeight - visualHeight - (offsetTop || 0)) : 0
+        inset: open ? Math.max(0, fullHeight - visualHeight - (offsetTop || 0)) : 0
     };
 }
 
