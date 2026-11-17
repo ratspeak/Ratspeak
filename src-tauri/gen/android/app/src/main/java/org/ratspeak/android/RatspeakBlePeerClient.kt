@@ -351,7 +351,8 @@ class RatspeakBlePeerClient(private val context: Context) {
     /** Disconnect and free GATT resources. Idempotent. */
     fun cleanup() {
         Log.i(TAG, "cleanup() $address")
-        running.set(false)
+        // Closing a live link ourselves gets no disconnect callback, so report it here.
+        if (running.getAndSet(false) && address.isNotEmpty()) nativePeerClientDisconnected(address)
         if (address.isNotEmpty()) clients.remove(address, this)
         handler.post {
             try { txChar?.let { gatt?.setCharacteristicNotification(it, false) } } catch (_: Exception) {}
