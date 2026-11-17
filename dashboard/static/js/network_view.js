@@ -18,7 +18,7 @@
         sel: null, view: null, dfilter: 'all', older: false, moreOpen: false, joinOpen: false,
         mapCollapsed: false, announcing: false, lastAnnounce: 0, hist: [], lastTotal: null,
         bleStarting: false, setupFor: null, ribbonWas: null,
-        internetOpen: false, waysCollapsed: [], connectedOnce: false, flash: null
+        internetOpen: false, waysCollapsed: [], connectedOnce: false, flash: null, notes: {}
     };
 
     function K() { return RS.kit; }
@@ -112,6 +112,7 @@
                 tx: live ? live.txb || 0 : 0, rx: live ? live.rxb || 0 : 0,
                 peers: live && live.peers != null ? live.peers : null, clients: live && live.clients != null ? live.clients : null,
                 pub: a.section === 'tcp' ? publicServerFor(iface) : null, joined: a.ifaceType === 'joined',
+                note: status === 'off' || status === 'paused' ? NV.notes[name] || '' : '',
                 health: au && au.interface === name ? 'Multicast unavailable' : a.mobileHealth ? a.mobileHealth.label : (a.waitingForDevice ? 'Waiting for USB' : trouble)
             };
         }).filter(function(c) { return c.kind !== 'ble'; });
@@ -214,6 +215,9 @@
     // "Start here" shows until the first connection, and never again after.
     function isStart(M) { return !M.conns.length && !NV.connectedOnce; }
     function onLine(text) { return dot('online') + esc(text); }
+    // A card says Off, or On with how many it's connected to.
+    function onCount(n, one, many) { return onLine(n ? 'On · ' + n + ' ' + (n === 1 ? one : many) : 'On'); }
+    function sum(lst, key) { return lst.reduce(function(t, c) { return t + (c.status === 'up' && c[key] ? c[key] : 0); }, 0); }
     // What keeps Bluetooth Peer from working fully, from the platform's own state.
     function bleNote(M) {
         var word = { bluetooth_off: 'Bluetooth is off', permission_needed: 'Bluetooth permission needed',
@@ -228,6 +232,7 @@
     }
     // A connected row says just "Connected"; the rest is in the detail.
     function rowStatus(c) {
+        if (c.note) return c.note;
         if (c.scanning) return 'Looking nearby…';
         if (c.status === 'pending') return c.health || 'Connecting…';
         if (c.status === 'paused') return 'Paused';
@@ -236,7 +241,7 @@
     }
     function rowName(c) { return c.pub ? c.pub.name : c.name; }
     function crow(c, M) {
-        var tone = c.status === 'up' ? 'online' : (c.status === 'paused' || c.status === 'off') ? '' : 'warning';
+        var tone = c.status === 'up' ? 'online' : c.note ? 'warning' : (c.status === 'paused' || c.status === 'off') ? '' : 'warning';
         return '<div class="net-crow"><button type="button" class="ui-row" data-act="c-node" data-id="' + esc(c.id) + '"' + (!M.phone && NV.sel === 'c:' + c.id ? ' aria-current="true"' : '') +
                 ' aria-label="' + esc(rowName(c) + ', ' + rowStatus(c) + '. Show details') + '">' + mark(c) +
                 '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + esc(rowName(c)) + '</span></span>' +
@@ -283,11 +288,11 @@
         var n = M.life.paused_count || 0;
         return '<div class="ui-notice ui-notice--warning" role="status">' + icon('pause') + '<div class="ui-notice-body">' + (n === 1 ? '1 connection' : n + ' connections') + ' paused.</div></div>';
     }
-    function deviceWay(M, kind, title, desc) {
+    function deviceWay(M, kind, title) {
         var lst = byKind(M, kind), act = lst.filter(function(c) { return c.status !== 'off'; });
-        var n = act.length, word = kind === 'lora' ? (n === 1 ? ' radio' : ' radios') : '';
-        var status = !lst.length ? esc(desc) : !n ? 'Off' : allPaused(act) ? pausedLine()
-            : act.some(function(c) { return c.status === 'up'; }) ? onLine(kind === 'lora' ? 'On · ' + n + word : 'On · Hosting') : 'Turning on…';
+        var n = act.length, up = act.filter(function(c) { return c.status === 'up'; });
+        var status = !n ? (NV.setupFor === kind ? onLine('On') : 'Off') : allPaused(act) ? pausedLine()
+            : kind === 'lora' ? onCount(up.length, 'radio', 'radios') : onCount(sum(up, 'clients'), 'client', 'clients');
         // A second radio (USB beside Bluetooth, say) is added from the card that lists the first.
         var foot = kind === 'lora' && lst.length ? link('Add another radio', 'add-radio') : '';
         return way(kind, { title: title, on: n > 0, status: status, ctl: sw({ act: 'dev-' + kind, on: n > 0 || NV.setupFor === kind, label: title }), body: crows(lst, M), foot: foot });
@@ -296,14 +301,14 @@
         var tcp = byKind(M, 'tcp'), out = '';
         // With no server yet, the switch only opens the server list; with servers, it turns them all off or on.
         if (!tcp.length) {
-            out += way('tcp', { title: 'Internet', start: isStart(M), on: NV.internetOpen, fold: false, status: 'Join a server to reach people anywhere.',
+            out += way('tcp', { title: 'Internet', start: isStart(M), on: NV.internetOpen, fold: false, status: NV.internetOpen ? onLine('On') : 'Off',
                 ctl: sw({ act: 'tcp', on: NV.internetOpen, label: 'Internet' }), body: NV.internetOpen ? serverList() : '' });
         } else {
             var tcpOn = tcp.filter(function(c) { return c.status !== 'off'; });
             var up = tcpOn.filter(function(c) { return c.status === 'up'; }).length;
             out += way('tcp', {
                 title: 'Internet', on: tcpOn.length > 0,
-                status: !tcpOn.length ? 'Off' : allPaused(tcpOn) ? pausedLine() : up ? onLine('On · ' + up + (up === 1 ? ' server' : ' servers')) : 'Joining…',
+                status: !tcpOn.length ? 'Off' : allPaused(tcpOn) ? pausedLine() : onCount(up, 'server', 'servers'),
                 ctl: sw({ act: 'tcp', on: tcpOn.length > 0, label: 'Internet' }),
                 body: crows(tcp, M) + (NV.joinOpen ? '<div class="net-join-more">' + serverList() + '</div>' : ''),
                 foot: link(NV.joinOpen ? 'Hide servers' : 'Join another server', 'join-toggle', ' aria-expanded="' + !!NV.joinOpen + '"')
@@ -312,25 +317,26 @@
         var bles = byKind(M, 'ble');
         if (M.ble.on) {
             out += way('ble', {
-                title: 'Bluetooth Peer', on: true, status: allPaused(bles) ? pausedLine() : (bleNote(M) || onLine('On · ' + bleLeft(M))),
+                title: 'Bluetooth Peer', on: true,
+                status: allPaused(bles) ? pausedLine() : (bleNote(M) || onCount(bles.filter(function(c) { return c.id !== 'ble:scan'; }).length, 'peer', 'peers')),
                 ctl: sw({ act: 'ble', on: true, label: 'Bluetooth Peer' }), body: crows(bles, M),
                 full: '<div class="net-seg-row"><span class="ui-label">Stay on for</span>' + seg(DURS, M.ble.duration == null ? BLE_DEFAULT_SECS : M.ble.duration, 'Stay on for', 'ble-dur') + '</div>'
             });
         } else {
-            out += way('ble', { title: 'Bluetooth Peer', status: M.ble.starting ? 'Turning on…' : (bleNote(M) || 'People nearby, no internet.'),
+            out += way('ble', { title: 'Bluetooth Peer', status: M.ble.starting ? onLine('On') : (bleNote(M) || 'Off'),
                 ctl: sw({ act: 'ble', on: M.ble.starting, busy: M.ble.starting, label: 'Bluetooth Peer' }) });
         }
         var locals = byKind(M, 'local'), localOn = locals.length > 0;
         out += way('local', {
             title: 'Local Network', on: localOn,
-            status: localOn ? (allPaused(locals) ? pausedLine() : locals.some(function(c) { return c.status === 'up'; }) ? onLine('On') : 'Turning on…') : 'Same Wi-Fi or wired network.',
+            status: !localOn ? 'Off' : allPaused(locals) ? pausedLine() : onCount(sum(locals, 'peers'), 'peer', 'peers'),
             ctl: sw({ act: 'local', on: localOn, label: 'Local Network' }), body: localOn ? crows(locals, M) : ''
         });
-        out += deviceWay(M, 'lora', 'Radio', 'LoRa, long range, off the grid.');
-        if (!M.phone || byKind(M, 'host').length) out += deviceWay(M, 'host', 'Host', 'Others connect to this computer.');
+        out += deviceWay(M, 'lora', 'Radio');
+        if (!M.phone || byKind(M, 'host').length) out += deviceWay(M, 'host', 'Host');
         var n = M.disc.entries.length;
         out += '<h3 class="ui-section-title">Find more</h3>' + way('discovered', {
-            title: 'Discover servers', on: M.disc.on, status: M.disc.on ? onLine('On · ' + n + ' found') : 'Shared servers and radios.',
+            title: 'Discover servers', on: M.disc.on, status: M.disc.on ? onCount(n, 'found', 'found') : 'Off',
             ctl: sw({ act: 'disc', on: M.disc.on, busy: M.disc.busy, label: 'Discover servers' }),
             foot: M.disc.on ? (n ? link('See all ' + n, 'list') : '') + link('Join automatically: ' + (M.disc.settings.autojoin ? M.disc.settings.autojoin + (M.disc.settings.autojoin === 1 ? ' server' : ' servers') : 'Off'), 'disc-settings') : ''
         });
@@ -684,7 +690,7 @@
     // ------------------------------------------------------------------ render and update
     var root = null, layer = null, mapObs = null, lastSig = '';
     function signature(M) {
-        return JSON.stringify([M.phone, M.conns.map(function(c) { return [c.id, c.status, c.name, c.health]; }), M.pausedAll, M.life.paused_count, M.ble.on, M.ble.starting,
+        return JSON.stringify([M.phone, M.conns.map(function(c) { return [c.id, c.status, c.name, c.health, c.note, c.peers, c.clients]; }), M.pausedAll, M.life.paused_count, M.ble.on, M.ble.starting,
             M.ble.duration, Math.ceil((M.ble.expiresAt * 1000 - Date.now()) / MIN), M.disc.on, M.disc.busy, M.disc.entries.length, M.disc.settings.autojoin, NV.sel, NV.view, NV.dfilter, NV.older,
             NV.moreOpen, NV.joinOpen, NV.mapCollapsed, NV.announcing, NV.setupFor, NV.internetOpen, NV.waysCollapsed.join(), NV.connectedOnce, live(M).length > 0, M.disc.entries.map(function(e) { return [e.id, e.joined, e.added, e.status]; })]);
     }
@@ -872,10 +878,16 @@
         switchAll(lst, on);
         if (!on) toast((kind === 'lora' ? (lst.length === 1 ? rowName(lst[0]) : 'Radios') : 'Hosting') + ' is off');
     }
+    // A turn-on that fails leaves the row off with the reason, until the next try.
     function switchAll(lst, on) {
         lst.forEach(function(c) {
+            delete NV.notes[c.id];
             if (on && (c.status === 'off' || c.status === 'paused')) {
-                RS.invoke('resume_interface', { args: { name: c.id, iface_type: c.ifaceType } }).catch(function(err) { fail(err, 'Could not turn it on'); });
+                RS.invoke('resume_interface', { args: { name: c.id, iface_type: c.ifaceType } }).catch(function(err) {
+                    NV.notes[c.id] = (err && err.message) || 'Couldn’t turn on';
+                    fail(err, 'Could not turn it on');
+                    render(true);
+                });
             } else if (!on && c.status !== 'off') {
                 RS.invoke('pause_interface', { args: { name: c.id, iface_type: c.ifaceType, off: true } }).catch(function(err) { fail(err, 'Could not turn it off'); });
             }
@@ -889,6 +901,7 @@
     }
     // One action per way's switch, from the switch itself or a tap on the map.
     function switchWay(kind, on) {
+        if (on) unfold(kind);
         if (kind === 'tcp') { internetSwitch(on); return; }
         if (kind === 'ble') { if (on) enableBle(); else disableBle(); return; }
         if (kind === 'lora' || kind === 'host') { deviceSwitch(kind, on); return; }
@@ -900,6 +913,13 @@
         } else {
             RS.invoke('disable_auto_interface', {}).then(function() { toast('Local Network is off'); }).catch(function(err) { fail(err, 'Could not turn off Local Network'); });
         }
+        render(true);
+    }
+    // Turning a card on opens it, so what it turned on is in view.
+    function unfold(kind) {
+        if (NV.waysCollapsed.indexOf(kind) === -1) return;
+        NV.waysCollapsed = NV.waysCollapsed.filter(function(k) { return k !== kind; });
+        RS.invoke('set_ui_state', { key: 'network_ways_collapsed', value: NV.waysCollapsed }).catch(function() {});
         render(true);
     }
     function foldWay(kind) {
@@ -1085,7 +1105,7 @@
         var a = el.getAttribute('data-act');
         if (a === 'tcp' || a === 'ble' || a === 'local') { switchWay(a, el.checked); return; }
         if (a === 'dev-lora' || a === 'dev-host') { switchWay(a.slice(4), el.checked); return; }
-        if (a === 'disc' && RS.discovery) RS.discovery.setEnabled(el.checked);
+        if (a === 'disc' && RS.discovery) { if (el.checked) unfold('discovered'); RS.discovery.setEnabled(el.checked); }
     }
 
     function init() {
@@ -1110,7 +1130,7 @@
         if (RS.networkIdentity) RS.networkIdentity.onChange(function() { flushHostDrafts(); NV.render(true); });
         window.addEventListener('ratspeak-theme-changed', function() { NV.render(true); });
         if (document.fonts && document.fonts.ready) document.fonts.ready.then(sizeTotals);
-        // Bluetooth Peer's time left counts down on the card while Network shows.
+        // Bluetooth Peer's time left counts down in its details while Network shows.
         setInterval(function() { if (window._blePeerEnabled && document.visibilityState === 'visible') NV.render(); }, 30000);
     }
     if (typeof VIEW_LIFECYCLE !== 'undefined') {

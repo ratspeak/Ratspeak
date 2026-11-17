@@ -20,6 +20,7 @@ changes that materially affect how an artifact is reproduced.
 - Folded sections on the Network screen point right while shut and down while open.
 - Discover servers is switched on and off only in Network. Settings › Network › Discovery shows whether it's on and keeps the rest of its options.
 - A message's Activity detail shows which kind of connection it was delivered or received over.
+- Network's cards say just Off or On, with what they're connected to: "On · 1 server", "On · 3 peers", "On · 1 radio". Turning a card on opens it, and a radio that can't turn on, such as a USB radio that isn't plugged in, says why on its row.
 - The Android app is about 5 MB smaller.
 
 ## [1.1.0] - 2026-11-15
