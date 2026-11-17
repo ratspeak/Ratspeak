@@ -470,9 +470,11 @@
     html[data-keyboard-platform="ios"].keyboard-open .ui-modal.ui-modal--keeps-keyboard {
         bottom: var(--keyboard-inset, 0px);
     }
+    /* On the keyboard, the home indicator's inset is hidden under it: no blank band below. */
     html[data-keyboard-platform="ios"].keyboard-open .ui-modal:focus-within > .ui-dialog,
     html[data-keyboard-platform="ios"].keyboard-open .ui-modal.ui-modal--keeps-keyboard > .ui-dialog {
         max-height: calc(var(--visual-viewport-height, 100dvh) - var(--space-8));
+        padding-bottom: 0;
     }
     .bottom-sheet-handle {
         width: 36px;
