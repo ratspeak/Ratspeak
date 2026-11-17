@@ -540,8 +540,12 @@ button.ui-prop, a.ui-prop { cursor: pointer; text-decoration: none; }
 @media (max-width: 768px), (pointer: coarse) { .ui-avatar--compact { --s: 40px; } }
 .ui-row-top--hug > .ui-row-title { flex: 0 1 auto; }
 .ui-row-top--hug > .ui-time { margin-left: auto; padding-left: 4px; }
-.ui-row-trail { margin-left: auto; padding-left: 4px; font-size: var(--text-xs); color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.ui-row-trail { margin-left: auto; padding-left: 4px; font-size: var(--text-xs); color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; display: inline-flex; align-items: center; gap: 4px; }
 .ui-row:is([aria-current="true"], [aria-current="page"]) .ui-row-trail { color: var(--text-secondary); }
+.ui-row-trail .ui-ico { width: 16px; height: 16px; flex: none; }
+/* On the status line it matches the status text. */
+.ui-row-sub > .ui-row-trail { font-size: inherit; }
+.ui-row .ui-row-trail.ui-row-trail--danger { color: var(--danger-ink); }
 /* An unnamed row: the short address is the title. */
 .ui-row.is-unnamed .ui-row-title { font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 400; color: var(--text-secondary); }
 

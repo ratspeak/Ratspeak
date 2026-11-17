@@ -3391,6 +3391,7 @@ impl AppState {
                     "rnode_state": rnode_state,
                     "last_connect_error": entry.last_connect_error,
                     "connect_failures": entry.connect_failures,
+                    "battery": radio_battery(&entry.radio),
                     "peers": entry.peers,
                     "clients": entry.clients,
                 })
@@ -3787,6 +3788,23 @@ impl AppState {
     }
 }
 
+/// An RNode's last battery report, `None` until it sends one (Reticulum.py
+/// leaves `battery_state` out while it is unknown).
+fn radio_battery(
+    radio: &[(&'static str, rns_transport::messages::InterfaceStatValue)],
+) -> Option<serde_json::Value> {
+    use rns_transport::messages::InterfaceStatValue as V;
+    let state = radio.iter().find_map(|(key, value)| match (*key, value) {
+        ("battery_state", V::Str(state)) => Some(state.as_str()),
+        _ => None,
+    })?;
+    let percent = radio.iter().find_map(|(key, value)| match (*key, value) {
+        ("battery_percent", V::Int(percent)) => Some(*percent),
+        _ => None,
+    })?;
+    Some(serde_json::json!({ "state": state, "percent": percent }))
+}
+
 fn cleanup_attachment_staging_dir(dir: &Path) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -4094,6 +4112,27 @@ mod tests {
         assert_eq!(rows[0]["connect_failures"], 3);
         assert_eq!(rows[1]["type"], serde_json::Value::Null);
         assert_eq!(rows[1]["parent"], "Hub");
+    }
+
+    #[test]
+    fn interface_stats_payload_carries_an_rnode_battery_once_reported() {
+        use rns_transport::messages::InterfaceStatValue as V;
+        let state = make_state();
+        let mut radio = interface_stat(82, "Radio", true);
+        radio.radio = vec![
+            ("battery_state", V::Str("charging".into())),
+            ("battery_percent", V::Int(87)),
+        ];
+        let mut silent = interface_stat(83, "Quiet radio", true);
+        silent.radio = vec![("battery_percent", V::Int(0))];
+
+        let payload = state.interface_stats_payload(&[radio, silent]);
+        let rows = &payload["interfaces"];
+        assert_eq!(
+            rows[0]["battery"],
+            serde_json::json!({ "state": "charging", "percent": 87 })
+        );
+        assert_eq!(rows[1]["battery"], serde_json::Value::Null);
     }
 
     #[tokio::test]

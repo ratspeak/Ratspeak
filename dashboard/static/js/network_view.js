@@ -18,7 +18,7 @@
         sel: null, view: null, dfilter: 'all', older: false, moreOpen: false, joinOpen: false,
         mapCollapsed: false, announcing: false, lastAnnounce: 0, hist: [], lastTotal: null,
         bleStarting: false, setupFor: null, ribbonWas: null,
-        internetOpen: false, waysCollapsed: [], connectedOnce: false, flash: null, notes: {}
+        internetOpen: false, waysCollapsed: [], connectedOnce: false, flash: null, notes: {}, batt: {}
     };
 
     function K() { return RS.kit; }
@@ -107,7 +107,9 @@
             var au = a.section === 'local' && !a.paused ? window._autoUnavailable : null;
             if (au && au.interface === name) status = 'pending';
             var trouble = status === 'pending' && typeof connectTroubleText === 'function' ? connectTroubleText(live) : '';
+            var batt = a.section === 'lora' && status === 'up' ? radioBattery(name, live) : null;
             return {
+                batt: batt,
                 id: name, name: display, kind: a.section, ifaceType: a.ifaceType, iface: iface, status: status,
                 tx: live ? live.txb || 0 : 0, rx: live ? live.rxb || 0 : 0,
                 peers: live && live.peers != null ? live.peers : null, clients: live && live.clients != null ? live.clients : null,
@@ -240,12 +242,34 @@
         return 'Connected';
     }
     function rowName(c) { return c.pub ? c.pub.name : c.name; }
+    // A connected radio's last battery report, on its status line so names keep their room.
+    // A new percent shows once it has held 10 s,
+    // so readings that wobble between two values never flap; the first and any state change show at once.
+    function radioBattery(id, live) {
+        var b = live && live.battery, pct = b ? Number(b.percent) : NaN;
+        if (!b || !isFinite(pct)) { delete NV.batt[id]; return null; }
+        pct = Math.max(0, Math.min(100, Math.round(pct)));
+        var now = Date.now(), h = NV.batt[id];
+        if (!h || h.state !== b.state) h = NV.batt[id] = { pct: pct, state: b.state, next: pct, since: now };
+        else if (pct === h.pct) h.next = pct;
+        else if (pct !== h.next) { h.next = pct; h.since = now; }
+        else if (now - h.since >= 10000) h.pct = pct;
+        var charging = h.state === 'charging' || h.state === 'charged';
+        return { pct: h.pct, state: h.state, charging: charging, low: !charging && h.pct <= 20 };
+    }
+    function battWords(b) { return b.pct + '%' + (b.state === 'charging' ? ', charging' : b.state === 'charged' ? ', charged' : b.low ? ', low' : ''); }
+    function rowLabel(c) { return rowName(c) + ', ' + rowStatus(c) + (c.batt ? ', battery ' + battWords(c.batt) : '') + '. Show details'; }
+    function battTrail(c) {
+        var b = c.batt;
+        return b ? '<span class="ui-row-trail' + (b.low ? ' ui-row-trail--danger' : '') + '" data-batt="' + esc(c.id) + '" aria-hidden="true" title="Battery ' + esc(battWords(b)) + '">' +
+            '<span class="n">' + b.pct + '%</span>' + icon(b.charging ? 'battery-charging' : 'battery') + '</span>' : '';
+    }
     function crow(c, M) {
         var tone = c.status === 'up' ? 'online' : c.note ? 'warning' : (c.status === 'paused' || c.status === 'off') ? '' : 'warning';
         return '<div class="net-crow"><button type="button" class="ui-row" data-act="c-node" data-id="' + esc(c.id) + '"' + (!M.phone && NV.sel === 'c:' + c.id ? ' aria-current="true"' : '') +
-                ' aria-label="' + esc(rowName(c) + ', ' + rowStatus(c) + '. Show details') + '">' + mark(c) +
+                ' aria-label="' + esc(rowLabel(c)) + '">' + mark(c) +
                 '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + esc(rowName(c)) + '</span></span>' +
-                '<span class="ui-row-sub">' + dot(tone) + '<span class="t">' + esc(rowStatus(c)) + '</span></span></span></button>' +
+                '<span class="ui-row-sub">' + dot(tone) + '<span class="t">' + esc(rowStatus(c)) + '</span>' + battTrail(c) + '</span></span></button>' +
             (c.scanning ? '' : '<button type="button" class="ui-icon-btn ui-icon-btn--sm" data-act="c-menu" data-id="' + esc(c.id) + '" aria-haspopup="menu" aria-expanded="false" aria-label="More for ' + esc(rowName(c)) + '" title="More for ' + esc(rowName(c)) + '">' + icon('more') + '</button>') +
         '</div>';
     }
@@ -386,6 +410,7 @@
         if (c.kind === 'host' && c.status === 'up' && c.clients != null) f.push(['Connected clients', esc(String(c.clients))]);
         if (c.kind === 'lora' && radioMhz(i)) f.push(['Frequency', radioMhz(i)]);
         if (c.kind === 'lora' && radioVia(i)) f.push(['Connected by', radioVia(i)]);
+        if (c.batt) f.push(['Battery', '<span data-batt-fact="' + esc(c.id) + '">' + esc(battWords(c.batt)) + '</span>']);
         if (c.kind === 'host' && i.listen_port) f.push(['Port', esc(i.listen_port)]);
         if (c.kind === 'host') { var nn = typeof _ifaceIfacNetworkName === 'function' ? _ifaceIfacNetworkName(i) : (i.network_name || ''); f.push(['Network name', nn ? esc(nn) : 'None']); }
         if (c.joined) f.push(['Added by', 'Join automatically']);
@@ -690,7 +715,7 @@
     // ------------------------------------------------------------------ render and update
     var root = null, layer = null, mapObs = null, lastSig = '';
     function signature(M) {
-        return JSON.stringify([M.phone, M.conns.map(function(c) { return [c.id, c.status, c.name, c.health, c.note, c.peers, c.clients]; }), M.pausedAll, M.life.paused_count, M.ble.on, M.ble.starting,
+        return JSON.stringify([M.phone, M.conns.map(function(c) { return [c.id, c.status, c.name, c.health, c.note, c.peers, c.clients, c.batt ? [c.batt.charging, c.batt.low] : 0]; }), M.pausedAll, M.life.paused_count, M.ble.on, M.ble.starting,
             M.ble.duration, Math.ceil((M.ble.expiresAt * 1000 - Date.now()) / MIN), M.disc.on, M.disc.busy, M.disc.entries.length, M.disc.settings.autojoin, NV.sel, NV.view, NV.dfilter, NV.older,
             NV.moreOpen, NV.joinOpen, NV.mapCollapsed, NV.announcing, NV.setupFor, NV.internetOpen, NV.waysCollapsed.join(), NV.connectedOnce, live(M).length > 0, M.disc.entries.map(function(e) { return [e.id, e.joined, e.added, e.status]; })]);
     }
@@ -726,6 +751,21 @@
         set('[data-live="announce"]', M.lastAnnounce ? ago(Date.now() - M.lastAnnounce) : '—');
         var s = root.querySelector('[data-spark="ribbon"]');
         if (s) s.innerHTML = spark(NV.hist, 600, 34);
+        // Battery percent and words change in place; the glyph and low colour are in the signature.
+        M.conns.forEach(function(c) {
+            if (!c.batt) return;
+            root.querySelectorAll('[data-batt],[data-batt-fact]').forEach(function(el) {
+                if (el.getAttribute('data-batt') === c.id) {
+                    var n = el.querySelector('.n'), t = c.batt.pct + '%', title = 'Battery ' + battWords(c.batt);
+                    if (n && n.textContent !== t) n.textContent = t;
+                    if (el.getAttribute('title') !== title) el.setAttribute('title', title);
+                    var row = el.closest('.ui-row');
+                    if (row && row.getAttribute('aria-label') !== rowLabel(c)) row.setAttribute('aria-label', rowLabel(c));
+                } else if (el.getAttribute('data-batt-fact') === c.id && el.textContent !== battWords(c.batt)) {
+                    el.textContent = battWords(c.batt);
+                }
+            });
+        });
     }
     // Each total and stat gets a slot as wide as its widest value in this font, so values never shift the line.
     function slot(b, widest, prop) {
