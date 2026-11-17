@@ -113,6 +113,7 @@ function identityAvatar(hashValue, size) {
         people: '<circle cx="12" cy="8" r="3"/><path d="M6.5 20a5.5 5.5 0 0 1 11 0"/><circle cx="5" cy="10" r="2.2"/><path d="M1.5 18a4 4 0 0 1 3.6-3.4"/><circle cx="19" cy="10" r="2.2"/><path d="M22.5 18a4 4 0 0 0-3.6-3.4"/>',
         shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
         bell: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/>',
+        'bell-off': '<path d="M13.73 21a2 2 0 0 1-3.46 0"/><path d="M18.63 13A17.89 17.89 0 0 1 18 8"/><path d="M6.26 6.26A5.86 5.86 0 0 0 6 8c0 7-3 9-3 9h14"/><path d="M18 8a6 6 0 0 0-9.33-5"/><line x1="2" y1="2" x2="22" y2="22"/>',
         palette: '<circle cx="13.5" cy="6.5" r="1"/><circle cx="17.5" cy="10.5" r="1"/><circle cx="8.5" cy="7.5" r="1"/><circle cx="6.5" cy="12.5" r="1"/><path d="M12 2a10 10 0 0 0 0 20c.93 0 1.5-.75 1.5-1.6 0-.42-.16-.8-.44-1.1-.27-.3-.43-.68-.43-1.1 0-.88.72-1.6 1.6-1.6H16a6 6 0 0 0 6-6c0-4.97-4.48-8.6-10-8.6z"/>',
         database: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>',
         code: '<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>',

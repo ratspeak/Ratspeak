@@ -1661,9 +1661,6 @@ function initTabSwipe() {
             if (RS.viewStack && typeof RS.viewStack.depth === 'function' && RS.viewStack.depth() > 1) return true;
             if (MOBILE_TAB_SLOTS.indexOf(_mobileTabSlot(currentView)) === -1) return true;
             if (e.target.closest('button, a, input, select, .selector-badge')) return true;
-            // Conversation rows own horizontal swipes for message actions. The
-            // document-level tab recognizer must not also navigate tabs.
-            if (e.target.closest('.msg-conv-row, .conv-swipe-delete')) return true;
             // Active chat and game sessions own horizontal gestures.
             var lxmfLayout = document.querySelector('.lxmf-layout');
             if (lxmfLayout && lxmfLayout.classList.contains('view-chat-detail')) return true;

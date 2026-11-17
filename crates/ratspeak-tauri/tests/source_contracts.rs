@@ -5895,20 +5895,43 @@ fn rnode_radio_catalog_has_single_runtime_source() {
 }
 
 #[test]
-fn conversation_row_swipe_uses_delete_choice_without_tab_navigation() {
+fn conversation_rows_open_mute_and_delete_on_hold_not_swipe() {
     let root = repo_root();
     let lxmf = read_source(root.join("dashboard/static/js/lxmf.js")).expect("lxmf js");
-    assert!(lxmf.contains("delegated: '.msg-conv-row'"));
-    assert!(lxmf.contains("showConversationDeleteDialog(hash, name)"));
+    // Hold (touch) or right-click (pointer) opens Mute and Delete…; no swipe acts on a row.
+    assert!(lxmf.contains("RS.gestures.attachLongPress(container, {"));
+    assert!(lxmf.contains("_openConversationRowMenu(row, { x: e.clientX, y: e.clientY });"));
+    assert!(!lxmf.contains("delegated: '.msg-conv-row'"));
+    assert!(!lxmf.contains("conv-swipe-delete"));
+    assert!(lxmf.contains("{ label: 'Delete…', icon: 'trash', danger: true, onSelect: function() { showConversationDeleteDialog(hash, name); } },"));
+    assert!(
+        lxmf.contains(
+            "return { label: muted ? 'Unmute' : 'Mute', icon: muted ? 'bell' : 'bell-off',"
+        )
+    );
+    // A muted chat raises no in-app alert either.
+    assert!(lxmf.contains("if (_messageIsPaper(msg) || _messageIsNote(msg) || _conversationIsMuted(msg.source)) return;"));
     assert!(!lxmf.contains("_swipeHideConversation("));
     assert!(!lxmf.contains("Conversation hidden"));
 
     let nav = read_source(root.join("dashboard/static/js/nav.js")).expect("nav js");
-    assert!(nav.contains("e.target.closest('.msg-conv-row, .conv-swipe-delete')"));
+    assert!(!nav.contains("conv-swipe-delete"));
+    let constants =
+        read_source(root.join("dashboard/static/js/constants.js")).expect("constants js");
+    assert!(!constants.contains("SWIPE_DISTANCE_CONV_DELETE_PX"));
 
     let messaging_css =
         read_source(root.join("dashboard/static/css/09-messaging.css")).expect("css");
     assert!(messaging_css.contains(".msg-conv-row { touch-action: pan-y; }"));
+    assert!(messaging_css.contains(".ui-count.is-muted {"));
+
+    // Every badge total leaves muted chats out; the command is registered.
+    let messaging = read_source(root.join("crates/ratspeak-tauri/src/commands/messaging.rs"))
+        .expect("messaging commands");
+    assert!(messaging.contains("pub async fn set_conversation_muted("));
+    assert!(!messaging.contains("get_all_unread_counts"));
+    let app = read_source(root.join("src-tauri/src/lib.rs")).expect("app");
+    assert!(app.contains("ratspeak_tauri::commands::messaging::set_conversation_muted,"));
 }
 
 #[test]

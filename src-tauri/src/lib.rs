@@ -1242,6 +1242,7 @@ pub fn run() {
                 ratspeak_tauri::commands::messaging::create_conversation_thread,
                 ratspeak_tauri::commands::messaging::rename_conversation_thread,
                 ratspeak_tauri::commands::messaging::hide_conversation,
+                ratspeak_tauri::commands::messaging::set_conversation_muted,
                 ratspeak_tauri::commands::messaging::delete_conversation,
                 ratspeak_tauri::commands::messaging::delete_messages,
                 ratspeak_tauri::commands::contacts::api_contacts,

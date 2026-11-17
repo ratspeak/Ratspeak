@@ -2697,8 +2697,7 @@ pub async fn get_conversation(
         let messages = db::get_conversation_in_thread(&p, &dh, &th, &id_c, 100);
         let threads = conversation_threads_payload(&p, &id_c, &dh);
         let total = if let Ok(conn) = p.get() {
-            let counts = db::get_all_unread_counts_conn(&conn, &id_c);
-            counts.values().sum::<i64>()
+            db::alerting_unread_total_conn(&conn, &id_c)
         } else {
             0
         };
@@ -2830,8 +2829,7 @@ pub async fn mark_read(
             Ok(c) => c,
             Err(_) => return 0i64,
         };
-        let counts = db::get_all_unread_counts_conn(&conn, &id_c);
-        counts.values().sum::<i64>()
+        db::alerting_unread_total_conn(&conn, &id_c)
     })
     .await
     .map_err(|_| AppError::internal("mark_read db task panicked"))?;
@@ -2839,6 +2837,39 @@ pub async fn mark_read(
     state.emit_to_all("unread_total", json!({ "count": total }));
     broadcast_conversations(Arc::clone(&state));
     Ok(json!({ "unread_total": total }))
+}
+
+/// Mute or unmute a conversation: it raises no notification or in-app alert
+/// and leaves the unread badge, while its messages still arrive.
+#[tauri::command]
+pub async fn set_conversation_muted(
+    state: State<'_, Arc<AppState>>,
+    hash: String,
+    muted: bool,
+) -> AppResult<Value> {
+    let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
+    if !validate_hex(&dest_hash, 16, 64) {
+        return Err(AppError::bad_request("Invalid identity hash"));
+    }
+    let identity_id = active_identity_id(&state);
+    if identity_id.is_empty() {
+        return Err(AppError::conflict("no active identity"));
+    }
+    let dh = dest_hash.clone();
+    let total = db::spawn_db(state.db.clone(), move |p| {
+        db::set_conversation_muted(&p, &dh, &identity_id, muted)
+            .map(|()| db::alerting_unread_total(&p, &identity_id))
+    })
+    .await
+    .map_err(|_| AppError::internal("set_conversation_muted db task panicked"))?
+    .map_err(|error| AppError::database_unavailable(format!("Failed to save: {error}")))?;
+    state.emit_to_all(
+        "conversation_muted",
+        json!({ "hash": dest_hash, "muted": muted }),
+    );
+    state.emit_to_all("unread_total", json!({ "count": total }));
+    broadcast_conversations(Arc::clone(&state));
+    Ok(json!({ "hash": dest_hash, "muted": muted }))
 }
 
 #[tauri::command]
@@ -2864,8 +2895,7 @@ pub async fn hide_conversation(state: State<'_, Arc<AppState>>, hash: String) ->
         ).is_err() {
             tracing::warn!(reason = "insert_failed", "hide_conversation insert failed");
         }
-        let counts = db::get_all_unread_counts_conn(&conn, &id_c);
-        counts.values().sum::<i64>()
+        db::alerting_unread_total_conn(&conn, &id_c)
     })
     .await
     .map_err(|_| AppError::internal("hide_conversation db task panicked"))?;
@@ -2920,7 +2950,7 @@ pub async fn delete_conversation(
             None => ratspeak_runtime::propagation_recovery::delete_messages(&st, &id_c, Some(&dh))?,
         };
         let files = deleted.remove_files();
-        let total: i64 = db::get_all_unread_counts(&st.db, &id_c).values().sum();
+        let total: i64 = db::alerting_unread_total(&st.db, &id_c);
         Ok::<_, db::admission::AdmissionDbError>((total, files))
     })
     .await
@@ -2990,7 +3020,7 @@ pub async fn delete_messages(
             &st, &id_c, &dh, &ids,
         )?;
         let files = removed.remove_files();
-        let total: i64 = db::get_all_unread_counts(&st.db, &id_c).values().sum();
+        let total: i64 = db::alerting_unread_total(&st.db, &id_c);
         Ok::<_, db::admission::AdmissionDbError>((deleted, total, files))
     })
     .await

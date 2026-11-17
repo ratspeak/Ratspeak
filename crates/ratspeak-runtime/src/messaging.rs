@@ -135,6 +135,7 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
             })
             .unwrap_or_default();
 
+        let muted = db::muted_conversations_conn(&conn, &id_for_db);
         let thread_labels = db::conversation_thread_labels_conn(&conn, &id_for_db)
             .map_err(|e| format!("thread labels failed: {e}"))?;
         let mut conversations: std::collections::HashMap<String, Value> =
@@ -228,6 +229,7 @@ pub async fn build_conversations_payload(state: &AppState) -> Option<Value> {
                             "last_msg_id": last_msg_id,
                             "timestamp": timestamp,
                             "unread": unread_counts.get(&other).copied().unwrap_or(0),
+                            "muted": muted.contains(&other),
                             "is_contact": is_contact,
                             "thread": thread,
                             "thread_label": thread_labels.label(&other, &thread),

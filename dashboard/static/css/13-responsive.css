@@ -379,22 +379,6 @@
         padding-top: 0;
     }
 
-    .conv-swipe-delete {
-        position: absolute;
-        right: 0;
-        top: 0;
-        bottom: 0;
-        width: 60px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        background: var(--status-error);
-        color: var(--on-accent);
-        border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
-        opacity: 0;
-        pointer-events: none;
-    }
-
     body.view-chat-detail .app-layout {
         height: var(--app-height, 100vh);
         height: var(--app-height, 100dvh);

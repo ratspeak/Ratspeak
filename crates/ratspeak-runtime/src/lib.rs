@@ -5836,6 +5836,8 @@ pub(crate) struct InboundLists {
     pub(crate) contacts: Vec<Value>,
     pub(crate) unread: i64,
     pub(crate) stored: bool,
+    /// The sender's conversation is muted: no alert.
+    pub(crate) muted: bool,
 }
 
 impl InboundLists {
@@ -5863,8 +5865,9 @@ pub(crate) async fn read_inbound_lists(
         label: contact_label_from_db(&p, &source, &identity),
         conversation: db::conversation_thread_display_label(&p, &identity, &source, &thread),
         contacts: contact_list_payload(db::get_all_contacts(&p, &identity)),
-        unread: db::get_all_unread_counts(&p, &identity).values().sum(),
+        unread: db::alerting_unread_total(&p, &identity),
         stored: db::message_exists_for_identity(&p, &msg_id, &identity),
+        muted: db::is_conversation_muted(&p, &source, &identity),
     })
     .await
     .ok()
@@ -6284,14 +6287,16 @@ async fn process_inbound_lxmf(
     if !stored {
         return stored_outcome;
     }
-    notify_inbound_message_if_background(
-        state,
-        &source_hash,
-        &notification_label,
-        &messaging::message_display_text(&msg.title_text(), &msg.content_text()),
-        renderer,
-        attachment_file.is_some() || audio_file.is_some(),
-    );
+    if !lists.as_ref().is_some_and(|lists| lists.muted) {
+        notify_inbound_message_if_background(
+            state,
+            &source_hash,
+            &notification_label,
+            &messaging::message_display_text(&msg.title_text(), &msg.content_text()),
+            renderer,
+            attachment_file.is_some() || audio_file.is_some(),
+        );
+    }
     state.emit_to_all("lxmf_message", event_data);
     messaging::broadcast_conversations(Arc::clone(state));
     match lists {

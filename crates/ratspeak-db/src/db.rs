@@ -429,6 +429,13 @@ CREATE TABLE IF NOT EXISTS hidden_conversations (
     PRIMARY KEY (dest_hash, identity_id)
 );
 
+CREATE TABLE IF NOT EXISTS muted_conversations (
+    dest_hash TEXT NOT NULL,
+    identity_id TEXT NOT NULL DEFAULT '',
+    muted_at REAL,
+    PRIMARY KEY (dest_hash, identity_id)
+);
+
 CREATE TABLE IF NOT EXISTS blocked_contacts (
     dest_hash TEXT NOT NULL,
     identity_id TEXT NOT NULL DEFAULT '',
@@ -2521,6 +2528,7 @@ pub const RESET_TABLES: &[&str] = &[
     "app_sessions",
     "app_actions",
     "hidden_conversations",
+    "muted_conversations",
     "blocked_contacts",
     "identity_activity",
     "pending_blackholes",
@@ -2577,6 +2585,10 @@ const IDENTITY_CASCADE: &[(&str, &str)] = &[
     (
         "hidden_conversations",
         "DELETE FROM hidden_conversations WHERE identity_id = ?1",
+    ),
+    (
+        "muted_conversations",
+        "DELETE FROM muted_conversations WHERE identity_id = ?1",
     ),
     (
         "blocked_contacts",
@@ -5282,6 +5294,78 @@ pub fn get_hidden_conversations(
         .unwrap_or_default()
 }
 
+/// Mute or unmute one conversation. A muted conversation still stores and
+/// shows its messages; it raises no alert and leaves the unread badge.
+pub fn set_conversation_muted(
+    pool: &DbPool,
+    dest_hash: &str,
+    identity_id: &str,
+    muted: bool,
+) -> Result<(), String> {
+    if identity_id.is_empty() {
+        return Err("no active identity".to_string());
+    }
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    if muted {
+        conn.execute(
+            "INSERT OR REPLACE INTO muted_conversations (dest_hash, identity_id, muted_at) VALUES (?1, ?2, ?3)",
+            params![dest_hash, identity_id, now_ts()],
+        )
+    } else {
+        conn.execute(
+            "DELETE FROM muted_conversations WHERE dest_hash = ?1 AND identity_id = ?2",
+            params![dest_hash, identity_id],
+        )
+    }
+    .map(drop)
+    .map_err(|e| e.to_string())
+}
+
+pub fn muted_conversations_conn(
+    conn: &Connection,
+    identity_id: &str,
+) -> std::collections::HashSet<String> {
+    let Ok(mut stmt) =
+        conn.prepare("SELECT dest_hash FROM muted_conversations WHERE identity_id = ?1")
+    else {
+        return Default::default();
+    };
+    stmt.query_map(params![identity_id], |row| row.get::<_, String>(0))
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
+}
+
+pub fn is_conversation_muted(pool: &DbPool, dest_hash: &str, identity_id: &str) -> bool {
+    pool.get().ok().is_some_and(|conn| {
+        conn.query_row(
+            "SELECT 1 FROM muted_conversations WHERE dest_hash = ?1 AND identity_id = ?2",
+            params![dest_hash, identity_id],
+            |_| Ok(()),
+        )
+        .is_ok()
+    })
+}
+
+/// Unread inbound messages outside muted conversations: the badge count.
+pub fn alerting_unread_total_conn(conn: &Connection, identity_id: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE direction = 'inbound' AND state != 'read' AND identity_id = ?1
+         AND source NOT IN (SELECT dest_hash FROM muted_conversations WHERE identity_id = ?1)",
+        params![identity_id],
+        |row| row.get(0),
+    )
+    .unwrap_or_else(|_| {
+        tracing::warn!(reason = "query_failed", "alerting_unread_total_conn failed");
+        0
+    })
+}
+
+pub fn alerting_unread_total(pool: &DbPool, identity_id: &str) -> i64 {
+    pool.get()
+        .map(|conn| alerting_unread_total_conn(&conn, identity_id))
+        .unwrap_or(0)
+}
+
 fn query_message_file_refs<P>(conn: &Connection, sql: &str, params: P) -> Vec<String>
 where
     P: rusqlite::Params,
@@ -5332,6 +5416,11 @@ pub fn delete_conversation(pool: &DbPool, dest_hash: &str, identity_id: &str) ->
     .or_report("delete_conversation");
     conn.execute(
         "DELETE FROM hidden_conversations WHERE dest_hash = ?1 AND identity_id = ?2",
+        params![dest_hash, identity_id],
+    )
+    .or_report("delete_conversation");
+    conn.execute(
+        "DELETE FROM muted_conversations WHERE dest_hash = ?1 AND identity_id = ?2",
         params![dest_hash, identity_id],
     )
     .or_report("delete_conversation");
@@ -17602,5 +17691,89 @@ mod voice_format_tests {
         assert!(stored_audio_mode(&pool, "bob", "clip.c2raw").is_err());
         pool.get().unwrap().execute("INSERT INTO messages(id,source,destination,timestamp,identity_id,audio_mode,audio_stored_name) VALUES('b','s','d',2,'alice',16,'clip.c2raw')",[]).unwrap();
         assert!(stored_audio_mode(&pool, "alice", "clip.c2raw").is_err());
+    }
+}
+
+#[cfg(test)]
+mod muted_conversation_tests {
+    use super::*;
+    use r2d2_sqlite::SqliteConnectionManager;
+
+    const ME: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const LOUD: &str = "11111111111111111111111111111111";
+    const QUIET: &str = "22222222222222222222222222222222";
+
+    fn pool_with_unread() -> DbPool {
+        let manager = SqliteConnectionManager::memory()
+            .with_init(|connection| connection.execute_batch("PRAGMA foreign_keys=ON;"));
+        let pool = r2d2::Pool::builder().max_size(1).build(manager).unwrap();
+        init_schema(&pool).unwrap();
+        save_identity(&pool, ME, "", "Me", "Me");
+        for (index, source) in [LOUD, QUIET, QUIET].into_iter().enumerate() {
+            try_save_message(
+                &pool,
+                &format!("{index:064x}"),
+                source,
+                ME,
+                "hi",
+                "",
+                index as f64,
+                "received",
+                "inbound",
+                ME,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                None,
+            )
+            .unwrap();
+        }
+        pool
+    }
+
+    #[test]
+    fn a_muted_conversation_leaves_the_badge_but_keeps_its_own_count() {
+        let pool = pool_with_unread();
+        assert_eq!(alerting_unread_total(&pool, ME), 3);
+        set_conversation_muted(&pool, QUIET, ME, true).unwrap();
+        assert!(is_conversation_muted(&pool, QUIET, ME));
+        assert!(!is_conversation_muted(&pool, LOUD, ME));
+        assert_eq!(alerting_unread_total(&pool, ME), 1);
+        assert_eq!(
+            get_all_unread_counts(&pool, ME)[QUIET],
+            2,
+            "the chat still counts its own"
+        );
+        set_conversation_muted(&pool, QUIET, ME, true).unwrap();
+        assert_eq!(muted_conversations_conn(&pool.get().unwrap(), ME).len(), 1);
+        set_conversation_muted(&pool, QUIET, ME, false).unwrap();
+        assert_eq!(alerting_unread_total(&pool, ME), 3);
+        assert!(
+            set_conversation_muted(&pool, QUIET, "", true).is_err(),
+            "never without an identity"
+        );
+    }
+
+    #[test]
+    fn deleting_a_conversation_or_its_identity_drops_the_mute() {
+        let pool = pool_with_unread();
+        set_conversation_muted(&pool, QUIET, ME, true).unwrap();
+        delete_conversation(&pool, QUIET, ME);
+        assert!(!is_conversation_muted(&pool, QUIET, ME));
+
+        set_conversation_muted(&pool, LOUD, ME, true).unwrap();
+        hide_conversation(&pool, LOUD, ME);
+        assert!(
+            is_conversation_muted(&pool, LOUD, ME),
+            "Remove from list keeps it muted"
+        );
+        assert!(
+            IDENTITY_CASCADE
+                .iter()
+                .any(|(table, _)| *table == "muted_conversations")
+        );
     }
 }

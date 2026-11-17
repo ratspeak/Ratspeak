@@ -539,6 +539,7 @@ button.ui-prop, a.ui-prop { cursor: pointer; text-decoration: none; }
 .ui-avatar--compact { --s: 32px; }
 @media (max-width: 768px), (pointer: coarse) { .ui-avatar--compact { --s: 40px; } }
 .ui-row-top--hug > .ui-row-title { flex: 0 1 auto; }
+.ui-row-top--hug > .ui-time { margin-left: auto; padding-left: 4px; }
 .ui-row-trail { margin-left: auto; padding-left: 4px; font-size: var(--text-xs); color: var(--text-muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ui-row:is([aria-current="true"], [aria-current="page"]) .ui-row-trail { color: var(--text-secondary); }
 /* An unnamed row: the short address is the title. */

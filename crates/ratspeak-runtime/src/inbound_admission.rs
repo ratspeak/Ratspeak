@@ -1524,6 +1524,7 @@ async fn refresh_chat(state: Arc<AppState>, refresh: ChatRefresh) {
         // lists replace these, and the row is checked again before an alert.
         let current = state.conversation_list_revision() == revision;
         let label = lists.alert_label();
+        let muted = lists.muted;
         if current {
             state.emit_to_all("contacts_update", lists.contacts.into());
             state.emit_to_all("unread_total", json!({"count":lists.unread}));
@@ -1533,7 +1534,7 @@ async fn refresh_chat(state: Arc<AppState>, refresh: ChatRefresh) {
         } else {
             crate::inbound_message_stored(&state, &message_id, &identity).await
         };
-        if stored {
+        if stored && !muted {
             crate::notify_inbound_message_if_background(
                 &state, &source, &label, &preview, renderer, attachment,
             );

@@ -626,7 +626,7 @@ fn announce_identity_data_cleared(state: &AppState, messages: bool, contacts: bo
 async fn read_identity_lists(state: &AppState, identity_id: String) -> Option<IdentityLists> {
     db::spawn_db(state.db.clone(), move |p| {
         let contacts = format_contacts_list(&db::get_all_contacts(&p, &identity_id));
-        let unread = db::get_all_unread_counts(&p, &identity_id).values().sum();
+        let unread = db::alerting_unread_total(&p, &identity_id);
         (contacts, unread)
     })
     .await

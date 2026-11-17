@@ -2248,28 +2248,75 @@ function _observeImageHydration(img, name) {
     _imageHydrationObserver.observe(img);
 }
 
-// Suppresses the synthetic click after swipe touchend.
-var _convSwipedRecently = false;
-
-function _addConvDeleteIndicator(row) {
-    if (row.querySelector('.conv-swipe-delete')) return;
-    var indicator = document.createElement('div');
-    indicator.className = 'conv-swipe-delete';
-    indicator.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>';
-    row.style.position = 'relative';
-    row.appendChild(indicator);
-}
-
-function _resetConvRowVisual(row) {
-    row.style.transition = 'transform 0.2s ease';
-    row.style.transform = '';
-    var del = row.querySelector('.conv-swipe-delete');
-    if (del) del.remove();
-}
+// Suppresses the click a hold leaves behind, so holding a row never also opens it.
+var _convHeldRecently = false;
 
 function _suppressNextConvClick() {
-    _convSwipedRecently = true;
-    setTimeout(function() { _convSwipedRecently = false; }, 400);
+    _convHeldRecently = true;
+    setTimeout(function() { _convHeldRecently = false; }, 400);
+}
+
+function _conversationIsMuted(hash) {
+    hash = _canonicalConversationHash(hash);
+    return (lxmfConversations || []).some(function(c) { return c && _canonicalConversationHash(c.hash) === hash && c.muted; });
+}
+
+function _setConversationMutedLocally(hash, muted) {
+    hash = _canonicalConversationHash(hash);
+    (lxmfConversations || []).forEach(function(c) {
+        if (c && _canonicalConversationHash(c.hash) === hash) c.muted = muted;
+    });
+    if (typeof lxmfConversations !== 'undefined') _renderConversationsFromCache(lxmfConversations);
+    _renderChatHeaderName();
+}
+
+// Mute: no notification, toast, or badge from this conversation; its messages still arrive.
+function _setConversationMuted(hash, muted) {
+    _setConversationMutedLocally(hash, muted);
+    RS.invoke('set_conversation_muted', { hash: hash, muted: muted }).catch(function(err) {
+        _setConversationMutedLocally(hash, !muted);
+        showToast((err && err.message) || (muted ? 'Could not mute' : 'Could not unmute'), 'toast-error', 4000);
+    });
+}
+
+function _conversationMuteItem(hash) {
+    var muted = _conversationIsMuted(hash);
+    return { label: muted ? 'Unmute' : 'Mute', icon: muted ? 'bell' : 'bell-off', onSelect: function() { _setConversationMuted(hash, !muted); } };
+}
+
+// A held conversation's menu, at its row; a right-click's, at the pointer. The list holds its
+// renders while it is open, so the row it belongs to stays put.
+var _convRowMenu = null;
+function _openConversationRowMenu(row, point) {
+    var hash = row && row.dataset.hash;
+    var item = row && row.closest('li');
+    if (!hash || !item || row.dataset.ghost === 'true') return;
+    var conversation = (lxmfConversations || []).find(function(c) { return c && _canonicalConversationHash(c.hash) === _canonicalConversationHash(hash); });
+    var name = _conversationNameInfo(hash, conversation && conversation.display_name, conversation && conversation.is_contact).name;
+    var items = [
+        _conversationMuteItem(hash),
+        { label: 'Delete…', icon: 'trash', danger: true, onSelect: function() { showConversationDeleteDialog(hash, name); } },
+    ];
+    var scroller = document.getElementById('msg-pane-scroll');
+    var state = { pending: null };
+    _convRowMenu = state;
+    function closed() {
+        if (_convRowMenu !== state) return;
+        _convRowMenu = null;
+        item.classList.remove('is-pressed');
+        if (state.pending) _renderConversationsFromCache(state.pending);
+    }
+    if (point) {
+        item.classList.add('is-pressed');
+        RS.kit.menu(row, { label: name, items: items, align: 'start', sheet: false,
+            rect: { left: point.x, right: point.x, top: point.y, bottom: point.y }, onClose: closed });
+        return;
+    }
+    RS.kit.menu(row, { title: name, items: items, onClose: closed, around: scroller ? {
+        el: item,
+        scroller: scroller,
+        band: function() { var r = scroller.getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; },
+    } : null });
 }
 
 function _removeGhostRow() {
@@ -2561,20 +2608,25 @@ function _conversationRowHtml(c, opts) {
         : 'No messages yet';
     var unread = Number(c.unread) || 0;
     var count = unread > 0
-        ? '<span class="ui-count" aria-label="' + unread + ' unread">' + (unread > 99 ? '99+' : unread) + '</span>'
+        ? '<span class="ui-count' + (c.muted ? ' is-muted' : '') + '" aria-label="' + unread + ' unread">' + (unread > 99 ? '99+' : unread) + '</span>'
         : '';
+    var muted = c.muted ? _conversationMutedMark() : '';
     var time = c.timestamp
         ? '<span class="ui-time" title="' + escapeHtml(RS.kit.time.full(c.timestamp)) + '">' + escapeHtml(RS.kit.time.row(c.timestamp)) + '</span>'
         : '';
     return '<li><button type="button" class="ui-row msg-conv-row' + (unread > 0 ? ' is-unread' : '') + '" data-hash="' + escapeHtml(hash) + '" data-presence="' + (presence.tier || '') + '"' +
         (opts.current ? ' aria-current="true"' : '') + (opts.ghost ? ' data-ghost="true"' : '') + '>' +
         RS.kit.avatar(hash, 'row', presence.tier, presence.heard) +
-        '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + title + '</span>' + time + '</span>' +
+        '<span class="ui-row-main"><span class="ui-row-top' + (muted ? ' ui-row-top--hug' : '') + '"><span class="ui-row-title">' + title + '</span>' + muted + time + '</span>' +
         '<span class="ui-row-sub"><span class="t">' + sub + '</span>' + count + '</span></span></button></li>';
 }
 
+function _conversationMutedMark() {
+    return '<span class="conv-muted" role="img" aria-label="Muted" title="Muted">' + RS.kit.icon('bell-off') + '</span>';
+}
+
 function _openConversationFromRow(hash) {
-    if (_convSwipedRecently || !hash) return;
+    if (_convHeldRecently || !hash) return;
     if (_ghostConversationHash && _ghostConversationHash !== hash) _removeGhostRow();
     // Per-conversation draft persistence on switch.
     var input = document.getElementById('lxmf-input');
@@ -2757,6 +2809,7 @@ function _renderConversationsFromCache(convos) {
     var container = document.getElementById('lxmf-conversations-list');
     if (!container) return;
     _bindConversationList(container);
+    if (_convRowMenu) { _convRowMenu.pending = convos; return; }
 
     convos = _mergeOptimisticConversation(convos);
     convos = convos.map(function(conversation) {
@@ -2811,38 +2864,26 @@ function _bindConversationList(container) {
             openActiveIdentityContactCard();
         }
     });
-    RS.gestures.attachSwipe(container, {
-        delegated: '.msg-conv-row',
-        direction: 'left',
-        distanceThreshold: RS.gestures.SWIPE_DISTANCE_CONV_DELETE_PX,
-        hapticAt: { commit: 'warning' },
-        onProgress: function(dx, _dy, _progress, row) {
-            if (!row) return;
-            var offset = Math.max(0, Math.min(-dx, 120));
-            row.style.transform = 'translateX(-' + offset + 'px)';
-            row.style.transition = 'none';
-            _addConvDeleteIndicator(row);
-            var del = row.querySelector('.conv-swipe-delete');
-            if (del) del.style.opacity = Math.min(1, offset / 80);
-        },
-        onCommit: function(row) {
-            if (!row) return;
+    // Hold a conversation (touch) or right-click it (pointer) for Mute and Delete….
+    RS.gestures.attachLongPress(container, {
+        duration: 500,
+        moveCancelPx: 12,
+        excludeZone: function(touch) { return !(touch.target && touch.target.closest && touch.target.closest('.msg-conv-row')); },
+        hapticStages: [{ at: 0.55, level: 'light' }],
+        onFire: function(touch) {
+            var row = touch.target.closest('.msg-conv-row');
+            if (!row || !row.isConnected) return;
             _suppressNextConvClick();
-            var hash = row.dataset.hash;
-            if (!hash) {
-                _resetConvRowVisual(row);
-                return;
-            }
-            var name = _conversationNameInfo(hash, null, false).name;
-            _resetConvRowVisual(row);
-            showConversationDeleteDialog(hash, name);
-        },
-        onCancel: function(dx, _dy, row) {
-            if (!row) return;
-            // Half-swipe still suppresses synthetic click.
-            if (dx < -10) _suppressNextConvClick();
-            _resetConvRowVisual(row);
+            _openConversationRowMenu(row, null);
         }
+    });
+    container.addEventListener('contextmenu', function(e) {
+        var row = e.target.closest && e.target.closest('.msg-conv-row');
+        if (!row) return;
+        e.preventDefault();
+        // A touch's own contextmenu follows its hold, which already opened the menu.
+        if (document.documentElement.dataset.inputModality === 'touch') return;
+        _openConversationRowMenu(row, { x: e.clientX, y: e.clientY });
     });
 }
 
@@ -3242,9 +3283,10 @@ function _renderChatHeaderName() {
     var info = _conversationNameInfo(lxmfActiveContact, null, false);
     var nameEl = document.getElementById('lxmf-chat-header-name');
     if (nameEl) {
-        var html = info.isHash
+        var html = (info.isHash
             ? '<span class="msg-title-hash" title="' + escapeHtml(RS.kit.hash.text(lxmfActiveContact, 'full')) + '">' + escapeHtml(info.name) + '</span>'
-            : ratspeakDisplayNameHtml(info.name, lxmfActiveContact);
+            : ratspeakDisplayNameHtml(info.name, lxmfActiveContact)) +
+            (_conversationIsMuted(lxmfActiveContact) ? _conversationMutedMark() : '');
         if (nameEl.innerHTML !== html) nameEl.innerHTML = html;
     }
     var who = document.getElementById('lxmf-chat-who');
@@ -6342,8 +6384,8 @@ RS.listen('lxmf_message', function(msg) {
     } else if (forActiveContact) {
         _refreshActiveConversationThreads();
     }
-    // Paper rows are filed by the user's own action, so they never alert.
-    if (_messageIsPaper(msg) || _messageIsNote(msg)) return;
+    // Paper rows are filed by the user's own action, so they never alert; nor does a muted chat.
+    if (_messageIsPaper(msg) || _messageIsNote(msg) || _conversationIsMuted(msg.source)) return;
     if (appForeground && !conversationVisible) {
         var fromLabel = _messageSourceName(msg);
         var hasAudio = !!msg.audio;
@@ -6949,6 +6991,7 @@ function openChatHeaderDropdown(triggerEl) {
                 else showToast('Could not copy', 'toast-error', 1500);
             });
         } },
+        _conversationMuteItem(hash),
         { separator: true },
         { label: 'Delete conversation', icon: 'trash', danger: true, onSelect: function() {
             // With several conversations this deletes only the open one.
@@ -7350,6 +7393,10 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     })();
+});
+
+RS.listen('conversation_muted', function(data) {
+    if (data && data.hash && _conversationIsMuted(data.hash) !== !!data.muted) _setConversationMutedLocally(data.hash, !!data.muted);
 });
 
 RS.listen('unread_total', function(data) {

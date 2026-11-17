@@ -1041,6 +1041,13 @@ body.image-viewer-open {
 .msg-title-hash { font-family: var(--font-mono); font-size: var(--text-sm); }
 /* Swipe left to delete owns the horizontal gesture; vertical still scrolls. */
 .msg-conv-row { touch-action: pan-y; }
+/* A held conversation lifts and the rest dim while its menu is open, as a held message does. */
+.ui-pane-scroll.is-acting .msg-conv-list > li:not(.is-pressed) { opacity: .45; transition: opacity .16s ease; }
+.msg-conv-list > li.is-pressed .msg-conv-row { background: var(--selection-bg); }
+/* Muted: a small bell-off after the name, and an unread count that doesn't call for attention. */
+.conv-muted { display: inline-flex; flex: none; margin-left: 6px; color: var(--text-muted); vertical-align: -2px; }
+.conv-muted .ui-ico { width: 14px; height: 14px; }
+.ui-count.is-muted { background: var(--surface-sunken); color: var(--text-secondary); }
 .msg-thread { color: var(--text-secondary); font-weight: 500; }
 .msg-hit { color: var(--text-primary); font-weight: 600; }
 .lxmf-sidebar .text-share-pending { align-self: flex-start; margin: 0 var(--ui-gutter) 8px; }

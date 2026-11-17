@@ -855,3 +855,42 @@ async fn unverified_or_unmarked_results_never_upgrade_a_contact() {
     let history = db::get_conversation(&state.db, &hex::encode(src), &identity, 10);
     assert_eq!(history[0]["results"]["command"], "status");
 }
+
+#[tokio::test]
+async fn a_muted_conversation_stores_its_messages_without_any_alert_or_badge() {
+    for method in 0..3 {
+        for muted in [true, false] {
+            let (state, emitter, notifier) = content_pipeline_state();
+            let identity = local_identity(&state);
+            let signing = rns_crypto::ed25519::Ed25519PrivateKey::generate();
+            let src = register_source_identity(&state, &signing);
+            db::set_conversation_muted(&state.db, &hex::encode(src), &identity, muted).unwrap();
+            let msg = lxmf_core::message::LxMessageDraft::new(
+                local_dest(&state),
+                src,
+                "",
+                "Are you there?",
+                lxmf_core::message_api::DeliveryMethod::Direct,
+            )
+            .unwrap()
+            .sign(&signing)
+            .unwrap()
+            .finalize(None)
+            .unwrap();
+            handle_decrypted_lxmf(&state, msg.pack().unwrap(), content_source(method)).await;
+
+            assert_eq!(message_rows(&state), 1, "method={method}: it still arrives");
+            assert_eq!(emitter.count("lxmf_message"), 1);
+            assert_eq!(
+                notifier.0.lock().unwrap().len(),
+                usize::from(!muted),
+                "method={method}, muted={muted}"
+            );
+            let badge = emitter.payloads("unread_total");
+            assert_eq!(badge.last().unwrap()["count"], i64::from(!muted), "method={method}");
+            let conversations = messaging::build_conversations_payload(&state).await.unwrap();
+            assert_eq!(conversations[0]["muted"], muted);
+            assert_eq!(conversations[0]["unread"], 1, "the chat itself still counts it");
+        }
+    }
+}
