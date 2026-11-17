@@ -3444,6 +3444,55 @@ function _messageRowHtml(msg, prev, next, ctx) {
             _messageReactionsHtml(msg, ctx.ourHash) + '</div></div>';
 }
 
+// A time that drops below its text leaves the bubble as wide as the column, since CSS sizes a
+// wrapped box to its container. Fit those bubbles to their widest line; line breaks don't change.
+function _fitMessageBubbles(container) {
+    if (!container || typeof document.createRange !== 'function') return;
+    _watchMessageBubbleFit(container);
+    var texts = Array.prototype.filter.call(container.querySelectorAll('.msg-text'), function(text) {
+        return text.lastElementChild && text.lastElementChild.classList.contains('msg-meta');
+    });
+    if (!texts.length) return;
+    texts.forEach(function(text) { text.style.width = ''; });
+    var gap = parseFloat(getComputedStyle(texts[0].lastElementChild).marginLeft) || 0;
+    var widths = texts.map(function(text) {
+        var meta = text.lastElementChild, range = document.createRange();
+        range.setStart(text, 0);
+        range.setEndBefore(meta);
+        var lines = range.getClientRects();
+        if (!lines.length) return 0;
+        var box = text.getBoundingClientRect(), time = meta.getBoundingClientRect();
+        if (time.top < lines[lines.length - 1].bottom) return 0;
+        var widest = time.width + gap;
+        for (var i = 0; i < lines.length; i++) widest = Math.max(widest, lines[i].right - box.left);
+        widest = Math.ceil(widest);
+        return widest < box.width - 1 ? widest : 0;
+    });
+    texts.forEach(function(text, i) { if (widths[i]) text.style.width = widths[i] + 'px'; });
+}
+
+// Refit when the column's width, the text size, the theme, or the loaded fonts change.
+function _watchMessageBubbleFit(container) {
+    if (container._rsBubbleFit) return;
+    var lastWidth = container.clientWidth, queued = false;
+    function refit() {
+        if (queued) return;
+        queued = true;
+        requestAnimationFrame(function() { queued = false; _fitMessageBubbles(container); });
+    }
+    container._rsBubbleFit = refit;
+    if (typeof ResizeObserver === 'function') {
+        new ResizeObserver(function() {
+            if (container.clientWidth === lastWidth) return;
+            lastWidth = container.clientWidth;
+            refit();
+        }).observe(container);
+    }
+    window.addEventListener('ratspeak-text-scale-changed', refit);
+    window.addEventListener('ratspeak-theme-changed', refit);
+    if (document.fonts && document.fonts.addEventListener) document.fonts.addEventListener('loadingdone', refit);
+}
+
 function renderConversation(options) {
     options = options || {};
     var container = document.getElementById('lxmf-messages');
@@ -3523,6 +3572,7 @@ function renderConversation(options) {
         htmlParts.push(_messageRowHtml(msg, msgs[mi - 1], msgs[mi + 1], ctx));
     }
     container.innerHTML = htmlParts.join('');
+    _fitMessageBubbles(container);
     // Preserve decoded images before restoring scroll. Replacing them with
     // empty placeholders temporarily shrinks the transcript on every progress
     // event and can clamp its scroll offset to a much earlier message.
