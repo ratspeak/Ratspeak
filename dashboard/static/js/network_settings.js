@@ -1,5 +1,5 @@
 // Settings › Network › Discovery, Network Stamps, and Links, the Network view's
-// Discovered group, and the restart every start-time setting needs.
+// Discovered group and its Discover switch, and the restart every start-time setting needs.
 
 (function() {
     'use strict';
@@ -94,7 +94,8 @@
         }
         var value = opts.value ? $(opts.value) : null;
         if (value && busy) setBadge(opts.value, 'Restarting…');
-        if (!busy) render();
+        if (busy) renderDiscovered();
+        else render();
     }
 
     // -------------------------------------------------------------- settings
@@ -124,7 +125,7 @@
     function render() {
         if (NS.busy) return;
         var s = current();
-        setToggle('ns-discover-toggle', s.discover);
+        setBadge('ns-discover-value', s.discover ? 'On' : 'Off');
         show('ns-autojoin-row', s.discover);
         setToggle('ns-unknown-impl-toggle', s.autoconnect_unknown_implementations);
         show('ns-unknown-impl-row', s.discover && s.autojoin > 0);
@@ -200,7 +201,8 @@
     }
 
     function wireSettings() {
-        bindToggle('ns-discover-toggle', 'ns-discover-row', function(on) { return { discover: on }; });
+        // The switch lives in Network; this row says where it is.
+        bindBadge('ns-discover-open', function() { if (typeof switchView === 'function') switchView('network'); });
         bindToggle('ns-unknown-impl-toggle', 'ns-unknown-impl-row', function(on) {
             return { autoconnect_unknown_implementations: on };
         });
@@ -458,7 +460,18 @@
         });
     }
 
+    // Network's switch. Until the restart lands, the view shows the state asked for.
+    function setEnabled(on) {
+        NS.discoverPending = !!on;
+        return save({ discover: !!on }, {}).then(function(ok) {
+            NS.discoverPending = null;
+            renderDiscovered();
+            return ok;
+        });
+    }
+
     RS.discovery = {
+        setEnabled: setEnabled,
         keep: keep,
         connect: connect,
         useRadio: useRadioSettings,

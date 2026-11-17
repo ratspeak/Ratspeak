@@ -134,7 +134,8 @@
             phone: compact(), conns: conns, life: life, pausedAll: !!life.paused_all,
             ble: { on: bleOn, starting: NV.bleStarting, duration: window._blePeerDuration, expiresAt: window._blePeerExpiresAt || 0,
                 state: typeof _deriveBlePeerState === 'function' ? _deriveBlePeerState() : '' },
-            disc: { on: !!settings.discover, settings: settings, entries: ((ns.discovered || {}).entries || []) },
+            disc: { on: ns.discoverPending != null ? ns.discoverPending : !!settings.discover, busy: ns.discoverPending != null && !!ns.busy,
+                settings: settings, entries: ((ns.discovered || {}).entries || []) },
             tx: totals.txb || 0, rx: totals.rxb || 0,
             activePeers: typeof PeersCache !== 'undefined' && PeersCache && typeof PeersCache.enriched === 'function' ? PeersCache.enriched().filter(RS.peerIsActive).length : 0,
             lastAnnounce: Math.max(NV.lastAnnounce || 0, stats && stats.last_announce_at ? stats.last_announce_at * 1000 : 0),
@@ -330,7 +331,7 @@
         var n = M.disc.entries.length;
         out += '<h3 class="ui-section-title">Find more</h3>' + way('discovered', {
             title: 'Discover servers', on: M.disc.on, status: M.disc.on ? onLine('On · ' + n + ' found') : 'Shared servers and radios.',
-            ctl: sw({ act: 'disc', on: M.disc.on, label: 'Discover servers' }),
+            ctl: sw({ act: 'disc', on: M.disc.on, busy: M.disc.busy, label: 'Discover servers' }),
             foot: M.disc.on ? (n ? link('See all ' + n, 'list') : '') + link('Join automatically: ' + (M.disc.settings.autojoin ? M.disc.settings.autojoin + (M.disc.settings.autojoin === 1 ? ' server' : ' servers') : 'Off'), 'disc-settings') : ''
         });
         return out;
@@ -684,7 +685,7 @@
     var root = null, layer = null, mapObs = null, lastSig = '';
     function signature(M) {
         return JSON.stringify([M.phone, M.conns.map(function(c) { return [c.id, c.status, c.name, c.health]; }), M.pausedAll, M.life.paused_count, M.ble.on, M.ble.starting,
-            M.ble.duration, Math.ceil((M.ble.expiresAt * 1000 - Date.now()) / MIN), M.disc.on, M.disc.entries.length, M.disc.settings.autojoin, NV.sel, NV.view, NV.dfilter, NV.older,
+            M.ble.duration, Math.ceil((M.ble.expiresAt * 1000 - Date.now()) / MIN), M.disc.on, M.disc.busy, M.disc.entries.length, M.disc.settings.autojoin, NV.sel, NV.view, NV.dfilter, NV.older,
             NV.moreOpen, NV.joinOpen, NV.mapCollapsed, NV.announcing, NV.setupFor, NV.internetOpen, NV.waysCollapsed.join(), NV.connectedOnce, live(M).length > 0, M.disc.entries.map(function(e) { return [e.id, e.joined, e.added, e.status]; })]);
     }
     function render(force) {
@@ -1067,6 +1068,8 @@
             case 'disc-settings':
                 if (typeof switchView === 'function') switchView('settings');
                 if (typeof selectSettingsSection === 'function') selectSettingsSection('panel-settings-network', { showMobileDetail: compact() });
+                var group = document.getElementById('discovery-settings-body');
+                if (group && group.scrollIntoView) group.scrollIntoView({ block: 'start' });
                 return;
             case 'disc-join': { var ej = discEntry(id); if (ej && RS.discovery) RS.discovery.connect(ej); return; }
             case 'disc-keep': { var ek = discEntry(id); if (ek && RS.discovery) RS.discovery.keep(ek.joined_interface); return; }
@@ -1082,10 +1085,7 @@
         var a = el.getAttribute('data-act');
         if (a === 'tcp' || a === 'ble' || a === 'local') { switchWay(a, el.checked); return; }
         if (a === 'dev-lora' || a === 'dev-host') { switchWay(a.slice(4), el.checked); return; }
-        if (a === 'disc') {
-            var input = document.getElementById('ns-discover-toggle');
-            if (input) { input.checked = el.checked; input.dispatchEvent(new Event('change')); }
-        }
+        if (a === 'disc' && RS.discovery) RS.discovery.setEnabled(el.checked);
     }
 
     function init() {

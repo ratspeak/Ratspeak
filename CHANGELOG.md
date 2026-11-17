@@ -18,6 +18,7 @@ changes that materially affect how an artifact is reproduced.
 - Joining Diamond first shows its stricter limits, so you can join or cancel.
 - A quick second tap after sending a message no longer starts a voice recording.
 - Folded sections on the Network screen point right while shut and down while open.
+- Discover servers is switched on and off only in Network. Settings › Network › Discovery shows whether it's on and keeps the rest of its options.
 - The Android app is about 5 MB smaller.
 
 ## [1.1.0] - 2026-11-15

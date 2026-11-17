@@ -11152,8 +11152,10 @@ fn discovery_settings_use_the_network_settings_commands() {
     assert!(ns.contains("checked: c.value === currentValue"));
     // Unknown implementations show only while joining; each switch saves one field.
     assert!(ns.contains("show('ns-unknown-impl-row', s.discover && s.autojoin > 0);"));
+    // Discover servers switches only in Network; Settings says where.
+    assert!(ns.contains("setBadge('ns-discover-value', s.discover ? 'On' : 'Off');"));
+    assert!(!ns.contains("ns-discover-toggle"));
     for (toggle, state) in [
-        ("ns-discover-toggle", "s.discover"),
         (
             "ns-unknown-impl-toggle",
             "s.autoconnect_unknown_implementations",
