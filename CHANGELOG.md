@@ -10,6 +10,7 @@ changes that materially affect how an artifact is reproduced.
 - **Message titles**: turn on Message titles in Settings › General to add a bold Title line above your message. A message that arrives with a title shows it in bold above the text.
 - **Shut down**: at the bottom of Settings (not on iPhone or iPad), it stops all network and Ratspeak services and closes the app, Android's background service included.
 - **Tray icon** (Linux): Settings › General › Window turns the tray icon on or off at once. With it off, closing the window quits.
+- **Radio battery**: a connected radio that reports its battery shows the percent on its row in Network › Radio, with a bolt while charging, and Battery in its details. It turns red at 20% or less.
 - **Mute a conversation**: hold a conversation (or right-click it on a computer) for Mute and Delete…. A muted conversation's messages still arrive, without notifications, and it leaves the unread count on the Messages tab and the app icon. Swiping a conversation no longer deletes it.
 
 ### Fixed and improved
@@ -35,6 +36,9 @@ changes that materially affect how an artifact is reproduced.
 - A message's Activity detail shows which kind of connection it was delivered or received over.
 - Network's cards say just Off or On, with what they're connected to: "On · 1 server", "On · 3 peers", "On · 1 radio". Turning a card on opens it, and a radio that can't turn on, such as a USB radio that isn't plugged in, says why on its row.
 - On Linux, clicking the tray icon opens Ratspeak; right-clicking shows Show and Quit. Starting Ratspeak no longer prints a libayatana-appindicator deprecation warning.
+- The QR scanner reads codes live with the camera on iPhone, iPad, Mac, and Linux, instead of only from a chosen photo. The camera prompt now says it's for scanning QR codes too.
+- On iPhone, holding Send no longer opens the Send by menu under the keyboard the first time after Ratspeak starts.
+- A Bluetooth peer that drops no longer stays listed as connected on Android, and Linux finds a Bluetooth adapter that turns on after Ratspeak starts.
 - The Android app is about 5 MB smaller.
 
 ## [1.1.0] - 2026-11-15
