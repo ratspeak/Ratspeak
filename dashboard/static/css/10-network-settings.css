@@ -142,6 +142,9 @@
 .activity-feedhead { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 12px 0 20px; background: var(--row-surface); }
 .activity-feedhead > .t { font-size: var(--text-sm); font-weight: 600; color: var(--text-secondary); }
 .activity-feedhead .ui-pane-count { margin-left: auto; }
+.activity-feedhead .activity-new { margin-left: auto; }
+.activity-feedhead .ui-pane-count:not([hidden]) + .activity-new { margin-left: 0; }
+.activity-cap-note { margin: 8px 20px 16px; }
 .activity-message-filter { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
 .activity-list > .ui-caption { top: 44px; }
 .activity-time { font-family: var(--font-mono); }
@@ -186,6 +189,7 @@
     .activity-cols { flex-direction: column; gap: 0; }
     .activity-chips { padding: 0 16px 8px; }
     .activity-feedhead { padding: 0 8px 0 16px; }
+    .activity-cap-note { margin-inline: 16px; }
     .ui-dialog .activity-dscroll { padding: 0; }
 }
 

@@ -23,8 +23,12 @@ var _activityControlToken = 0;
 var _activityControlPending = false;
 
 // Auto-scroll new entries only when pinned to bottom; 8px tolerance for sub-pixel rounding.
-var activityStickToBottom = true;
-var ACTIVITY_STICK_TOLERANCE_PX = 8;
+// Newest first. At the top the list follows new events; scrolled away or with a row open it
+// holds still, and the feed head counts what arrived since.
+var activityFollowLatest = true;
+var activitySeenNewest = null;
+var activityHeldFloor = null;
+var ACTIVITY_LIVE_TOLERANCE_PX = 8;
 
 var ACTIVITY_AREA_ORDER = [
     'network',
@@ -805,7 +809,7 @@ var activityBootstrap = createActivityBootstrap({
         activityMessageFilter = null;
         activitySelectedSequence = null;
         activityResetReveals();
-        activityStickToBottom = true;
+        activityFollowLatest = true;
         setActivityControlPending(false);
         updateActivityUI();
         renderActivityFilters();
@@ -883,7 +887,7 @@ function openActivityMessageFilter(filter, opts) {
     var searchInput = document.getElementById('activity-search-input');
     if (searchInput) searchInput.value = '';
     activitySelectedSequence = null;
-    activityStickToBottom = true;
+    activityFollowLatest = true;
     _activityKeepView = true;
     try {
         if (typeof switchView === 'function') switchView('activity');
@@ -900,7 +904,7 @@ function openActivityMessageFilter(filter, opts) {
 
 function clearActivityMessageFilter(moveFocus) {
     activityMessageFilter = null;
-    activityStickToBottom = true;
+    activityFollowLatest = true;
     renderActivityFilters();
     renderActivityFeed();
     if (moveFocus) {
@@ -1016,7 +1020,7 @@ function initActivity() {
     if (searchInput) {
         searchInput.addEventListener('input', function() {
             activitySearchQuery = this.value.trim().toLowerCase();
-            activityStickToBottom = !activitySearchQuery;
+            activityFollowLatest = true;
             if (searchClear) searchClear.hidden = !this.value;
             renderActivityFeed();
         });
@@ -1046,9 +1050,7 @@ function initActivity() {
                 activityProblemsOnly = !activityProblemsOnly;
                 activityAreaFilter = 'all';
             }
-            activityStickToBottom = false;
-            var scroller = document.getElementById('activity-scroll');
-            if (scroller) scroller.scrollTop = 0;
+            activityFollowLatest = true;
             renderActivityFilters();
             renderActivityFeed();
         });
@@ -1057,8 +1059,10 @@ function initActivity() {
     var scroll = document.getElementById('activity-scroll');
     if (scroll) {
         scroll.addEventListener('scroll', function() {
-            var distanceFromBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
-            activityStickToBottom = distanceFromBottom <= ACTIVITY_STICK_TOLERANCE_PX;
+            var live = scroll.scrollTop <= ACTIVITY_LIVE_TOLERANCE_PX;
+            if (live === activityFollowLatest) return;
+            activityFollowLatest = live;
+            if (live) renderActivityNewCount(activityEvents.filter(activityEventMatches));
         }, { passive: true });
         scroll.addEventListener('click', function(event) {
             if (event.target.closest && event.target.closest('[data-activity-action="unmsg"]')) {
@@ -1067,6 +1071,15 @@ function initActivity() {
             }
             if (event.target.closest && event.target.closest('[data-activity-action="clear-search"]')) {
                 clearActivitySearch();
+                return;
+            }
+            if (event.target.closest && event.target.closest('[data-activity-action="newest"]')) {
+                showNewestActivity();
+                return;
+            }
+            if (event.target.closest && event.target.closest('[data-activity-action="search"]')) {
+                var search = document.getElementById('activity-search-input');
+                if (search && typeof search.focus === 'function') search.focus();
                 return;
             }
             var row = activityClosestEventTarget(event.target, 'activity-event', scroll);
@@ -1101,7 +1114,7 @@ function clearActivitySearch() {
     if (searchInput) searchInput.value = '';
     if (searchClear) searchClear.hidden = true;
     activitySearchQuery = '';
-    activityStickToBottom = true;
+    activityFollowLatest = true;
     renderActivityFeed();
     if (searchInput) searchInput.focus();
 }
@@ -1199,7 +1212,7 @@ function clearActivity() {
         activityEvents = [];
         activitySelectedSequence = null;
         activityResetReveals();
-        activityStickToBottom = true;
+        activityFollowLatest = true;
         renderActivityFilters();
         renderActivityFeed();
         activityBootstrap.forceResync('clear_acknowledged');
@@ -1300,11 +1313,11 @@ function renderActivityFilters() {
         return '<li><button type="button" class="ui-row ui-row--one' + (extra || '') + '" ' + attrs + (current ? ' aria-current="true"' : '') + '>' +
             '<span class="activity-adot' + (key ? ' a-' + escapeHtml(key) : ' is-blank') + '" aria-hidden="true"></span>' +
             '<span class="ui-row-main"><span class="ui-row-top"><span class="ui-row-title">' + escapeHtml(label) + '</span>' +
-            '<span class="ui-time">' + count + '</span></span></span></button></li>';
+            '<span class="ui-time">' + count.toLocaleString('en-US') + '</span></span></span></button></li>';
     }
     function chip(label, count, on, attrs) {
         return '<button type="button" class="ui-chip" role="checkbox" aria-checked="' + (on ? 'true' : 'false') + '" ' + attrs + '>' +
-            (on && RS.kit ? RS.kit.icon('check') : '') + escapeHtml(label) + ' <span class="n">' + count + '</span></button>';
+            (on && RS.kit ? RS.kit.icon('check') : '') + escapeHtml(label) + ' <span class="n">' + count.toLocaleString('en-US') + '</span></button>';
     }
 
     var rows = railRow('', 'All', activityEvents.length, allOn, 'data-area="all"');
@@ -1335,7 +1348,7 @@ function activityClosestEventTarget(target, className, boundary) {
 function selectActivityEvent(sequence) {
     if (!activityIsCanonicalU64(sequence, false)) return;
     activitySelectedSequence = sequence;
-    activityStickToBottom = false;
+    activityFollowLatest = false;
     var event = activityEventBySequence(sequence);
     if (event && !activityIdentityProtectionEnabled && !activityEventIdentifiersRevealed(event)) {
         activityRevealEvent(event);
@@ -2119,7 +2132,11 @@ function openActivityEventSheet(sequence) {
         title: activityEventSummary(event),
         size: 'md',
         body: activityDetailHtml(event, true),
-        onClose: function() { _activitySheet = null; }
+        onClose: function() {
+            _activitySheet = null;
+            var scroller = document.getElementById('activity-scroll');
+            activityFollowLatest = !!scroller && scroller.scrollTop <= ACTIVITY_LIVE_TOLERANCE_PX;
+        }
     });
     _activitySheet.dialog.addEventListener('click', handleActivityDetailClick);
 }
@@ -2178,6 +2195,55 @@ function activityMinuteLabel(ts) {
     return isNaN(d.getTime()) ? '' : (RS.kit ? RS.kit.time.clock(d.getTime()) : formatActivityTime(ts));
 }
 
+// The first row below the sticky head, and where it sits, so a re-render can put it back.
+function activityScrollAnchor(scroller) {
+    var top = scroller.getBoundingClientRect().top;
+    var head = scroller.querySelector('.activity-feedhead');
+    var clear = top + (head ? head.getBoundingClientRect().height : 0);
+    var rows = scroller.querySelectorAll('.activity-event');
+    for (var i = 0; i < rows.length; i++) {
+        var rect = rows[i].getBoundingClientRect();
+        if (rect.bottom > clear) return { sequence: rows[i].getAttribute('data-sequence'), offset: rect.top - top };
+    }
+    return null;
+}
+
+function activityRestoreAnchor(scroller, anchor) {
+    var row = scroller.querySelector('.activity-event[data-sequence="' + anchor.sequence + '"]');
+    if (!row) return;
+    scroller.scrollTop += row.getBoundingClientRect().top - scroller.getBoundingClientRect().top - anchor.offset;
+}
+
+// "N new" in the feed head while the list holds still; the count otherwise.
+function renderActivityNewCount(filtered) {
+    var newest = filtered.length ? filtered[filtered.length - 1].sequence : null;
+    if (activityFollowLatest || activitySeenNewest === null) activitySeenNewest = newest;
+    var fresh = 0;
+    for (var i = filtered.length - 1; i >= 0 && activityCompareU64(filtered[i].sequence, activitySeenNewest) > 0; i--) fresh++;
+    var count = document.getElementById('activity-result-count');
+    var btn = document.getElementById('activity-new-btn');
+    if (count) {
+        count.hidden = fresh > 0;
+        count.textContent = filtered.length.toLocaleString('en-US') + (filtered.length === 1 ? ' event' : ' events');
+    }
+    if (btn) {
+        btn.hidden = fresh === 0;
+        var label = fresh.toLocaleString('en-US') + ' new';
+        if (btn.getAttribute('data-label') !== label) {
+            btn.setAttribute('data-label', label);
+            btn.innerHTML = (RS.kit ? RS.kit.icon('arrow-up') : '') + escapeHtml(label);
+            btn.setAttribute('aria-label', label + '. Show the newest');
+        }
+    }
+}
+
+function showNewestActivity() {
+    activityFollowLatest = true;
+    renderActivityFeed();
+    var first = document.querySelector('#activity-feed .activity-event');
+    if (first && typeof first.focus === 'function') first.focus({ preventScroll: true });
+}
+
 function renderActivityFeed() {
     var feed = document.getElementById('activity-feed');
     if (!feed) return;
@@ -2186,12 +2252,12 @@ function renderActivityFeed() {
     var visible = filtered.length > ACTIVITY_MAX_RENDERED
         ? filtered.slice(filtered.length - ACTIVITY_MAX_RENDERED)
         : filtered;
-    var count = document.getElementById('activity-result-count');
-    if (count) {
-        count.textContent = visible.length < filtered.length
-            ? 'Latest ' + visible.length + ' of ' + filtered.length
-            : filtered.length + (filtered.length === 1 ? ' event' : ' events');
+    // Held, the oldest row shown stays the oldest, so nothing drops off under the reader.
+    if (!activityFollowLatest && activityHeldFloor !== null && visible.length && activityCompareU64(visible[0].sequence, activityHeldFloor) > 0) {
+        visible = filtered.filter(function(event) { return activityCompareU64(event.sequence, activityHeldFloor) >= 0; });
     }
+    activityHeldFloor = visible.length ? visible[0].sequence : null;
+    renderActivityNewCount(filtered);
     var label = document.getElementById('activity-feed-label');
     if (label) {
         if (activityMessageFilter) {
@@ -2236,10 +2302,12 @@ function renderActivityFeed() {
     }
 
     var compact = typeof isCompactLayout === 'function' && isCompactLayout();
-    // One list per minute, so each minute's caption sticks only over its own rows.
+    var scroller = document.getElementById('activity-scroll');
+    var anchor = !activityFollowLatest && scroller ? activityScrollAnchor(scroller) : null;
+    // Newest first, one list per minute, so each minute's caption sticks only over its own rows.
     var html = '';
     var lastMinute = null;
-    for (var i = 0; i < visible.length; i++) {
+    for (var i = visible.length - 1; i >= 0; i--) {
         var event = visible[i];
         var minute = activityMinuteLabel(event.timestamp_unix_ms);
         if (minute !== lastMinute) {
@@ -2271,9 +2339,13 @@ function renderActivityFeed() {
                 '<span class="ui-row-sub"><span class="t">' + meta.join(' · ') + '</span></span></span>' +
             '</button></li>';
     }
-    feed.innerHTML = html + '</ul>';
-    var scroller = document.getElementById('activity-scroll');
-    if (activityStickToBottom && scroller) scroller.scrollTop = scroller.scrollHeight;
+    feed.innerHTML = html + '</ul>' + (visible.length < filtered.length
+        ? '<p class="ui-list-note activity-cap-note">Showing the ' + visible.length.toLocaleString('en-US') + ' most recent of ' + filtered.length.toLocaleString('en-US') +
+            '. <button type="button" class="ui-link" data-activity-action="search">Search to find older events</button></p>' : '');
+    if (scroller) {
+        if (activityFollowLatest) scroller.scrollTop = 0;
+        else if (anchor) activityRestoreAnchor(scroller, anchor);
+    }
     renderActivityDetail();
     refreshActivityEventSheet();
 }
@@ -2462,7 +2534,7 @@ function resetActivityView() {
     activitySearchQuery = '';
     activityMessageFilter = null;
     activitySelectedSequence = null;
-    activityStickToBottom = true;
+    activityFollowLatest = true;
     var searchInput = document.getElementById('activity-search-input');
     if (searchInput) searchInput.value = '';
 }
