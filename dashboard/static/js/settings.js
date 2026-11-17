@@ -339,6 +339,26 @@ window.ratspeakPaperMessagesEnabled = function() {
     return !!_settingsPaperMessagesEnabled;
 };
 
+// Message titles: the composer's Title line, kept with the app's other UI state.
+var _settingsMessageTitlesBound = false;
+
+function initMessageTitlesToggle() {
+    var toggle = document.getElementById('settings-message-titles-toggle');
+    if (!toggle || _settingsMessageTitlesBound) return;
+    _settingsMessageTitlesBound = true;
+    (RS.uiStateListeners = RS.uiStateListeners || []).push(function(data) {
+        if (data.message_titles !== undefined) toggle.checked = !!data.message_titles;
+    });
+    toggle.addEventListener('change', function() {
+        var on = !!toggle.checked;
+        if (typeof RS.adoptUiState === 'function') RS.adoptUiState({ message_titles: on });
+        RS.invoke('set_ui_state', { key: 'message_titles', value: on }).catch(function(error) {
+            if (typeof RS.adoptUiState === 'function') RS.adoptUiState({ message_titles: !on });
+            if (typeof showToast === 'function') showToast((error && error.message) || 'Could not change message titles', 'toast-error', 4000);
+        });
+    });
+}
+
 function readDeveloperModePreference() {
     try {
         return window.localStorage.getItem(_settingsDeveloperModeStorageKey) === 'true';
@@ -1721,6 +1741,7 @@ function applyAppSettingsPayload(data) {
     initActivityIdentityProtectionToggle();
     initHideKnownSpamPeersToggle();
     initPaperMessagesToggle();
+    initMessageTitlesToggle();
     RS.invoke('api_app_settings').then(applyAppSettingsPayload).catch(function() {});
     if (lxmfLimitToggle) {
         lxmfLimitToggle.addEventListener('change', function() {

@@ -1120,6 +1120,7 @@ body.image-viewer-open {
 .msg-bubble:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .msg-text { display: flow-root; white-space: pre-wrap; cursor: text; user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; }
 .msg-text.md { white-space: normal; }
+.msg-subject { display: block; font-weight: 600; }
 .msg-row .msg-bubble--emoji { padding: 0 2px; background: transparent; }
 .msg-text--emoji { font-size: var(--text-3xl); line-height: 1.2; }
 .msg-highlight { animation: msg-highlight 1.5s ease-out; }
@@ -1267,6 +1268,13 @@ button.msg-mark:focus-visible { outline: 2px solid var(--focus-ring); outline-of
 .cmp-input::placeholder { color: var(--input-placeholder); }
 .cmp-input:focus-visible { outline: none; }
 .cmp-row > .cmp-input:first-child { padding-left: 13px; }
+/* Message titles: a bold Title line and a hairline above the message, in the same pill. */
+.cmp-fields { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.cmp-fields > .cmp-input { flex: none; }
+.cmp .cmp-title { width: auto; height: 36px; margin: 0; padding: 10px 4px 2px; box-sizing: border-box; border: 0; border-radius: 0; background: transparent; box-shadow: none; color: var(--input-text); font: inherit; font-size: var(--text-base); font-weight: 600; line-height: var(--cmp-line); outline: none; -webkit-appearance: none; appearance: none; }
+.cmp .cmp-title::placeholder { color: var(--input-placeholder); font-weight: 600; }
+.cmp .cmp-title:focus, .cmp .cmp-title:focus-visible { outline: none; box-shadow: none; }
+.cmp-rule { height: 1px; margin: 0 4px; background: var(--border-row); }
 .cmp-count { position: absolute; right: 52px; top: -22px; padding: 2px 8px; border-radius: var(--radius-tag); background: var(--surface-popover); color: var(--text-muted); font-size: var(--text-2xs); font-variant-numeric: tabular-nums; }
 .cmp-count.is-over { color: var(--danger-ink); }
 /* Disabled (a hub reconnecting): the pill dims and one line above it says why. */

@@ -56,6 +56,7 @@ var _ghostConversationHash = null;
 var _replyTarget = null;
 var _msgReactions = {};
 var _lxmfDrafts = {};
+var _lxmfTitleDrafts = {};
 var _conversationCache = {};
 var _conversationCacheSizes = {};
 var _conversationCacheBytes = 0;
@@ -1567,14 +1568,13 @@ function _stripMessageMarkdown(text) {
 function _messageBodyHtml(msg, hasRenderedAudio) {
     var body = _messageBodyContent(msg, hasRenderedAudio);
     var title = ((msg && msg.title) || '').trim();
+    var subject = title ? '<strong class="msg-subject">' + escapeHtml(title) + '</strong>' : '';
     if (_messageIsMarkdown(msg) && body.trim()) {
         var rendered = RS.markdown.render(body, { links: _messageLinkRanges });
-        if (rendered != null) {
-            return { html: (title ? '<p class="md-p">' + escapeHtml(title) + '</p>' : '') + rendered, markdown: true };
-        }
+        if (rendered != null) return { html: subject + rendered, markdown: true };
     }
-    var text = _messageDisplayContent(msg, hasRenderedAudio);
-    return { html: text ? linkifyMessageText(text) : '', markdown: false };
+    var text = body.trim() ? body : '';
+    return { html: subject + (text ? linkifyMessageText(text) : ''), markdown: false };
 }
 
 // Delivery marks on a 16 px grid, one colour except Not delivered. One check is Sent,
@@ -2342,12 +2342,17 @@ function _saveActiveDraft(input) {
     if (!input || !key) return;
     if (input.value.trim()) { _lxmfDrafts[key] = input.value; }
     else { delete _lxmfDrafts[key]; }
+    var title = _lxmfTitleField();
+    if (title && title.value.trim()) _lxmfTitleDrafts[key] = title.value;
+    else delete _lxmfTitleDrafts[key];
 }
 
 function _restoreActiveDraft(input) {
     if (!input) return;
     input.value = _lxmfDrafts[_activeConversationKey()] || '';
     input.style.height = '';
+    var title = _lxmfTitleField();
+    if (title) title.value = _lxmfTitleDrafts[_activeConversationKey()] || '';
 }
 
 // The conversation a list row opens: the one holding the contact's newest message.
@@ -3246,10 +3251,9 @@ function _renderChatHeaderName() {
     if (who) who.setAttribute('aria-label', info.name + ', details');
     var input = document.getElementById('lxmf-input');
     if (input) {
-        var first = info.isHash ? '' : String(info.name || '').trim().split(/\s+/)[0];
-        var placeholder = first ? 'Message ' + first : 'Message';
-        if (input.placeholder !== placeholder) input.placeholder = placeholder;
+        if (input.placeholder !== 'Message…') input.placeholder = 'Message…';
     }
+    _syncLxmfTitleField();
     var intro = document.querySelector('#lxmf-messages .msg-intro-name');
     if (intro) intro.innerHTML = nameEl ? nameEl.innerHTML : escapeHtml(info.name);
 }
@@ -3774,9 +3778,36 @@ function generateMsgId() {
     return 'out_' + hex;
 }
 
+// Message titles (Settings › General): a Title line above the message, off by default.
+var _lxmfTitlesOn = false;
+(RS.uiStateListeners = RS.uiStateListeners || []).push(function(data) {
+    if (data.message_titles === undefined) return;
+    _lxmfTitlesOn = !!data.message_titles;
+    _syncLxmfTitleField();
+});
+
+function _lxmfTitleField() { return document.getElementById('lxmf-title'); }
+
+// A node reads commands as plain text, so its chat has no Title.
+function _syncLxmfTitleField() {
+    var title = _lxmfTitleField();
+    if (!title) return;
+    var shown = _lxmfTitlesOn && !(RS.rsnode && lxmfActiveContact && RS.rsnode.isDevice(lxmfActiveContact));
+    if (title.hidden === !shown) return;
+    if (!shown && document.activeElement === title) _focusLxmfComposerInput(document.getElementById('lxmf-input'));
+    title.hidden = !shown;
+    if (title.nextElementSibling) title.nextElementSibling.hidden = !shown;
+    if (!shown) title.value = '';
+}
+
+function _lxmfTitleValue() {
+    var title = _lxmfTitleField();
+    return title && !title.hidden ? title.value.trim() : '';
+}
+
 function _captureLxmfSendFocusState() {
     var input = document.getElementById('lxmf-input');
-    if (RS.composer) RS.composer.captureFocus(input);
+    if (RS.composer) RS.composer.captureFocus(input, _isLxmfComposerFocused());
 }
 
 function _consumeLxmfSendFocusState(input) {
@@ -3794,7 +3825,8 @@ function _focusLxmfComposerInput(input) {
 
 function _isLxmfComposerFocused() {
     var input = document.getElementById('lxmf-input');
-    return !!(input && document.activeElement === input);
+    var active = document.activeElement;
+    return !!(active && (active === input || active === _lxmfTitleField()));
 }
 
 function _shouldPreserveLxmfComposerKeyboard() {
@@ -3804,7 +3836,7 @@ function _shouldPreserveLxmfComposerKeyboard() {
 function _restoreLxmfComposerKeyboard(shouldRestore) {
     if (!shouldRestore) return;
     var input = document.getElementById('lxmf-input');
-    if (!input || document.activeElement === input) return;
+    if (!input || _isLxmfComposerFocused()) return;
     setTimeout(function() {
         if (document.body.classList.contains('view-chat-detail') || lxmfActiveContact) {
             _focusLxmfComposerInput(input);
@@ -3819,6 +3851,9 @@ function _finishLxmfComposerSend(input, shouldRestoreFocus, targetHash) {
     input.style.height = '';
     input.scrollTop = 0;
     delete _lxmfDrafts[_activeConversationKey()];
+    delete _lxmfTitleDrafts[_activeConversationKey()];
+    var title = _lxmfTitleField();
+    if (title) title.value = '';
     if (shouldRestoreFocus) {
         _focusLxmfComposerInput(input);
     } else if (document.activeElement === input) {
@@ -3893,6 +3928,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
     var input = document.getElementById('lxmf-input');
     if (!input) return;
     var shouldRestoreComposerFocus = _consumeLxmfSendFocusState(input);
+    var title = _lxmfTitleValue();
     // A node reads commands as plain text.
     var composed = RS.rsnode && RS.rsnode.isDevice(targetHash)
         ? { content: input.value.trim(), renderer: null, preview: input.value.trim() }
@@ -3932,6 +3968,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
                 args: {
                     dest_hash: targetHash,
                     content: text,
+                    title: title,
                     delivery_method: chosenDelivery,
                     client_msg_id: attachMsgId,
                     staging_token: stageToken,
@@ -3963,6 +4000,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
             thread: sendOwner.thread,
             direction: 'outbound',
             content: text,
+            title: title,
             renderer: renderer,
             timestamp: Date.now() / 1000,
             state: 'sending',
@@ -3998,6 +4036,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
             args: {
                 dest_hash: targetHash,
                 content: text,
+                title: title,
                 delivery_method: chosenDelivery,
                 reply_to_id: _replyTarget.id,
                 reply_to_preview: _replyTarget.content,
@@ -4013,6 +4052,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
             thread: sendOwner.thread,
             direction: 'outbound',
             content: text,
+            title: title,
             renderer: renderer,
             timestamp: Date.now() / 1000,
             state: 'sending',
@@ -4032,6 +4072,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
         args: {
             dest_hash: targetHash,
             content: text,
+            title: title,
             delivery_method: chosenDelivery,
             client_msg_id: msgId,
             renderer: renderer,
@@ -4053,6 +4094,7 @@ function sendLxmfMessage(deliveryMethod, shareContext) {
         thread: sendOwner.thread,
         direction: 'outbound',
         content: text,
+        title: title,
         renderer: renderer,
         timestamp: Date.now() / 1000,
         state: 'sending',
@@ -7193,6 +7235,14 @@ document.addEventListener('DOMContentLoaded', function() {
 
     // Mobile: Enter always inserts newline (avoid OSK return-key accidental sends).
     // Desktop: Enter sends, Shift+Enter inserts newline.
+    var titleField = _lxmfTitleField();
+    if (titleField) {
+        titleField.addEventListener('keydown', function(e) {
+            if (e.key !== 'Enter' || e.isComposing) return;
+            e.preventDefault();
+            _focusLxmfComposerInput(document.getElementById('lxmf-input'));
+        });
+    }
     var textarea = document.getElementById('lxmf-input');
     if (textarea) {
         RS.composer.bindTypingPolicy(textarea);

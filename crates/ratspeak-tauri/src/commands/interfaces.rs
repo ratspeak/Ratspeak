@@ -1180,6 +1180,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         "network_ways_collapsed": ui_state.network_ways_collapsed,
         "network_connected_once": ui_state.network_connected_once,
         "update_last_checked": ui_state.update_last_checked,
+        "message_titles": ui_state.message_titles,
     }))
 }
 
@@ -1194,6 +1195,8 @@ struct UiState {
     network_connected_once: bool,
     /// Unix seconds.
     update_last_checked: u64,
+    /// The composer shows a Title line.
+    message_titles: bool,
 }
 
 const NETWORK_WAYS: [&str; 6] = ["tcp", "ble", "local", "lora", "host", "discovered"];
@@ -1217,6 +1220,7 @@ fn stored_ui_state(pool: &db::DbPool) -> UiState {
         update_last_checked: db::get_setting(pool, "update_last_checked")
             .and_then(|value| value.parse().ok())
             .unwrap_or(0),
+        message_titles: flag("message_titles"),
     }
 }
 
@@ -1224,7 +1228,10 @@ fn stored_ui_state(pool: &db::DbPool) -> UiState {
 fn ui_state_setting(key: &str, value: &Value) -> AppResult<String> {
     match (key, value) {
         (
-            "activity_tab_seen" | "network_map_collapsed" | "network_connected_once",
+            "activity_tab_seen"
+            | "network_map_collapsed"
+            | "network_connected_once"
+            | "message_titles",
             Value::Bool(on),
         ) => Ok(on.to_string()),
         ("network_ways_collapsed", Value::Array(items)) => items
@@ -1245,7 +1252,8 @@ fn ui_state_setting(key: &str, value: &Value) -> AppResult<String> {
             | "network_map_collapsed"
             | "network_connected_once"
             | "network_ways_collapsed"
-            | "update_last_checked",
+            | "update_last_checked"
+            | "message_titles",
             _,
         ) => Err(AppError::bad_request(format!("{key} has the wrong type"))),
         _ => Err(AppError::bad_request("Unknown UI state")),
@@ -1297,6 +1305,7 @@ mod ui_state_tests {
             ("update_last_checked", json!(-1)),
             ("update_last_checked", json!(1.5)),
             ("update_last_checked", json!(true)),
+            ("message_titles", json!("on")),
             ("theme_mode", json!("dark")),
             ("", json!(true)),
         ] {
@@ -1315,6 +1324,7 @@ mod ui_state_tests {
         db::set_setting(&pool, "activity_tab_seen", "true");
         db::set_setting(&pool, "update_last_checked", "42");
         db::set_setting(&pool, "network_connected_once", "true");
+        db::set_setting(&pool, "message_titles", "true");
         db::set_setting(
             &pool,
             "network_ways_collapsed",
@@ -1328,6 +1338,7 @@ mod ui_state_tests {
                 network_ways_collapsed: vec!["tcp", "local"],
                 network_connected_once: true,
                 update_last_checked: 42,
+                message_titles: true,
             }
         );
         assert_eq!(

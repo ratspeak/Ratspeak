@@ -944,6 +944,9 @@ pub async fn send_reaction(
 pub struct SendReplyArgs {
     pub dest_hash: String,
     pub content: String,
+    /// LXMF title; empty when the composer has none.
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default)]
     pub reply_to_id: Option<String>,
     #[serde(default)]
@@ -967,6 +970,7 @@ pub async fn send_lxmf_reply(
     wait_while_messaging_starts(&state).await;
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(&args.content)?;
+    let title = sanitize_text(args.title.as_deref().unwrap_or(""), 256);
     let reply_to_id = sanitize_text(args.reply_to_id.as_deref().unwrap_or(""), 128);
     let reply_to_preview = sanitize_text(args.reply_to_preview.as_deref().unwrap_or(""), 200);
     let wire_reply_to_id = state
@@ -1020,6 +1024,7 @@ pub async fn send_lxmf_reply(
     let st: Arc<AppState> = Arc::clone(&state);
     let dh = dest_hash.clone();
     let ct = content.clone();
+    let tt = title.clone();
     let id_c = identity_id.clone();
     let reply_id_for_send = wire_reply_to_id.clone();
     let cancellation = client_send
@@ -1030,7 +1035,7 @@ pub async fn send_lxmf_reply(
             manager.send_reply_with_preference_report(ReplyMessageSendRequest {
                 dest_hash_hex: &dh,
                 content: &ct,
-                title: "",
+                title: &tt,
                 reply_to_id: &reply_id_for_send,
                 reply_to_preview: &reply_to_preview,
                 db_pool: &st.db,
@@ -1234,6 +1239,9 @@ pub struct SendWithAttachmentArgs {
     pub dest_hash: String,
     #[serde(default)]
     pub content: Option<String>,
+    /// LXMF title; empty when the composer has none.
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default)]
     pub delivery_method: Option<String>,
     #[serde(default)]
@@ -1279,6 +1287,7 @@ async fn queue_prepared_attachment(
     state: Arc<AppState>,
     dest_hash: String,
     content: String,
+    title: String,
     delivery_pref: DeliveryPreference,
     renderer: Option<u8>,
     thread: String,
@@ -1315,6 +1324,7 @@ async fn queue_prepared_attachment(
     let st = Arc::clone(&state);
     let dh = dest_hash.clone();
     let ct = content.clone();
+    let tt = title;
     let fn_c = file_name.clone();
     let im = image_mime.clone();
     let cancellation = client_send
@@ -1335,7 +1345,7 @@ async fn queue_prepared_attachment(
                     AttachmentMessageRequest {
                         dest_hash_hex: &dh,
                         content: &msg_content,
-                        title: "",
+                        title: &tt,
                         file_name: &fn_c,
                         file_bytes: &file_bytes,
                         staged_path: staged_path.as_deref(),
@@ -1785,6 +1795,7 @@ pub async fn send_lxmf_with_attachment(
     wait_while_messaging_starts(&state).await;
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(args.content.as_deref().unwrap_or(""))?;
+    let title = sanitize_text(args.title.as_deref().unwrap_or(""), 256);
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref())?;
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
     let renderer = parse_message_renderer(args.renderer)?;
@@ -1903,6 +1914,7 @@ pub async fn send_lxmf_with_attachment(
         state_arc,
         dest_hash,
         content,
+        title,
         delivery_pref,
         renderer,
         parse_conversation_thread(args.thread.as_deref())?,
@@ -2268,6 +2280,9 @@ pub struct SendStagedAttachmentArgs {
     pub dest_hash: String,
     #[serde(default)]
     pub content: Option<String>,
+    /// LXMF title; empty when the composer has none.
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default)]
     pub delivery_method: Option<String>,
     pub staging_token: String,
@@ -2288,6 +2303,7 @@ pub async fn send_lxmf_with_staged_attachment(
     wait_while_messaging_starts(&state).await;
     let dest_hash = sanitize_text(&args.dest_hash, 128).to_ascii_lowercase();
     let content = sanitize_message_content(args.content.as_deref().unwrap_or(""))?;
+    let title = sanitize_text(args.title.as_deref().unwrap_or(""), 256);
     let delivery_pref = parse_delivery_preference(args.delivery_method.as_deref())?;
     let client_msg_id = normalize_lxmf_client_msg_id(args.client_msg_id.as_deref())?;
     let renderer = parse_message_renderer(args.renderer)?;
@@ -2340,6 +2356,7 @@ pub async fn send_lxmf_with_staged_attachment(
         Arc::clone(&state),
         dest_hash,
         content,
+        title,
         delivery_pref,
         renderer,
         parse_conversation_thread(args.thread.as_deref())?,

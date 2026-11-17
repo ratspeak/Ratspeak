@@ -52,10 +52,11 @@
     // reopens the IME around the asynchronous command response.
     var composerFocusState = new WeakMap();
 
-    RS.composer.captureFocus = function(input) {
+    // focused: the composer had focus, when another of its fields (a title) held it.
+    RS.composer.captureFocus = function(input, focused) {
         if (!input) return;
         composerFocusState.set(input, {
-            wasFocused: document.activeElement === input,
+            wasFocused: focused === undefined ? document.activeElement === input : !!focused,
             capturedAt: Date.now()
         });
     };

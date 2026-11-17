@@ -5,8 +5,13 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+### Added
+
+- **Message titles**: turn on Message titles in Settings › General to add a bold Title line above your message. A message that arrives with a title shows it in bold above the text.
+
 ### Fixed and improved
 
+- The message box says "Message…" in every conversation.
 - Names and statuses now reach you even when busy servers hold back announces, and a first message from someone new soon shows their name.
 - Peers reached through a named internet connection show Internet again.
 - With Relay for other devices on, phones connected over Bluetooth can reach people this device hasn't heard yet.

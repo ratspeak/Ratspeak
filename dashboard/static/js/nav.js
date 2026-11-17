@@ -1331,7 +1331,7 @@ function initKeyboardDetection() {
         // Capture intent before changing viewport geometry. A smaller viewport
         // can create a large bottom gap without the user scrolling at all.
         var followIOSChat = inConversationDetail && activeComposer &&
-            (activeComposer.id === 'lxmf-input' || activeComposer.id === 'channel-message-input') &&
+            _isChatComposerField(activeComposer) &&
             _chatMessagesFollowingForKeyboard();
 
         var documentScroll = Math.max(
@@ -1458,7 +1458,7 @@ function initKeyboardDetection() {
             return;
         }
 
-        if (el.id === 'lxmf-input' || el.id === 'channel-message-input') {
+        if (_isChatComposerField(el)) {
             // iOS follows viewport changes directly. Its initial focus resize
             // can precede keyboard opening, which cleared the old one-shot flag.
             _waitingForKeyboard = !isIOS() && _chatMessagesNearBottomForKeyboard();
@@ -1491,10 +1491,15 @@ function initKeyboardDetection() {
     document.addEventListener('focusout', function(e) {
         var el = e.target;
         // The settle timer stays: it may still owe the keyboard-closed state.
-        if (el.id === 'lxmf-input' || el.id === 'channel-message-input') {
+        if (_isChatComposerField(el)) {
             _waitingForKeyboard = false;
         }
     });
+}
+
+// A chat composer's own fields: the message, and in Messages its optional title.
+function _isChatComposerField(el) {
+    return !!el && (el.id === 'lxmf-input' || el.id === 'lxmf-title' || el.id === 'channel-message-input');
 }
 
 function initTextareaAutoGrow() {

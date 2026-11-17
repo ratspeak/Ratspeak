@@ -337,9 +337,10 @@ fn channels_keep_hubs_live_only_and_wire_bounded_local_history_across_the_produc
     assert!(keyboard_detection.contains("'--keyboard-inset'"));
     assert!(keyboard_detection.contains("vv.pageTop"));
     assert!(keyboard_detection.contains("bodyRect.top"));
-    assert!(
-        keyboard_detection.contains("el.id === 'lxmf-input' || el.id === 'channel-message-input'")
-    );
+    assert!(keyboard_detection.contains("if (_isChatComposerField(el)) {"));
+    assert!(nav_js.contains(
+        "return !!el && (el.id === 'lxmf-input' || el.id === 'lxmf-title' || el.id === 'channel-message-input');"
+    ));
     assert!(!keyboard_detection.contains("scheduleViewportSettle"));
     assert!(keyboard_detection.contains("active.closest('.bottom-sheet.open')"));
     assert!(keyboard_detection.contains("'data-keyboard-platform'"));
@@ -5982,7 +5983,7 @@ fn message_composer_send_preserves_preexisting_focus_state() {
         !send_function.contains("input.focus();"),
         "send must not unconditionally focus the composer after a button send"
     );
-    assert!(ui_shared.contains("RS.composer.captureFocus = function(input)"));
+    assert!(ui_shared.contains("RS.composer.captureFocus = function(input, focused)"));
     assert!(ui_shared.contains("RS.composer.consumeFocus = function(input)"));
     assert!(ui_shared.contains("RS.composer.focusWithoutScroll = function(input)"));
     assert!(ui_shared.contains("RS.composer.bindTapToSend = function(button, input, onSend)"));
@@ -6001,7 +6002,9 @@ fn message_composer_send_preserves_preexisting_focus_state() {
             .contains("input.focus();")
     );
     assert!(channels.contains("RS.composer.shouldSendOnEnter(event)"));
-    assert!(nav.contains("el.id === 'lxmf-input' || el.id === 'channel-message-input'"));
+    assert!(nav.contains(
+        "el.id === 'lxmf-input' || el.id === 'lxmf-title' || el.id === 'channel-message-input'"
+    ));
     assert!(nav.contains("document.getElementById('channel-transcript')"));
 
     let components_css =
