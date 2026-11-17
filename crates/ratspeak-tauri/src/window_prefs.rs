@@ -33,6 +33,13 @@ impl DecorationsPref {
 
 pub const CLOSE_BUTTON_SETTING: &str = "close_button_action";
 
+/// Linux: "off" hides the tray icon, so closing the window quits.
+pub const TRAY_ICON_SETTING: &str = "tray_icon";
+
+pub fn tray_icon_shown(value: Option<&str>) -> bool {
+    value.is_none_or(|value| value.trim() != "off")
+}
+
 /// What the main window's close button does on Windows. `Ask` shows the
 /// native prompt; Quit from the tray menu always quits.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -154,6 +161,15 @@ mod tests {
             DecorationsPref::from_setting(Some("garbage")),
             DecorationsPref::Auto
         );
+    }
+
+    #[test]
+    fn the_tray_icon_shows_unless_turned_off() {
+        assert!(tray_icon_shown(None));
+        assert!(tray_icon_shown(Some("on")));
+        assert!(tray_icon_shown(Some("garbage")));
+        assert!(!tray_icon_shown(Some("off")));
+        assert!(!tray_icon_shown(Some(" off ")));
     }
 
     #[test]

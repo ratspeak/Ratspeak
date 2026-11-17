@@ -9,6 +9,7 @@ function openSettings() {
     initActivityIdentityProtectionToggle();
     initDeveloperModeToggle();
     initWindowDecorationsToggle();
+    initTrayIconToggle();
     initCloseButtonToggle();
     syncSettingsIdentityActions();
     renderSettingsVersion();
@@ -497,6 +498,40 @@ function initWindowDecorationsToggle() {
     if (_settingsWindowDecorationsBound) return;
     _settingsWindowDecorationsBound = true;
     _settingsBindSeg(document.getElementById('settings-window-decorations-seg'), setWindowDecorationsMode);
+}
+
+// Linux: the tray icon, shown or hidden at once. Without it, closing the window quits.
+var _settingsTrayIconShown = true;
+var _settingsTrayIconBound = false;
+
+function syncTrayIconToggleState() {
+    var toggle = document.getElementById('settings-tray-icon-toggle');
+    if (toggle) toggle.checked = _settingsTrayIconShown;
+}
+
+function adoptTrayIconFromBackend(shown) {
+    _settingsTrayIconShown = shown !== false;
+    syncTrayIconToggleState();
+}
+
+function initTrayIconToggle() {
+    var group = document.getElementById('settings-tray-icon-group');
+    var toggle = document.getElementById('settings-tray-icon-toggle');
+    syncSettingsWindowBlock();
+    if (!group || !toggle || !windowDecorationsRowApplies()) return;
+    group.hidden = false;
+    syncTrayIconToggleState();
+    if (_settingsTrayIconBound) return;
+    _settingsTrayIconBound = true;
+    toggle.addEventListener('change', function() {
+        var previous = _settingsTrayIconShown;
+        _settingsTrayIconShown = !!toggle.checked;
+        RS.invoke('set_tray_icon', { shown: _settingsTrayIconShown }).catch(function(error) {
+            _settingsTrayIconShown = previous;
+            syncTrayIconToggleState();
+            showToast((error && error.message) || 'Could not change the tray icon', 'toast-error', 4000);
+        });
+    });
 }
 
 var _settingsCloseButtonBound = false;
@@ -1740,6 +1775,7 @@ function applyAppSettingsPayload(data) {
     if (data.developer_mode !== undefined) {
         adoptDeveloperModeFromBackend(data.developer_mode);
     }
+    if (data.tray_icon !== undefined) adoptTrayIconFromBackend(data.tray_icon);
     if (data.window_decorations !== undefined) {
         adoptWindowDecorationsFromBackend(data.window_decorations);
     }

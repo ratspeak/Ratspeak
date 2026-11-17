@@ -55,7 +55,8 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Cont
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = "0.18"
-libloading = "0.8"
+# StatusNotifierItem tray: reports left-clicks, and never loads libayatana-appindicator.
+tray-icon = { version = "0.25", default-features = false, features = ["ksni"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.19"

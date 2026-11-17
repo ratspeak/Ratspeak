@@ -2969,10 +2969,9 @@ fn linux_package_metadata_is_explicit_for_app_stores() {
         assert!(verify_packages.contains(requirement));
     }
 
-    // A missing tray library must not crash startup or strand a hidden window.
+    // A desktop without a tray must not crash startup or strand a hidden window.
     let shell = read_source(root.join("src-tauri/src/lib.rs")).expect("desktop shell");
-    assert!(shell.contains("if !desktop_tray_supported() {"));
-    assert!(shell.contains("app.manage(DesktopTray);"));
+    assert!(shell.contains("} else if let Err(error) = install_desktop_tray(app.handle()) {"));
     assert!(shell.contains("&& close_hides_main_window(app_handle)"));
     assert!(!shell.contains("install_desktop_tray(app)?;"));
 
@@ -12070,4 +12069,43 @@ fn shut_down_stops_every_service_then_closes_except_on_ios() {
     assert!(shut_down.contains("RatspeakService.stopActive()"));
     assert!(shut_down.contains("finishAndRemoveTask()"));
     assert!(shut_down.contains("android.os.Process.killProcess(android.os.Process.myPid())"));
+}
+
+#[test]
+fn linux_tray_reports_left_clicks_and_can_be_turned_off() {
+    let root = repo_root();
+    // StatusNotifierItem reports a left-click (Activate); AppIndicator reports none, and its
+    // library warns that it is deprecated when loaded.
+    let manifest = read_source(root.join("src-tauri/Cargo.toml")).expect("manifest");
+    let linux = manifest
+        .split("[target.'cfg(target_os = \"linux\")'.dependencies]")
+        .nth(1)
+        .and_then(|tail| tail.split("\n[").next())
+        .expect("linux dependencies");
+    assert!(linux.contains(
+        "tray-icon = { version = \"0.25\", default-features = false, features = [\"ksni\"] }"
+    ));
+    assert!(!manifest.contains("libloading"));
+    let app = read_source(root.join("src-tauri/src/lib.rs")).expect("app");
+    assert!(
+        !app.contains("desktop_tray_supported"),
+        "nothing probes libayatana"
+    );
+    assert!(!app.contains("libappindicator"));
+    let tray = rust_function_block(&app, "install_desktop_tray");
+    assert!(tray.contains(".show_menu_on_left_click(false)"));
+    assert!(tray.contains("button: MouseButton::Left,"));
+    assert!(tray.contains("DESKTOP_TRAY.store(true, std::sync::atomic::Ordering::Release);"));
+    // Without a tray, closing the window quits.
+    assert!(app.contains("DESKTOP_TRAY.load(std::sync::atomic::Ordering::Acquire)"));
+    // The switch: read at start, applied at once, gated like the other window settings.
+    assert!(app.contains("if !tray_icon {\n                tracing::info!(\"tray icon off; closing the window quits Ratspeak\");"));
+    let switch = rust_function_block(&app, "set_tray_icon");
+    assert!(switch.contains("app.remove_tray_by_id(\"ratspeak\");"));
+    assert!(switch.contains("install_desktop_tray(&app)"));
+    let gate = read_source(root.join("crates/ratspeak-tauri/src/invoke_gate.rs")).expect("gate");
+    assert_eq!(gate.matches("\"set_tray_icon\",").count(), 2);
+    let settings = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
+        .expect("settings");
+    assert!(settings.contains("\"tray_icon\": tray_icon,"));
 }

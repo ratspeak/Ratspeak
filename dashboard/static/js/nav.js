@@ -522,6 +522,7 @@ var VIEW_LIFECYCLE = {
         if (typeof initChannelHostingToggle === 'function') initChannelHostingToggle();
         if (typeof initDeveloperModeToggle === 'function') initDeveloperModeToggle();
         if (typeof initWindowDecorationsToggle === 'function') initWindowDecorationsToggle();
+        if (typeof initTrayIconToggle === 'function') initTrayIconToggle();
         if (typeof initCloseButtonToggle === 'function') initCloseButtonToggle();
     },
 

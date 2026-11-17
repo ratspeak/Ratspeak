@@ -31,12 +31,12 @@ const TRAY_SHOW_ID: &str = "ratspeak_tray_show";
 ))]
 const TRAY_QUIT_ID: &str = "ratspeak_tray_quit";
 
-/// Managed once the tray exists; without it, closing the window quits.
+/// Set while the tray icon exists; without it, closing the window quits.
 #[cfg(all(
     not(any(target_os = "android", target_os = "ios")),
     not(target_os = "macos")
 ))]
-struct DesktopTray;
+static DESKTOP_TRAY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 // Initialize btleplug before any adapter access. Keep the existing JNI 0.19
 // JVM registrations for native BLE Peer/RNode, RFCOMM, and USB independent.
@@ -1141,6 +1141,11 @@ pub fn run() {
             tauri::generate_handler![
                 #[cfg(not(target_os = "ios"))]
                 shut_down_app,
+                #[cfg(all(
+                    not(any(target_os = "android", target_os = "ios")),
+                    not(target_os = "macos")
+                ))]
+                set_tray_icon,
                 open_external_url,
                 open_support_email,
                 set_window_decorations,
@@ -1504,7 +1509,7 @@ pub fn run() {
             // Window prefs must be read before the window is built.
             #[cfg(not(any(target_os = "android", target_os = "ios")))]
             #[cfg_attr(not(target_os = "linux"), allow(unused_variables))]
-            let (decorations_setting, developer_mode) = state
+            let (decorations_setting, developer_mode, tray_icon) = state
                 .as_ref()
                 .and_then(|state| {
                     rt.block_on(ratspeak_tauri::db::spawn_db(state.db.clone(), |p| {
@@ -1512,11 +1517,18 @@ pub fn run() {
                             ratspeak_tauri::db::get_setting(&p, "window_decorations"),
                             ratspeak_tauri::db::get_setting(&p, "developer_mode_enabled")
                                 .is_some_and(|v| v == "true"),
+                            ratspeak_tauri::window_prefs::tray_icon_shown(
+                                ratspeak_tauri::db::get_setting(
+                                    &p,
+                                    ratspeak_tauri::window_prefs::TRAY_ICON_SETTING,
+                                )
+                                .as_deref(),
+                            ),
                         )
                     }))
                     .ok()
                 })
-                .unwrap_or((None, false));
+                .unwrap_or((None, false, true));
 
             std::mem::forget(rt);
 
@@ -1601,15 +1613,10 @@ pub fn run() {
                 not(any(target_os = "android", target_os = "ios")),
                 not(target_os = "macos")
             ))]
-            if !desktop_tray_supported() {
-                tracing::warn!(
-                    reason = "indicator_library_missing",
-                    "tray unavailable; closing the window quits Ratspeak"
-                );
-            } else if let Err(error) = install_desktop_tray(app) {
+            if !tray_icon {
+                tracing::info!("tray icon off; closing the window quits Ratspeak");
+            } else if let Err(error) = install_desktop_tray(app.handle()) {
                 tracing::warn!(%error, "tray unavailable; closing the window quits Ratspeak");
-            } else {
-                app.manage(DesktopTray);
             }
 
             // iOS edge-to-edge: env(safe-area-inset-*) + viewport-fit=cover
@@ -1761,8 +1768,8 @@ fn close_hides_main_window(_app: &tauri::AppHandle) -> bool {
     not(any(target_os = "android", target_os = "ios")),
     not(target_os = "macos")
 ))]
-fn close_hides_main_window(app: &tauri::AppHandle) -> bool {
-    app.try_state::<DesktopTray>().is_some()
+fn close_hides_main_window(_app: &tauri::AppHandle) -> bool {
+    DESKTOP_TRAY.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// The 1200×800 first window would overflow small screens; fill the work area instead.
@@ -1873,33 +1880,11 @@ fn close_main_window(app: &tauri::AppHandle) {
     }
 }
 
-// libappindicator-sys panics, rather than erroring, when none of these load.
-#[cfg(target_os = "linux")]
-fn desktop_tray_supported() -> bool {
-    [
-        "libayatana-appindicator3.so.1",
-        "libappindicator3.so.1",
-        "libayatana-appindicator3.so",
-        "libappindicator3.so",
-    ]
-    .into_iter()
-    // SAFETY: the same libraries the tray loads itself; their initializers are GTK's.
-    .any(|name| unsafe { libloading::Library::new(name) }.is_ok())
-}
-
-#[cfg(all(
-    not(any(target_os = "android", target_os = "ios")),
-    not(any(target_os = "macos", target_os = "linux"))
-))]
-fn desktop_tray_supported() -> bool {
-    true
-}
-
 #[cfg(all(
     not(any(target_os = "android", target_os = "ios")),
     not(target_os = "macos")
 ))]
-fn install_desktop_tray(app: &mut tauri::App) -> tauri::Result<()> {
+fn install_desktop_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
@@ -1933,7 +1918,43 @@ fn install_desktop_tray(app: &mut tauri::App) -> tauri::Result<()> {
         tray = tray.icon(icon);
     }
     tray.build(app)?;
+    DESKTOP_TRAY.store(true, std::sync::atomic::Ordering::Release);
     Ok(())
+}
+
+/// Linux's tray icon switch, applied at once: off removes the icon, so closing
+/// the window quits; on brings it back where a tray exists.
+#[cfg(all(
+    not(any(target_os = "android", target_os = "ios")),
+    not(target_os = "macos")
+))]
+#[tauri::command]
+async fn set_tray_icon(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, std::sync::Arc<ratspeak_tauri::state::AppState>>,
+    shown: bool,
+) -> Result<serde_json::Value, String> {
+    use std::sync::atomic::Ordering;
+    let present = DESKTOP_TRAY.load(Ordering::Acquire);
+    if shown && !present {
+        install_desktop_tray(&app)
+            .map_err(|_| "No system tray is available on this desktop".to_string())?;
+    } else if !shown && present {
+        DESKTOP_TRAY.store(false, Ordering::Release);
+        app.remove_tray_by_id("ratspeak");
+    }
+    let stored = if shown { "on" } else { "off" };
+    ratspeak_tauri::db::spawn_db(state.db.clone(), move |p| {
+        ratspeak_tauri::db::try_set_setting(
+            &p,
+            ratspeak_tauri::window_prefs::TRAY_ICON_SETTING,
+            stored,
+        )
+    })
+    .await
+    .map_err(|_| "set_tray_icon db task panicked".to_string())?
+    .map_err(|e| format!("Failed to save the tray icon setting: {e}"))?;
+    Ok(serde_json::json!({ "shown": shown }))
 }
 
 #[cfg(target_os = "ios")]

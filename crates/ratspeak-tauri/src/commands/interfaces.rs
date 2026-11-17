@@ -1088,6 +1088,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         lxmf_limit_1mb,
         public_channel_consent_version,
         close_button_action,
+        tray_icon,
         ui_state,
     ) = db::spawn_db(state.db.clone(), |p| {
         let hw_timeout = db::get_setting(&p, "hardware_session_timeout")
@@ -1120,6 +1121,9 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
                 .unwrap_or(0);
         let close_button_action =
             CloseButtonAction::from_setting(db::get_setting(&p, CLOSE_BUTTON_SETTING).as_deref());
+        let tray_icon = crate::window_prefs::tray_icon_shown(
+            db::get_setting(&p, crate::window_prefs::TRAY_ICON_SETTING).as_deref(),
+        );
         let ui_state = stored_ui_state(&p);
         (
             hw_timeout,
@@ -1135,6 +1139,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
             lxmf_limit_1mb,
             public_channel_consent_version,
             close_button_action,
+            tray_icon,
             ui_state,
         )
     })
@@ -1153,6 +1158,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         true,
         0,
         CloseButtonAction::Ask,
+        true,
         UiState::default(),
     ));
     Ok(json!({
@@ -1175,6 +1181,7 @@ pub async fn api_app_settings(state: State<'_, Arc<AppState>>) -> AppResult<Valu
         "public_channel_consent_version": public_channel_consent_version,
         "public_channel_consent_required_version": db::PUBLIC_CHANNEL_CONSENT_VERSION,
         "close_button_action": close_button_action.as_setting(),
+        "tray_icon": tray_icon,
         "activity_tab_seen": ui_state.activity_tab_seen,
         "network_map_collapsed": ui_state.network_map_collapsed,
         "network_ways_collapsed": ui_state.network_ways_collapsed,

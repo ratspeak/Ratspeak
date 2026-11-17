@@ -9,6 +9,7 @@ changes that materially affect how an artifact is reproduced.
 
 - **Message titles**: turn on Message titles in Settings › General to add a bold Title line above your message. A message that arrives with a title shows it in bold above the text.
 - **Shut down**: at the bottom of Settings (not on iPhone or iPad), it stops all network and Ratspeak services and closes the app, Android's background service included.
+- **Tray icon** (Linux): Settings › General › Window turns the tray icon on or off at once. With it off, closing the window quits.
 - **Mute a conversation**: hold a conversation (or right-click it on a computer) for Mute and Delete…. A muted conversation's messages still arrive, without notifications, and it leaves the unread count on the Messages tab and the app icon. Swiping a conversation no longer deletes it.
 
 ### Fixed and improved
@@ -33,6 +34,7 @@ changes that materially affect how an artifact is reproduced.
 - Discover servers is switched on and off only in Network. Settings › Network › Discovery shows whether it's on and keeps the rest of its options.
 - A message's Activity detail shows which kind of connection it was delivered or received over.
 - Network's cards say just Off or On, with what they're connected to: "On · 1 server", "On · 3 peers", "On · 1 radio". Turning a card on opens it, and a radio that can't turn on, such as a USB radio that isn't plugged in, says why on its row.
+- On Linux, clicking the tray icon opens Ratspeak; right-clicking shows Show and Quit. Starting Ratspeak no longer prints a libayatana-appindicator deprecation warning.
 - The Android app is about 5 MB smaller.
 
 ## [1.1.0] - 2026-11-15
