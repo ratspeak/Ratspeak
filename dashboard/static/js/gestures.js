@@ -783,10 +783,19 @@ RS.gestures = RS.gestures || {};
             if (arrowSvg) arrowSvg.style.transform = '';
         }
 
+        // What scrolls may be a pane around the list; a pull counts only from its top.
+        function _scroller() {
+            for (var n = el; n && n !== document.body && n !== document.documentElement; n = n.parentElement) {
+                var overflow = getComputedStyle(n).overflowY;
+                if ((overflow === 'auto' || overflow === 'scroll') && n.scrollHeight > n.clientHeight) return n;
+            }
+            return document.scrollingElement || document.documentElement;
+        }
+
         function _onTouchStart(e) {
             if (skipIf && skipIf(e)) return;
             if (refreshing) return;
-            if (el.scrollTop > 0) return;
+            if (_scroller().scrollTop > 0) return;
             startY = e.touches[0].clientY;
             pulling = true;
         }
