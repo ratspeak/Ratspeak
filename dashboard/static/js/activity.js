@@ -1952,6 +1952,7 @@ function activityFormatAttributeValue(attribute, event) {
     if (attribute.key === 'reason' && value === 'remote') {
         return 'Remote Link teardown';
     }
+    if (attribute.key === 'interface_class') return activityInterfaceLabel(value);
     if (type === 'code') return ACTIVITY_CODE_LABELS[value] || String(value);
     if (type === 'endpoint') {
         return activityHumanizeCode(value && value.class ? value.class : 'unknown') + ' endpoint';
@@ -1985,7 +1986,7 @@ function activityAttributeLabel(key) {
         duration_ms: 'Duration',
         endpoint: 'Endpoint',
         evicted_count: 'Removed',
-        interface_class: 'Interface',
+        interface_class: 'Connection',
         max_message_bytes: 'Maximum message',
         max_nick_bytes: 'Maximum nickname',
         max_room_bytes: 'Maximum channel name',
@@ -2033,7 +2034,7 @@ function activityEventFacts(event) {
             return;
         }
         var text = escapeHtml(activityFormatAttributeValue(attribute, event));
-        var plain = attribute.key === 'reason' && activityIsDeliveryEvent(event);
+        var plain = (attribute.key === 'reason' && activityIsDeliveryEvent(event)) || attribute.key === 'interface_class';
         rows.push([
             activityAttributeLabel(attribute.key),
             plain ? '<span>' + text + '</span>' : '<code>' + text + '</code>'

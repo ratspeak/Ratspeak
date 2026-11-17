@@ -183,6 +183,7 @@ impl ProducerEvent {
                     method: input.method,
                     rtt_ms: input.rtt_ms,
                     failure_reason: input.failure_reason,
+                    interface: input.interface,
                 })
             }
             Payload::LxmfDeliveryRetrying(input) => {
@@ -211,6 +212,7 @@ impl ProducerEvent {
                     source: input.source,
                     method: input.method,
                     encoded_bytes: input.encoded_bytes,
+                    interface: input.interface,
                 })
             }
             Payload::LxmfInboundRejected(input) => {
@@ -466,6 +468,7 @@ pub struct LxmfDeliveryStateChanged {
     pub method: Option<LxmfDeliveryMethod>,
     pub rtt_ms: Option<u64>,
     pub failure_reason: Option<DeliveryFailureReason>,
+    pub interface: Option<InterfaceClass>,
 }
 
 pub fn lxmf_delivery_state_changed(input: LxmfDeliveryStateChanged) -> ProducerEvent {
@@ -500,6 +503,7 @@ pub struct LxmfInboundAccepted {
     pub source: DestinationHash,
     pub method: InboundLxmfMethod,
     pub encoded_bytes: u32,
+    pub interface: Option<InterfaceClass>,
 }
 
 pub fn lxmf_inbound_accepted(input: LxmfInboundAccepted) -> ProducerEvent {

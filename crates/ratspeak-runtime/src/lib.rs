@@ -383,6 +383,38 @@ where
         .record_event_fenced(|| state.is_current_activity_origin_fence(origin), make);
 }
 
+/// The kind of connection the path to `destination` used at the last stats poll.
+fn path_interface_class(state: &AppState, destination: &str) -> Option<producer::InterfaceClass> {
+    let stats = state.last_stats.read().ok()?;
+    interface_class_on_path(stats.as_ref()?, destination)
+}
+
+fn interface_class_on_path(stats: &Value, destination: &str) -> Option<producer::InterfaceClass> {
+    use producer::InterfaceClass::*;
+    let name = stats["path_index"][destination]["interface"].as_str()?;
+    let rows = stats["interface_stats"]["interfaces"].as_array()?;
+    let row = |name: &str| rows.iter().find(|row| row["name"].as_str() == Some(name));
+    let mut row = row(name)?;
+    // A client a listener spawned takes the listener's kind.
+    if let Some(parent) = row["parent"].as_str() {
+        row = rows
+            .iter()
+            .find(|candidate| candidate["name"].as_str() == Some(parent))?;
+    }
+    match row["type"].as_str() {
+        Some("TCPClientInterface") => Some(TcpClient),
+        Some("TCPServerInterface") => Some(TcpServer),
+        Some("BackboneClientInterface") => Some(BackboneClient),
+        Some("BackboneInterface") => Some(BackboneServer),
+        Some("RNodeInterface" | "RNodeMultiInterface" | "RNodeSubInterface") => Some(RNode),
+        Some("AutoInterface" | "AutoInterfacePeer") => Some(Auto),
+        None if matches!(row["name"].as_str(), Some("Bluetooth Peer" | "BLE Mesh")) => {
+            Some(BluetoothPeer)
+        }
+        _ => None,
+    }
+}
+
 /// Activity for a game action this device sent.
 pub fn record_game_action(
     state: &AppState,
@@ -511,6 +543,42 @@ mod activity_delivery_adapter_tests {
             &"44".repeat(32),
             "sending_via_link",
         ));
+    }
+}
+
+#[cfg(test)]
+mod path_interface_tests {
+    use super::*;
+
+    fn stats(path_iface: &str) -> Value {
+        json!({
+            "path_index": { "aa": { "interface": path_iface } },
+            "interface_stats": { "interfaces": [
+                { "name": "Ruby", "type": "TCPClientInterface", "parent": null },
+                { "name": "Hub", "type": "TCPServerInterface", "parent": null },
+                { "name": "Client on Hub", "type": "TCPClientInterface", "parent": "Hub" },
+                { "name": "Bluetooth Peer", "type": null, "parent": null },
+                { "name": "Pipe", "type": "PipeInterface", "parent": null },
+            ] },
+        })
+    }
+
+    #[test]
+    fn a_path_names_its_kind_of_connection() {
+        use producer::InterfaceClass::*;
+        let class = |iface| interface_class_on_path(&stats(iface), "aa");
+        assert!(matches!(class("Ruby"), Some(TcpClient)));
+        assert!(
+            matches!(class("Client on Hub"), Some(TcpServer)),
+            "a spawned client is its listener's"
+        );
+        assert!(matches!(class("Bluetooth Peer"), Some(BluetoothPeer)));
+        assert!(class("Pipe").is_none(), "no kind to name");
+        assert!(class("Gone").is_none(), "an interface no longer running");
+        assert!(
+            interface_class_on_path(&stats("Ruby"), "bb").is_none(),
+            "no path"
+        );
     }
 }
 
@@ -3244,6 +3312,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                         Option<String>,
                         Option<lxmf::LxmfDeliveryFailureUpdate>,
                         Option<producer::DeliveryFailureReason>,
+                        Option<String>,
                     );
                     let mut persisted: Vec<PersistedStep> = Vec::with_capacity(results.len());
                     let keep_trying = tick_state.lxmf_keep_trying_enabled();
@@ -3294,6 +3363,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 None,
                                 failure,
                                 failure_reason,
+                                None,
                             ));
                             continue;
                         }
@@ -3341,19 +3411,21 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                 &msg_id_for_db,
                                 &identity_for_db,
                             );
-                            if matches!(written, Some(("delivered", ..))) {
-                                wake_recipient_of_proof(
+                            let recipient = if matches!(written, Some(("delivered", ..))) {
+                                recipient_of_proof(
                                     &state_for_db,
                                     &p,
                                     &identity_for_db,
                                     &msg_id_for_db,
-                                );
-                            }
-                            (written, method)
+                                )
+                            } else {
+                                None
+                            };
+                            (written, method, recipient)
                         })
                         .await
                         {
-                            Ok((Some((state, destination, reason)), method)) => {
+                            Ok((Some((state, destination, reason)), method, recipient)) => {
                                 if state == OutboundState::Waiting.as_str() {
                                     tick_state.note_waiting_row();
                                 }
@@ -3364,9 +3436,10 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                     destination,
                                     failure,
                                     reason,
+                                    recipient,
                                 ))
                             }
-                            Ok((None, _)) => tracing::debug!(
+                            Ok((None, _, _)) => tracing::debug!(
                                 msg_id = %short_id(msg_id),
                                 new_state = %new_state,
                                 reason = "terminal_state_preserved",
@@ -3380,7 +3453,9 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                             ),
                         }
                     }
-                    for (msg_id, new_state, method, destination, failure, reason) in &persisted {
+                    for (msg_id, new_state, method, destination, failure, reason, recipient) in
+                        &persisted
+                    {
                         let rtt_ms = (*new_state == "delivered")
                             .then(|| packet_delivery_rtts.get(msg_id))
                             .flatten()
@@ -3448,6 +3523,9 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                                             | producer::LxmfDeliveryState::Waiting => *reason,
                                             _ => None,
                                         },
+                                        interface: recipient.as_deref().and_then(|recipient| {
+                                            path_interface_class(&tick_state, recipient)
+                                        }),
                                     },
                                 ))
                             });
@@ -5119,16 +5197,20 @@ async fn handle_lxmf_delivery_proofs(
 }
 
 /// A proof of delivery shows its recipient is in reach: what else waits for it is tried.
-fn wake_recipient_of_proof(state: &AppState, pool: &db::DbPool, identity_id: &str, msg_id: &str) {
-    if !state.lxmf_keep_trying_enabled() {
-        return;
-    }
-    if let Some(recipient) = db::get_outbound_message_destination(pool, msg_id, identity_id)
-        .as_deref()
-        .and_then(ratspeak_core::hex_to_array16)
+/// A delivered message's recipient, woken from waiting when Keep trying is on.
+fn recipient_of_proof(
+    state: &AppState,
+    pool: &db::DbPool,
+    identity_id: &str,
+    msg_id: &str,
+) -> Option<String> {
+    let recipient = db::get_outbound_message_destination(pool, msg_id, identity_id)?;
+    if state.lxmf_keep_trying_enabled()
+        && let Some(hash) = ratspeak_core::hex_to_array16(&recipient)
     {
-        state.wake_waiting(lxmf::WakeEvent::Heard(recipient));
+        state.wake_waiting(lxmf::WakeEvent::Heard(hash));
     }
+    Some(recipient)
 }
 
 async fn complete_authenticated_lxmf_delivery_proof(
@@ -5159,16 +5241,16 @@ async fn complete_authenticated_lxmf_delivery_proof(
     let rtt_ms = rtt.map(|d| d.as_secs_f64() * 1000.0);
     let msg_id_for_db = msg_id.to_string();
     let identity_for_db = helpers::active_identity_id(state);
-    // One hop: flip the state and read the method back for the emit.
+    // One hop: flip the state and read the method and recipient back for the emit.
     let state_for_db = Arc::clone(state);
-    let (updated, method) = db::spawn_db(state.db.clone(), move |p| {
+    let (updated, method, recipient) = db::spawn_db(state.db.clone(), move |p| {
         let updated =
             db::update_message_state(&p, &msg_id_for_db, &identity_for_db, "delivered", rtt_ms);
         let method = db::get_message_delivery_method(&p, &msg_id_for_db, &identity_for_db);
-        if updated {
-            wake_recipient_of_proof(&state_for_db, &p, &identity_for_db, &msg_id_for_db);
-        }
-        (updated, method)
+        let recipient = updated
+            .then(|| recipient_of_proof(&state_for_db, &p, &identity_for_db, &msg_id_for_db))
+            .flatten();
+        (updated, method, recipient)
     })
     .await
     .expect("db task panicked");
@@ -5223,6 +5305,9 @@ async fn complete_authenticated_lxmf_delivery_proof(
                 method,
                 rtt_ms,
                 failure_reason: None,
+                interface: recipient
+                    .as_deref()
+                    .and_then(|recipient| path_interface_class(state, recipient)),
             },
         ))
     });
@@ -6125,6 +6210,14 @@ async fn process_inbound_lxmf(
                 source: producer::DestinationHash::new(msg.source_hash()),
                 method: inbound_method,
                 encoded_bytes: fallback_id_material.len().min(u32::MAX as usize) as u32,
+                // A message from the Offline Inbox or on paper didn't come over the sender's path.
+                interface: matches!(
+                    inbound_method,
+                    producer::InboundLxmfMethod::Direct
+                        | producer::InboundLxmfMethod::Opportunistic
+                )
+                .then(|| path_interface_class(state, &source_hash))
+                .flatten(),
             },
         ))
     });
@@ -7270,6 +7363,7 @@ fn apply_wake_outcome(
                         .and_then(producer::LxmfDeliveryMethod::from_code),
                     rtt_ms: None,
                     failure_reason: Some(reason),
+                    interface: None,
                 },
             ))
         });
@@ -7825,6 +7919,7 @@ async fn check_message_timeouts(state: &AppState, activity_origin: ActivityReque
                     method,
                     rtt_ms: None,
                     failure_reason: Some(reason),
+                    interface: None,
                 },
             ))
         });
@@ -11498,16 +11593,22 @@ mod waiting_send_tests {
         let id = send(&state, &identity, "proven");
 
         state.set_lxmf_keep_trying_enabled(false);
-        wake_recipient_of_proof(&state, &state.db, &identity, &id);
+        assert_eq!(
+            recipient_of_proof(&state, &state.db, &identity, &id).as_deref(),
+            Some(hex::encode(peer_hash()).as_str())
+        );
         assert!(state.take_wake_signals().is_empty(), "waiting is off");
 
         state.lxmf_keep_trying.store(true, Ordering::Relaxed);
-        wake_recipient_of_proof(&state, &state.db, &identity, &"ee".repeat(32));
+        assert_eq!(
+            recipient_of_proof(&state, &state.db, &identity, &"ee".repeat(32)),
+            None
+        );
         assert!(
             state.take_wake_signals().is_empty(),
             "not a message of ours"
         );
-        wake_recipient_of_proof(&state, &state.db, &identity, &id);
+        recipient_of_proof(&state, &state.db, &identity, &id);
         let mut heard = lxmf::WakeSignals::default();
         heard.raise(lxmf::WakeEvent::Heard(peer_hash()));
         assert_eq!(state.take_wake_signals(), heard);

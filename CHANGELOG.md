@@ -19,6 +19,7 @@ changes that materially affect how an artifact is reproduced.
 - A quick second tap after sending a message no longer starts a voice recording.
 - Folded sections on the Network screen point right while shut and down while open.
 - Discover servers is switched on and off only in Network. Settings › Network › Discovery shows whether it's on and keeps the rest of its options.
+- A message's Activity detail shows which kind of connection it was delivered or received over.
 - The Android app is about 5 MB smaller.
 
 ## [1.1.0] - 2026-11-15

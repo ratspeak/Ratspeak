@@ -11566,10 +11566,10 @@ fn offline_inbox_sends_wait_as_live_sends_do() {
     ));
     let squeezed = runtime.split_whitespace().collect::<String>();
     assert!(squeezed.contains(
-        "ifmatches!(written,Some((\"delivered\",..))){wake_recipient_of_proof(&state_for_db,&p,&identity_for_db,&msg_id_for_db,);}"
+        "letrecipient=ifmatches!(written,Some((\"delivered\",..))){recipient_of_proof(&state_for_db,&p,&identity_for_db,&msg_id_for_db,)}else{None};"
     ));
     assert!(squeezed.contains(
-        "ifupdated{wake_recipient_of_proof(&state_for_db,&p,&identity_for_db,&msg_id_for_db);}"
+        "letrecipient=updated.then(||recipient_of_proof(&state_for_db,&p,&identity_for_db,&msg_id_for_db)).flatten();"
     ));
 }
 

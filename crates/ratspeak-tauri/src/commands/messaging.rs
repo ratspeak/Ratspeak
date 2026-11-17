@@ -292,6 +292,7 @@ fn emit_lxmf_send_taken(
                     method: None,
                     rtt_ms: None,
                     failure_reason: Some(reason),
+                    interface: None,
                 },
             ))
         },
@@ -2454,6 +2455,7 @@ async fn cancel_canonical_lxmf_message(
                         method,
                         rtt_ms: None,
                         failure_reason: None,
+                        interface: None,
                     },
                 ))
             },

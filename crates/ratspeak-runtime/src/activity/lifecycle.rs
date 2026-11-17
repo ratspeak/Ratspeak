@@ -1928,6 +1928,7 @@ mod tests {
                         method: None,
                         rtt_ms: None,
                         failure_reason: Some(producer::DeliveryFailureReason::PathUnavailable),
+                        interface: None,
                     },
                 ))
             }),
@@ -1974,6 +1975,7 @@ mod tests {
                         method: None,
                         rtt_ms: None,
                         failure_reason: Some(producer::DeliveryFailureReason::LinkNotEstablished),
+                        interface: None,
                     },
                 ))
             }),
@@ -2027,6 +2029,7 @@ mod tests {
                         method: None,
                         rtt_ms: None,
                         failure_reason: None,
+                        interface: None,
                     },
                 ))
             }),

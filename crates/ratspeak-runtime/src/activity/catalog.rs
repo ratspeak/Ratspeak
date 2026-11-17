@@ -2109,6 +2109,8 @@ pub struct LxmfDeliveryStateChanged {
     pub method: Option<LxmfDeliveryMethod>,
     pub rtt_ms: Option<u64>,
     pub failure_reason: Option<DeliveryFailureReason>,
+    /// The kind of connection the contact's path used.
+    pub interface: Option<InterfaceClass>,
 }
 
 pub fn lxmf_delivery_state_changed(
@@ -2208,6 +2210,9 @@ pub fn lxmf_delivery_state_changed(
     }
     if let Some(reason) = input.failure_reason {
         draft = draft.operational_code(ActivityAttributeKey::Reason, reason.code())?;
+    }
+    if let Some(interface) = input.interface {
+        draft = draft.operational_code(ActivityAttributeKey::InterfaceClass, interface.code())?;
     }
     Ok(draft)
 }
@@ -2344,12 +2349,14 @@ pub struct LxmfInboundAccepted {
     pub source: DestinationHash,
     pub method: InboundLxmfMethod,
     pub encoded_bytes: u32,
+    /// The kind of connection the sender's path used.
+    pub interface: Option<InterfaceClass>,
 }
 
 pub fn lxmf_inbound_accepted(
     input: LxmfInboundAccepted,
 ) -> Result<ActivityDraft, ActivityRejectReason> {
-    let draft = ActivityDraft::new(
+    let mut draft = ActivityDraft::new(
         kinds::LXMF_INBOUND_ACCEPTED,
         ActivitySeverity::Info,
         ActivityDirection::Inbound,
@@ -2368,6 +2375,9 @@ pub fn lxmf_inbound_accepted(
         ActivityAttributeKey::ByteLength,
         ExactValue::Unsigned(u64::from(input.encoded_bytes)),
     );
+    if let Some(interface) = input.interface {
+        draft = draft.operational_code(ActivityAttributeKey::InterfaceClass, interface.code())?;
+    }
     Ok(draft)
 }
 
@@ -3989,6 +3999,7 @@ mod tests {
             method: Some(LxmfDeliveryMethod::Direct),
             rtt_ms: None,
             failure_reason: None,
+            interface: None,
         })
         .unwrap();
         assert!(matches!(draft.coalescing_policy(), CoalescingPolicy::Never));
@@ -4000,6 +4011,49 @@ mod tests {
             })
             .unwrap();
         assert_eq!(validated.kind.code(), "lxmf.delivery.cancelled");
+    }
+
+    #[test]
+    fn message_events_name_their_connection_by_kind_only() {
+        let context = || super::super::classified::DraftContext {
+            capture_session: "33".repeat(16),
+            capture_generation: 1,
+            capture_profile: super::super::schema::CaptureProfile::Normal,
+        };
+        let connection = |validated: super::super::classified::ValidatedDraft| {
+            validated
+                .attributes
+                .iter()
+                .find(|attribute| attribute.key == ActivityAttributeKey::InterfaceClass)
+                .and_then(|attribute| match attribute.value {
+                    super::super::classified::DraftValue::OperationalCode(code) => Some(code),
+                    _ => None,
+                })
+        };
+        let delivered = lxmf_delivery_state_changed(LxmfDeliveryStateChanged {
+            time: ObservationTime::new(5, 5),
+            message: MessageId::new([10; 32]),
+            state: LxmfDeliveryState::Delivered,
+            method: Some(LxmfDeliveryMethod::Direct),
+            rtt_ms: Some(900),
+            failure_reason: None,
+            interface: Some(InterfaceClass::RNode),
+        })
+        .unwrap()
+        .validate(context())
+        .unwrap();
+        assert_eq!(connection(delivered), Some("rnode"));
+        let received = lxmf_inbound_accepted(LxmfInboundAccepted {
+            time: ObservationTime::new(6, 6),
+            source: DestinationHash::new([11; 16]),
+            method: InboundLxmfMethod::Opportunistic,
+            encoded_bytes: 120,
+            interface: Some(InterfaceClass::Auto),
+        })
+        .unwrap()
+        .validate(context())
+        .unwrap();
+        assert_eq!(connection(received), Some("auto"));
     }
 
     #[test]

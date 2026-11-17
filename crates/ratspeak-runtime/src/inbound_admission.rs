@@ -1450,6 +1450,7 @@ pub(crate) async fn admit_download(
                         source: crate::producer::DestinationHash::new(source_hash),
                         method: crate::InboundLxmfSource::Propagated.activity_method(),
                         encoded_bytes: wire_len.min(u32::MAX as usize) as u32,
+                        interface: None,
                     },
                 ))
             });
