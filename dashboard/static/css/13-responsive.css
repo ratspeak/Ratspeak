@@ -480,11 +480,14 @@
         bottom: var(--keyboard-inset, 0px);
         max-height: min(70vh, calc(var(--visual-viewport-height, 100dvh) - var(--space-8)));
     }
-    /* The kit sheet (Add contact, identity dialogs) lifts the same way. */
-    html[data-keyboard-platform="ios"].keyboard-open .ui-modal:focus-within {
+    /* The kit sheet (Add contact, identity dialogs) lifts the same way, as does a menu
+       sheet that leaves focus in the composer behind it (Send by, Attach). */
+    html[data-keyboard-platform="ios"].keyboard-open .ui-modal:focus-within,
+    html[data-keyboard-platform="ios"].keyboard-open .ui-modal.ui-modal--keeps-keyboard {
         bottom: var(--keyboard-inset, 0px);
     }
-    html[data-keyboard-platform="ios"].keyboard-open .ui-modal:focus-within > .ui-dialog {
+    html[data-keyboard-platform="ios"].keyboard-open .ui-modal:focus-within > .ui-dialog,
+    html[data-keyboard-platform="ios"].keyboard-open .ui-modal.ui-modal--keeps-keyboard > .ui-dialog {
         max-height: calc(var(--visual-viewport-height, 100dvh) - var(--space-8));
     }
     .bottom-sheet-handle {

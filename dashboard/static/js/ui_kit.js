@@ -727,6 +727,8 @@ function identityAvatar(hashValue, size) {
                 sheet: '<div class="ui-menu ui-menu--sheet" role="menu"' + (name ? ' aria-label="' + esc(name) + '"' : '') + '>' + caption + menuItemsHtml(items, true) + '</div>',
                 onClose: function(value) { handle.closed = true; finish(value); }
             });
+            // Focus stays in the field behind, so its keyboard stays up: the sheet rides above it.
+            if (opts.keepFocus) sheet.modal.classList.add('ui-modal--keeps-keyboard');
             sheet.dialog.addEventListener('mousedown', function(e) { if (opts.keepFocus) e.preventDefault(); });
             sheet.dialog.addEventListener('click', function(e) {
                 var btn = e.target.closest && e.target.closest('[data-ui-menu-index]');

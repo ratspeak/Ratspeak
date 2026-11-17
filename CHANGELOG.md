@@ -12,6 +12,7 @@ changes that materially affect how an artifact is reproduced.
 ### Fixed and improved
 
 - The message box says "Message…" in every conversation.
+- On iPhone, holding Send shows every way to send above the keyboard, instead of hiding Offline Inbox and Paper under it. The Attach menu sits above the keyboard too.
 - Names and statuses now reach you even when busy servers hold back announces, and a first message from someone new soon shows their name.
 - Peers reached through a named internet connection show Internet again.
 - With Relay for other devices on, phones connected over Bluetooth can reach people this device hasn't heard yet.
