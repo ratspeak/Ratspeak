@@ -15,6 +15,7 @@ use crate::state::AppState;
 /// The gate refuses every other command once it knows none is active.
 pub(crate) const IDENTITY_FREE: &[&str] = &[
     // Shell.
+    "shut_down_app",
     "open_external_url",
     "open_support_email",
     "set_window_decorations",
@@ -96,6 +97,7 @@ pub(crate) const IDENTITY_FREE: &[&str] = &[
 /// management. The rest is the locked identity's and waits for its unlock.
 pub(crate) const LOCK_FREE: &[&str] = &[
     // Shell.
+    "shut_down_app",
     "open_external_url",
     "open_support_email",
     "set_window_decorations",

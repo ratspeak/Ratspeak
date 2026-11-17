@@ -53,6 +53,7 @@
         ["nativeMemoryPressure", "(Z)V"],
         ["showActivityRestoreFailure", "(J)V"],
         ["reportStartupFailure", "()V"],
+        ["shutDown", "()V"],
         ["nativeActivityAttached", "(JIZ)V"],
         ["nativeActivityDetached", "(J)V"],
         ["nativeActivityResumed", "(JZ)V"],

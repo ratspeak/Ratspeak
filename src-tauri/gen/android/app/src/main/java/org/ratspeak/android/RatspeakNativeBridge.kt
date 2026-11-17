@@ -64,7 +64,18 @@ object RatspeakNativeBridge {
     @JvmStatic
     fun reportStartupFailure() {
         coreStartupFailed = true
-        mainHandler.post { RatspeakService.stopForStartupFailure() }
+        mainHandler.post { RatspeakService.stopActive() }
+    }
+
+    /** Settings › Shut down, once the core has stopped: no service, task, or process stays behind. */
+    @JvmStatic
+    fun shutDown() {
+        mainHandler.post {
+            RatspeakService.stopActive()
+            activityRef.get()?.finishAndRemoveTask()
+            // A process left running would hand its stopped core to the next launch.
+            mainHandler.postDelayed({ android.os.Process.killProcess(android.os.Process.myPid()) }, 300L)
+        }
     }
 
     internal fun attachActivity(activity: MainActivity, webviewReady: Boolean): Long {

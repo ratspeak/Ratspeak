@@ -1139,6 +1139,8 @@ pub fn run() {
     let app = builder
         .invoke_handler(ratspeak_tauri::invoke_gate::gated(
             tauri::generate_handler![
+                #[cfg(not(target_os = "ios"))]
+                shut_down_app,
                 open_external_url,
                 open_support_email,
                 set_window_decorations,
@@ -2132,37 +2134,57 @@ fn set_desktop_foreground(app: &tauri::AppHandle, foreground: bool) {
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 fn shutdown_desktop_core_for_exit(app: &tauri::AppHandle) {
-    tauri::async_runtime::block_on(async {
-        if let Some(state) = app.try_state::<std::sync::Arc<ratspeak_tauri::state::AppState>>() {
-            let state = std::sync::Arc::clone(state.inner());
-            let shutdown = async {
-                let _identity_lifecycle = state.identity_switch_lock.lock().await;
-                ratspeak_tauri::shutdown_rns_lxmf(&state).await?;
-                let _activity_control = state.activity_control_lock.lock().await;
-                state.activity.shutdown().await
-            };
-            match tokio::time::timeout(std::time::Duration::from_secs(5), shutdown).await {
-                Ok(Ok(())) => {}
-                Ok(Err(error)) => {
-                    tracing::error!(%error, "desktop shutdown lifecycle boundary failed");
-                }
-                Err(_) => {
-                    tracing::error!(
-                        reason = "lifecycle_timeout",
-                        "desktop shutdown lifecycle boundary timed out"
-                    );
-                }
+    tauri::async_runtime::block_on(shutdown_core(app));
+}
+
+/// Settings › Shut down: every network service stops and Ratspeak closes. iOS has
+/// none; the system suspends the app there.
+#[cfg(not(target_os = "ios"))]
+#[tauri::command]
+async fn shut_down_app(app: tauri::AppHandle) {
+    #[cfg(target_os = "android")]
+    {
+        shutdown_core(&app).await;
+        mobile_native::shut_down();
+    }
+    // Desktop's exit runs the same shutdown on its way out.
+    #[cfg(not(target_os = "android"))]
+    app.exit(0);
+}
+
+/// Stop the network, messaging, and Activity within bounded time.
+#[cfg(not(target_os = "ios"))]
+async fn shutdown_core(app: &tauri::AppHandle) {
+    if let Some(state) = app.try_state::<std::sync::Arc<ratspeak_tauri::state::AppState>>() {
+        let state = std::sync::Arc::clone(state.inner());
+        let shutdown = async {
+            let _identity_lifecycle = state.identity_switch_lock.lock().await;
+            ratspeak_tauri::shutdown_rns_lxmf(&state).await?;
+            let _activity_control = state.activity_control_lock.lock().await;
+            state.activity.shutdown().await
+        };
+        match tokio::time::timeout(std::time::Duration::from_secs(5), shutdown).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::error!(%error, "shutdown lifecycle boundary failed");
+            }
+            Err(_) => {
+                tracing::error!(
+                    reason = "lifecycle_timeout",
+                    "shutdown lifecycle boundary timed out"
+                );
             }
         }
+    }
 
-        // Release the WinRT GattServiceProvider before exit so Windows does
-        // not leave a short-lived stale BLE advertisement behind.
-        let _ = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            ratspeak_tauri::shutdown_ble_peer_for_exit(),
-        )
-        .await;
-    });
+    // Release the WinRT GattServiceProvider before exit so Windows does
+    // not leave a short-lived stale BLE advertisement behind.
+    #[cfg(not(target_os = "android"))]
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        ratspeak_tauri::shutdown_ble_peer_for_exit(),
+    )
+    .await;
 }
 
 // NWPathMonitor is Swift-only (no ObjC class); bind the C ABI directly.

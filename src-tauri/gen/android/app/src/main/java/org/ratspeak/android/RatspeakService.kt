@@ -43,8 +43,8 @@ class RatspeakService : Service() {
 
         internal fun lastMicrophoneFailureCode(): String = lastMicrophoneFailure
 
-        /** A core that failed to start leaves no session for this service to keep alive. */
-        internal fun stopForStartupFailure() {
+        /** No session left for this service to keep alive: a failed start, or Shut down. */
+        internal fun stopActive() {
             val service = activeService ?: return
             service.stopForeground(Service.STOP_FOREGROUND_REMOVE)
             service.stopSelf()

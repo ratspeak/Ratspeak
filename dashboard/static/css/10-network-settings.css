@@ -8,6 +8,8 @@
 .settings-nav-pane { flex: 0 0 300px; width: 300px; }
 .settings-nav-pane .ui-pane-scroll { padding: 0 8px 16px; }
 .settings-nav { display: flex; flex-direction: column; gap: 2px; }
+/* Shut down is an action, not a section: it sits apart at the foot of the list. */
+.settings-shut-down-nav { margin-top: 12px; }
 .settings-index { display: flex; flex-direction: column; gap: 16px; padding: 0 8px; }
 .settings-detail-pane { display: block; }
 .settings-detail-page { width: 100%; max-width: 720px; margin: 0 auto; padding: 24px 32px 48px; box-sizing: border-box; }

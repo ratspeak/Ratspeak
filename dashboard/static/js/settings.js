@@ -339,6 +339,31 @@ window.ratspeakPaperMessagesEnabled = function() {
     return !!_settingsPaperMessagesEnabled;
 };
 
+// Shut down: every network service stops and Ratspeak closes. iOS suspends apps itself
+// and can't close one, so it has no such action.
+function initShutDownAction() {
+    document.querySelectorAll('[data-settings-action="shut-down"]').forEach(function(button) {
+        if (button._shutDownBound) return;
+        button._shutDownBound = true;
+        var row = button.closest('.settings-shut-down-group') || button;
+        if (typeof isIOS === 'function' && isIOS()) { row.hidden = true; return; }
+        button.addEventListener('click', confirmShutDown);
+    });
+}
+
+function confirmShutDown() {
+    rsConfirm({
+        title: 'Shut down Ratspeak?',
+        message: 'This stops all network and Ratspeak services, and will close the app.',
+        confirmText: 'Shut down'
+    }).then(function(ok) {
+        if (!ok) return;
+        RS.invoke('shut_down_app').catch(function(error) {
+            showToast((error && error.message) || 'Could not shut down', 'toast-error', 4000);
+        });
+    });
+}
+
 // Message titles: the composer's Title line, kept with the app's other UI state.
 var _settingsMessageTitlesBound = false;
 
@@ -1742,6 +1767,7 @@ function applyAppSettingsPayload(data) {
     initHideKnownSpamPeersToggle();
     initPaperMessagesToggle();
     initMessageTitlesToggle();
+    initShutDownAction();
     RS.invoke('api_app_settings').then(applyAppSettingsPayload).catch(function() {});
     if (lxmfLimitToggle) {
         lxmfLimitToggle.addEventListener('change', function() {

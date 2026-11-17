@@ -4380,7 +4380,7 @@ fn a_failed_start_leaves_no_android_session_or_service() {
     assert!(native.contains("\"reportStartupFailure\""));
     assert!(boundaries.contains("[\"reportStartupFailure\", \"()V\"]"));
     assert!(bridge.contains("fun reportStartupFailure()"));
-    assert!(service.contains("fun stopForStartupFailure()"));
+    assert!(service.contains("fun stopActive()"));
 
     let create = service
         .split("override fun onCreate()")
@@ -4655,7 +4655,7 @@ fn only_real_transitions_take_the_lifecycle_lock_as_a_transition() {
             "crates/ratspeak-tauri/src/commands/system.rs apply_foreground_transition",
             "crates/ratspeak-tauri/src/lib.rs init_core",
             "src-tauri/src/lib.rs set_desktop_foreground",
-            "src-tauri/src/lib.rs shutdown_desktop_core_for_exit",
+            "src-tauri/src/lib.rs shutdown_core",
         ],
         "a new transition must be deliberate; routine work takes lock_routine"
     );
@@ -12042,4 +12042,32 @@ fn private_networks_use_the_network_identity_commands() {
     assert!(
         listing.contains("network:handle.network_identity.as_ref().map(|identity|identity.hash)")
     );
+}
+
+#[test]
+fn shut_down_stops_every_service_then_closes_except_on_ios() {
+    let root = repo_root();
+    let app = read_source(root.join("src-tauri/src/lib.rs")).expect("app");
+    assert!(app.contains("#[cfg(not(target_os = \"ios\"))]\n                shut_down_app,"));
+    let command = rust_function_block(&app, "shut_down_app");
+    assert!(command.contains("shutdown_core(&app).await;\n        mobile_native::shut_down();"));
+    assert!(
+        command.contains("app.exit(0);"),
+        "desktop's exit runs the same shutdown"
+    );
+    assert!(app.contains("tauri::async_runtime::block_on(shutdown_core(app));"));
+    let gate = read_source(root.join("crates/ratspeak-tauri/src/invoke_gate.rs")).expect("gate");
+    assert_eq!(
+        gate.matches("\"shut_down_app\",").count(),
+        2,
+        "with or without an identity, locked or not"
+    );
+    let bridge = read_source(root.join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakNativeBridge.kt",
+    ))
+    .expect("bridge");
+    let shut_down = bridge.split("fun shutDown()").nth(1).expect("shutDown");
+    assert!(shut_down.contains("RatspeakService.stopActive()"));
+    assert!(shut_down.contains("finishAndRemoveTask()"));
+    assert!(shut_down.contains("android.os.Process.killProcess(android.os.Process.myPid())"));
 }

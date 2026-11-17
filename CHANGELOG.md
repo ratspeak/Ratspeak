@@ -8,6 +8,7 @@ changes that materially affect how an artifact is reproduced.
 ### Added
 
 - **Message titles**: turn on Message titles in Settings › General to add a bold Title line above your message. A message that arrives with a title shows it in bold above the text.
+- **Shut down**: at the bottom of Settings (not on iPhone or iPad), it stops all network and Ratspeak services and closes the app, Android's background service included.
 - **Mute a conversation**: hold a conversation (or right-click it on a computer) for Mute and Delete…. A muted conversation's messages still arrive, without notifications, and it leaves the unread count on the Messages tab and the app icon. Swiping a conversation no longer deletes it.
 
 ### Fixed and improved

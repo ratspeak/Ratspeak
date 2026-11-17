@@ -392,6 +392,16 @@ pub(crate) fn clear_secret() {
     });
 }
 
+/// Settings › Shut down, once the core has stopped: end the service, the task,
+/// and the process.
+#[cfg(target_os = "android")]
+pub(crate) fn shut_down() {
+    let _ = with_android_bridge(|env, class| {
+        env.call_static_method(class, "shutDown", "()V", &[])?;
+        Ok(())
+    });
+}
+
 /// No session will run in this process: stop the foreground service and keep
 /// it from starting again.
 #[cfg(target_os = "android")]
