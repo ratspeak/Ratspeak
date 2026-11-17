@@ -1412,6 +1412,22 @@ z`,
             }
         }
 
+        // Reads the square detectFrame draws on scanCanvas (a bare video frame has no pixels to
+        // read), as Choose image does: contact cards have rounded modules, and above 600px it also
+        // tries half size, for a code held close.
+        function jsQrFrameDetector() {
+            return {
+                maxSide: 640,
+                detect: function(source) {
+                    if (source !== scanCanvas || !scanCtx) return Promise.resolve([]);
+                    var frame = scanCtx.getImageData(0, 0, scanCanvas.width, scanCanvas.height);
+                    var code = window.jsQR(frame.data, frame.width, frame.height, { inversionAttempts: 'dontInvert' }) ||
+                        decodeRoundedQr(frame.data, frame.width, frame.height);
+                    return Promise.resolve(code && code.data ? [{ rawValue: code.data }] : []);
+                },
+            };
+        }
+
         function decodeImageFile(file) {
             if (!file || busy) return;
             busy = true;
@@ -1619,7 +1635,8 @@ z`,
 
             nativeQrDetectorAvailable().then(function(available) {
                 if (generation !== liveGeneration) return;
-                if (!available) {
+                // WebKit (iOS, macOS, Linux) has no BarcodeDetector; jsQR reads the frames instead.
+                if (!available && typeof window.jsQR !== 'function') {
                     liveStarting = false;
                     setFallbackReady(true);
                     setScannerMode('fallback');
@@ -1673,8 +1690,8 @@ z`,
                     contactScanDiag('get_user_media_ready', { video_tracks: tracks.length });
                     var detector = null;
                     try {
-                        detector = new BarcodeDetector({ formats: ['qr_code'] });
-                        contactScanDiag('detector_created');
+                        detector = available ? new BarcodeDetector({ formats: ['qr_code'] }) : jsQrFrameDetector();
+                        contactScanDiag('detector_created', { native: !!available });
                     } catch (err) {
                         liveStarting = false;
                         stopStream();
@@ -1707,7 +1724,7 @@ z`,
                         var side = Math.min(vw, vh);
                         var sx = (vw - side) / 2;
                         var sy = (vh - side) / 2;
-                        var target = Math.round(Math.max(480, Math.min(900, side)));
+                        var target = Math.round(Math.max(480, Math.min(detector.maxSide || 900, side)));
                         if (scanCanvas.width !== target) scanCanvas.width = target;
                         if (scanCanvas.height !== target) scanCanvas.height = target;
                         scanCtx.drawImage(video, sx, sy, side, side, 0, 0, target, target);

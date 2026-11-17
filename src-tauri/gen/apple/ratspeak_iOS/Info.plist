@@ -37,7 +37,7 @@
 	<key>NSBluetoothPeripheralUsageDescription</key>
 	<string>Ratspeak uses Bluetooth to connect to hardware nodes and other Bluetooth peers when enabled.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Ratspeak accesses your camera so you can take photos or videos to send in a message.</string>
+	<string>Ratspeak uses your camera to scan QR codes and to take photos or videos to send in a message.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Required when you enable a TCP, Local, or Bluetooth Peer interface in Network settings so Ratspeak can reach other nodes on your local network.</string>
 	<key>NSMicrophoneUsageDescription</key>

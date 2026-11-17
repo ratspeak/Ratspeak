@@ -9,7 +9,7 @@
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Required when you enable a TCP, Local, or Bluetooth Peer interface in Network settings so Ratspeak can reach other nodes on your local network.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Ratspeak accesses your camera so you can take photos or videos to send in a message.</string>
+	<string>Ratspeak uses your camera to scan QR codes and to take photos or videos to send in a message.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Ratspeak accesses your photo library so you can attach existing photos or videos to a message.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
