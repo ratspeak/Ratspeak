@@ -132,7 +132,7 @@
         var square = variant === 'square';
         if (appId === 'chess') {
             return square ? chess([2, 2, 4, 4], SAMPLE_FEN, [5, 7, 2, 4], 'gp-square')
-                : chess([0, 2, 8, 4], SAMPLE_FEN, [5, 7, 2, 4], 'gp-wide');
+                : chess([0, 0, 8, 8], SAMPLE_FEN, [5, 7, 2, 4], 'gp-wide');
         }
         if (appId === 'four_in_a_row') return four(SAMPLE_FOUR, 18, square ? 'gp-square' : 'gp-wide');
         if (appId === 'ttt') return ttt(SAMPLE_TTT, 6, square ? 'gp-square' : 'gp-wide');

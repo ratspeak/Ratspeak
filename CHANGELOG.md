@@ -18,6 +18,7 @@ changes that materially affect how an artifact is reproduced.
 - Joining Diamond first shows its stricter limits, so you can join or cancel.
 - A quick second tap after sending a message no longer starts a voice recording.
 - A message whose time sits on the line below its text no longer leaves empty space beside the text.
+- On a phone, Games shows each game as a card with its board beside it, so all three fit on the first screen. Chess previews show the whole board, in the same colours as the other games.
 - Folded sections on the Network screen point right while shut and down while open.
 - Discover servers is switched on and off only in Network. Settings › Network › Discovery shows whether it's on and keeps the rest of its options.
 - A message's Activity detail shows which kind of connection it was delivered or received over.

@@ -18,11 +18,12 @@
 
 /* ---------------------------------------------------------------- Board art (tiles, thumbnails, the gallery) */
 .gp { display: block; flex: none; }
-.gp-chess-frame { fill: color-mix(in oklab, var(--chess-border) 80%, var(--accent)); }
-.gp-l { fill: var(--chess-light); }
-.gp-d { fill: var(--chess-dark); }
-.gp-l.gp-last { fill: color-mix(in oklab, var(--accent) 28%, var(--chess-light)); }
-.gp-d.gp-last { fill: color-mix(in oklab, var(--accent) 30%, var(--chess-dark)); }
+/* Chess art takes the accent tint the other boards use; the live board keeps the chess colours. */
+.gp-chess-frame { fill: color-mix(in oklab, var(--accent) 34%, var(--border)); }
+.gp-l { fill: color-mix(in oklab, var(--accent) 22%, white); }
+.gp-d { fill: color-mix(in oklab, var(--accent) 72%, var(--bg-secondary)); }
+.gp-l.gp-last { fill: color-mix(in oklab, var(--accent) 45%, white); }
+.gp-d.gp-last { fill: color-mix(in oklab, var(--accent) 92%, var(--bg-secondary)); }
 .gp-four { overflow: hidden; }
 .gp-four-frame { fill: var(--surface-elevation-1); stroke: var(--border-control); stroke-width: 0.04; }
 .gp-four-lane { stroke: rgba(var(--theme-border-rgb), 0.18); stroke-width: 0.03; }
@@ -95,8 +96,12 @@
 .games-pane .game-landing { padding: 0 16px 24px; gap: 24px; }
 @media (max-width: 768px) {
     .game-landing { padding: 8px 16px 24px; gap: 24px; }
-    .game-tiles { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-    .game-tiles .game-choice .game-art { height: 116px; }
+    /* Each game is a card with its board beside, so all three fit on the first screen. */
+    .game-tiles { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+    .game-tiles .game-choice { flex-direction: row; align-items: center; gap: 14px; padding-right: 14px; }
+    .game-tiles .game-choice .game-art { width: 104px; height: 104px; flex: none; }
+    .game-tiles .game-choice .gp { width: 80px; height: 80px; }
+    .game-tiles .game-choice-copy { padding: 12px 0; gap: 2px; }
     .game-section .ui-list { margin: 0 -16px; }
 }
 
