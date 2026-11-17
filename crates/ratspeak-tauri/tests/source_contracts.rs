@@ -8167,6 +8167,16 @@ fn contact_card_qr_flow_exports_public_key_and_imports_known_identity() {
 
     assert!(contact_card_js.contains("BarcodeDetector"));
     assert!(contact_card_js.contains("RS.mediaPermissions.ensure({ camera: true })"));
+    // WebKit (iOS, macOS, Linux) has no BarcodeDetector: the camera reads frames with jsQR,
+    // rounded contact-card modules included, instead of falling back to Choose image.
+    assert!(contact_card_js.contains("if (!available && typeof window.jsQR !== 'function') {"));
+    assert!(contact_card_js.contains(
+        "detector = available ? new BarcodeDetector({ formats: ['qr_code'] }) : jsQrFrameDetector();"
+    ));
+    assert!(contact_card_js.contains("decodeRoundedQr(frame.data, frame.width, frame.height);"));
+    let mac_entitlements =
+        read_source(root.join("src-tauri/Entitlements.plist")).expect("macOS entitlements");
+    assert!(mac_entitlements.contains("<key>com.apple.security.device.camera</key>"));
     assert!(
         contact_card_js
             .contains("var previewCommand = options.previewCommand || 'api_preview_contact_card'")
@@ -12108,4 +12118,28 @@ fn linux_tray_reports_left_clicks_and_can_be_turned_off() {
     let settings = read_source(root.join("crates/ratspeak-tauri/src/commands/interfaces.rs"))
         .expect("settings");
     assert!(settings.contains("\"tray_icon\": tray_icon,"));
+}
+
+#[test]
+fn android_ble_peer_reports_a_link_it_closes_itself() {
+    // Android sends no disconnect callback after our own close, and the app forgets a peer
+    // only on Disconnected: a dropped write would otherwise leave it shown as connected.
+    let client = read_source(repo_root().join(
+        "src-tauri/gen/android/app/src/main/java/org/ratspeak/android/RatspeakBlePeerClient.kt",
+    ))
+    .expect("BLE peer client");
+    let cleanup = client
+        .split("fun cleanup() {")
+        .nth(1)
+        .and_then(|tail| tail.split("\n    }\n").next())
+        .expect("cleanup");
+    assert!(cleanup.contains(
+        "if (running.getAndSet(false) && address.isNotEmpty()) nativePeerClientDisconnected(address)"
+    ));
+    assert!(
+        !cleanup.contains("running.set(false)"),
+        "exactly one report per live link"
+    );
+    // The callback path reports only while the link was live, so the two never both fire.
+    assert!(client.contains("if (running.getAndSet(false)) {"));
 }
