@@ -39,6 +39,8 @@ changes that materially affect how an artifact is reproduced.
 - The QR scanner reads codes live with the camera on iPhone, iPad, Mac, and Linux, instead of only from a chosen photo. The camera prompt now says it's for scanning QR codes too.
 - On iPhone, holding Send no longer opens the Send by menu under the keyboard the first time after Ratspeak starts.
 - A Bluetooth peer that drops no longer stays listed as connected on Android, and Linux finds a Bluetooth adapter that turns on after Ratspeak starts.
+- Activity shows the newest event at the top. While you read further down or have an event open, the list holds still and its header shows how many new events have arrived; tap it to go back to the newest.
+- A menu opened over the iPhone keyboard no longer leaves a blank band below its last item.
 - The Android app is about 5 MB smaller.
 
 ## [1.1.0] - 2026-11-15
