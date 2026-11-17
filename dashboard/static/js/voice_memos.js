@@ -44,7 +44,10 @@
     var draftPlaybackKey = '';
     var draftPlaybackSequence = 0;
     var DRAFT_PLAYBACK_PREFIX = '__voice_memo_draft__:';
-    var pointerStartedRecording = false;
+    var pointerPressedRecord = false;
+    // Record takes Send's place once a message goes; a second tap meant for Send must not start a recording.
+    var RECORD_SETTLE_MS = 500;
+    var recordShownAt = 0;
     var nativeMobilePlaybackByLease = Object.create(null);
     var pendingNativePlaybackStarts = 0;
     var earlyNativePlaybackEvents = Object.create(null);
@@ -284,6 +287,7 @@
         var hasAttachment = typeof lxmfPendingFile !== 'undefined' && !!lxmfPendingFile;
         var canRecord = available && recorderState === 'idle' && !hasText && !hasAttachment;
         // One trailing slot: Record while the field is empty, Send once there is text or an attachment.
+        if (canRecord && recordButton.hidden) recordShownAt = Date.now();
         recordButton.hidden = !canRecord;
         sendButton.hidden = canRecord;
         sendButton.disabled = !hasText && !hasAttachment;
@@ -1584,20 +1588,21 @@
         if (record) {
             // Starting on pointer-down makes touch-and-hold feel immediate;
             // keyboard activation still uses click for accessibility.
+            // The click after a press belongs to that press, even one ignored for landing too soon.
             record.addEventListener('pointerdown', function(event) {
                 if (event.button !== undefined && event.button !== 0) return;
-                pointerStartedRecording = true;
-                startRecording();
+                pointerPressedRecord = true;
+                if (Date.now() - recordShownAt >= RECORD_SETTLE_MS) startRecording();
             });
             record.addEventListener('click', function() {
-                if (pointerStartedRecording) {
-                    pointerStartedRecording = false;
+                if (pointerPressedRecord) {
+                    pointerPressedRecord = false;
                     return;
                 }
-                startRecording();
+                if (Date.now() - recordShownAt >= RECORD_SETTLE_MS) startRecording();
             });
             record.addEventListener('pointercancel', function() {
-                pointerStartedRecording = false;
+                pointerPressedRecord = false;
             });
         }
         if (pauseButton) pauseButton.addEventListener('click', togglePause);

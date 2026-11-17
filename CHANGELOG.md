@@ -16,6 +16,7 @@ changes that materially affect how an artifact is reproduced.
 - Local Network no longer lists confusing "wlan0 peer" rows, and turning one off no longer turns Local Network off. A server you host no longer lists each client as a connection of its own.
 - Joining a server no longer spins forever: after 30 seconds the row says why it couldn't connect and offers Retry.
 - Joining Diamond first shows its stricter limits, so you can join or cancel.
+- A quick second tap after sending a message no longer starts a voice recording.
 - Folded sections on the Network screen point right while shut and down while open.
 - The Android app is about 5 MB smaller.
 
