@@ -6750,7 +6750,11 @@ function _newMessageListHtml(query) {
             RS.kit.icon('chevron-right') + '</button></li></ul>';
     }
     if (address) {
-        html += '<ul class="ui-list" aria-label="LXMF address">' + _newMessagePersonRow(address, '', 'LXMF address') + '</ul>';
+        // A heard identity hash opens their conversation at their LXMF address.
+        var resolved = typeof resolvedLxmfAddress === 'function' ? resolvedLxmfAddress(address) : null;
+        html += resolved && resolved.fromIdentity
+            ? '<ul class="ui-list" aria-label="LXMF address">' + _newMessagePersonRow(resolved.address, '', 'Their LXMF address, from the identity hash') + '</ul>'
+            : '<ul class="ui-list" aria-label="LXMF address">' + _newMessagePersonRow(address, '', 'LXMF address') + '</ul>';
     }
     var recent = (lxmfConversations || []).slice().sort(function(a, b) {
         return (b.timestamp || 0) - (a.timestamp || 0);
@@ -6798,7 +6802,15 @@ function openNewMessageSheet() {
     var input = built.dialog.querySelector('input[type="search"]');
     var list = built.dialog.querySelector('.msg-picker-list');
     if (RS.composer && RS.composer.bindTypingPolicy) RS.composer.applyTypingPolicy(input);
-    input.addEventListener('input', function() { list.innerHTML = _newMessageListHtml(input.value); });
+    input.addEventListener('input', function() {
+        list.innerHTML = _newMessageListHtml(input.value);
+        var typed = _newMessageAddress(input.value);
+        if (typed && typeof resolvedLxmfAddress === 'function' && !resolvedLxmfAddress(typed)) {
+            resolveLxmfAddress(typed).then(function(answer) {
+                if (answer.fromIdentity && _newMessageAddress(input.value) === typed) list.innerHTML = _newMessageListHtml(input.value);
+            });
+        }
+    });
     input.addEventListener('keydown', function(e) {
         if (e.key !== 'Enter' || e.isComposing) return;
         e.preventDefault();

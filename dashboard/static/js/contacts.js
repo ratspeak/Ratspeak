@@ -245,6 +245,7 @@ function openAddContactDialog(opts) {
                 '<input class="ui-input ui-input--mono" id="add-contact-address" placeholder="32 characters" autocomplete="off" spellcheck="false" autocapitalize="none" aria-describedby="add-contact-address-help">' +
                 '<p class="ui-help" id="add-contact-address-help">The address they sent you, or the one under their name in Ratspeak.</p>' +
                 '<p class="ui-error" id="add-contact-address-error" hidden>' + RS.kit.icon('alert') + '<span></span></p></div>' +
+            '<div class="ui-notice ui-notice--info" id="add-contact-identity" hidden>' + RS.kit.icon('info') + '<div class="ui-notice-body"></div></div>' +
             '<div class="ui-well add-contact-known" id="add-contact-known" hidden></div>' +
             '<div class="ui-notice ui-notice--info" id="add-contact-exists" hidden>' + RS.kit.icon('info') + '<div class="ui-notice-body"></div></div>' +
             '<div class="ui-field" id="add-contact-name-field"><label class="ui-label" for="add-contact-name">Name</label>' +
@@ -262,6 +263,7 @@ function openAddContactDialog(opts) {
     var help = built.q('#add-contact-address-help');
     var knownWell = built.q('#add-contact-known');
     var exists = built.q('#add-contact-exists');
+    var fromIdentity = built.q('#add-contact-identity');
     var submit = built.q('#add-contact-submit');
     if (typeof disableAutoCorrect === 'function') { disableAutoCorrect(address); disableAutoCorrect(name); }
     address.value = opts.hash || '';
@@ -283,13 +285,26 @@ function openAddContactDialog(opts) {
     }
 
     function evaluate(strict) {
-        var value = normalizeLxmfAddressInput(address.value);
-        var valid = isLxmfAddress(value);
+        var entered = normalizeLxmfAddressInput(address.value);
+        var valid = isLxmfAddress(entered);
+        // Their identity hash, if heard, stands for their LXMF address.
+        var resolved = valid ? resolvedLxmfAddress(entered) : null;
+        var value = resolved && resolved.fromIdentity ? resolved.address : entered;
+        if (valid && !resolved && typeof resolveLxmfAddress === 'function') {
+            resolveLxmfAddress(entered).then(function(answer) {
+                if (answer.fromIdentity && normalizeLxmfAddressInput(address.value) === entered) evaluate(false);
+            });
+        }
+        fromIdentity.hidden = value === entered;
+        if (value !== entered) {
+            fromIdentity.querySelector('.ui-notice-body').innerHTML = 'That’s their identity hash. Using their LXMF address, <span class="ui-hash">' +
+                escapeHtml(RS.kit.hash.short(value)) + '</span>.';
+        }
         existing = null;
         var model = valid ? personModel(value) : null;
         if (model && model.contact) existing = model;
-        if (strict && value && !valid) {
-            showError('An LXMF address is 32 characters, using 0–9 and a–f. This one has ' + value.length + '.');
+        if (strict && entered && !valid) {
+            showError('An LXMF address is 32 characters, using 0–9 and a–f. This one has ' + entered.length + '.');
         } else if (!strict || valid) {
             showError('');
         }
@@ -323,10 +338,11 @@ function openAddContactDialog(opts) {
             return;
         }
         submit.disabled = true;
-        RS.invoke('add_contact', { args: { hash: value, display_name: name.value.trim() || null } }).then(function() {
-            built.close(value);
+        RS.invoke('add_contact', { args: { hash: value, display_name: name.value.trim() || null } }).then(function(result) {
+            var saved = (result && result.hash) || value;
+            built.close(saved);
             if (typeof showToast === 'function') showToast('Contact added', 'toast-success', 2500);
-            if (!isCompactLayout() && isViewActive('contacts')) selectContact(value);
+            if (!isCompactLayout() && isViewActive('contacts')) selectContact(saved);
         }).catch(function(err) {
             submit.disabled = false;
             if (err && err.code === 'locked') return;

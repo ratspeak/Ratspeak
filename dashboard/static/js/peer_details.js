@@ -3,6 +3,19 @@
 // still serve the conversation About sheet and the Network peer sheet; their Details
 // disclosure also folds the person sheet's facts.
 
+// A 32-character hash someone entered as an LXMF address. The identity hash of someone heard
+// resolves to their LXMF address; anything else stays as entered. Answers are cached.
+var _lxmfAddressResolved = Object.create(null);
+function resolveLxmfAddress(value) {
+    if (_lxmfAddressResolved[value]) return Promise.resolve(_lxmfAddressResolved[value]);
+    return RS.invoke('resolve_lxmf_address', { input: value }).then(function(r) {
+        var answer = { address: (r && r.address) || value, fromIdentity: !!(r && r.from_identity) };
+        _lxmfAddressResolved[value] = answer;
+        return answer;
+    }, function() { return { address: value, fromIdentity: false }; });
+}
+function resolvedLxmfAddress(value) { return _lxmfAddressResolved[value] || null; }
+
 // The person a hash names: the peer row (live route, heard times) and the saved contact.
 function personModel(hash) {
     var peer = null, contact = null;

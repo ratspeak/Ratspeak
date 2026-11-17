@@ -335,6 +335,27 @@ pub async fn broadcast_conversations_now(state: &AppState) {
     }
 }
 
+/// An LXMF address from a 32-character hash someone entered. The identity hash of someone
+/// this device has heard becomes their LXMF address (`true`); anything else stays as entered,
+/// since an unheard identity hash and an LXMF address can't be told apart.
+pub fn resolve_lxmf_address(pool: &db::DbPool, identity_id: &str, input: &str) -> (String, bool) {
+    let unchanged = (input.to_string(), false);
+    let Some(identity) = hex::decode(input)
+        .ok()
+        .and_then(|bytes| <[u8; 16]>::try_from(bytes.as_slice()).ok())
+    else {
+        return unchanged;
+    };
+    if db::lxmf_address_known(pool, input, identity_id) || !db::identity_hash_heard(pool, input) {
+        return unchanged;
+    }
+    let address = rns_identity::destination::Destination::hash_from_name_and_identity(
+        ratspeak_core::LXMF_DELIVERY_APP_NAME,
+        Some(&identity),
+    );
+    (hex::encode(address), true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,5 +564,43 @@ mod tests {
             "a received message has no delivery state to mark"
         );
         assert_eq!(inbound["last_msg_id"], "in-last");
+    }
+    #[test]
+    fn an_identity_hash_this_device_has_heard_becomes_its_lxmf_address() {
+        let state = make_state();
+        let identity = "0123456789abcdef0123456789abcdef";
+        let address = hex::encode(
+            rns_identity::destination::Destination::hash_from_name_and_identity(
+                ratspeak_core::LXMF_DELIVERY_APP_NAME,
+                Some(&<[u8; 16]>::try_from(hex::decode(identity).unwrap().as_slice()).unwrap()),
+            ),
+        );
+        // Not heard yet: it can't be told from an LXMF address, so it stays as entered.
+        assert_eq!(
+            resolve_lxmf_address(&state.db, "me", identity),
+            (identity.to_string(), false)
+        );
+        state
+            .db
+            .get()
+            .unwrap()
+            .execute(
+                "INSERT INTO identity_activity (dest_hash, identity_hash, last_seen, first_seen) VALUES (?1, ?2, 1, 1)",
+                rusqlite::params![address, identity],
+            )
+            .unwrap();
+        assert_eq!(
+            resolve_lxmf_address(&state.db, "me", identity),
+            (address.clone(), true)
+        );
+        // Their LXMF address, and anything that isn't 32 hex characters, stay as entered.
+        assert_eq!(
+            resolve_lxmf_address(&state.db, "me", &address),
+            (address.clone(), false)
+        );
+        assert_eq!(
+            resolve_lxmf_address(&state.db, "me", "abc"),
+            ("abc".to_string(), false)
+        );
     }
 }

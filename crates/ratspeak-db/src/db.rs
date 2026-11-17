@@ -3237,6 +3237,33 @@ pub fn get_blocked_set(pool: &DbPool, identity_id: &str) -> std::collections::Ha
         .unwrap_or_default()
 }
 
+/// Whether `dest_hash` is an address this device knows: heard, or saved as a contact.
+pub fn lxmf_address_known(pool: &DbPool, dest_hash: &str, identity_id: &str) -> bool {
+    let Ok(conn) = pool.get() else {
+        return false;
+    };
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM identity_activity WHERE dest_hash = ?1)
+             OR EXISTS(SELECT 1 FROM contacts WHERE dest_hash = ?1 AND identity_id = ?2)",
+        params![dest_hash, identity_id],
+        |row| row.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
+}
+
+/// Whether this device has heard an announce from `identity_hash`.
+pub fn identity_hash_heard(pool: &DbPool, identity_hash: &str) -> bool {
+    let Ok(conn) = pool.get() else {
+        return false;
+    };
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM identity_activity WHERE identity_hash = ?1 AND identity_hash <> '')",
+        params![identity_hash],
+        |row| row.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
+}
+
 pub fn identity_hash_for_dest(pool: &DbPool, dest_hash: &str) -> Option<String> {
     let conn = pool.get().ok()?;
     conn.query_row(

@@ -16,6 +16,9 @@ use crate::error::{AppError, AppResult};
 use crate::helpers::{active_identity_id, sanitize_text, validate_hex};
 use crate::state::AppState;
 
+pub(crate) const LXMF_ADDRESS_INVALID: &str =
+    "Not a valid LXMF address. It's 32 characters, using 0-9 and a-f.";
+
 #[tauri::command]
 pub async fn api_contacts(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let identity_id = active_identity_id(&state);
@@ -186,30 +189,30 @@ pub async fn add_contact(
     state: State<'_, Arc<AppState>>,
     args: AddContactArgs,
 ) -> AppResult<Value> {
-    let dest_hash = sanitize_text(&args.hash, 128).to_ascii_lowercase();
+    let entered = sanitize_text(&args.hash, 128).to_ascii_lowercase();
     let display_name = args.display_name.as_deref().map(|s| sanitize_text(s, 64));
 
-    if !validate_hex(&dest_hash, 16, 64) {
-        return Err(AppError::bad_request(
-            "Invalid identity hash. Must be 16-64 hex characters (0-9, a-f).",
-        ));
+    if !validate_hex(&entered, 32, 32) {
+        return Err(AppError::bad_request(LXMF_ADDRESS_INVALID));
     }
 
     let identity_id = active_identity_id(&state);
     if identity_id.is_empty() {
         return Err(AppError::conflict("no active identity"));
     }
-    let dh = dest_hash.clone();
     let dn = display_name.clone();
     let id_c = identity_id.clone();
-    let contacts_list = db::spawn_db(state.db.clone(), move |p| {
+    // An identity hash someone has heard is saved as their LXMF address, never as a dead contact.
+    let (contacts_list, dest_hash, from_identity) = db::spawn_db(state.db.clone(), move |p| {
+        let (dh, from_identity) =
+            ratspeak_runtime::messaging::resolve_lxmf_address(&p, &id_c, &entered);
         let conn = match p.get() {
             Ok(c) => c,
-            Err(_) => return Vec::<Value>::new(),
+            Err(_) => return (Vec::<Value>::new(), dh, from_identity),
         };
         db::save_contact(&p, &dh, dn.as_deref(), "trusted", &id_c);
         let contacts = db::get_all_contacts_conn(&conn, &id_c);
-        format_contacts_list(&contacts)
+        (format_contacts_list(&contacts), dh, from_identity)
     })
     .await
     .map_err(|_| AppError::internal("add_contact db task panicked"))?;
@@ -223,7 +226,27 @@ pub async fn add_contact(
         }),
     );
     emit_peer_delta_for(&state, &dest_hash).await;
-    Ok(json!({ "hash": dest_hash, "display_name": display_name }))
+    Ok(json!({ "hash": dest_hash, "display_name": display_name, "from_identity": from_identity }))
+}
+
+/// What a 32-character hash someone entered addresses: the same hash, or the LXMF address
+/// of the heard identity it belongs to.
+#[tauri::command]
+pub async fn resolve_lxmf_address(
+    state: State<'_, Arc<AppState>>,
+    input: String,
+) -> AppResult<Value> {
+    let entered = sanitize_text(&input, 128).to_ascii_lowercase();
+    if !validate_hex(&entered, 32, 32) {
+        return Err(AppError::bad_request(LXMF_ADDRESS_INVALID));
+    }
+    let identity_id = active_identity_id(&state);
+    let (address, from_identity) = db::spawn_db(state.db.clone(), move |p| {
+        ratspeak_runtime::messaging::resolve_lxmf_address(&p, &identity_id, &entered)
+    })
+    .await
+    .map_err(|_| AppError::internal("resolve_lxmf_address db task panicked"))?;
+    Ok(json!({ "address": address, "from_identity": from_identity }))
 }
 
 #[tauri::command]

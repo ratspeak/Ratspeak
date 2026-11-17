@@ -41,6 +41,7 @@ changes that materially affect how an artifact is reproduced.
 - A Bluetooth peer that drops no longer stays listed as connected on Android, and Linux finds a Bluetooth adapter that turns on after Ratspeak starts.
 - Activity shows the newest event at the top. While you read further down or have an event open, the list holds still and its header shows how many new events have arrived; tap it to go back to the newest.
 - A menu opened over the iPhone keyboard no longer leaves a blank band below its last item.
+- Adding a contact or starting a message with someone's identity hash, rather than their LXMF address, now uses their LXMF address when Ratspeak has heard them, and says so. Errors about an address now say "LXMF address".
 - The Android app is about 5 MB smaller.
 
 ## [1.1.0] - 2026-11-15

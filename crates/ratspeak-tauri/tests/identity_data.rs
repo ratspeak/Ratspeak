@@ -243,6 +243,7 @@ fn commands() -> impl Fn(tauri::ipc::Invoke<MockRuntime>) -> bool + Send + Sync 
         ratspeak_tauri::commands::messaging::delete_messages,
         ratspeak_tauri::commands::contacts::api_contacts,
         ratspeak_tauri::commands::contacts::add_contact,
+        ratspeak_tauri::commands::contacts::resolve_lxmf_address,
         ratspeak_tauri::commands::contacts::block_contact,
         ratspeak_tauri::commands::messaging::hide_conversation,
         ratspeak_tauri::commands::messaging::send_lxmf_message,
@@ -1673,4 +1674,67 @@ fn a_block_made_while_pending_lifts_apply_is_not_undone() {
     );
     assert!(db::is_blocked(&fixture.state.db, SPAM, A));
     assert!(db::pending_network_lifts(&fixture.state.db, A).is_empty());
+}
+
+// Mark Qvist's report: an identity hash typed where the LXMF address goes made a contact
+// nobody answers at. One this device has heard now saves as their LXMF address.
+#[test]
+fn adding_a_heard_identity_hash_saves_their_lxmf_address() {
+    let _serial = SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let fixture = Fixture::new(Some(A), false);
+    let identity = "0123456789abcdef0123456789abcdef";
+    let address = "fedcba9876543210fedcba9876543210";
+    fixture
+        .state
+        .db
+        .get()
+        .unwrap()
+        .execute(
+            "INSERT INTO identity_activity (dest_hash, identity_hash, last_seen, first_seen) VALUES (?1, ?2, 1, 1)",
+            rusqlite::params![address, identity],
+        )
+        .unwrap();
+    let derived =
+        ratspeak_runtime::messaging::resolve_lxmf_address(&fixture.state.db, A, identity).0;
+    assert_ne!(derived, identity);
+
+    let resolved = fixture
+        .invoke("resolve_lxmf_address", json!({ "input": identity }))
+        .unwrap();
+    assert_eq!(
+        resolved,
+        json!({ "address": derived, "from_identity": true })
+    );
+    let added = fixture
+        .invoke("add_contact", json!({ "args": { "hash": identity } }))
+        .unwrap();
+    assert_eq!(added["hash"], derived);
+    assert_eq!(added["from_identity"], true);
+    let saved: Vec<String> = db::get_all_contacts(&fixture.state.db, A)
+        .iter()
+        .filter_map(|c| c["dest_hash"].as_str().map(str::to_string))
+        .collect();
+    assert!(saved.contains(&derived) && !saved.iter().any(|h| h == identity));
+
+    // An LXMF address, heard or not, is saved as entered; anything else isn't an address.
+    let added = fixture
+        .invoke(
+            "add_contact",
+            json!({ "args": { "hash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee" } }),
+        )
+        .unwrap();
+    assert_eq!(added["hash"], "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+    assert_eq!(added["from_identity"], false);
+    let refused = fixture
+        .invoke(
+            "add_contact",
+            json!({ "args": { "hash": "abcdef0123456789" } }),
+        )
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("Not a valid LXMF address"),
+        "{refused}"
+    );
 }

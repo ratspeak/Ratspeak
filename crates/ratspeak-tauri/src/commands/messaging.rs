@@ -413,7 +413,7 @@ pub async fn api_conversation(
     dest_hash: String,
 ) -> AppResult<Value> {
     if !validate_hex(&dest_hash, 16, 64) {
-        return Err(AppError::bad_request("Invalid identity hash"));
+        return Err(AppError::bad_request("Not a valid LXMF address."));
     }
     let identity_id = active_identity_id(&state);
     let dest_for_db = dest_hash.clone();
@@ -723,11 +723,11 @@ pub async fn send_lxmf_message(
             &state,
             client_msg_id.as_deref(),
             "invalid_destination",
-            "Invalid identity hash",
+            "Not a valid LXMF address.",
         );
         return Err(AppError::new(
             "invalid_destination",
-            "Invalid identity hash",
+            "Not a valid LXMF address.",
         ));
     }
     if content.is_empty() {
@@ -1114,11 +1114,11 @@ pub async fn send_lxmf_propagated(
             &state,
             client_msg_id.as_deref(),
             "invalid_destination",
-            "Invalid identity hash",
+            "Not a valid LXMF address.",
         );
         return Err(AppError::new(
             "invalid_destination",
-            "Invalid identity hash",
+            "Not a valid LXMF address.",
         ));
     }
     if content.is_empty() {
@@ -1830,11 +1830,11 @@ pub async fn send_lxmf_with_attachment(
             &state,
             client_msg_id.as_deref(),
             "invalid_destination",
-            "Invalid identity hash",
+            "Not a valid LXMF address.",
         );
         return Err(AppError::new(
             "invalid_destination",
-            "Invalid identity hash",
+            "Not a valid LXMF address.",
         ));
     }
     validate_delivery_preference(&state, delivery_pref)?;
@@ -2310,7 +2310,7 @@ pub async fn send_lxmf_with_staged_attachment(
     if !validate_hex(&dest_hash, 16, 64) {
         return Err(AppError::new(
             "invalid_destination",
-            "Invalid identity hash",
+            "Not a valid LXMF address.",
         ));
     }
     validate_delivery_preference(&state, delivery_pref)?;
@@ -2684,7 +2684,7 @@ pub async fn get_conversation(
 ) -> AppResult<Value> {
     let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
-        return Err(AppError::bad_request("Invalid identity hash"));
+        return Err(AppError::bad_request("Not a valid LXMF address."));
     }
     let thread = parse_conversation_thread(thread.as_deref())?;
     let identity_id = active_identity_id(&state);
@@ -2729,7 +2729,7 @@ fn conversation_peer(hash: &str) -> AppResult<String> {
     if validate_hex(&peer, 32, 32) {
         Ok(peer)
     } else {
-        Err(AppError::bad_request("Invalid identity hash"))
+        Err(AppError::bad_request("Not a valid LXMF address."))
     }
 }
 
@@ -2817,7 +2817,7 @@ pub async fn mark_read(
 ) -> AppResult<Value> {
     let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
-        return Err(AppError::bad_request("Invalid identity hash"));
+        return Err(AppError::bad_request("Not a valid LXMF address."));
     }
     let thread = parse_conversation_thread(thread.as_deref())?;
     let identity_id = active_identity_id(&state);
@@ -2849,7 +2849,7 @@ pub async fn set_conversation_muted(
 ) -> AppResult<Value> {
     let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
-        return Err(AppError::bad_request("Invalid identity hash"));
+        return Err(AppError::bad_request("Not a valid LXMF address."));
     }
     let identity_id = active_identity_id(&state);
     if identity_id.is_empty() {
@@ -2876,7 +2876,7 @@ pub async fn set_conversation_muted(
 pub async fn hide_conversation(state: State<'_, Arc<AppState>>, hash: String) -> AppResult<Value> {
     let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
-        return Err(AppError::bad_request("Invalid identity hash"));
+        return Err(AppError::bad_request("Not a valid LXMF address."));
     }
     let identity_id = active_identity_id(&state);
     if identity_id.is_empty() {
@@ -2919,7 +2919,7 @@ pub async fn delete_conversation(
 ) -> AppResult<Value> {
     let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
-        return Err(AppError::bad_request("Invalid identity hash"));
+        return Err(AppError::bad_request("Not a valid LXMF address."));
     }
     let thread = thread
         .map(|thread| parse_conversation_thread(Some(&thread)))
@@ -2980,7 +2980,7 @@ pub async fn delete_messages(
 ) -> AppResult<Value> {
     let dest_hash = sanitize_text(&hash, 128).to_ascii_lowercase();
     if !validate_hex(&dest_hash, 16, 64) {
-        return Err(AppError::bad_request("Invalid identity hash"));
+        return Err(AppError::bad_request("Not a valid LXMF address."));
     }
     if ids.is_empty() || ids.len() > db::admission::MAX_SELECTED_DELETION {
         return Err(AppError::bad_request("Invalid message selection"));

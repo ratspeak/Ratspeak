@@ -1259,6 +1259,7 @@ pub fn run() {
                 ratspeak_tauri::commands::contact_card::api_preview_contact_card,
                 ratspeak_tauri::commands::contact_card::import_contact_card,
                 ratspeak_tauri::commands::contacts::add_contact,
+                ratspeak_tauri::commands::contacts::resolve_lxmf_address,
                 ratspeak_tauri::commands::contacts::remove_contact,
                 ratspeak_tauri::commands::contacts::block_contact,
                 ratspeak_tauri::commands::contacts::unblock_contact,
