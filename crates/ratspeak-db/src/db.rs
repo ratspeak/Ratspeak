@@ -9719,19 +9719,26 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
             "INSERT INTO identity_activity(dest_hash, identity_hash, last_seen, first_seen, announce_count, display_name, status, last_interface, services, lxmf_compression_support, announce_emitted)
              VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), COALESCE(?6, ''), ?7, COALESCE(?8, ''), COALESCE(?9, 0))
              ON CONFLICT(dest_hash) DO UPDATE SET
-                 announce_emitted = COALESCE(?9, announce_emitted),
+                 announce_emitted = MAX(announce_emitted, COALESCE(?9, 0)),
                  last_seen = MAX(excluded.last_seen, last_seen),
                  announce_count = announce_count + 1,
                  identity_hash = CASE
                      WHEN excluded.identity_hash != '' THEN excluded.identity_hash
                      ELSE identity_hash
                  END,
+                 -- An older announce heard late (a hub's held copy, or one accepted once the
+                 -- path lapsed) never undoes a newer name or status. Without an emission time,
+                 -- only a row that has none yet takes them.
                  display_name = CASE
-                     WHEN excluded.display_name != '' THEN excluded.display_name
+                     WHEN excluded.display_name != ''
+                      AND (?9 >= announce_emitted OR (?9 IS NULL AND announce_emitted = 0))
+                         THEN excluded.display_name
                      ELSE display_name
                  END,
                  status = CASE
-                     WHEN ?5 IS NOT NULL THEN excluded.status
+                     WHEN ?5 IS NOT NULL
+                      AND (?9 >= announce_emitted OR (?9 IS NULL AND announce_emitted = 0))
+                         THEN excluded.status
                      ELSE status
                  END,
                  last_interface = CASE
@@ -16741,6 +16748,57 @@ mod peers_snapshot_tests {
         );
         assert_eq!(announce_count_for(&pool, hash), 2);
         assert_eq!(services_for(&pool, hash), "lxmf.delivery");
+    }
+
+    #[test]
+    fn an_older_announce_heard_late_never_undoes_a_newer_name_or_status() {
+        let pool = test_pool();
+        let hash = "cccccccccccccccccccccccccccccccc";
+        let heard = |name: &str, status: &str, emitted: Option<u64>| IdentityActivityUpdate {
+            dest_hash: hash.into(),
+            timestamp: 100.0,
+            display_name: Some(name.into()),
+            status: Some(status.into()),
+            last_interface: None,
+            identity_hash: None,
+            services: vec![PEER_SERVICE_LXMF_DELIVERY.into()],
+            clear_ratspeak_services: true,
+            lxmf_compression_support: None,
+            announce_emitted: emitted,
+        };
+        let profile = |pool: &DbPool| -> (String, String, i64) {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT display_name, status, announce_emitted FROM identity_activity WHERE dest_hash = ?1",
+                    params![hash],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap()
+        };
+
+        // Before any announce with an emission time, the cache may fill the row in.
+        touch_identity_activity_updates(&pool, &[heard("Ada", "", None)]);
+        assert_eq!(profile(&pool), ("Ada".into(), "".into(), 0));
+
+        // She sets a status (emitted 2000)...
+        touch_identity_activity_updates(&pool, &[heard("Ada L", "On the trail", Some(2000))]);
+        // ...then a hub's held copy of her older announce (emitted 1000, no status) arrives.
+        touch_identity_activity_updates(&pool, &[heard("Ada", "", Some(1000))]);
+        assert_eq!(
+            profile(&pool),
+            ("Ada L".into(), "On the trail".into(), 2000)
+        );
+        // A cached copy with no emission time can't undo it either.
+        touch_identity_activity_updates(&pool, &[heard("Ada", "", None)]);
+        assert_eq!(
+            profile(&pool),
+            ("Ada L".into(), "On the trail".into(), 2000)
+        );
+
+        // Her own newer announce still clears it.
+        touch_identity_activity_updates(&pool, &[heard("Ada L", "", Some(3000))]);
+        assert_eq!(profile(&pool), ("Ada L".into(), "".into(), 3000));
     }
 
     #[test]
