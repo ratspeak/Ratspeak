@@ -23,6 +23,8 @@
 
     function K() { return RS.kit; }
     function icon(name, cls) { return K() ? K().icon(name, cls) : ''; }
+    // Folded points right, open points down, like the app's other folds.
+    function disclosure(open) { return icon(open ? 'chevron-down' : 'chevron-right'); }
     function esc(v) { return escapeHtml(v == null ? '' : String(v)); }
     function compact() { return typeof isCompactLayout === 'function' && isCompactLayout(); }
     function dot(tone) { return '<span class="ui-dot' + (tone ? ' ui-dot--' + tone : '') + '" aria-hidden="true"></span>'; }
@@ -179,7 +181,7 @@
               '<div class="netmap-stat"><b data-live="announce" title="' + (M.lastAnnounce ? K().time.full(M.lastAnnounce) : '') + '">' + (M.lastAnnounce ? ago(Date.now() - M.lastAnnounce) : '—') + '</b><span>Last announce</span></div>'
             : '') + '</div>';
         var open = !NV.mapCollapsed, mapLabel = open ? 'Hide map' : 'Show map';
-        var toggle = '<button type="button" class="ui-icon-btn ui-icon-btn--sm ui-icon-btn--disclosure" data-act="map-toggle" aria-expanded="' + open + '" aria-label="' + mapLabel + '" title="' + mapLabel + '">' + icon(open ? 'chevron-up' : 'chevron-down') + '</button>';
+        var toggle = '<button type="button" class="ui-icon-btn ui-icon-btn--sm ui-icon-btn--disclosure" data-act="map-toggle" aria-expanded="' + open + '" aria-label="' + mapLabel + '" title="' + mapLabel + '">' + disclosure(open) + '</button>';
         // On a phone the pane header carries the title.
         var title = M.phone ? '' : '<h2 class="ui-detail-title">Network</h2>';
         return '<section class="netmap-stage" aria-label="Network map">' +
@@ -198,7 +200,7 @@
         var shut = fold && NV.waysCollapsed.indexOf(kind) !== -1;
         var verb = shut ? 'Show ' : 'Hide ';
         var chev = fold ? '<button type="button" class="ui-icon-btn ui-icon-btn--sm ui-icon-btn--disclosure" data-act="way-fold" data-id="' + kind + '" aria-expanded="' + !shut +
-            '" aria-label="' + esc(verb + o.title) + '" title="' + esc(verb + o.title) + '">' + icon(shut ? 'chevron-down' : 'chevron-up') + '</button>' : '';
+            '" aria-label="' + esc(verb + o.title) + '" title="' + esc(verb + o.title) + '">' + disclosure(!shut) + '</button>' : '';
         return '<section class="net-way k-' + kind + (o.on ? ' is-on' : '') + (o.start ? ' is-start' : '') + (NV.flash === kind ? ' is-flash' : '') + '" aria-labelledby="net-wt-' + kind + '">' +
             '<div class="net-way-head">' + tile(kind, o.on) +
                 '<div class="net-way-titles"><h3 class="net-way-title" id="net-wt-' + kind + '">' + esc(o.title) + '</h3>' +
@@ -264,7 +266,7 @@
         var community = all.filter(function(s) { return s.group === 'community'; }).sort(function(a, b) { return a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }); });
         var label = (NV.moreOpen ? 'Hide' : 'Show') + ' unofficial servers';
         var unofficial = '<div class="net-srow net-srow--toggle" data-act="more-servers"><span class="net-mark" aria-hidden="true">' + icon('people') + '</span><span class="net-sname">Unofficial</span>' +
-            '<button type="button" class="ui-icon-btn ui-icon-btn--sm ui-icon-btn--disclosure" data-act="more-servers" aria-expanded="' + NV.moreOpen + '" aria-label="' + label + '" title="' + label + '">' + icon(NV.moreOpen ? 'chevron-up' : 'chevron-down') + '</button></div>';
+            '<button type="button" class="ui-icon-btn ui-icon-btn--sm ui-icon-btn--disclosure" data-act="more-servers" aria-expanded="' + NV.moreOpen + '" aria-label="' + label + '" title="' + label + '">' + disclosure(NV.moreOpen) + '</button></div>';
         var out = '<div class="net-slist">' + official.map(srow).join('') + unofficial + '</div>';
         if (NV.moreOpen) out += '<p class="ui-help net-snote">Run by the community. Their operators can see your IP address.</p><div class="net-slist">' + community.map(srow).join('') + '</div>';
         return out + '<div class="net-links">' + link('Add your own server', 'own', '', 'plus') + '</div>';
@@ -1037,9 +1039,7 @@
             case 'join': {
                 var s = (typeof PUBLIC_TCP_SERVERS !== 'undefined' ? PUBLIC_TCP_SERVERS : []).filter(function(x) { return x.id === id; })[0];
                 if (!s) return;
-                var st = serverState(s);
-                if (st.match && typeof resumePublicServerInterface === 'function') resumePublicServerInterface(s, st.match);
-                else if (typeof connectPublicServer === 'function') connectPublicServer(s);
+                if (typeof joinPublicServer === 'function') joinPublicServer(s, serverState(s).match);
                 render(true);
                 return;
             }

@@ -4,7 +4,11 @@ var _modalPreviousFocus = null;
 var PUBLIC_TCP_SERVERS = [
     { id: 'ratspeak-ruby', group: 'official', name: 'Ruby', host: '1.ratspeak.org', port: 4141, tone: 'ruby' },
     { id: 'ratspeak-emerald', group: 'official', name: 'Emerald', host: '2.ratspeak.org', port: 4242, tone: 'emerald', aliases: [{ host: 'rns.ratspeak.org', port: 4242 }] },
-    { id: 'ratspeak-diamond', group: 'official', name: 'Diamond', host: '3.ratspeak.org', port: 4343, tone: 'diamond' },
+    { id: 'ratspeak-diamond', group: 'official', name: 'Diamond', host: '3.ratspeak.org', port: 4343, tone: 'diamond', joinNotice: {
+        message: 'Diamond has stricter protection than Ruby and Emerald. It bans you if you have:',
+        points: ['50 remote peers connected through you', 'More than 20 connections from the same IP address'],
+        note: 'The first ban is 24 hours, the next is 7 days, and every one after that is 30 days. Staying within these limits brings it back down.'
+    } },
     { id: 'apollo-rns', group: 'community', name: 'Apollo RNS', host: 'rns.not-a-number.io', port: 4242, place: 'Belgium' },
     { id: 'beleth', group: 'community', name: 'Beleth', host: 'rns.beleth.net', port: 4242 },
     { id: 'michmesh', group: 'community', name: 'MichMesh', host: 'rns.michmesh.net', port: 7822, place: 'Michigan, US' },
@@ -2169,6 +2173,26 @@ function _beginPublicServerJoin(server) {
 
 function _redrawPublicServers() {
     if (RS.networkView && typeof RS.networkView.render === 'function') RS.networkView.render(true);
+}
+
+// A saved server rejoins as it is; a server with stricter rules says so before the first join.
+function joinPublicServer(server, match) {
+    if (match) {
+        resumePublicServerInterface(server, match);
+        return Promise.resolve(true);
+    }
+    var notice = server.joinNotice;
+    var asked = notice ? rsConfirm({
+        title: 'Join ' + server.name + '?',
+        message: notice.message,
+        points: notice.points,
+        note: notice.note,
+        confirmText: 'Join'
+    }) : Promise.resolve(true);
+    return asked.then(function(ok) {
+        if (ok) connectPublicServer(server);
+        return ok;
+    });
 }
 
 // A public server is always joined as a TCP client, which Backbone servers accept too.

@@ -9,6 +9,8 @@ function rsConfirm(opts) {
             message: opts.message || '',
             confirmText: opts.confirmText || 'Confirm',
             cancelText: opts.cancelText || 'Cancel',
+            points: opts.points,
+            note: opts.note,
             danger: !!opts.danger,
             initialFocus: opts.initialFocus,
             hasInput: false
@@ -256,12 +258,21 @@ function _rsShowDialog(cfg, callback) {
         nativeBackValue: function() { return resolveValue(false); }
     }, callback);
 
-    if (cfg.message) {
-        var message = _rsText('p', '', cfg.message);
-        message.id = (built.title ? built.title.id : 'rs-dialog') + '-message';
-        built.sheet.setAttribute('aria-describedby', message.id);
-        built.body.appendChild(message);
+    var described = [];
+    function describe(el, part) {
+        el.id = (built.title ? built.title.id : 'rs-dialog') + '-' + part;
+        described.push(el.id);
+        built.body.appendChild(el);
     }
+    if (cfg.message) describe(_rsText('p', '', cfg.message), 'message');
+    if (cfg.points && cfg.points.length) {
+        var points = document.createElement('ul');
+        points.className = 'ui-dialog-points';
+        cfg.points.forEach(function(point) { points.appendChild(_rsText('li', '', point)); });
+        describe(points, 'points');
+    }
+    if (cfg.note) describe(_rsText('p', '', cfg.note), 'note');
+    if (described.length) built.sheet.setAttribute('aria-describedby', described.join(' '));
     if (cfg.detail) built.body.appendChild(cfg.detail);
 
     if (cfg.hasInput) {
