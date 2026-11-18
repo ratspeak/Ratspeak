@@ -5,6 +5,8 @@ changes that materially affect how an artifact is reproduced.
 
 ## [Unreleased]
 
+## [1.1.1] - 2026-11-17
+
 ### Added
 
 - **Message titles**: turn on Message titles in Settings › General to give a message a bold title line. A message that arrives with a title shows it above the text.

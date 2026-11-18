@@ -1,38 +1,29 @@
-## v1.1.0
+## v1.1.1
 
 ### Added
 
-- **A refreshed design**: buttons, lists, search, switches, and dialogs look and work the same everywhere, on desktop and phone, in every theme. Any address in the app can be copied in full with one tap.
-- **Network at a glance**: the Network tab maps your connections, with every way to connect in one Connectivity panel. Pause all stops them at once, and Resume all brings the same ones back.
-- **Activity**: a new tab shows what Ratspeak is doing on the network and explains problems in plain words.
-- **Contacts and Identity**: on desktop, a contact opens beside the list. Your identities have their own page, with your recovery phrase, PIN, and export in one place.
-- **Games home**: see the games waiting on your move, start a new game, or play again with someone you've played before.
-- **Keep trying to send**: a message that can't be sent now waits, marked with an hourglass, and Ratspeak tries again for up to 24 hours. It goes when the recipient is heard, when your network or Offline Inbox is back, or when you choose Try now from its menu. Stop trying ends it. On by default; turn it off in Settings › General.
-- **Discovered connections**: turn on Discover servers in Network to see the servers and radios others publish, and connect to one or use its radio settings. Join automatically keeps a number of them connected, and Accept from can limit both to publishers you trust.
-- **Auto-connect to unknown implementations**: in Settings › Network › Discovery, let Join automatically also join servers running other software. It's off by default, so only servers running Python Reticulum 1.5.7 or later or rsReticulum 1.5.0 or later are joined.
-- **Network stamps**: in Settings › Network › Network stamps, stamp your announces and path requests so nodes that require stamps pass them on, and require stamps from others. Both are off by default, and requiring stamps means nodes on older software aren't heard.
-- **Link MTU discovery**: transfers over fast links use larger packets and finish sooner. On by default; turn it off in Settings › Network › Links.
-- **More public servers**: Network's Internet list has six more community servers under Unofficial.
-- **Paste a QR code**: the contact QR scanner's Paste button reads a copied QR image or contact link.
+- **Message titles**: turn on Message titles in Settings › General to give a message a bold title line. A message that arrives with a title shows it above the text.
+- **Mute a conversation**: hold a conversation, or right-click it on a computer, for Mute and Delete…. A muted conversation's messages still arrive, without notifications, and leave the unread count. Swiping a conversation no longer deletes it.
+- **Shut down**: at the bottom of Settings, Shut down stops all network and Ratspeak services and closes the app, Android's background service included. Not on iPhone or iPad.
+- **Radio battery**: a radio that reports its battery shows its level in Network › Radio and beside its name in its details. It's red at 20% or less, orange to 49%, and green above, with a bolt while charging.
+- **Tray icon** (Linux): turn the tray icon off in Settings › General › Window. With it off, closing the window quits.
 
 ### Fixed and improved
 
-- Ratspeak works with Reticulum 1.6.0, LXMF 1.3.0, and LXST 0.6.0, including nodes and contacts that ask for stamps.
-- Ratspeak starts faster when a server can't be reached, and a message sent while messaging starts waits instead of failing. If messaging stops on an error, it now restarts on its own.
-- Messages to one person that had to wait arrive in the order you sent them, and an Offline Inbox message sent while your inbox is out of reach waits instead of being refused.
-- Delivery marks now show inside a conversation only, not in the conversation list.
-- A message to your own address stays on this device as a note, and deleting that conversation no longer deletes all your other messages.
-- With Relay for other devices on, a public server saved as a Backbone connection now counts toward the one-public-server limit.
-- Settings use plain names, and the docs at docs.ratspeak.org still give the technical terms for anyone building on Ratspeak or running their own nodes: Relay for other devices is Reticulum's transport mode, and Offline Inbox is an LXMF propagation node.
-- A call no longer ends when a setup packet is lost, and damaged voice packets are skipped. On Android, recording voice messages and making calls work again.
-- Peer and contact panels keep Message, Call, and the contact actions in reach, with the technical details under Details and a dot for whether they've been heard recently. The sidebar groups chats, people, and this device.
-- Peers you haven't heard from in a day are cleared, so the list and Ratspeak's storage stay small on busy networks. Contacts and anyone you've messaged or played a game with always stay.
-- Messages to someone you've written to before keep using their newest encryption key, even when they haven't announced for a while.
-- On Android, tapping into a message no longer makes the screen jump around for a second or more before you can type, and closing the keyboard no longer freezes the app.
-- In Channels, the first screen follows your network and says what to do next, and Reconnect rejoins the hub you were on.
-
-### Build and compatibility
-
-- Bluetooth Peer uses new Bluetooth identifiers, so 1.1.0 doesn't find devices on 1.0.44 or earlier over Bluetooth Peer until both update. Bluetooth RNodes aren't affected.
-- 1.1.0 updates how messages are stored and moves network data to new files. Ratspeak 1.0.44 and earlier can't open data used by 1.1.0, so back up your data first if you may need to go back.
-- An identity you never named, shown as !Ratspeak.org- and six characters, gets a name like Leaping Frog when you update, and new identities without a name get one too. Rename yours any time on the Identity page.
+- Names and statuses reach you even when busy servers hold back announces, a first message from someone new soon shows their name, and an older announce heard late no longer undoes a newer name or status.
+- A message to someone with no known route asks the network three times, spaced so servers can answer, instead of every few seconds.
+- Game moves no longer stay on Sending move or show as not delivered once they're delivered, and moves show in Activity.
+- Ratspeak announces about once an hour by default, at a slightly varied time, and starting the app no longer announces when Auto-announce is off.
+- Network's cards say Off, or On with what they're connected to, and turning one on opens it. A radio that can't start, such as a USB radio that isn't plugged in, says why on its row.
+- Local Network no longer lists confusing "wlan0 peer" rows, and turning one off no longer turns Local Network off. Discover servers is switched on and off only in Network.
+- Joining a server no longer spins forever: after 30 seconds the row says why it couldn't connect and offers Retry. Joining Diamond first shows its stricter limits.
+- Bluetooth: with Relay for other devices on, phones connected over Bluetooth can reach people this device hasn't heard yet. On Android, a peer that drops no longer stays listed as connected and a busy moment no longer drops the link, and Linux finds a Bluetooth adapter that turns on after Ratspeak starts.
+- Activity shows the newest event at the top and holds still while you read, and a message's details say which kind of connection it used. Peers reached through a named internet connection show Internet again.
+- On iPhone, holding Send or opening Attach shows every option above the keyboard.
+- The QR scanner reads codes live with the camera on iPhone, iPad, Mac, and Linux, not only from a chosen photo.
+- On Linux, clicking the tray icon opens Ratspeak, and Ratspeak no longer prints a libayatana-appindicator warning.
+- Adding a contact or starting a message with someone's identity hash, rather than their LXMF address, uses their LXMF address when Ratspeak has heard them.
+- A quick tap after sending no longer starts a voice recording.
+- On a phone, the first flick back up after scrolling to the end of Messages or Contacts scrolls, instead of needing a second try.
+- On a phone, Games fits all three games on the first screen with whole-board chess previews.
+- The Android app is about 5 MB smaller: its start-up code is built once instead of three times.
