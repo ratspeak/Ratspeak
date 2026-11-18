@@ -12,6 +12,7 @@
 
 - Names and statuses reach you even when busy servers hold back announces, a first message from someone new soon shows their name, and an older announce heard late no longer undoes a newer name or status.
 - A message to someone with no known route asks the network three times, spaced so servers can answer, instead of every few seconds.
+- A server that knows the way to someone but can't read the details no longer sets off a network-wide search, and bursts of requests no longer crowd out real ones.
 - Game moves no longer stay on Sending move or show as not delivered once they're delivered, and moves show in Activity.
 - Ratspeak announces about once an hour by default, at a slightly varied time, and starting the app no longer announces when Auto-announce is off.
 - Network's cards say Off, or On with what they're connected to, and turning one on opens it. A radio that can't start, such as a USB radio that isn't plugged in, says why on its row.
