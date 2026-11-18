@@ -15,6 +15,11 @@
         padding: var(--sat) 0 0 var(--sal);
     }
 }
+/* Phone: the top inset takes the colour of the split view beneath it; only the inset, so the glass tab bar keeps its tint. */
+@media (max-width: 768px) {
+    .app-layout:has(.view.active .ui-split > .ui-pane) { background: linear-gradient(var(--surface-workspace) 0 0) top / 100% var(--sat) no-repeat; }
+    .app-layout:has(.view.active .ui-split > .ui-detail.is-open) { background: linear-gradient(var(--surface-panel) 0 0) top / 100% var(--sat) no-repeat; }
+}
 
 /* Sidebar: the brand row carries the collapse control; you sit at the foot and open Identity. */
 .shell-sidebar { position: relative; z-index: var(--z-sticky); }
