@@ -17,14 +17,12 @@ Ratspeak is a native desktop and mobile client for end-to-end encrypted direct c
 
 [![License: Reticulum License](https://img.shields.io/badge/license-Reticulum%20License-blue.svg)](LICENSE)
 [![Rust 1.90+](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org)
-[![Status](https://img.shields.io/badge/status-alpha-yellow.svg)](#current-state)
+[![Status](https://img.shields.io/badge/status-beta-green.svg)](#current-state)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/readme/ratspeak-banner-dark.png">
   <img src="docs/readme/ratspeak-banner-light.png" width="100%" alt="Ratspeak on a laptop and an iPhone: Sam’s network over the internet, Wi-Fi, Bluetooth, and LoRa, and Alice’s conversation with him on her phone.">
 </picture>
-
-###### *Note: Ratspeak is currently in ALPHA. If you are looking for a more stable<br> experience, waiting for a later stable release is recommended.*
 
 </div>
 
