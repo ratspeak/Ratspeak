@@ -9,6 +9,7 @@
 pub mod activity;
 pub mod announce;
 pub mod announce_handlers;
+pub mod announce_pacing;
 mod announce_stamps;
 pub mod blackhole;
 pub mod channel_hub;
@@ -6512,8 +6513,7 @@ const POLL_NOW_COOLDOWN: Duration = Duration::from_millis(750);
 enum PollActivityObservation {
     InterfaceState { online: bool },
     AnnounceSuppressed,
-    AnnounceIngressBurst { active: bool },
-    AnnouncesHeld { count: u64 },
+    AnnouncePacing(announce_pacing::AnnouncePacingChange),
     PathObserved { destination: [u8; 16], hops: u8 },
     AnnounceObserved { destination: [u8; 16], hops: u8 },
 }
@@ -6588,22 +6588,7 @@ fn record_poll_activity(
                 interface: None,
             },
         )),
-        PollActivityObservation::AnnounceIngressBurst { active } => Ok(
-            producer::rns_announce_activity(producer::RnsAnnounceActivity {
-                transition: if active {
-                    producer::RnsAnnounceTransition::IngressBurstStarted
-                } else {
-                    producer::RnsAnnounceTransition::IngressBurstCleared
-                },
-                interface: None,
-            }),
-        ),
-        PollActivityObservation::AnnouncesHeld { count } => Ok(producer::rns_announce_activity(
-            producer::RnsAnnounceActivity {
-                transition: producer::RnsAnnounceTransition::Held { count },
-                interface: None,
-            },
-        )),
+        PollActivityObservation::AnnouncePacing(change) => Ok(announce_pacing_activity(change)),
         PollActivityObservation::PathObserved { destination, hops } => {
             Ok(producer::rns_path_observed(producer::RnsPathDiscovered {
                 destination: producer::DestinationHash::new(destination),
@@ -6623,6 +6608,22 @@ fn record_poll_activity(
             }),
         ),
     });
+}
+
+fn announce_pacing_activity(change: announce_pacing::AnnouncePacingChange) -> ProducerEvent {
+    use announce_pacing::AnnouncePacingChange::{Ended, Started};
+    let transition = match change {
+        Started(interface) => producer::RnsAnnounceTransition::IngressBurstStarted {
+            connection: producer::ConnectionName::new(interface.name).ok(),
+        },
+        Ended(interface) => producer::RnsAnnounceTransition::IngressBurstCleared {
+            connection: producer::ConnectionName::new(interface.name).ok(),
+        },
+    };
+    producer::rns_announce_activity(producer::RnsAnnounceActivity {
+        transition,
+        interface: None,
+    })
 }
 
 /// Runs `publish` under the lifecycle lock while `generation` is still the
@@ -6656,10 +6657,7 @@ async fn poll_stats_loop(
     });
 
     let mut prev_online: std::collections::HashMap<u64, bool> = std::collections::HashMap::new();
-    let mut prev_ingress_burst: std::collections::HashMap<u64, bool> =
-        std::collections::HashMap::new();
-    let mut prev_held_announces: std::collections::HashMap<u64, u64> =
-        std::collections::HashMap::new();
+    let mut pacing = announce_pacing::AnnouncePacing::default();
     let mut last_interface_announce = std::time::Instant::now();
     // Announces already applied to the LXMF caches, by received timestamp.
     let mut processed_announces: std::collections::HashMap<[u8; 16], f64> =
@@ -6748,8 +6746,6 @@ async fn poll_stats_loop(
                     for iface in &s {
                         let name = iface.name.as_str();
                         let online = state.effective_interface_online(iface.id, iface.online);
-                        let burst_active = iface.burst_active;
-                        let held_announces = iface.held_announces;
                         let key = iface.id;
                         let rnode_activity_covered =
                             state.is_rnode_activity_interface_covered(iface.id);
@@ -6806,22 +6802,10 @@ async fn poll_stats_loop(
                                 });
                             }
                         }
-                        let prev_burst = prev_ingress_burst.get(&key).copied();
-                        if prev_burst.is_some_and(|was_bursting| was_bursting != burst_active) {
-                            activity_observations.push(
-                                PollActivityObservation::AnnounceIngressBurst {
-                                    active: burst_active,
-                                },
-                            );
-                        }
-                        let prev_held = prev_held_announces.get(&key).copied().unwrap_or(0);
-                        if held_announces > 0 && prev_held == 0 {
-                            activity_observations.push(PollActivityObservation::AnnouncesHeld {
-                                count: held_announces,
-                            });
-                        }
-                        prev_ingress_burst.insert(key, burst_active);
-                        prev_held_announces.insert(key, held_announces);
+                    }
+                    for change in pacing.observe(&s, rns_link::clock::ContinuousInstant::now()) {
+                        tracing::debug!(interface = change.key(), "announce pacing changed");
+                        activity_observations.push(PollActivityObservation::AnnouncePacing(change));
                     }
 
                     state.interface_stats_payload(&s)
@@ -7266,6 +7250,15 @@ async fn poll_stats_loop(
         stats_emit_skipped = !emit;
 
         last_poll_at = std::time::Instant::now();
+    }
+
+    // Spells still open end with polling, so each has its end row.
+    for change in pacing.close_all() {
+        record_poll_activity(
+            &state,
+            runtime_activity_origin,
+            PollActivityObservation::AnnouncePacing(change),
+        );
     }
 }
 

@@ -224,6 +224,12 @@ impl CapturePrivacy {
                         value: StoredRawValue::OpaqueLocalReference { action, raw },
                     });
                 }
+                DraftValue::LocalLabel(label) => {
+                    masked_attributes.push(ActivityAttributeV1 {
+                        key,
+                        value: ActivityValueV1::Label(label.into_string()),
+                    });
+                }
             }
         }
         masked_attributes.shrink_to_fit();
@@ -357,7 +363,7 @@ fn shrink_wire_allocations(wire: &mut ActivityEventV1) {
     }
     for attribute in &mut wire.attributes {
         match &mut attribute.value {
-            ActivityValueV1::Code(value) => value.shrink_to_fit(),
+            ActivityValueV1::Code(value) | ActivityValueV1::Label(value) => value.shrink_to_fit(),
             ActivityValueV1::Endpoint(_) => {}
             ActivityValueV1::Identifier(value) => value.pseudonym.shrink_to_fit(),
             ActivityValueV1::Boolean(_)
@@ -389,7 +395,7 @@ fn charged_bytes(
         .saturating_add(raw_fields_capacity.saturating_mul(mem::size_of::<StoredRawField>()));
     for attribute in &wire.attributes {
         total = total.saturating_add(match &attribute.value {
-            ActivityValueV1::Code(value) => value.capacity(),
+            ActivityValueV1::Code(value) | ActivityValueV1::Label(value) => value.capacity(),
             ActivityValueV1::Endpoint(_) => 0,
             ActivityValueV1::Identifier(value) => value.pseudonym.capacity(),
             ActivityValueV1::Boolean(_)
@@ -710,6 +716,65 @@ mod tests {
         assert_eq!(repeated.ordinal, None);
         assert_eq!(repeated.rendered, hex::encode(overflow_digest));
         assert_eq!(privacy.by_digest.len(), 32);
+    }
+
+    #[test]
+    fn a_connection_name_shows_in_the_app_and_never_in_a_safe_copy() {
+        let name = "TCP to private.example:4242";
+        let mut privacy = privacy(5, 5);
+        let draft = catalog::rns_announce_activity(catalog::RnsAnnounceActivity {
+            time: catalog::ObservationTime::new(1, 1),
+            transition: catalog::RnsAnnounceTransition::IngressBurstCleared {
+                connection: Some(catalog::ConnectionName::new(name.into()).unwrap()),
+            },
+            interface: None,
+        })
+        .unwrap();
+        let validated = draft
+            .validate(DraftContext {
+                capture_session: privacy.capture_session().to_string(),
+                capture_generation: 1,
+                capture_profile: CaptureProfile::Normal,
+            })
+            .unwrap();
+        let stored = privacy
+            .seal(super::super::classified::ReadyDraft(validated), 1)
+            .unwrap();
+
+        let masked = serde_json::to_value(stored.masked()).unwrap();
+        assert_eq!(
+            masked["attributes"],
+            serde_json::json!([{ "key": "interface", "value": { "type": "label", "value": name } }])
+        );
+        let copy = serde_json::to_value(stored.safe_copy().unwrap()).unwrap();
+        assert_eq!(copy["attributes"], serde_json::json!([]));
+        assert_eq!(copy["kind"], "rns.announce.ingress_burst_cleared");
+        assert!(
+            stored
+                .reveal_identifier(ActivityAttributeKey::Interface)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn connection_names_are_bounded_plain_text() {
+        for rejected in [
+            String::new(),
+            "  ".into(),
+            "Hub\nnext".into(),
+            "Hub\u{202e}buH".into(),
+            "a".repeat(257),
+        ] {
+            assert!(catalog::ConnectionName::new(rejected).is_err());
+        }
+        for accepted in [
+            "Hub",
+            "TCP to node.example:4242",
+            "Café Ünïcode",
+            &"a".repeat(256),
+        ] {
+            assert!(catalog::ConnectionName::new(accepted.to_string()).is_ok());
+        }
     }
 
     #[test]

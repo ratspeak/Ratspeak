@@ -2,7 +2,8 @@
 //!
 //! Every type in this file is safe to serialize. Raw identifiers, endpoints,
 //! navigation references, payloads, and human-authored text deliberately have
-//! no representation here.
+//! no representation here. The one label is a local connection's own name,
+//! which the app shows as its Network screen does; safe copies leave it out.
 
 #![allow(
     dead_code,
@@ -127,6 +128,7 @@ pub enum ActivityAttributeKey {
     Hops,
     Hub,
     Identity,
+    Interface,
     InterfaceClass,
     Link,
     MaxMessageBytes,
@@ -139,7 +141,6 @@ pub enum ActivityAttributeKey {
     Percent,
     Profile,
     ProtocolVersion,
-    QueueCount,
     RatePerMinute,
     RejectedCount,
     Reason,
@@ -228,6 +229,7 @@ pub(super) enum ActivityValueV1 {
     Code(String),
     Endpoint(MaskedEndpointV1),
     Identifier(MaskedIdentifierV1),
+    Label(String),
     Signed(i64),
     Unsigned(u64),
 }
@@ -276,7 +278,7 @@ impl SafeCopyAttributeV1 {
     fn from_masked(
         attribute: &ActivityAttributeV1,
         endpoint_pseudonym: Option<&str>,
-    ) -> Result<Self, SafeCopyError> {
+    ) -> Result<Option<Self>, SafeCopyError> {
         let value = match &attribute.value {
             ActivityValueV1::Boolean(value) => SafeCopyValueV1::Boolean(*value),
             ActivityValueV1::Code(value) => SafeCopyValueV1::Code(value.clone()),
@@ -292,13 +294,14 @@ impl SafeCopyAttributeV1 {
                     pseudonym: value.pseudonym.clone(),
                 })
             }
+            ActivityValueV1::Label(_) => return Ok(None),
             ActivityValueV1::Signed(value) => SafeCopyValueV1::Signed(*value),
             ActivityValueV1::Unsigned(value) => SafeCopyValueV1::Unsigned(*value),
         };
-        Ok(Self {
+        Ok(Some(Self {
             key: attribute.key,
             value,
-        })
+        }))
     }
 }
 
@@ -384,8 +387,9 @@ impl ActivityEventV1 {
                 .attributes
                 .iter()
                 .enumerate()
-                .map(|(index, attribute)| {
+                .filter_map(|(index, attribute)| {
                     SafeCopyAttributeV1::from_masked(attribute, endpoint_pseudonym(index))
+                        .transpose()
                 })
                 .collect::<Result<Vec<_>, _>>()?,
             correlation_id: self.correlation_id.clone(),
@@ -643,7 +647,6 @@ pub(super) mod kinds {
     // announce lifecycles use `rns.announce.queued` and never claim RF sent.
     kind!(RNS_ANNOUNCE_SENT, "rns.announce.sent", Network);
     kind!(RNS_ANNOUNCE_FAILED, "rns.announce.failed", Network);
-    kind!(RNS_ANNOUNCE_HELD, "rns.announce.held", Network);
     kind!(
         RNS_ANNOUNCE_INGRESS_BURST_STARTED,
         "rns.announce.ingress_burst_started",

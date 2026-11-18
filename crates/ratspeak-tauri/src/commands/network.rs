@@ -579,37 +579,21 @@ pub(crate) async fn emit_ingress_diagnostics_snapshot(
     if !state.is_current_activity_origin_fence(expected_fence) {
         return;
     }
-    for entry in entries {
-        let burst_active = entry.burst_active;
-        let held_announces = entry.held_announces;
-        if burst_active {
-            state.activity.record_event_fenced(
-                || state.is_current_activity_origin_fence(expected_fence),
-                || {
-                    Ok(producer::rns_announce_activity(
-                        producer::RnsAnnounceActivity {
-                            transition: producer::RnsAnnounceTransition::IngressBurstStarted,
-                            interface: None,
+    // A new capture opens with the pacing spells already under way.
+    for name in ratspeak_runtime::announce_pacing::pacing_connections(&entries) {
+        state.activity.record_event_fenced(
+            || state.is_current_activity_origin_fence(expected_fence),
+            || {
+                Ok(producer::rns_announce_activity(
+                    producer::RnsAnnounceActivity {
+                        transition: producer::RnsAnnounceTransition::IngressBurstStarted {
+                            connection: producer::ConnectionName::new(name).ok(),
                         },
-                    ))
-                },
-            );
-        }
-        if held_announces > 0 {
-            state.activity.record_event_fenced(
-                || state.is_current_activity_origin_fence(expected_fence),
-                || {
-                    Ok(producer::rns_announce_activity(
-                        producer::RnsAnnounceActivity {
-                            transition: producer::RnsAnnounceTransition::Held {
-                                count: held_announces,
-                            },
-                            interface: None,
-                        },
-                    ))
-                },
-            );
-        }
+                        interface: None,
+                    },
+                ))
+            },
+        );
     }
 }
 

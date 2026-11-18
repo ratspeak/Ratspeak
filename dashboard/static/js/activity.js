@@ -1740,8 +1740,8 @@ function activityEventSummary(event) {
         'rns.security.dropped': 'Network input rejected',
         'rns.announce.queued': 'Announce queued',
         'rns.announce.sent': 'Announce queued',
-        'rns.announce.ingress_burst_started': 'High announce traffic detected',
-        'rns.announce.ingress_burst_cleared': 'Announce traffic returned to normal',
+        'rns.announce.ingress_burst_started': 'Pacing new announces',
+        'rns.announce.ingress_burst_cleared': 'Announce pacing ended',
         'lxmf.propagation.started': 'Storing message in Offline Inbox',
         'lxmf.propagation.succeeded': 'Message stored in Offline Inbox',
         'lxmf.propagation.failed': 'Offline Inbox delivery failed',
@@ -1782,7 +1782,6 @@ function activityEventSummary(event) {
         'observed': 'observed',
         'timed_out': 'timed out',
         'sent': 'sent',
-        'held': 'queued',
         'suppressed': 'suppressed',
         'dropped': 'dropped',
         'authenticated': 'authenticated',
@@ -1845,6 +1844,26 @@ function activityEventSummary(event) {
         'capture_cleared': 'cleared'
     };
     return (subject + (actionCode ? ' ' + (actions[actionCode] || activityHumanizeCode(actionCode).toLowerCase()) : '')).trim();
+}
+
+// A connection's name as the Network screen shows it.
+function activityConnectionLabel(name) {
+    var live = typeof getInterfaceLiveStatus === 'function' ? getInterfaceLiveStatus(name) : null;
+    var shown = typeof friendlyInterfaceName === 'function'
+        ? friendlyInterfaceName(name, (live && live.type) || '', (live && live.role) || '')
+        : name;
+    return activitySafeDisplayName(shown) || 'A connection';
+}
+
+// Reticulum pacing a busy connection's announces: its normal self-protection, not a problem.
+function activityPacingDetail(event) {
+    var started = event.kind === 'rns.announce.ingress_burst_started';
+    if (!started && event.kind !== 'rns.announce.ingress_burst_cleared') return '';
+    var attribute = activityAttribute(event, 'interface');
+    var name = attribute && attribute.value && attribute.value.type === 'label'
+        ? activityConnectionLabel(String(attribute.value.value || ''))
+        : 'A connection';
+    return started ? name + " is busy, so new announces come in a few at a time. Messages aren't affected." : name;
 }
 
 function activityInterfaceLabel(code) {
@@ -1969,6 +1988,9 @@ function activityFormatAttributeValue(attribute, event) {
         return 'Remote Link teardown';
     }
     if (attribute.key === 'interface_class') return activityInterfaceLabel(value);
+    if (type === 'label') {
+        return attribute.key === 'interface' ? activityConnectionLabel(String(value || '')) : activitySafeDisplayName(value);
+    }
     if (type === 'code') return ACTIVITY_CODE_LABELS[value] || String(value);
     if (type === 'endpoint') {
         return activityHumanizeCode(value && value.class ? value.class : 'unknown') + ' endpoint';
@@ -2002,12 +2024,12 @@ function activityAttributeLabel(key) {
         duration_ms: 'Duration',
         endpoint: 'Endpoint',
         evicted_count: 'Removed',
+        interface: 'Connection',
         interface_class: 'Connection',
         max_message_bytes: 'Maximum message',
         max_nick_bytes: 'Maximum nickname',
         max_room_bytes: 'Maximum channel name',
         max_rooms: 'Maximum channels',
-        queue_count: 'Queued',
         rate_per_minute: 'Rate',
         rejected_count: 'Rejected',
         rtt_ms: 'Round trip',
@@ -2050,7 +2072,8 @@ function activityEventFacts(event) {
             return;
         }
         var text = escapeHtml(activityFormatAttributeValue(attribute, event));
-        var plain = (attribute.key === 'reason' && activityIsDeliveryEvent(event)) || attribute.key === 'interface_class';
+        var plain = (attribute.key === 'reason' && activityIsDeliveryEvent(event)) ||
+            attribute.key === 'interface_class' || attribute.key === 'interface';
         rows.push([
             activityAttributeLabel(attribute.key),
             plain ? '<span>' + text + '</span>' : '<code>' + text + '</code>'
@@ -2073,6 +2096,7 @@ function activityPlainWords(event) {
     if (event.kind === 'channels.session.closed' && activityCodeValue(event, 'reason') === 'remote') {
         return 'The hub ended the authenticated Reticulum Link. The close signal carries no detailed reason.';
     }
+    if (event.kind === 'rns.announce.ingress_burst_started') return activityPacingDetail(event);
     return '';
 }
 
@@ -2330,6 +2354,8 @@ function renderActivityFeed() {
         if (ACTIVITY_REASON_IN_META_KINDS.indexOf(event.kind) !== -1 && activityDeliveryReasonLabel(event)) {
             meta.push('<span data-reason>' + escapeHtml(activityDeliveryReasonLabel(event)) + '</span>');
         }
+        var pacing = activityPacingDetail(event);
+        if (pacing) meta.push('<span data-detail>' + escapeHtml(pacing) + '</span>');
         if (event.count > 1) meta.push('<span>' + escapeHtml(String(event.count)) + ' events</span>');
         html += '<li><button type="button" class="ui-row activity-event' + (problem ? ' is-problem' : '') +
             '" data-area="' + escapeHtml(presentationArea) + '" data-sequence="' + escapeHtml(event.sequence) +

@@ -14,14 +14,14 @@ pub use super::catalog::{
     AppRuntimeTransition, ChannelEnvelopeKind, ChannelJoinEvidence, ChannelMessageToken,
     ChannelNegotiatedCapabilities, ChannelNegotiatedLimits, ChannelRoomFailureReason,
     ChannelRoomToken, ChannelRoomTransition, ChannelSessionCloseReason,
-    ChannelSessionFailureReason, ChannelSessionTransition, DeliveryFailureReason, DestinationHash,
-    HubModerationAction, HubServiceDegradation, HubSessionCloseReason, HubSessionRejection,
-    HubTransition, HubTrustChange, IdentityHash, InboundLxmfMethod, InterfaceClass,
-    InterfaceDegradationReason, InterfaceFailureReason, InterfaceRollback, InterfaceTimeoutReason,
-    InterfaceTransition, LinkId, LrgpActionStage, LxmfDeliveryMethod, LxmfDeliveryState,
-    LxmfInboundRejectionReason, LxmfProgressStep, LxmfSubmissionFailureReason, LxstCallReason,
-    LxstTransition, MessageId, PathEvidence, PathRequestMethod, SourceValidation, TcpEndpoint,
-    WakeCause,
+    ChannelSessionFailureReason, ChannelSessionTransition, ConnectionName, DeliveryFailureReason,
+    DestinationHash, HubModerationAction, HubServiceDegradation, HubSessionCloseReason,
+    HubSessionRejection, HubTransition, HubTrustChange, IdentityHash, InboundLxmfMethod,
+    InterfaceClass, InterfaceDegradationReason, InterfaceFailureReason, InterfaceRollback,
+    InterfaceTimeoutReason, InterfaceTransition, LinkId, LrgpActionStage, LxmfDeliveryMethod,
+    LxmfDeliveryState, LxmfInboundRejectionReason, LxmfProgressStep, LxmfSubmissionFailureReason,
+    LxstCallReason, LxstTransition, MessageId, PathEvidence, PathRequestMethod, SourceValidation,
+    TcpEndpoint, WakeCause,
 };
 
 /// Opaque timeless event accepted by [`super::ActivityRecorder::record_event`].
@@ -300,11 +300,12 @@ pub enum RnsAnnounceTransition {
         method: AnnounceMethod,
         reason: AnnounceFailureReason,
     },
-    Held {
-        count: u64,
+    IngressBurstStarted {
+        connection: Option<ConnectionName>,
     },
-    IngressBurstStarted,
-    IngressBurstCleared,
+    IngressBurstCleared {
+        connection: Option<ConnectionName>,
+    },
     Suppressed {
         reason: AnnounceSuppressionReason,
     },
@@ -335,12 +336,11 @@ pub fn rns_announce_activity(input: RnsAnnounceActivity) -> ProducerEvent {
         RnsAnnounceTransition::Failed { method, reason } => {
             catalog::RnsAnnounceTransition::Failed { method, reason }
         }
-        RnsAnnounceTransition::Held { count } => catalog::RnsAnnounceTransition::Held { count },
-        RnsAnnounceTransition::IngressBurstStarted => {
-            catalog::RnsAnnounceTransition::IngressBurstStarted
+        RnsAnnounceTransition::IngressBurstStarted { connection } => {
+            catalog::RnsAnnounceTransition::IngressBurstStarted { connection }
         }
-        RnsAnnounceTransition::IngressBurstCleared => {
-            catalog::RnsAnnounceTransition::IngressBurstCleared
+        RnsAnnounceTransition::IngressBurstCleared { connection } => {
+            catalog::RnsAnnounceTransition::IngressBurstCleared { connection }
         }
         RnsAnnounceTransition::Suppressed { reason } => {
             catalog::RnsAnnounceTransition::Suppressed { reason }

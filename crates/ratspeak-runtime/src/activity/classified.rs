@@ -28,6 +28,7 @@ pub enum ActivityRejectReason {
     EncodedEventTooLarge,
     InvalidEndpoint,
     InvalidIdentifier,
+    InvalidLabel,
     InvalidOperationalCode,
     TooManyAttributes,
 }
@@ -39,6 +40,7 @@ impl fmt::Display for ActivityRejectReason {
             Self::EncodedEventTooLarge => "encoded_event_too_large",
             Self::InvalidEndpoint => "invalid_endpoint",
             Self::InvalidIdentifier => "invalid_identifier",
+            Self::InvalidLabel => "invalid_label",
             Self::InvalidOperationalCode => "invalid_operational_code",
             Self::TooManyAttributes => "too_many_attributes",
         })
@@ -153,6 +155,7 @@ pub(super) enum DraftValue {
         action: NavigationAction,
         raw: Zeroizing<Box<[u8]>>,
     },
+    LocalLabel(Box<str>),
 }
 
 impl PartialEq for DraftValue {
@@ -190,6 +193,7 @@ impl PartialEq for DraftValue {
                     raw: right_raw,
                 },
             ) => left_action == right_action && left_raw[..] == right_raw[..],
+            (Self::LocalLabel(left), Self::LocalLabel(right)) => left == right,
             _ => false,
         }
     }
@@ -340,6 +344,14 @@ impl ActivityDraft {
         self
     }
 
+    pub(super) fn local_label(mut self, key: ActivityAttributeKey, label: Box<str>) -> Self {
+        self.attributes.push(DraftAttribute {
+            key,
+            value: DraftValue::LocalLabel(label),
+        });
+        self
+    }
+
     pub(super) fn opaque_reference(
         mut self,
         key: ActivityAttributeKey,
@@ -443,11 +455,25 @@ fn conservative_projection(attribute: &DraftAttribute) -> Option<ActivityAttribu
             ActivityValueV1::Endpoint(MaskedEndpointV1 { class: *class })
         }
         DraftValue::OpaqueLocalReference { .. } => return None,
+        DraftValue::LocalLabel(label) => ActivityValueV1::Label(label.to_string()),
     };
     Some(ActivityAttributeV1 {
         key: attribute.key,
         value,
     })
+}
+
+/// A label shows as written: bounded, with no control or direction-override characters.
+pub(super) fn validate_local_label(label: &str) -> Result<(), ActivityRejectReason> {
+    if label.trim().is_empty()
+        || label.len() > MAX_STRING_FIELD_BYTES
+        || label.chars().any(|c| {
+            c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+        })
+    {
+        return Err(ActivityRejectReason::InvalidLabel);
+    }
+    Ok(())
 }
 
 fn validate_operational_code(code: &str) -> Result<(), ActivityRejectReason> {

@@ -168,10 +168,9 @@ fn legacy_message(event: &ActivityEventV1) -> Option<&'static str> {
         "rns.path.timed_out" => "Path request timed out",
         "rns.announce.queued" | "rns.announce.sent" => "Announce queued",
         "rns.announce.failed" => "Announce failed",
-        "rns.announce.held" => "Announce queued",
         "rns.announce.observed" => "Announce observed",
-        "rns.announce.ingress_burst_started" => "High announce traffic detected",
-        "rns.announce.ingress_burst_cleared" => "Announce traffic returned to normal",
+        "rns.announce.ingress_burst_started" => "Pacing new announces",
+        "rns.announce.ingress_burst_cleared" => "Announce pacing ended",
         "rns.announce.suppressed" => "Announce suppressed",
         "rns.security.dropped" => "Network input rejected",
         "rns.packet.sampled" => "Packet observed",
@@ -536,15 +535,6 @@ fn legacy_detail(event: &ActivityEventV1) -> String {
         }
         "rns.announce.suppressed" => {
             push_code(&mut fragments, event, ActivityAttributeKey::Reason);
-        }
-        "rns.announce.held" => {
-            push_unsigned(
-                &mut fragments,
-                event,
-                ActivityAttributeKey::QueueCount,
-                "",
-                " queued",
-            );
         }
         "rns.announce.observed" => {
             push_ordinal(
@@ -965,7 +955,6 @@ mod tests {
             | "interface.removed"
             | "interface.failed"
             | "interface.timed_out"
-            | "rns.announce.held"
             | "rns.announce.ingress_burst_cleared"
             | "rns.announce.suppressed"
             | "lxst.service.started"
@@ -1014,13 +1003,13 @@ mod tests {
             "app.runtime.started"
             | "interface.connecting"
             | "rns.path.requested"
+            | "rns.announce.ingress_burst_started"
             | "lxmf.delivery.queued"
             | "lxmf.delivery.retrying"
             | "lxst.service.started"
             | "lxst.call.ringing"
             | "lxst.call.link_requested" => ActivityOutcome::Started,
             "rns.announce.sent"
-            | "rns.announce.held"
             | "lxmf.delivery.path_pending"
             | "lxmf.delivery.link_establishing"
             | "lxmf.delivery.link_ready"
@@ -1048,10 +1037,9 @@ mod tests {
             | "lxmf.inbound.accepted"
             | "lxst.service.stopped"
             | "lxst.call.ended" => ActivityOutcome::Success,
-            "interface.offline"
-            | "interface.degraded"
-            | "rns.announce.ingress_burst_started"
-            | "lxst.media.warning" => ActivityOutcome::Degraded,
+            "interface.offline" | "interface.degraded" | "lxst.media.warning" => {
+                ActivityOutcome::Degraded
+            }
             "rns.announce.suppressed" => ActivityOutcome::Dropped,
             "lxmf.delivery.rejected" | "lxst.call.rejected" => ActivityOutcome::Rejected,
             "app.runtime.unavailable"
@@ -1629,35 +1617,41 @@ mod tests {
             ),
             projection_case!(
                 producer::rns_announce_activity(producer::RnsAnnounceActivity {
-                    transition: producer::RnsAnnounceTransition::Held { count: 2 },
-                    interface: None,
-                }),
-                "rns.announce.held",
-                Network,
-                Warning,
-                Normal,
-                [QueueCount],
-                "announce",
-                "Announce queued",
-                "essential"
-            ),
-            projection_case!(
-                producer::rns_announce_activity(producer::RnsAnnounceActivity {
-                    transition: producer::RnsAnnounceTransition::IngressBurstStarted,
+                    transition: producer::RnsAnnounceTransition::IngressBurstStarted {
+                        connection: Some(producer::ConnectionName::new("Hub".into()).unwrap()),
+                    },
                     interface: None,
                 }),
                 "rns.announce.ingress_burst_started",
                 Network,
-                Warning,
+                Info,
                 Normal,
-                [],
+                [Interface],
                 "announce",
-                "High announce traffic detected",
-                "essential"
+                "Pacing new announces",
+                "standard"
             ),
             projection_case!(
                 producer::rns_announce_activity(producer::RnsAnnounceActivity {
-                    transition: producer::RnsAnnounceTransition::IngressBurstCleared,
+                    transition: producer::RnsAnnounceTransition::IngressBurstCleared {
+                        connection: Some(producer::ConnectionName::new("Hub".into()).unwrap()),
+                    },
+                    interface: None,
+                }),
+                "rns.announce.ingress_burst_cleared",
+                Network,
+                Info,
+                Normal,
+                [Interface],
+                "announce",
+                "Announce pacing ended",
+                "standard"
+            ),
+            projection_case!(
+                producer::rns_announce_activity(producer::RnsAnnounceActivity {
+                    transition: producer::RnsAnnounceTransition::IngressBurstCleared {
+                        connection: None,
+                    },
                     interface: None,
                 }),
                 "rns.announce.ingress_burst_cleared",
@@ -1666,7 +1660,7 @@ mod tests {
                 Normal,
                 [],
                 "announce",
-                "Announce traffic returned to normal",
+                "Announce pacing ended",
                 "standard"
             ),
             projection_case!(
@@ -2380,7 +2374,6 @@ mod tests {
             "rns.announce.queued",
             "rns.announce.sent",
             "rns.announce.failed",
-            "rns.announce.held",
             "rns.announce.observed",
             "rns.announce.ingress_burst_started",
             "rns.announce.ingress_burst_cleared",

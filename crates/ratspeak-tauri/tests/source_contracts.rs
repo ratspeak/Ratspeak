@@ -9851,8 +9851,11 @@ fn path_resolution_diagnostics_are_not_duplicate_or_stale() {
         read_source(root.join("crates/ratspeak-runtime/src/state.rs")).expect("runtime state");
     assert!(runtime_state.contains("\"held_announces\": entry.held_announces"));
     assert!(runtime_state.contains("\"burst_active\": entry.burst_active"));
-    assert!(runtime.contains("PollActivityObservation::AnnounceIngressBurst"));
-    assert!(runtime.contains("PollActivityObservation::AnnouncesHeld"));
+    // Pacing reaches Activity as one start and one end row per spell, never per held count.
+    assert!(runtime.contains("pacing.observe(&s, rns_link::clock::ContinuousInstant::now())"));
+    assert!(runtime.contains("PollActivityObservation::AnnouncePacing(change)"));
+    assert!(runtime.contains("for change in pacing.close_all()"));
+    assert!(!runtime.contains("PollActivityObservation::AnnouncesHeld"));
     assert!(runtime.contains("for observation in activity_observations"));
     assert!(runtime.contains("record_poll_activity(&state, poll_activity_origin, observation)"));
 
@@ -9869,6 +9872,8 @@ fn path_resolution_diagnostics_are_not_duplicate_or_stale() {
             .contains("emit_ingress_diagnostics_snapshot(state.inner(), diagnostics_fence).await;")
     );
     assert!(network.contains("\"interfaces_holding_announces\""));
+    assert!(network.contains("announce_pacing::pacing_connections(&entries)"));
+    assert!(!network.contains("RnsAnnounceTransition::Held"));
 }
 
 #[test]

@@ -202,6 +202,17 @@ impl TcpEndpoint {
     }
 }
 
+/// A connection's name as Reticulum reports it, the key the Network screen
+/// names it by. Activity shows it as that screen does; safe copies drop it.
+pub struct ConnectionName(Box<str>);
+
+impl ConnectionName {
+    pub fn new(value: String) -> Result<Self, ActivityRejectReason> {
+        super::classified::validate_local_label(&value)?;
+        Ok(Self(value.into_boxed_str()))
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum AppRuntimeTransition {
     Started,
@@ -616,11 +627,13 @@ pub enum RnsAnnounceTransition {
         method: AnnounceMethod,
         reason: AnnounceFailureReason,
     },
-    Held {
-        count: u64,
+    /// Reticulum's ingress control began pacing a connection's new announces.
+    IngressBurstStarted {
+        connection: Option<ConnectionName>,
     },
-    IngressBurstStarted,
-    IngressBurstCleared,
+    IngressBurstCleared {
+        connection: Option<ConnectionName>,
+    },
     Suppressed {
         reason: AnnounceSuppressionReason,
     },
@@ -654,21 +667,15 @@ pub fn rns_announce_activity(
             ActivityOutcome::Failed,
             CoalescingPolicy::Never,
         ),
-        RnsAnnounceTransition::Held { .. } => (
-            kinds::RNS_ANNOUNCE_HELD,
-            ActivitySeverity::Warning,
-            ActivityDirection::Local,
-            ActivityOutcome::Progress,
-            CoalescingPolicy::AdjacentEquivalent,
-        ),
-        RnsAnnounceTransition::IngressBurstStarted => (
+        // Upstream's normal self-protection, not a fault.
+        RnsAnnounceTransition::IngressBurstStarted { .. } => (
             kinds::RNS_ANNOUNCE_INGRESS_BURST_STARTED,
-            ActivitySeverity::Warning,
+            ActivitySeverity::Info,
             ActivityDirection::Inbound,
-            ActivityOutcome::Degraded,
+            ActivityOutcome::Started,
             CoalescingPolicy::Never,
         ),
-        RnsAnnounceTransition::IngressBurstCleared => (
+        RnsAnnounceTransition::IngressBurstCleared { .. } => (
             kinds::RNS_ANNOUNCE_INGRESS_BURST_CLEARED,
             ActivitySeverity::Info,
             ActivityDirection::Local,
@@ -717,11 +724,11 @@ pub fn rns_announce_activity(
                 .operational_code(ActivityAttributeKey::Method, method.code())?
                 .operational_code(ActivityAttributeKey::Reason, reason.code())?;
         }
-        RnsAnnounceTransition::Held { count } => {
-            draft = draft.exact(
-                ActivityAttributeKey::QueueCount,
-                ExactValue::Unsigned(count),
-            );
+        RnsAnnounceTransition::IngressBurstStarted { connection }
+        | RnsAnnounceTransition::IngressBurstCleared { connection } => {
+            if let Some(connection) = connection {
+                draft = draft.local_label(ActivityAttributeKey::Interface, connection.0);
+            }
         }
         RnsAnnounceTransition::Suppressed { reason } => {
             draft = draft.operational_code(ActivityAttributeKey::Reason, reason.code())?;
@@ -737,8 +744,6 @@ pub fn rns_announce_activity(
                     ActivityAttributeKey::Hops,
                     ExactValue::Unsigned(u64::from(hops)),
                 );
-        }
-        RnsAnnounceTransition::IngressBurstStarted | RnsAnnounceTransition::IngressBurstCleared => {
         }
     }
     if let Some(interface) = input.interface {
