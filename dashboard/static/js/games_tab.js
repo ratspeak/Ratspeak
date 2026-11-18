@@ -1355,9 +1355,9 @@
             for (var fIdx = 0; fIdx < 8; fIdx++) {
                 var file = (orient === 'w') ? files[fIdx] : files[7 - fIdx];
                 var sq = file + rank;
-                // a1 is dark (file+rank odd → light, 0-indexed).
+                // a1 is dark: 0-indexed file plus 1-indexed rank is even on light squares.
                 var fileNum = files.indexOf(file);
-                var isLight = ((fileNum + rank) % 2 === 1);
+                var isLight = ((fileNum + rank) % 2 === 0);
                 var classes = ['chess-square', isLight ? 'light' : 'dark'];
                 var piece = pieces[sq] || null;
                 var isSelected = selected === sq;
