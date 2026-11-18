@@ -358,10 +358,10 @@ pub enum ratspeak_runtime::activity::producer::RnsAnnounceTransition
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::Failed
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::Failed::method: ratspeak_runtime::activity::producer::AnnounceMethod
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::Failed::reason: ratspeak_runtime::activity::producer::AnnounceFailureReason
-pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::Held
-pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::Held::count: u64
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::IngressBurstCleared
+pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::IngressBurstCleared::connection: core::option::Option<ratspeak_runtime::activity::producer::ConnectionName>
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::IngressBurstStarted
+pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::IngressBurstStarted::connection: core::option::Option<ratspeak_runtime::activity::producer::ConnectionName>
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::Observed
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::Observed::destination: ratspeak_runtime::activity::producer::DestinationHash
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::Observed::hops: u8
@@ -416,6 +416,9 @@ pub struct ratspeak_runtime::activity::producer::ChannelsSessionActivity
 pub ratspeak_runtime::activity::producer::ChannelsSessionActivity::correlation_id: ratspeak_runtime::activity::CorrelationId
 pub ratspeak_runtime::activity::producer::ChannelsSessionActivity::hub: ratspeak_runtime::activity::producer::DestinationHash
 pub ratspeak_runtime::activity::producer::ChannelsSessionActivity::transition: ratspeak_runtime::activity::producer::ChannelSessionTransition
+pub struct ratspeak_runtime::activity::producer::ConnectionName(_)
+impl ratspeak_runtime::activity::producer::ConnectionName
+pub fn ratspeak_runtime::activity::producer::ConnectionName::new(alloc::string::String) -> core::result::Result<Self, ratspeak_runtime::activity::ActivityRejectReason>
 pub struct ratspeak_runtime::activity::producer::DestinationHash(_)
 impl ratspeak_runtime::activity::producer::DestinationHash
 pub fn ratspeak_runtime::activity::producer::DestinationHash::from_hex(&str) -> core::result::Result<Self, ratspeak_runtime::activity::ActivityRejectReason>
@@ -554,6 +557,7 @@ pub ratspeak_runtime::activity::ActivityAttributeKey::EvictedCount
 pub ratspeak_runtime::activity::ActivityAttributeKey::Hops
 pub ratspeak_runtime::activity::ActivityAttributeKey::Hub
 pub ratspeak_runtime::activity::ActivityAttributeKey::Identity
+pub ratspeak_runtime::activity::ActivityAttributeKey::Interface
 pub ratspeak_runtime::activity::ActivityAttributeKey::InterfaceClass
 pub ratspeak_runtime::activity::ActivityAttributeKey::Link
 pub ratspeak_runtime::activity::ActivityAttributeKey::MaxMessageBytes
@@ -566,7 +570,6 @@ pub ratspeak_runtime::activity::ActivityAttributeKey::Method
 pub ratspeak_runtime::activity::ActivityAttributeKey::Percent
 pub ratspeak_runtime::activity::ActivityAttributeKey::Profile
 pub ratspeak_runtime::activity::ActivityAttributeKey::ProtocolVersion
-pub ratspeak_runtime::activity::ActivityAttributeKey::QueueCount
 pub ratspeak_runtime::activity::ActivityAttributeKey::RatePerMinute
 pub ratspeak_runtime::activity::ActivityAttributeKey::Reason
 pub ratspeak_runtime::activity::ActivityAttributeKey::RejectedCount
@@ -633,6 +636,7 @@ pub ratspeak_runtime::activity::ActivityRejectReason::CaptureContextMismatch
 pub ratspeak_runtime::activity::ActivityRejectReason::EncodedEventTooLarge
 pub ratspeak_runtime::activity::ActivityRejectReason::InvalidEndpoint
 pub ratspeak_runtime::activity::ActivityRejectReason::InvalidIdentifier
+pub ratspeak_runtime::activity::ActivityRejectReason::InvalidLabel
 pub ratspeak_runtime::activity::ActivityRejectReason::InvalidOperationalCode
 pub ratspeak_runtime::activity::ActivityRejectReason::TooManyAttributes
 impl core::fmt::Display for ratspeak_runtime::activity::ActivityRejectReason
@@ -854,6 +858,8 @@ pub mod ratspeak_runtime::announce_handlers
 pub async fn ratspeak_runtime::announce_handlers::spawn_lxmf_delivery_handler(alloc::sync::Arc<ratspeak_runtime::state::AppState>, &rns_runtime::reticulum::ReticulumHandle, rns_runtime::lifecycle::ShutdownSignal)
 pub async fn ratspeak_runtime::announce_handlers::spawn_lxmf_propagation_handler(alloc::sync::Arc<ratspeak_runtime::state::AppState>, &rns_runtime::reticulum::ReticulumHandle, rns_runtime::lifecycle::ShutdownSignal)
 pub async fn ratspeak_runtime::announce_handlers::spawn_lxst_telephony_handler(alloc::sync::Arc<ratspeak_runtime::state::AppState>, &rns_runtime::reticulum::ReticulumHandle, rns_runtime::lifecycle::ShutdownSignal)
+pub mod ratspeak_runtime::announce_pacing
+pub fn ratspeak_runtime::announce_pacing::pacing_connections(&[rns_transport::messages::InterfaceStatRpcEntry]) -> alloc::vec::Vec<alloc::string::String>
 pub mod ratspeak_runtime::blackhole
 pub async fn ratspeak_runtime::blackhole::apply_pending_network_lifts(&ratspeak_runtime::state::AppState, &str)
 pub async fn ratspeak_runtime::blackhole::escalate_pending_if_present(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, [u8; 16], [u8; 16])
