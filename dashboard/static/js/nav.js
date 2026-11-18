@@ -1165,17 +1165,21 @@ function _visualViewportGeometry(visualHeight, offsetTop, pageTop, bodyTop, scro
     };
 }
 
-// The inset is measured from the full height: as the composer takes focus, WKWebView
-// briefly reports innerHeight at the keyboard-shrunk height and sends no event when it recovers.
 function _keyboardViewportMetrics(innerHeight, visualHeight, offsetTop, maxViewportHeight) {
     var keyboardHeight = innerHeight - visualHeight;
     var heightDrop = maxViewportHeight > 0 ? maxViewportHeight - visualHeight : 0;
     var open = keyboardHeight > 150 || heightDrop > 150;
-    var fullHeight = Math.max(innerHeight, maxViewportHeight || 0);
     return {
         open: open,
-        inset: open ? Math.max(0, fullHeight - visualHeight - (offsetTop || 0)) : 0
+        inset: open ? Math.max(0, innerHeight - visualHeight - (offsetTop || 0)) : 0
     };
+}
+
+// The layout height fixed sheets sit in. iOS never shrinks it for the keyboard, but as the
+// composer takes focus WKWebView briefly reports innerHeight at the shrunk height and sends no
+// event when it recovers, so measure from the full height there. Elsewhere the layout really shrinks.
+function _sheetLayoutHeight(innerHeight, maxViewportHeight, ios) {
+    return ios ? Math.max(innerHeight, maxViewportHeight || 0) : innerHeight;
 }
 
 // IME resizes come in steps: open on the first past the threshold, close at full height or once settled.
@@ -1361,7 +1365,7 @@ function initKeyboardDetection() {
         // WKWebView can report offsetTop late, so use the effective
         // rendered offset when anchoring fixed sheets and conversations.
         var keyboardMetrics = _keyboardViewportMetrics(
-            window.innerHeight,
+            _sheetLayoutHeight(window.innerHeight, _maxViewportHeight, typeof isIOS === 'function' && isIOS()),
             currentHeight,
             visualGeometry.offset,
             _maxViewportHeight
