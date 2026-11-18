@@ -3,6 +3,7 @@
 //! Each destination's stamp is also made as soon as it exists, so its first
 //! announce need not wait, and the window can say when one is still being made.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -16,13 +17,15 @@ use crate::state::AppState;
 
 pub(crate) const STAMP_EVENT: &str = "announce_stamp";
 
-/// The stamps being made for this session's presence announces.
+/// The stamps being made for this identity's presence announces.
 #[derive(Default)]
 pub(crate) struct Preparation {
     round: u64,
+    identity: Option<String>,
     started: bool,
     working: usize,
     since: Option<Instant>,
+    in_flight: HashSet<[u8; 16]>,
     jobs: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -53,20 +56,54 @@ impl AppState {
     }
 }
 
-/// A new identity session: the previous one's stamp jobs are cancelled.
-pub(crate) fn begin(state: &AppState) -> u64 {
+/// This identity's stamp jobs; another identity's are cancelled. The same
+/// identity keeps its jobs, so a start after setup finds setup's stamp.
+pub(crate) fn begin(state: &AppState, identity_hash: &str) -> u64 {
     let Ok(mut prep) = state.announce_stamp.lock() else {
         return 0;
     };
+    if prep.identity.as_deref() == Some(identity_hash) {
+        return prep.round;
+    }
     for job in prep.jobs.drain(..) {
         job.abort();
     }
     prep.round += 1;
+    prep.identity = Some(identity_hash.to_string());
     prep.started = true;
     prep.working = 0;
     prep.since = None;
+    prep.in_flight.clear();
     state.emitter.emit(STAMP_EVENT, prep.status());
     prep.round
+}
+
+/// Set up the stamper as this identity's network start will, before that start.
+pub(crate) fn configure_for_identity(state: &AppState, identity_hash: &str) -> bool {
+    let config_dir = crate::rns_config_dir_for_start(state, Some(identity_hash));
+    match rns_runtime::reticulum::configure_destination_stamper(
+        config_dir.to_str(),
+        &crate::rns::init_options(),
+    ) {
+        Ok(()) => true,
+        Err(error) => {
+            tracing::warn!(%error, "could not set up destination stamps before the network");
+            false
+        }
+    }
+}
+
+/// Make an identity's presence stamps now; `configure_for_identity` first.
+pub(crate) fn start_for_identity(
+    state: &Arc<AppState>,
+    identity_hash: &str,
+    identity: &Identity,
+    destinations: &[&Destination],
+) {
+    let round = begin(state, identity_hash);
+    for destination in destinations {
+        prepare(state, round, destination, identity, true);
+    }
 }
 
 pub(crate) fn current_round(state: &AppState) -> u64 {
@@ -83,21 +120,23 @@ pub(crate) fn prepare(
     identity: &Identity,
     presence: bool,
 ) {
-    let Some(prepared) = rns_runtime::destination_stamper::prepare(destination, identity) else {
-        return;
-    };
+    let hash = destination.hash;
     let Ok(mut prep) = state.announce_stamp.lock() else {
         return;
     };
-    if prep.round != round {
+    // One search per destination: a later start waits on the one in flight.
+    if prep.round != round || prep.in_flight.contains(&hash) {
         return;
     }
+    let Some(prepared) = rns_runtime::destination_stamper::prepare(destination, identity) else {
+        return;
+    };
+    prep.in_flight.insert(hash);
     if presence {
         prep.working += 1;
         prep.since.get_or_insert_with(Instant::now);
         state.emitter.emit(STAMP_EVENT, prep.status());
     }
-    let hash = destination.hash;
     let task_state = Arc::clone(state);
     prep.jobs.push(tokio::spawn(async move {
         let stamp = prepared.ready().await;
@@ -109,7 +148,11 @@ pub(crate) fn prepare(
         let Ok(mut prep) = task_state.announce_stamp.lock() else {
             return;
         };
-        if prep.round == round && presence {
+        if prep.round != round {
+            return;
+        }
+        prep.in_flight.remove(&hash);
+        if presence {
             prep.working = prep.working.saturating_sub(1);
             if prep.working == 0 {
                 prep.since = None;

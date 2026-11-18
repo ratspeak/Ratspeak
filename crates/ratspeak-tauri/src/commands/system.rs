@@ -162,6 +162,7 @@ pub async fn api_setup_complete(
         let write_db = state.db.clone();
         let write_nick = display_name.clone();
         let write_phrase = m.clone();
+        let stamp_key = key.clone();
         let write = tokio::task::spawn_blocking(move || {
             crate::lxmf::LxmfManager::import_identity_with_phrase(
                 &write_dir,
@@ -184,6 +185,12 @@ pub async fn api_setup_complete(
                 );
             }
         };
+        // Usually done before the recovery-phrase steps are.
+        ratspeak_runtime::start_announce_stamp_for_new_identity(
+            state.inner(),
+            &hash,
+            &stamp_key[..],
+        );
         // Persisting an identity is inactive. The acknowledged privacy/runtime
         // boundary must complete before this first identity becomes active.
         let reset = crate::reset_activity_for_shutdown(&state)

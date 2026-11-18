@@ -2987,6 +2987,7 @@ pub async fn ratspeak_runtime::shutdown_ble_peer_for_exit()
 pub async fn ratspeak_runtime::shutdown_rns_lxmf(&alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> core::result::Result<(), ratspeak_runtime::activity::ActivityRecorderError>
 pub fn ratspeak_runtime::spawn_startup_rnode_activity_monitor(alloc::sync::Arc<ratspeak_runtime::state::AppState>, rns_runtime::reticulum::RNodeRuntimeObserver, ratspeak_runtime::state::RNodeActivityOrigin)
 pub async fn ratspeak_runtime::start_activity_unless_stopped(&ratspeak_runtime::state::AppState)
+pub fn ratspeak_runtime::start_announce_stamp_for_new_identity(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, &str, &[u8])
 pub async fn ratspeak_runtime::start_channel_hub_service(&alloc::sync::Arc<ratspeak_runtime::state::AppState>) -> bool
 pub fn ratspeak_runtime::stop_outbound_message(&ratspeak_runtime::state::AppState, &str, &str) -> ratspeak_runtime::StoppedSend
 pub fn ratspeak_runtime::telephony_hash_for_identity_hex(&str) -> core::option::Option<alloc::string::String>

@@ -45,6 +45,16 @@ pub struct RnsManager {
     started: ContinuousInstant,
 }
 
+/// What every Ratspeak network start passes to Reticulum.
+pub(crate) fn init_options() -> InitOptions {
+    let mut options = InitOptions::default();
+    // One failed interface is shown as a warning; the others still start.
+    options.keep_starting_after_interface_failure = true;
+    // An unreachable server costs one connect timeout in all, not one each.
+    options.start_interfaces_concurrently = true;
+    options
+}
+
 impl RnsManager {
     /// Initialize RNS. `is_foreground` is shared with the transport actor and
     /// interfaces for background throttling.
@@ -70,17 +80,12 @@ impl RnsManager {
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let started = ContinuousInstant::now();
         let shutdown = ShutdownSignal::new();
-        // One failed interface is shown as a warning; the others still start.
-        let mut options = InitOptions::default();
-        options.keep_starting_after_interface_failure = true;
-        // An unreachable server costs one connect timeout in all, not one each.
-        options.start_interfaces_concurrently = true;
         let handle = reticulum::init_with_policy(
             Some(config_dir),
             socket_dir,
             shutdown.clone(),
             is_foreground,
-            options,
+            init_options(),
             ble_rnode_startup_options(),
             policy,
         )

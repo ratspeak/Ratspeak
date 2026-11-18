@@ -2022,6 +2022,24 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                 state.set_startup_stage("error");
                 return;
             }
+            // The stamps start as soon as the identity is loaded, before its network;
+            // one already made, during setup say, is loaded instead.
+            if announce_stamps::configure_for_identity(&state, &mgr.identity_hash) {
+                mgr.load_stored_destination_stamps();
+                let mut stamped = vec![mgr.delivery_destination()];
+                if state
+                    .propagation_node_hosting_enabled
+                    .load(Ordering::Relaxed)
+                {
+                    stamped.push(mgr.propagation_destination());
+                }
+                announce_stamps::start_for_identity(
+                    &state,
+                    &mgr.identity_hash,
+                    &mgr.identity,
+                    &stamped,
+                );
+            }
 
             let Ok(active) = read_active_identity_for_startup(&state).await else {
                 return;
@@ -2173,17 +2191,7 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
         .lock()
         .ok()
         .and_then(|lxmf| lxmf.as_ref().map(|mgr| mgr.identity_hash.clone()));
-    let config_dir = if state.config.uses_app_private_rns_config_dir() {
-        if let Some(identity_hash) = active_runtime_identity.as_deref() {
-            let dir = state.config.identity_rns_config_dir(identity_hash);
-            seed_identity_rns_config_from_app_private(&state.config.rns_config_dir, &dir);
-            dir
-        } else {
-            state.config.rns_config_dir.clone()
-        }
-    } else {
-        state.config.rns_config_dir.clone()
-    };
+    let config_dir = rns_config_dir_for_start(&state, active_runtime_identity.as_deref());
     // Earlier releases' received ratchets are unused now; removing thousands
     // of them stays off the start's path, and an interrupted removal resumes
     // at the next start.
@@ -2297,26 +2305,6 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                     mgr.router
                         .set_transport(rns_mgr.handle.transport_tx.clone());
                     mgr.load_stored_destination_stamps();
-                    let round = announce_stamps::begin(&state);
-                    announce_stamps::prepare(
-                        &state,
-                        round,
-                        mgr.delivery_destination(),
-                        &mgr.identity,
-                        true,
-                    );
-                    if state
-                        .propagation_node_hosting_enabled
-                        .load(Ordering::Relaxed)
-                    {
-                        announce_stamps::prepare(
-                            &state,
-                            round,
-                            mgr.propagation_destination(),
-                            &mgr.identity,
-                            true,
-                        );
-                    }
                     Some(mgr.lxmf_dest_hash)
                 } else {
                     None
@@ -4137,6 +4125,44 @@ fn release_opportunistic_announce(state: &AppState, dest_hash: &str) {
     }
 }
 
+const ANNOUNCE_SENT_EVENT: &str = "announce_sent";
+
+/// The Reticulum config directory a network start uses: this identity's own,
+/// seeded from the app-private one, when the profile keeps one per identity.
+fn rns_config_dir_for_start(state: &AppState, identity_hash: Option<&str>) -> std::path::PathBuf {
+    if state.config.uses_app_private_rns_config_dir()
+        && let Some(identity_hash) = identity_hash
+    {
+        let dir = state.config.identity_rns_config_dir(identity_hash);
+        seed_identity_rns_config_from_app_private(&state.config.rns_config_dir, &dir);
+        return dir;
+    }
+    state.config.rns_config_dir.clone()
+}
+
+/// Start a new identity's announce stamp the moment it exists, before its
+/// network does, so the first start usually finds it made.
+pub fn start_announce_stamp_for_new_identity(
+    state: &Arc<AppState>,
+    identity_hash: &str,
+    private_key: &[u8],
+) {
+    let Ok(identity) = rns_identity::identity::Identity::from_private_key(private_key) else {
+        return;
+    };
+    let Ok(delivery) = rns_identity::destination::Destination::new(
+        Some(&identity),
+        rns_identity::destination::Direction::In,
+        rns_identity::destination::DestType::Single,
+        LXMF_DELIVERY_APP_NAME,
+    ) else {
+        return;
+    };
+    if announce_stamps::configure_for_identity(state, identity_hash) {
+        announce_stamps::start_for_identity(state, identity_hash, &identity, &[&delivery]);
+    }
+}
+
 fn schedule_startup_auto_announce(state: Arc<AppState>) {
     if *state.announce_interval_rx.borrow() == 0 {
         return;
@@ -4757,9 +4783,15 @@ async fn execute_announce_burst(
                 report.queued += 1;
                 if is_lxmf_delivery {
                     report.lxmf_delivery_queued = true;
+                    let sent_ms = unix_now_ms();
                     state
                         .last_lxmf_delivery_announce_at_ms
-                        .store(unix_now_ms(), Ordering::Relaxed);
+                        .store(sent_ms, Ordering::Relaxed);
+                    // The window shows an announce as sent only now, not when it was queued.
+                    state.emitter.emit(
+                        ANNOUNCE_SENT_EVENT,
+                        json!({ "at": sent_ms as f64 / 1000.0 }),
+                    );
                 } else {
                     report.propagation_queued = true;
                 }
@@ -11983,6 +12015,47 @@ mod notification_tests {
         *state.lxmf.lock().unwrap() =
             Some(crate::lxmf::LxmfManager::load_or_create(&tmp, None, None).unwrap());
         state
+    }
+
+    // Setup makes the stamp as the identity is created; its first network start
+    // loads that one and has nothing left to make.
+    #[tokio::test]
+    async fn a_new_identitys_stamp_is_made_at_creation_and_loaded_by_its_start() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
+        let state = Arc::new(make_state(Arc::new(RecordingNotifier::default())));
+        let (_, key) = generate_recoverable_key().unwrap();
+        let identity = rns_identity::identity::Identity::from_private_key(&key[..]).unwrap();
+        let hash = hex::encode(identity.hash);
+        // A low value keeps the search short in a debug build.
+        let dir = rns_config_dir_for_start(&state, Some(&hash));
+        std::fs::write(
+            dir.join("config"),
+            "[stamps]\n  destination_value = 8\n  destination_cost = 6\n",
+        )
+        .unwrap();
+
+        start_announce_stamp_for_new_identity(&state, &hash, &key[..]);
+        assert_eq!(state.announce_stamp_status()["state"], "working");
+        let deadline = Instant::now() + Duration::from_secs(20);
+        while state.announce_stamp_status()["state"] != "ready" {
+            assert!(Instant::now() < deadline, "the stamp was made");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        let mut delivery = rns_identity::destination::Destination::new(
+            Some(&identity),
+            rns_identity::destination::Direction::In,
+            rns_identity::destination::DestType::Single,
+            LXMF_DELIVERY_APP_NAME,
+        )
+        .unwrap();
+        rns_runtime::destination_stamper::load_stored_stamp(&mut delivery, &identity);
+        assert!(
+            delivery.destination_stamp().is_some(),
+            "saved where the start loads it"
+        );
+        assert!(rns_runtime::destination_stamper::prepare(&delivery, &identity).is_none());
+        crate::announce_stamps::test_policy::unstamp();
     }
 
     fn manual_leadership(state: &AppState) -> crate::announce::AnnounceLeadership {
