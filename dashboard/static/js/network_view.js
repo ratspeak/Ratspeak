@@ -103,8 +103,8 @@
             var online = live ? live.online !== false : false;
             var status = a.paused ? (off.indexOf(name) !== -1 ? 'off' : 'paused') : (online ? 'up' : 'pending');
             var display = typeof friendlyInterfaceName === 'function' ? friendlyInterfaceName(name, iface.type || '', iface.role || 'normal') : name;
-            // iOS without the multicast entitlement: Local Network can't hear anyone.
-            var au = a.section === 'local' && !a.paused ? window._autoUnavailable : null;
+            // A refused multicast join (iOS without the entitlement) means Local Network can't hear anyone, unless it already does.
+            var au = a.section === 'local' && !a.paused && !(online && live.peers > 0) ? window._autoUnavailable : null;
             if (au && au.interface === name) status = 'pending';
             var trouble = status === 'pending' && typeof connectTroubleText === 'function' ? connectTroubleText(live) : '';
             var batt = a.section === 'lora' && status === 'up' ? radioBattery(name, live) : null;
