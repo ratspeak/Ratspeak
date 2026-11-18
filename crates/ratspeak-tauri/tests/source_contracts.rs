@@ -3265,7 +3265,10 @@ fn notification_attention_uses_visibility_not_transport_settlement_or_selected_s
     );
     assert!(voice.contains("!state.should_surface_native_notification()"));
     assert!(channels.contains("!state.should_surface_native_notification()"));
-    assert!(system.contains("state.set_notification_foreground(fg);"));
+    // Desktop focus is attention only; the network lifecycle follows visibility.
+    assert!(system.contains("state.set_notification_foreground(attention);"));
+    assert!(!system.contains("state.set_notification_foreground(fg);"));
+    assert!(state_js.contains("args: { foreground: !document.hidden, attention: foreground },"));
     assert!(mobile.contains("state.set_notification_foreground(foreground);"));
     assert!(shell.contains("state.set_notification_foreground(foreground);"));
 

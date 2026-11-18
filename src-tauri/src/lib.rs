@@ -2137,7 +2137,7 @@ fn set_desktop_foreground(app: &tauri::AppHandle, foreground: bool) {
                 };
                 if expiry.is_ok() {
                     let _ = ratspeak_tauri::commands::system::set_foreground_state_if_current(
-                        &state, true, transition,
+                        &state, true, true, transition,
                     );
                 } else {
                     tracing::error!(
@@ -2148,7 +2148,7 @@ fn set_desktop_foreground(app: &tauri::AppHandle, foreground: bool) {
             });
         } else {
             let _ = ratspeak_tauri::commands::system::set_foreground_state_if_current(
-                &state, false, transition,
+                &state, false, false, transition,
             );
         }
     }

@@ -1181,7 +1181,10 @@ function _postLifecycleForeground(foreground, detail) {
         }
         return Promise.resolve(true);
     }
-    return RS.invoke('api_set_foreground', { args: { foreground: foreground } }).then(function() {
+    // A blur is not a background edge: the network follows visibility, attention follows focus.
+    return RS.invoke('api_set_foreground', {
+        args: { foreground: !document.hidden, attention: foreground },
+    }).then(function() {
         if (foreground) {
             var eventDetail = detail || {};
             eventDetail.foreground = true;

@@ -294,6 +294,10 @@ fn restart_after_migration(state: Arc<AppState>) {
 pub struct SetForegroundArgs {
     #[serde(default)]
     pub foreground: Option<bool>,
+    /// Desktop window focus. Notifications follow it; the network lifecycle
+    /// follows `foreground` (window visibility), so a blur is not a background edge.
+    #[serde(default)]
+    pub attention: Option<bool>,
 }
 
 #[tauri::command]
@@ -301,22 +305,27 @@ pub struct SetForegroundArgs {
     level = "debug",
     name = "command.api_set_foreground",
     skip_all,
-    fields(foreground = args.foreground),
+    fields(foreground = args.foreground, attention = args.attention),
 )]
 pub async fn api_set_foreground(
     state: State<'_, Arc<AppState>>,
     args: SetForegroundArgs,
 ) -> AppResult<Value> {
-    apply_foreground_state(Arc::clone(state.inner()), args.foreground.unwrap_or(true)).await
+    let fg = args.foreground.unwrap_or(true);
+    apply_foreground_state(Arc::clone(state.inner()), fg, args.attention.unwrap_or(fg)).await
 }
 
 /// Apply a native or IPC foreground transition through one ordered lifecycle
 /// boundary. Platform callbacks call this directly instead of depending on a
 /// running WebView JavaScript event loop.
-pub async fn apply_foreground_state(state: Arc<AppState>, fg: bool) -> AppResult<Value> {
+pub async fn apply_foreground_state(
+    state: Arc<AppState>,
+    fg: bool,
+    attention: bool,
+) -> AppResult<Value> {
     let transition = state.begin_foreground_transition();
-    state.set_notification_foreground(fg);
-    apply_foreground_transition(state, fg, transition).await
+    state.set_notification_foreground(attention);
+    apply_foreground_transition(state, fg, attention, transition).await
 }
 
 /// Apply a foreground edge whose authority was allocated synchronously when
@@ -325,6 +334,7 @@ pub async fn apply_foreground_state(state: Arc<AppState>, fg: bool) -> AppResult
 pub async fn apply_foreground_transition(
     state: Arc<AppState>,
     fg: bool,
+    attention: bool,
     transition: u64,
 ) -> AppResult<Value> {
     if !state.is_current_foreground_transition(transition) {
@@ -347,20 +357,25 @@ pub async fn apply_foreground_transition(
             .await
             .map_err(|_| AppError::internal("activity lifecycle unavailable"))?;
     }
-    let _ = set_foreground_state_if_current(&state, fg, transition);
+    let _ = set_foreground_state_if_current(&state, fg, attention, transition);
     Ok(json!({ "foreground": state.is_foreground() }))
 }
 
 pub fn set_foreground_state(state: &Arc<AppState>, fg: bool) {
     let transition = state.begin_foreground_transition();
-    let _ = set_foreground_state_if_current(state, fg, transition);
+    let _ = set_foreground_state_if_current(state, fg, fg, transition);
 }
 
-pub fn set_foreground_state_if_current(state: &Arc<AppState>, fg: bool, transition: u64) -> bool {
+pub fn set_foreground_state_if_current(
+    state: &Arc<AppState>,
+    fg: bool,
+    attention: bool,
+    transition: u64,
+) -> bool {
     if !state.is_current_foreground_transition(transition) {
         return false;
     }
-    state.set_notification_foreground(fg);
+    state.set_notification_foreground(attention);
     let was = state
         .is_foreground
         .swap(fg, std::sync::atomic::Ordering::Relaxed);

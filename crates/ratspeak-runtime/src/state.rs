@@ -1311,9 +1311,8 @@ impl AppState {
         self.poll_now.notify_one();
     }
 
-    /// Announce-driven refresh; a backgrounded mobile app keeps its regular poll pace.
+    /// Announce-driven refresh; a backgrounded app keeps its regular poll pace.
     pub fn request_announce_poll(&self) {
-        #[cfg(feature = "mobile-throttle")]
         if !self.is_foreground() {
             return;
         }

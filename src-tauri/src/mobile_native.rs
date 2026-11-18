@@ -806,7 +806,7 @@ pub(crate) fn submit_lifecycle(foreground: bool) {
     state.set_notification_foreground(foreground);
     tauri::async_runtime::spawn(async move {
         if ratspeak_tauri::commands::system::apply_foreground_transition(
-            state, foreground, transition,
+            state, foreground, foreground, transition,
         )
         .await
         .is_err()

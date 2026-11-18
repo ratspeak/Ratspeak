@@ -6605,10 +6605,9 @@ async fn poll_stats_loop(
         std::collections::HashMap::new();
     let mut processed_generation = None;
     let mut restored_announces = RestoredAnnounces::default();
-    // A backgrounded mobile poll skips the UI emit; resume must not wait out the cooldown.
+    // A backgrounded poll skips the UI emit; resume must not wait out the cooldown.
     let mut stats_emit_skipped = false;
 
-    #[cfg(feature = "mobile-throttle")]
     let mut was_foreground = true;
     let mut last_poll_at = std::time::Instant::now()
         .checked_sub(POLL_NOW_COOLDOWN)
@@ -6633,8 +6632,7 @@ async fn poll_stats_loop(
             break;
         }
 
-        // Mobile: drop to 15s while backgrounded.
-        #[cfg(feature = "mobile-throttle")]
+        // Drop to 15s while backgrounded (desktop: window hidden or in the tray).
         {
             let is_fg = state.is_foreground();
             if is_fg != was_foreground {
@@ -7209,11 +7207,8 @@ async fn poll_stats_loop(
         }
 
         state.set_last_stats(stats.clone());
-        // A backgrounded mobile WebView has no reader; resume polls and emits at once.
-        #[cfg(feature = "mobile-throttle")]
+        // A backgrounded WebView has no reader; resume polls and emits at once.
         let emit = state.is_foreground();
-        #[cfg(not(feature = "mobile-throttle"))]
-        let emit = true;
         if emit {
             state.emit_to_all("stats_update", stats);
         }

@@ -2200,7 +2200,7 @@ pub(super) mod tests {
                 .unwrap();
             let _ = super::super::channels::api_channel_unread(app.state()).await;
             let edge = state.begin_foreground_transition();
-            super::super::system::apply_foreground_transition(Arc::clone(&state), true, edge)
+            super::super::system::apply_foreground_transition(Arc::clone(&state), true, true, edge)
                 .await
                 .unwrap();
             let unblock = super::super::contacts::UnblockContactArgs {
