@@ -281,6 +281,7 @@ pub async fn ratspeak_tauri::commands::contacts::clear_system_blackholes(tauri::
 pub async fn ratspeak_tauri::commands::contacts::get_blackhole(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::contacts::purge_unverified_blackholes(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::contacts::remove_contact(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::contacts::resolve_lxmf_address(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::contacts::unblock_contact(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::contacts::UnblockContactArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub mod ratspeak_tauri::commands::games
 pub struct ratspeak_tauri::commands::games::ResendLastGameActionArgs
@@ -578,6 +579,7 @@ pub ratspeak_tauri::commands::messaging::SendReplyArgs::renderer: core::option::
 pub ratspeak_tauri::commands::messaging::SendReplyArgs::reply_to_id: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendReplyArgs::reply_to_preview: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendReplyArgs::thread: core::option::Option<alloc::string::String>
+pub ratspeak_tauri::commands::messaging::SendReplyArgs::title: core::option::Option<alloc::string::String>
 pub struct ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs
 pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::client_msg_id: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::content: core::option::Option<alloc::string::String>
@@ -586,6 +588,7 @@ pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::dest_hash: al
 pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::renderer: core::option::Option<u8>
 pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::staging_token: alloc::string::String
 pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::thread: core::option::Option<alloc::string::String>
+pub ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs::title: core::option::Option<alloc::string::String>
 pub struct ratspeak_tauri::commands::messaging::SendWithAttachmentArgs
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::client_msg_id: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::content: core::option::Option<alloc::string::String>
@@ -597,6 +600,7 @@ pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::image_data: cor
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::image_mime: core::option::Option<alloc::string::String>
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::renderer: core::option::Option<u8>
 pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::thread: core::option::Option<alloc::string::String>
+pub ratspeak_tauri::commands::messaging::SendWithAttachmentArgs::title: core::option::Option<alloc::string::String>
 pub struct ratspeak_tauri::commands::messaging::TryWaitingNowArgs
 pub ratspeak_tauri::commands::messaging::TryWaitingNowArgs::msg_id: alloc::string::String
 pub async fn ratspeak_tauri::commands::messaging::api_conversation(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
@@ -629,6 +633,7 @@ pub async fn ratspeak_tauri::commands::messaging::send_lxmf_reply(tauri::state::
 pub async fn ratspeak_tauri::commands::messaging::send_lxmf_with_attachment(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::SendWithAttachmentArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::send_lxmf_with_staged_attachment(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::SendStagedAttachmentArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::send_reaction(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::SendReactionArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::messaging::set_conversation_muted(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, bool) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::messaging::try_waiting_now(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::messaging::TryWaitingNowArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub mod ratspeak_tauri::commands::network
 pub struct ratspeak_tauri::commands::network::NetworkLogArgs
@@ -916,9 +921,11 @@ pub struct ratspeak_tauri::window_prefs::SessionEnv
 pub ratspeak_tauri::window_prefs::SessionEnv::tiling_compositor: bool
 pub ratspeak_tauri::window_prefs::SessionEnv::wayland_session: bool
 pub const ratspeak_tauri::window_prefs::CLOSE_BUTTON_SETTING: &str
+pub const ratspeak_tauri::window_prefs::TRAY_ICON_SETTING: &str
 pub fn ratspeak_tauri::window_prefs::desktop_names_indicate_tiling(core::option::Option<&str>, core::option::Option<&str>) -> bool
 pub fn ratspeak_tauri::window_prefs::detect_session_env() -> ratspeak_tauri::window_prefs::SessionEnv
 pub fn ratspeak_tauri::window_prefs::resolve_window_decorations(ratspeak_tauri::window_prefs::DecorationsPref, ratspeak_tauri::window_prefs::SessionEnv) -> bool
+pub fn ratspeak_tauri::window_prefs::tray_icon_shown(core::option::Option<&str>) -> bool
 pub enum ratspeak_tauri::StartupError
 pub ratspeak_tauri::StartupError::ProfileInUse
 pub ratspeak_tauri::StartupError::SchemaNewer

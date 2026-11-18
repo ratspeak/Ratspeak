@@ -247,6 +247,7 @@ pub ratspeak_core::types::DiscoveredInterfaces::enabled: bool
 pub ratspeak_core::types::DiscoveredInterfaces::entries: alloc::vec::Vec<ratspeak_core::types::DiscoveredEntry>
 pub struct ratspeak_core::types::LrgpMsgMeta
 pub ratspeak_core::types::LrgpMsgMeta::app_id: alloc::string::String
+pub ratspeak_core::types::LrgpMsgMeta::command: alloc::string::String
 pub ratspeak_core::types::LrgpMsgMeta::contact_hash: alloc::string::String
 pub ratspeak_core::types::LrgpMsgMeta::identity_id: alloc::string::String
 pub ratspeak_core::types::LrgpMsgMeta::sent_at: f64
