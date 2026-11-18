@@ -2205,7 +2205,10 @@ fn dynamic_rnode_activity_monitors_are_exact_covered_and_ownership_gated() {
     let stats_projection =
         rust_function_block(&runtime_state, "interface_stats_payload_with_readiness");
     assert!(stats_projection.contains("entry.online && product_ready"));
-    assert!(stats_projection.contains("\"rxb\": entry.rx_bytes"));
+    assert!(
+        stats_projection
+            .contains("\"rxb\": entry.rx_bytes.saturating_add(entry.filtered_rx_bytes),")
+    );
     assert!(stats_projection.contains("\"txb\": entry.tx_bytes"));
     assert_eq!(
         runtime_lib

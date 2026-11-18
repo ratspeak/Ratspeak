@@ -3377,7 +3377,8 @@ impl AppState {
                     "name": entry.name,
                     "type": entry.identity.as_ref().map(|identity| identity.class_name.as_str()),
                     "parent": entry.parent_interface_name,
-                    "rxb": entry.rx_bytes,
+                    // Accepted plus filtered: everything received, as before 1.6.1.
+                    "rxb": entry.rx_bytes.saturating_add(entry.filtered_rx_bytes),
                     "txb": entry.tx_bytes,
                     "online": online,
                     "bitrate": entry.bitrate,
@@ -4124,6 +4125,24 @@ mod tests {
         assert_eq!(rows[0]["connect_failures"], 3);
         assert_eq!(rows[1]["type"], serde_json::Value::Null);
         assert_eq!(rows[1]["parent"], "Hub");
+    }
+
+    #[test]
+    fn interface_stats_payload_receives_accepted_and_filtered_bytes() {
+        let state = make_state();
+        let mut hub = interface_stat(84, "Hub", true);
+        hub.rx_bytes = 1_200;
+        hub.filtered_rx_bytes = 300;
+        hub.tx_bytes = 900;
+        let mut full = interface_stat(85, "Full", true);
+        full.rx_bytes = u64::MAX;
+        full.filtered_rx_bytes = 1;
+
+        let payload = state.interface_stats_payload(&[hub, full]);
+        let rows = &payload["interfaces"];
+        assert_eq!(rows[0]["rxb"], 1_500);
+        assert_eq!(rows[0]["txb"], 900);
+        assert_eq!(rows[1]["rxb"], u64::MAX);
     }
 
     #[test]
