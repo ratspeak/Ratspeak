@@ -1635,6 +1635,7 @@ mod tests {
                 producer::rns_announce_activity(producer::RnsAnnounceActivity {
                     transition: producer::RnsAnnounceTransition::IngressBurstCleared {
                         connection: Some(producer::ConnectionName::new("Hub".into()).unwrap()),
+                        stopped_before: std::time::Duration::from_secs(600),
                     },
                     interface: None,
                 }),
@@ -1642,7 +1643,7 @@ mod tests {
                 Network,
                 Info,
                 Normal,
-                [Interface],
+                [Interface, StoppedBeforeMs],
                 "announce",
                 "Announce pacing ended",
                 "standard"
@@ -1651,6 +1652,7 @@ mod tests {
                 producer::rns_announce_activity(producer::RnsAnnounceActivity {
                     transition: producer::RnsAnnounceTransition::IngressBurstCleared {
                         connection: None,
+                        stopped_before: std::time::Duration::ZERO,
                     },
                     interface: None,
                 }),

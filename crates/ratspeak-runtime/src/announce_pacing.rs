@@ -20,13 +20,17 @@ pub(crate) struct PacedInterface {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AnnouncePacingChange {
     Started(PacedInterface),
-    Ended(PacedInterface),
+    /// The row comes after the calm window; `ago` is how long before it pacing stopped.
+    Ended {
+        interface: PacedInterface,
+        ago: Duration,
+    },
 }
 
 impl AnnouncePacingChange {
     pub(crate) fn key(&self) -> u64 {
         match self {
-            Self::Started(interface) | Self::Ended(interface) => interface.key,
+            Self::Started(interface) | Self::Ended { interface, .. } => interface.key,
         }
     }
 }
@@ -66,7 +70,7 @@ impl AnnouncePacing {
             .map(|(key, _)| *key)
             .collect();
         for key in ended {
-            changes.extend(self.end(key));
+            changes.extend(self.end(key, now));
         }
         for (key, (name, pacing)) in &connections {
             match self.spells.get_mut(key) {
@@ -100,17 +104,24 @@ impl AnnouncePacing {
     }
 
     /// Ends every open spell, when polling stops.
-    pub(crate) fn close_all(&mut self) -> Vec<AnnouncePacingChange> {
+    pub(crate) fn close_all(&mut self, now: ContinuousInstant) -> Vec<AnnouncePacingChange> {
         let keys: Vec<u64> = self.spells.keys().copied().collect();
-        keys.into_iter().filter_map(|key| self.end(key)).collect()
+        keys.into_iter()
+            .filter_map(|key| self.end(key, now))
+            .collect()
     }
 
-    fn end(&mut self, key: u64) -> Option<AnnouncePacingChange> {
+    fn end(&mut self, key: u64, now: ContinuousInstant) -> Option<AnnouncePacingChange> {
         let spell = self.spells.remove(&key)?;
-        Some(AnnouncePacingChange::Ended(PacedInterface {
-            key,
-            name: spell.name,
-        }))
+        Some(AnnouncePacingChange::Ended {
+            interface: PacedInterface {
+                key,
+                name: spell.name,
+            },
+            ago: spell
+                .ended_at
+                .map_or(Duration::ZERO, |at| now.saturating_duration_since(at)),
+        })
     }
 }
 
@@ -167,8 +178,12 @@ mod tests {
         AnnouncePacingChange::Started(interface(key, name))
     }
 
-    fn ended(key: u64, name: &str) -> AnnouncePacingChange {
-        AnnouncePacingChange::Ended(interface(key, name))
+    /// Ended, with pacing stopped `ago` minutes before the row.
+    fn ended(key: u64, name: &str, ago: u64) -> AnnouncePacingChange {
+        AnnouncePacingChange::Ended {
+            interface: interface(key, name),
+            ago: Duration::from_secs(ago * 60),
+        }
     }
 
     fn minutes(at: ContinuousInstant, minutes: u64) -> ContinuousInstant {
@@ -202,7 +217,7 @@ mod tests {
         );
         assert_eq!(
             pacing.observe(&[row(1, "Hub", false)], minutes(t0, 13)),
-            [ended(1, "Hub")]
+            [ended(1, "Hub", 10)]
         );
         assert!(
             pacing
@@ -227,11 +242,11 @@ mod tests {
         );
         assert_eq!(
             pacing.observe(&both(false, false), minutes(t0, 11)),
-            [ended(1, "Hub")]
+            [ended(1, "Hub", 10)]
         );
         assert_eq!(
             pacing.observe(&both(false, false), minutes(t0, 21)),
-            [ended(2, "Radio")]
+            [ended(2, "Radio", 10)]
         );
     }
 
@@ -266,7 +281,7 @@ mod tests {
         );
         assert_eq!(
             pacing.observe(&[row(1, "Hub", false)], minutes(t0, 21)),
-            [ended(1, "Hub")]
+            [ended(1, "Hub", 10)]
         );
     }
 
@@ -277,15 +292,15 @@ mod tests {
         pacing.observe(&[row(1, "Hub", true)], t0);
         pacing.observe(&[row(1, "Hub", false)], minutes(t0, 1));
         // No poll lands in the window, as when the app was asleep: the old
-        // spell still ends before the new one starts.
+        // spell still ends before the new one starts, eleven minutes after it stopped.
         assert_eq!(
             pacing.observe(&[row(1, "Hub", true)], minutes(t0, 12)),
-            [ended(1, "Hub"), started(1, "Hub")]
+            [ended(1, "Hub", 11), started(1, "Hub")]
         );
         pacing.observe(&[row(1, "Hub", false)], minutes(t0, 13));
         assert_eq!(
             pacing.observe(&[row(1, "Hub", false)], minutes(t0, 23)),
-            [ended(1, "Hub")]
+            [ended(1, "Hub", 10)]
         );
     }
 
@@ -300,7 +315,7 @@ mod tests {
         let mut pacing = AnnouncePacing::default();
         assert_eq!(pacing.observe(&stats, t0), [started(10, "Hub")]);
         assert_eq!(pacing_connections(&stats), ["Hub"]);
-        assert_eq!(pacing.close_all(), [ended(10, "Hub")]);
+        assert_eq!(pacing.close_all(t0), [ended(10, "Hub", 0)]);
     }
 
     #[test]
@@ -309,7 +324,7 @@ mod tests {
         let mut pacing = AnnouncePacing::default();
         pacing.observe(&[row(1, "Hub", true)], t0);
         assert!(pacing.observe(&[], minutes(t0, 1)).is_empty());
-        assert_eq!(pacing.observe(&[], minutes(t0, 11)), [ended(1, "Hub")]);
+        assert_eq!(pacing.observe(&[], minutes(t0, 11)), [ended(1, "Hub", 10)]);
     }
 
     #[test]
@@ -319,7 +334,7 @@ mod tests {
         pacing.observe(&[row(1, "Hub", true)], t0);
         assert_eq!(
             pacing.observe(&[row(1, "Radio", true)], minutes(t0, 1)),
-            [ended(1, "Hub"), started(1, "Radio")]
+            [ended(1, "Hub", 0), started(1, "Radio")]
         );
     }
 
@@ -327,8 +342,15 @@ mod tests {
     fn stopping_ends_open_spells_at_once() {
         let t0 = ContinuousInstant::now();
         let mut pacing = AnnouncePacing::default();
-        pacing.observe(&[row(1, "Hub", true), row(2, "Radio", false)], t0);
-        assert_eq!(pacing.close_all(), [ended(1, "Hub")]);
-        assert!(pacing.close_all().is_empty());
+        pacing.observe(&[row(1, "Hub", true), row(2, "Radio", true)], t0);
+        pacing.observe(
+            &[row(1, "Hub", true), row(2, "Radio", false)],
+            minutes(t0, 1),
+        );
+        assert_eq!(
+            pacing.close_all(minutes(t0, 4)),
+            [ended(1, "Hub", 0), ended(2, "Radio", 3)]
+        );
+        assert!(pacing.close_all(minutes(t0, 5)).is_empty());
     }
 }

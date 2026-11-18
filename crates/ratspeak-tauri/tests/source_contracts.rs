@@ -9854,7 +9854,10 @@ fn path_resolution_diagnostics_are_not_duplicate_or_stale() {
     // Pacing reaches Activity as one start and one end row per spell, never per held count.
     assert!(runtime.contains("pacing.observe(&s, rns_link::clock::ContinuousInstant::now())"));
     assert!(runtime.contains("PollActivityObservation::AnnouncePacing(change)"));
-    assert!(runtime.contains("for change in pacing.close_all()"));
+    assert!(
+        runtime
+            .contains("for change in pacing.close_all(rns_link::clock::ContinuousInstant::now())")
+    );
     assert!(!runtime.contains("PollActivityObservation::AnnouncesHeld"));
     assert!(runtime.contains("for observation in activity_observations"));
     assert!(runtime.contains("record_poll_activity(&state, poll_activity_origin, observation)"));

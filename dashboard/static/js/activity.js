@@ -1863,7 +1863,15 @@ function activityPacingDetail(event) {
     var name = attribute && attribute.value && attribute.value.type === 'label'
         ? activityConnectionLabel(String(attribute.value.value || ''))
         : 'A connection';
-    return started ? name + " is busy, so new announces come in a few at a time. Messages aren't affected." : name;
+    if (started) return name + " is busy, so new announces come in a few at a time. Messages aren't affected.";
+    var stopped = activityPacingStoppedAt(event);
+    return stopped ? name + ', ended at ' + stopped : name;
+}
+
+// The end row comes after a calm spell, so it gives the time pacing stopped.
+function activityPacingStoppedAt(event) {
+    var before = Number(activityUnsignedValue(event, 'stopped_before_ms'));
+    return before > 0 ? activityMinuteLabel(event.timestamp_unix_ms - before) : '';
 }
 
 function activityInterfaceLabel(code) {
@@ -1988,6 +1996,7 @@ function activityFormatAttributeValue(attribute, event) {
         return 'Remote Link teardown';
     }
     if (attribute.key === 'interface_class') return activityInterfaceLabel(value);
+    if (attribute.key === 'stopped_before_ms') return activityPacingStoppedAt(event) || String(value);
     if (type === 'label') {
         return attribute.key === 'interface' ? activityConnectionLabel(String(value || '')) : activitySafeDisplayName(value);
     }
@@ -2033,6 +2042,7 @@ function activityAttributeLabel(key) {
         rate_per_minute: 'Rate',
         rejected_count: 'Rejected',
         rtt_ms: 'Round trip',
+        stopped_before_ms: 'Ended',
         sampled_count: 'Summarized',
         source_area: 'Source',
         time_span_ms: 'Time span'
@@ -2073,7 +2083,7 @@ function activityEventFacts(event) {
         }
         var text = escapeHtml(activityFormatAttributeValue(attribute, event));
         var plain = (attribute.key === 'reason' && activityIsDeliveryEvent(event)) ||
-            attribute.key === 'interface_class' || attribute.key === 'interface';
+            attribute.key === 'interface_class' || attribute.key === 'interface' || attribute.key === 'stopped_before_ms';
         rows.push([
             activityAttributeLabel(attribute.key),
             plain ? '<span>' + text + '</span>' : '<code>' + text + '</code>'

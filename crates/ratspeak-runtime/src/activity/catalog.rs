@@ -631,8 +631,10 @@ pub enum RnsAnnounceTransition {
     IngressBurstStarted {
         connection: Option<ConnectionName>,
     },
+    /// Recorded after the calm window, so it says how long before it pacing stopped.
     IngressBurstCleared {
         connection: Option<ConnectionName>,
+        stopped_before: std::time::Duration,
     },
     Suppressed {
         reason: AnnounceSuppressionReason,
@@ -724,10 +726,24 @@ pub fn rns_announce_activity(
                 .operational_code(ActivityAttributeKey::Method, method.code())?
                 .operational_code(ActivityAttributeKey::Reason, reason.code())?;
         }
-        RnsAnnounceTransition::IngressBurstStarted { connection }
-        | RnsAnnounceTransition::IngressBurstCleared { connection } => {
+        RnsAnnounceTransition::IngressBurstStarted { connection } => {
             if let Some(connection) = connection {
                 draft = draft.local_label(ActivityAttributeKey::Interface, connection.0);
+            }
+        }
+        RnsAnnounceTransition::IngressBurstCleared {
+            connection,
+            stopped_before,
+        } => {
+            if let Some(connection) = connection {
+                draft = draft.local_label(ActivityAttributeKey::Interface, connection.0);
+            }
+            let stopped_before_ms = u64::try_from(stopped_before.as_millis()).unwrap_or(u64::MAX);
+            if stopped_before_ms > 0 {
+                draft = draft.exact(
+                    ActivityAttributeKey::StoppedBeforeMs,
+                    ExactValue::Unsigned(stopped_before_ms),
+                );
             }
         }
         RnsAnnounceTransition::Suppressed { reason } => {

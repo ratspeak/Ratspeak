@@ -726,6 +726,7 @@ mod tests {
             time: catalog::ObservationTime::new(1, 1),
             transition: catalog::RnsAnnounceTransition::IngressBurstCleared {
                 connection: Some(catalog::ConnectionName::new(name.into()).unwrap()),
+                stopped_before: std::time::Duration::from_secs(600),
             },
             interface: None,
         })
@@ -742,12 +743,18 @@ mod tests {
             .unwrap();
 
         let masked = serde_json::to_value(stored.masked()).unwrap();
+        let stopped = serde_json::json!({
+            "key": "stopped_before_ms", "value": { "type": "unsigned", "value": 600_000 }
+        });
         assert_eq!(
             masked["attributes"],
-            serde_json::json!([{ "key": "interface", "value": { "type": "label", "value": name } }])
+            serde_json::json!([
+                { "key": "interface", "value": { "type": "label", "value": name } },
+                stopped,
+            ])
         );
         let copy = serde_json::to_value(stored.safe_copy().unwrap()).unwrap();
-        assert_eq!(copy["attributes"], serde_json::json!([]));
+        assert_eq!(copy["attributes"], serde_json::json!([stopped]));
         assert_eq!(copy["kind"], "rns.announce.ingress_burst_cleared");
         assert!(
             stored

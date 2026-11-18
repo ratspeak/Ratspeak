@@ -305,6 +305,7 @@ pub enum RnsAnnounceTransition {
     },
     IngressBurstCleared {
         connection: Option<ConnectionName>,
+        stopped_before: std::time::Duration,
     },
     Suppressed {
         reason: AnnounceSuppressionReason,
@@ -339,9 +340,13 @@ pub fn rns_announce_activity(input: RnsAnnounceActivity) -> ProducerEvent {
         RnsAnnounceTransition::IngressBurstStarted { connection } => {
             catalog::RnsAnnounceTransition::IngressBurstStarted { connection }
         }
-        RnsAnnounceTransition::IngressBurstCleared { connection } => {
-            catalog::RnsAnnounceTransition::IngressBurstCleared { connection }
-        }
+        RnsAnnounceTransition::IngressBurstCleared {
+            connection,
+            stopped_before,
+        } => catalog::RnsAnnounceTransition::IngressBurstCleared {
+            connection,
+            stopped_before,
+        },
         RnsAnnounceTransition::Suppressed { reason } => {
             catalog::RnsAnnounceTransition::Suppressed { reason }
         }

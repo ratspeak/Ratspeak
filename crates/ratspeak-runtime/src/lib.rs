@@ -6616,8 +6616,9 @@ fn announce_pacing_activity(change: announce_pacing::AnnouncePacingChange) -> Pr
         Started(interface) => producer::RnsAnnounceTransition::IngressBurstStarted {
             connection: producer::ConnectionName::new(interface.name).ok(),
         },
-        Ended(interface) => producer::RnsAnnounceTransition::IngressBurstCleared {
+        Ended { interface, ago } => producer::RnsAnnounceTransition::IngressBurstCleared {
             connection: producer::ConnectionName::new(interface.name).ok(),
+            stopped_before: ago,
         },
     };
     producer::rns_announce_activity(producer::RnsAnnounceActivity {
@@ -7253,7 +7254,7 @@ async fn poll_stats_loop(
     }
 
     // Spells still open end with polling, so each has its end row.
-    for change in pacing.close_all() {
+    for change in pacing.close_all(rns_link::clock::ContinuousInstant::now()) {
         record_poll_activity(
             &state,
             runtime_activity_origin,

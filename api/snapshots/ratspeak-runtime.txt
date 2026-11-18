@@ -360,6 +360,7 @@ pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::Failed::method:
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::Failed::reason: ratspeak_runtime::activity::producer::AnnounceFailureReason
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::IngressBurstCleared
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::IngressBurstCleared::connection: core::option::Option<ratspeak_runtime::activity::producer::ConnectionName>
+pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::IngressBurstCleared::stopped_before: core::time::Duration
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::IngressBurstStarted
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::IngressBurstStarted::connection: core::option::Option<ratspeak_runtime::activity::producer::ConnectionName>
 pub ratspeak_runtime::activity::producer::RnsAnnounceTransition::Observed
@@ -579,6 +580,7 @@ pub ratspeak_runtime::activity::ActivityAttributeKey::SampledCount
 pub ratspeak_runtime::activity::ActivityAttributeKey::Session
 pub ratspeak_runtime::activity::ActivityAttributeKey::SourceArea
 pub ratspeak_runtime::activity::ActivityAttributeKey::State
+pub ratspeak_runtime::activity::ActivityAttributeKey::StoppedBeforeMs
 pub ratspeak_runtime::activity::ActivityAttributeKey::TimeSpanMs
 pub ratspeak_runtime::activity::ActivityAttributeKey::Validation
 pub enum ratspeak_runtime::activity::ActivityCaptureState

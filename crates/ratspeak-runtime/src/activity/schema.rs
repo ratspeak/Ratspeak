@@ -150,6 +150,7 @@ pub enum ActivityAttributeKey {
     Session,
     SourceArea,
     State,
+    StoppedBeforeMs,
     TimeSpanMs,
     Validation,
 }
