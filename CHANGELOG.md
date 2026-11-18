@@ -34,6 +34,7 @@ changes that materially affect how an artifact is reproduced.
 - A quick tap after sending no longer starts a voice recording.
 - On a phone, the first flick back up after scrolling to the end of Messages or Contacts scrolls, instead of needing a second try.
 - On a phone, Games fits all three games on the first screen with whole-board chess previews.
+- On a computer, switching windows no longer saves network state or delays message timeouts, and Ratspeak does less work when minimized or in the tray.
 - The Android app is about 5 MB smaller: its start-up code is built once instead of three times.
 
 ## [1.1.0] - 2026-11-15
