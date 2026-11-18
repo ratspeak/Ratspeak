@@ -2177,6 +2177,11 @@ function tryTriggerAnnounce() {
     return true;
 }
 
+var ANNOUNCE_STAMP_TOAST = 'Announce queued. It goes out once your stamp is ready.';
+function announceStampWorking() {
+    return !!(window._announceStamp && window._announceStamp.state === 'working');
+}
+
 // The originating IPC response is the single completion owner. A WebView can
 // miss a broadcast while suspending; tying this guard to a second event left
 // the visible button reset while `_announcePending` remained stuck forever.
@@ -2195,11 +2200,15 @@ function handleManualAnnounceResult(data) {
         window.dispatchEvent(new CustomEvent('ratspeak-manual-announce-result', { detail: data }));
         var alreadyQueued = data.disposition === 'already_queued' || data.disposition === 'deferred';
         if (typeof haptic === 'function') haptic(alreadyQueued ? 'light' : 'success');
-        showToast(
-            alreadyQueued ? 'Announce already queued' : 'Announce queued',
-            alreadyQueued ? 'toast-info' : 'toast-success',
-            4000
-        );
+        if (announceStampWorking()) {
+            showToast(ANNOUNCE_STAMP_TOAST, 'toast-info', 5000);
+        } else {
+            showToast(
+                alreadyQueued ? 'Announce already queued' : 'Announce queued',
+                alreadyQueued ? 'toast-info' : 'toast-success',
+                4000
+            );
+        }
         // The request is admitted by the presence coordinator. Component
         // queueing and interface-specific transmission continue asynchronously.
         if (!alreadyQueued && origin && typeof showAnnounceAnimation === 'function') {

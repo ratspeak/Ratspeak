@@ -778,6 +778,15 @@ RS.listen('ble_scan_results', function(data) {
     if (typeof bleScanFinished === 'function') bleScanFinished(data);
 });
 
+// Whether an announce's destination stamp is still being made; a queued announce waits for it.
+window._announceStamp = window._announceStamp || null;
+RS.listen('announce_stamp', function(data) {
+    if (data && data.state) window._announceStamp = data;
+});
+RS.invoke('api_startup_progress').then(function(data) {
+    if (data && data.stamp && !window._announceStamp) window._announceStamp = data.stamp;
+}).catch(function() {});
+
 // AutoInterface JoinFailed; surface the runtime failure on the matching row.
 RS.listen('auto_unavailable', function(data) {
     if (!data) return;
