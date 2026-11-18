@@ -12163,25 +12163,27 @@ fn android_ble_peer_reports_a_link_it_closes_itself() {
 }
 
 /// Reticulum 1.6.1 detaches a hub whose reply fails verification, or one that
-/// is blackholed. Ratspeak takes the request, says why on the connection's
-/// row, and attaches a saved client again after 30 s, 2 min, then 10 min.
+/// is blackholed. rns-runtime carries it out; Ratspeak says why on the
+/// connection's row, and attaches a saved client again after 30 s, 2 min,
+/// then 10 min.
 #[test]
 fn transport_detaches_reach_the_connection_row_and_come_back() {
     let root = repo_root();
     let read = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
     let detach = read("crates/ratspeak-runtime/src/interface_detach.rs");
-    assert!(detach.contains("TransportMessage::SetInterfaceControl { tx }"));
+    assert!(detach.contains("handle.subscribe_interface_detaches()"));
+    // The runtime keeps its own control channel and carries out the detach.
+    assert!(!detach.contains("SetInterfaceControl"));
+    assert!(!detach.contains("teardown_interface"));
     assert!(detach.contains(
         "Duration::from_secs(30),\n    Duration::from_secs(120),\n    Duration::from_secs(600),"
     ));
     assert!(detach.contains("DetachReason::InvalidSynthesis => Some(Self::Unverified)"));
     assert!(detach.contains("DetachReason::BlackholedTransport => Some(Self::Blocked)"));
-    // Carried out as rns-runtime does: by name, else the interface and what it spawned.
-    assert!(detach.contains("handle.detach_interface(&name)"));
-    assert!(detach.contains("rns_runtime::reticulum::teardown_interface(handle, interface_id)"));
+    assert!(detach.contains("if detach.parent_id.is_some() {"));
     assert!(detach.contains("let wait = (cause == DetachCause::Unverified).then("));
 
-    // Each network start takes the requests over once its runtime is installed.
+    // Each network start follows its runtime's detaches, from the start.
     let runtime = read("crates/ratspeak-runtime/src/lib.rs");
     let start = rust_function_block(&runtime, "init_rns_lxmf_inner");
     let installed = start.find("state.set_rns(rns_mgr)").expect("set_rns");

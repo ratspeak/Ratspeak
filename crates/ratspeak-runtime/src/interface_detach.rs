@@ -1,22 +1,19 @@
 //! Interfaces Reticulum detaches since 1.6.1: a server whose tunnel synthesis
 //! fails verification, or one whose transport identity is blackholed.
 //!
-//! Ratspeak takes the transport's detach requests, carries each out as
-//! rns-runtime does, and keeps why, for the connection's status line. A saved
-//! connection whose server failed verification is attached again from its
-//! config after 30 s, 2 min, then every 10 min; a blocked server stays off.
+//! rns-runtime carries out each detach; Ratspeak keeps why, for the
+//! connection's status line. A saved connection whose server failed
+//! verification is attached again from its config after 30 s, 2 min, then
+//! every 10 min; a blocked server stays off.
 
 use std::collections::HashMap;
 use std::sync::{Arc, MutexGuard, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rns_runtime::lifecycle::ShutdownSignal;
-use rns_runtime::reticulum::ReticulumHandle;
-use rns_transport::messages::{
-    DetachReason, InterfaceControl, InterfaceRole, InterfaceStatRpcEntry, TransportMessage,
-    TransportQuery, TransportQueryResponse,
-};
-use tokio::sync::mpsc;
+use rns_runtime::reticulum::{InterfaceDetach, ReticulumHandle};
+use rns_transport::messages::DetachReason;
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::state::AppState;
 
@@ -238,105 +235,40 @@ fn schedule(state: &Arc<AppState>, session: u64, name: &str, attempt: u32, wait:
     });
 }
 
-fn short_name(entry: &InterfaceStatRpcEntry) -> &str {
-    entry
-        .identity
-        .as_ref()
-        .map_or(entry.name.as_str(), |identity| identity.short_name.as_str())
-}
-
-/// As rns-runtime: I2P listeners and local interfaces stay.
-fn kept(entry: &InterfaceStatRpcEntry) -> bool {
-    let i2p = entry
-        .identity
-        .as_ref()
-        .is_some_and(|identity| identity.class_name == "I2PInterface");
-    let local = [
-        InterfaceRole::SharedServer,
-        InterfaceRole::LocalClient,
-        InterfaceRole::SharedInstancePeer,
-    ]
-    .iter()
-    .any(|role| role.as_str() == entry.role);
-    i2p || local
-}
-
-/// Takes the transport's detach requests for this network session, in place
-/// of rns-runtime's own handler, which then stops.
+/// Follows this network session's detaches from its start, so one made
+/// before this runs is not missed.
 pub async fn install(state: &Arc<AppState>, handle: &ReticulumHandle, shutdown: ShutdownSignal) {
-    let (tx, mut requests) = mpsc::unbounded_channel();
-    if handle
-        .transport_tx
-        .send(TransportMessage::SetInterfaceControl { tx })
-        .await
-        .is_err()
-    {
-        return;
-    }
+    let mut events = handle.subscribe_interface_detaches();
     let session = detaches(state).begin_session();
     let state = Arc::clone(state);
-    let handle = handle.clone();
     tokio::spawn(async move {
         loop {
-            let request = tokio::select! {
-                request = requests.recv() => request,
-                () = shutdown.wait() => None,
+            let event = tokio::select! {
+                event = events.recv() => event,
+                () = shutdown.wait() => return,
             };
-            match request {
-                Some(InterfaceControl::Detach {
-                    interface_id,
-                    reason,
-                }) => detach(&state, &handle, session, interface_id, reason).await,
-                Some(_) => {}
-                None => return,
+            match event {
+                Ok(detach) => detached(&state, session, &detach),
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => return,
             }
         }
     });
 }
 
-async fn detach(
-    state: &Arc<AppState>,
-    handle: &ReticulumHandle,
-    session: u64,
-    interface_id: rns_transport::messages::InterfaceId,
-    reason: DetachReason,
-) {
-    let Some(TransportQueryResponse::InterfaceStats(entries)) = handle
-        .query_transport(TransportQuery::GetInterfaceStats)
-        .await
-    else {
-        return;
-    };
-    let Some(entry) = entries.iter().find(|entry| entry.id == interface_id) else {
-        return;
-    };
-    if kept(entry) {
-        return;
-    }
-    let name = short_name(entry).to_string();
-    tracing::info!(?reason, "Reticulum detached an interface");
-    // By name, the runtime's own path; an ambiguous name stops just this one.
-    let unique = entries.iter().filter(|e| short_name(e) == name).count() == 1;
-    let detached = entry.parent_id.is_none()
-        && unique
-        && matches!(handle.detach_interface(&name).await, Ok(Some(true)));
-    if !detached {
-        for child in entries.iter().filter(|e| e.parent_id == Some(interface_id)) {
-            rns_runtime::reticulum::teardown_interface(handle, child.id).await;
-        }
-        rns_runtime::reticulum::teardown_interface(handle, interface_id).await;
-    }
+fn detached(state: &Arc<AppState>, session: u64, detach: &InterfaceDetach) {
+    tracing::info!(reason = ?detach.reason, "Reticulum detached an interface");
     // A server's accepted client reconnects on its own.
-    if entry.parent_id.is_some() {
+    if detach.parent_id.is_some() {
         return;
     }
-    let Some(cause) = DetachCause::from_reason(reason) else {
+    let Some(cause) = DetachCause::from_reason(detach.reason) else {
         return;
     };
-    let next = detaches(state).detached(session, &name, cause, Instant::now(), unix_now());
+    let next = detaches(state).detached(session, &detach.name, cause, Instant::now(), unix_now());
     state.request_poll_now();
     if let Some((attempt, wait)) = next {
-        schedule(state, session, &name, attempt, wait);
+        schedule(state, session, &detach.name, attempt, wait);
     }
 }
 
@@ -433,5 +365,70 @@ mod tests {
             DetachCause::from_reason(DetachReason::BlackholedTransport),
             Some(DetachCause::Blocked)
         );
+    }
+
+    /// The hub's reply fails verification while the network starts, before
+    /// Ratspeak follows its detaches: the row still says why, and it retries.
+    #[tokio::test]
+    async fn a_detach_while_the_network_starts_reaches_the_connection_row() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
+        let hub = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = hub.local_addr().unwrap().port();
+        let torn_down = tokio::spawn(async move {
+            let (mut stream, _) = hub.accept().await.unwrap();
+            let mut reply = rns_transport::tunnel::build_tunnel_synthesis_packet_with_ext(
+                &rns_identity::identity::Identity::new(),
+                rns_transport::tunnel::interface_hash("TCPInterface[Hub]"),
+                &rns_transport::tunnel::TunnelExt::local(true, 0.0, 0.0),
+            )
+            .unwrap();
+            reply[rns_wire::constants::HEADER_MINSIZE + 120] ^= 0x01;
+            stream
+                .write_all(&rns_interface::hdlc::frame(&reply))
+                .await
+                .unwrap();
+            let _ = stream.read_to_end(&mut Vec::new()).await;
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let config_dir = dir.path().join("rns");
+        assert!(crate::rns_config::write_config(
+            &config_dir,
+            &format!(
+                "[reticulum]\nshare_instance = No\n[interfaces]\n[[Hub]]\ntype = TCPClientInterface\nenabled = yes\ntarget_host = 127.0.0.1\ntarget_port = {port}\n"
+            ),
+        ));
+        let runtime = crate::rns::RnsManager::init_with_policy(
+            config_dir.to_str().unwrap(),
+            None,
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            rns_runtime::shared_instance::InstancePolicy::Standalone,
+        )
+        .await
+        .unwrap();
+        crate::announce_stamps::test_policy::unstamp();
+        tokio::time::timeout(Duration::from_secs(10), torn_down)
+            .await
+            .expect("Reticulum detaches the hub")
+            .unwrap();
+
+        let pool = crate::db::init_pool(dir.path()).unwrap();
+        crate::db::init_schema(&pool).unwrap();
+        let state = Arc::new(AppState::new(
+            crate::config::DashboardConfig::from_env_and_defaults(dir.path().into()),
+            pool,
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        ));
+        install(&state, &runtime.handle, runtime.shutdown.clone()).await;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while payload(&state).get("Hub").is_none() {
+            assert!(Instant::now() < deadline, "the detach reaches the row");
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(payload(&state)["Hub"]["cause"], "unverified");
+        assert!(payload(&state)["Hub"]["retry_at"].is_u64());
+
+        runtime.handle.shutdown_and_wait().await;
     }
 }
