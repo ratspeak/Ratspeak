@@ -1369,8 +1369,11 @@ function scheduleActivityRender() {
     _activityRenderScheduled = true;
     requestAnimationFrame(function() {
         _activityRenderScheduled = false;
-        renderActivityFilters();
-        renderActivityFeed();
+        // The feed lives in its view, and entering the view renders it.
+        if (typeof isViewActive !== 'function' || isViewActive('activity')) {
+            renderActivityFilters();
+            renderActivityFeed();
+        }
         updateActivityUI();
     });
 }

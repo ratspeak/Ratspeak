@@ -1,10 +1,16 @@
 //! Serialized LXMF persistence outside the live protocol-manager lock.
 
 use std::io;
-use std::time::Instant;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 use crate::lxmf::{KnownIdentitiesSnapshot, LxmfCheckpointSnapshot};
 use crate::state::AppState;
+
+/// A hub delivers announces in bursts, and each write rewrites every known
+/// identity with several fsyncs; announce paths share one write per window.
+const ANNOUNCE_PERSISTENCE_COALESCE: Duration = Duration::from_secs(10);
 
 async fn run_blocking<T, F>(reason: &'static str, artifacts: usize, work: F) -> io::Result<T>
 where
@@ -95,6 +101,43 @@ where
         manager.acknowledge_persistence_delta(&persisted);
     }
     Ok(true)
+}
+
+/// Persist announce-learned identities and router state within
+/// [`ANNOUNCE_PERSISTENCE_COALESCE`]. The session shutdown checkpoint writes
+/// whatever a pending flush has not.
+pub fn schedule_announce_persistence(state: &Arc<AppState>, router_changed: bool) {
+    if router_changed {
+        state
+            .announce_router_persistence_pending
+            .store(true, Ordering::Release);
+    }
+    if state
+        .announce_persistence_scheduled
+        .swap(true, Ordering::AcqRel)
+    {
+        return;
+    }
+    let state = Arc::clone(state);
+    tokio::spawn(async move {
+        tokio::time::sleep(ANNOUNCE_PERSISTENCE_COALESCE).await;
+        state
+            .announce_persistence_scheduled
+            .store(false, Ordering::Release);
+        let router_changed = state
+            .announce_router_persistence_pending
+            .swap(false, Ordering::AcqRel);
+        // Identity keys are written when dirty; a failed write stays dirty.
+        if let Err(error) = persist_current_delta(&state, false, router_changed, "announces").await
+        {
+            if router_changed {
+                state
+                    .announce_router_persistence_pending
+                    .store(true, Ordering::Release);
+            }
+            tracing::warn!(%error, "announce-derived LXMF persistence failed");
+        }
+    });
 }
 
 /// Persist the current periodic/shutdown checkpoint.

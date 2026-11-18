@@ -269,12 +269,11 @@ impl DownloadCoordinator {
             }
         }
         let generation = state.current_identity_session_generation();
-        let Some((identity, node, keys, has_state)) = state.lxmf.lock().ok().and_then(|manager| {
+        let Some((identity, node, has_state)) = state.lxmf.lock().ok().and_then(|manager| {
             let manager = manager.as_ref()?;
             Some((
                 manager.identity.hash,
                 manager.configured_propagation_node?,
-                manager.download_key_epoch(),
                 manager.download_state_installed(),
             ))
         }) else {
@@ -294,7 +293,9 @@ impl DownloadCoordinator {
         // A delete/reset can revoke cached haves while the database work is in
         // flight, even without switching identity or node. Capture after the
         // snapshot call, which can itself advance the revision.
-        let Some((snapshot, revision)) = state.lxmf.lock().ok().and_then(|mut manager| {
+        // The key epoch hashes every known identity and ratchet; compute it
+        // only once the gate opens, not on every LXMF tick.
+        let Some((snapshot, revision, keys)) = state.lxmf.lock().ok().and_then(|mut manager| {
             let manager = manager.as_mut()?;
             if manager.identity.hash != identity
                 || manager.configured_propagation_node != Some(node)
@@ -306,7 +307,11 @@ impl DownloadCoordinator {
             } else {
                 manager.download_suppression_snapshot()
             };
-            Some((snapshot, manager.download_state_revision()))
+            Some((
+                snapshot,
+                manager.download_state_revision(),
+                manager.download_key_epoch(),
+            ))
         }) else {
             return;
         };

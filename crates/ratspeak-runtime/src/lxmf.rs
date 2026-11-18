@@ -1517,7 +1517,8 @@ impl KnownIdentitiesSnapshot {
 /// absent: each changed remote ratchet is persisted as a per-destination delta
 /// when learned, so a checkpoint never rewrites thousands of unchanged files.
 pub struct LxmfCheckpointSnapshot {
-    known_identities: KnownIdentitiesSnapshot,
+    /// Absent when the file already holds the current revision.
+    known_identities: Option<KnownIdentitiesSnapshot>,
     router_state: RouterStateSnapshot,
     router_state_dir: PathBuf,
     node_policies: HashMap<[u8; 16], AdvertisedNodePolicy>,
@@ -1525,13 +1526,17 @@ pub struct LxmfCheckpointSnapshot {
 
 impl LxmfCheckpointSnapshot {
     pub fn persist(&self) -> std::io::Result<()> {
-        self.known_identities.persist()?;
+        if let Some(known_identities) = self.known_identities.as_ref() {
+            known_identities.persist()?;
+        }
         self.router_state.save_state(&self.router_state_dir)?;
         lxmf_core::persist::save_node_policies(&self.router_state_dir, &self.node_policies)
     }
 
     pub fn known_identities_count(&self) -> usize {
-        self.known_identities.count
+        self.known_identities
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.count)
     }
 }
 
@@ -4812,7 +4817,9 @@ impl LxmfManager {
 
     pub fn checkpoint_snapshot(&self) -> LxmfCheckpointSnapshot {
         LxmfCheckpointSnapshot {
-            known_identities: self.known_identities_snapshot(),
+            known_identities: self
+                .known_identities_dirty()
+                .then(|| self.known_identities_snapshot()),
             router_state: self.router.state_snapshot(),
             router_state_dir: self.lxmf_storage_dir.clone(),
             node_policies: self.propagation_node_policies.clone(),
@@ -4857,7 +4864,9 @@ impl LxmfManager {
     }
 
     pub fn acknowledge_checkpoint_snapshot(&mut self, snapshot: &LxmfCheckpointSnapshot) {
-        self.acknowledge_known_identities_snapshot(&snapshot.known_identities);
+        if let Some(known_identities) = snapshot.known_identities.as_ref() {
+            self.acknowledge_known_identities_snapshot(known_identities);
+        }
     }
 
     pub fn known_identities_dirty(&self) -> bool {

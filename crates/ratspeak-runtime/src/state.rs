@@ -763,6 +763,10 @@ pub struct AppState {
     /// Monotonic ticket used to discard a stale asynchronous foreground
     /// transition after a newer background/foreground edge has arrived.
     foreground_transition_generation: AtomicU64,
+    /// A coalesced announce-derived LXMF write is pending.
+    pub(crate) announce_persistence_scheduled: AtomicBool,
+    /// That pending write must include router state.
+    pub(crate) announce_router_persistence_pending: AtomicBool,
     /// Monotonic ticket used to discard stale platform connectivity callbacks.
     /// The corresponding async lock serializes interface reconciliation,
     /// persistence, and transport-policy publication as one transition.
@@ -1161,6 +1165,8 @@ impl AppState {
             is_foreground: Arc::new(AtomicBool::new(true)),
             notification_foreground: AtomicBool::new(true),
             foreground_transition_generation: AtomicU64::new(0),
+            announce_persistence_scheduled: AtomicBool::new(false),
+            announce_router_persistence_pending: AtomicBool::new(false),
             network_transition_generation: AtomicU64::new(0),
             network_transition_lock: tokio::sync::Mutex::new(()),
             foreground_changed: Arc::new(tokio::sync::Notify::new()),

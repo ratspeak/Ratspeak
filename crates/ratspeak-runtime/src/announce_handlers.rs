@@ -208,16 +208,8 @@ async fn process_delivery_announce(state: &Arc<AppState>, event: AnnounceHandler
             })
         })
         .unwrap_or((false, false));
-    if (identity_changed || router_changed)
-        && let Err(error) = crate::lxmf_persistence::persist_current_delta(
-            state,
-            identity_changed,
-            router_changed,
-            "delivery_announce",
-        )
-        .await
-    {
-        tracing::warn!(%error, "delivery announce persistence failed");
+    if identity_changed || router_changed {
+        crate::lxmf_persistence::schedule_announce_persistence(state, router_changed);
     }
 
     let iface = refresh_lxmf_route_cache_and_lookup_iface(state, event.destination_hash).await;
@@ -403,16 +395,8 @@ async fn process_propagation_announce(state: &Arc<AppState>, event: AnnounceHand
         .unwrap_or((false, false));
     // Link requests to the node recall the link cost this announce carries.
     refresh_lxmf_route_cache_and_lookup_iface(state, event.destination_hash).await;
-    if (identity_changed || router_changed)
-        && let Err(error) = crate::lxmf_persistence::persist_current_delta(
-            state,
-            identity_changed,
-            router_changed,
-            "propagation_announce",
-        )
-        .await
-    {
-        tracing::warn!(%error, "propagation announce persistence failed");
+    if identity_changed || router_changed {
+        crate::lxmf_persistence::schedule_announce_persistence(state, router_changed);
     }
 
     let inserted = if let (Some(app_data), Ok(mut registry)) = (

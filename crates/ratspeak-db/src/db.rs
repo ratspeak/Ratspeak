@@ -153,6 +153,8 @@ const IDENTITY_SELECT_COLUMNS: &str = "hash,
     propagation_auto_favor_static";
 
 const POOL_MAX_SIZE: u32 = 32;
+/// Connections kept open; the rest open on demand and close when idle.
+const POOL_MIN_IDLE: u32 = 4;
 
 /// Run sync `db::*` work on the blocking pool. Wrap multi-statement critical
 /// sections in a single call so they share one `Connection`.
@@ -208,7 +210,10 @@ pub fn init_pool(data_dir: &Path) -> Result<DbPool, Box<dyn std::error::Error + 
                  PRAGMA synchronous=NORMAL;",
         )
     });
-    let pool = Pool::builder().max_size(POOL_MAX_SIZE).build(manager)?;
+    let pool = Pool::builder()
+        .max_size(POOL_MAX_SIZE)
+        .min_idle(Some(POOL_MIN_IDLE))
+        .build(manager)?;
 
     tracing::info!("Database pool initialized");
     Ok(pool)
@@ -2847,7 +2852,12 @@ pub fn fill_unnamed_contact_names(
         };
         rows.filter_map(Result::ok).collect()
     };
-    if unnamed.is_empty() {
+    // Runs every stats poll: take the write lock only when an announce names one.
+    let matched: Vec<_> = names
+        .iter()
+        .filter(|(dest, _)| unnamed.contains(dest))
+        .collect();
+    if matched.is_empty() {
         return false;
     }
     let Some(tx) = conn
@@ -2861,7 +2871,7 @@ pub fn fill_unnamed_contact_names(
         .unwrap_or_default()
         .as_secs_f64();
     let mut changed = false;
-    for (dest_hash, name) in names.iter().filter(|(dest, _)| unnamed.contains(dest)) {
+    for (dest_hash, name) in matched {
         changed |= tx
             .execute(
                 "UPDATE contacts SET display_name = ?1, last_seen = ?4

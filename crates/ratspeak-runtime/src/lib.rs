@@ -6910,22 +6910,7 @@ async fn poll_stats_loop(
                         .collect();
                 }
                 if identities_changed || router_changed {
-                    let persistence_state = state.clone();
-                    tokio::spawn(async move {
-                        if let Err(error) = crate::lxmf_persistence::persist_current_delta(
-                            &persistence_state,
-                            identities_changed,
-                            router_changed,
-                            "announce_ingress",
-                        )
-                        .await
-                        {
-                            tracing::warn!(
-                                %error,
-                                "announce-derived LXMF persistence failed"
-                            );
-                        }
-                    });
+                    crate::lxmf_persistence::schedule_announce_persistence(&state, router_changed);
                 }
 
                 if let Ok(mut history) = state.announce_history.write() {

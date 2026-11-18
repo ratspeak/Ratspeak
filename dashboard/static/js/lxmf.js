@@ -6553,24 +6553,31 @@ RS.listen('lxmf_step', function(data) {
 });
 
 RS.listen('lxmf_delivery_progress', function(data) {
+    var changed = false;
     if (data.client_msg_id && data.msg_id) {
         for (var ri = 0; ri < lxmfConversation.length; ri++) {
             if (lxmfConversation[ri].id === data.client_msg_id) {
                 lxmfConversation[ri].id = data.msg_id;
+                changed = true;
                 break;
             }
         }
         _flushPendingLxmfCancel(data.client_msg_id, data.msg_id);
     }
-    var changed = false;
     lxmfConversation.forEach(function(msg) {
         if (data.msg_id && msg.id === data.msg_id) {
+            var shown = function() {
+                return [msg.delivery_progress, msg.delivery_link_id, msg.delivery_representation,
+                    msg.delivery_method, msg.state, msg.copy_sent].join('|');
+            };
+            var before = shown();
             if (typeof data.progress === 'number') msg.delivery_progress = data.progress;
             if (data.link_id) msg.delivery_link_id = data.link_id;
             if (data.representation) msg.delivery_representation = data.representation;
             if (data.method) msg.delivery_method = data.method;
             _moveMessageOnItsWay(msg, data.step);
-            changed = true;
+            // Most progress events repeat what the transcript already shows.
+            if (shown() !== before) changed = true;
         }
     });
     if (changed) {

@@ -1885,6 +1885,7 @@ pub async fn ratspeak_runtime::lxmf_persistence::persist_current_checkpoint(&rat
 pub async fn ratspeak_runtime::lxmf_persistence::persist_current_delta(&ratspeak_runtime::state::AppState, bool, bool, &'static str) -> core::io::error::Result<bool>
 pub async fn ratspeak_runtime::lxmf_persistence::persist_current_known_identities_under_owner(&ratspeak_runtime::state::AppState, &tokio::sync::mutex::MutexGuard<'_, ()>, &'static str) -> core::io::error::Result<bool>
 pub async fn ratspeak_runtime::lxmf_persistence::persist_known_identities_under_owner(&tokio::sync::mutex::MutexGuard<'_, ()>, ratspeak_runtime::lxmf::KnownIdentitiesSnapshot, &'static str) -> core::io::error::Result<ratspeak_runtime::lxmf::KnownIdentitiesSnapshot>
+pub fn ratspeak_runtime::lxmf_persistence::schedule_announce_persistence(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, bool)
 pub mod ratspeak_runtime::messaging
 pub fn ratspeak_runtime::messaging::broadcast_conversations(alloc::sync::Arc<ratspeak_runtime::state::AppState>)
 pub async fn ratspeak_runtime::messaging::broadcast_conversations_now(&ratspeak_runtime::state::AppState)
