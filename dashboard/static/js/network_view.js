@@ -254,15 +254,20 @@
         else if (pct === h.pct) h.next = pct;
         else if (pct !== h.next) { h.next = pct; h.since = now; }
         else if (now - h.since >= 10000) h.pct = pct;
-        var charging = h.state === 'charging' || h.state === 'charged';
-        return { pct: h.pct, state: h.state, charging: charging, low: !charging && h.pct <= 20 };
+        var charging = h.state === 'charging' || h.state === 'charged', low = !charging && h.pct <= 20;
+        // Bars: none at 20% or less, one to 69%, two from 70%. Colour: red, orange to 49%, green.
+        return { pct: h.pct, state: h.state, charging: charging, low: low,
+            glyph: charging ? 'battery-charging' : h.pct <= 20 ? 'battery' : h.pct < 70 ? 'battery-half' : 'battery-full',
+            tone: low ? 'low' : charging ? 'charging' : h.pct < 50 ? 'mid' : 'high' };
     }
     function battWords(b) { return b.pct + '%' + (b.state === 'charging' ? ', charging' : b.state === 'charged' ? ', charged' : b.low ? ', low' : ''); }
     function rowLabel(c) { return rowName(c) + ', ' + rowStatus(c) + (c.batt ? ', battery ' + battWords(c.batt) : '') + '. Show details'; }
-    function battTrail(c) {
+    // On a row the button's label says it; beside the detail title it labels itself.
+    function battTrail(c, labelled) {
         var b = c.batt;
-        return b ? '<span class="ui-row-trail' + (b.low ? ' ui-row-trail--danger' : '') + '" data-batt="' + esc(c.id) + '" aria-hidden="true" title="Battery ' + esc(battWords(b)) + '">' +
-            '<span class="n">' + b.pct + '%</span>' + icon(b.charging ? 'battery-charging' : 'battery') + '</span>' : '';
+        return b ? '<span class="ui-row-trail batt batt--' + b.tone + '" data-batt="' + esc(c.id) + '"' +
+            (labelled ? ' role="img" aria-label="Battery ' + esc(battWords(b)) + '"' : ' aria-hidden="true"') + ' title="Battery ' + esc(battWords(b)) + '">' +
+            '<span class="n" aria-hidden="true">' + b.pct + '%</span>' + icon(b.glyph) + '</span>' : '';
     }
     function crow(c, M) {
         var tone = c.status === 'up' ? 'online' : c.note ? 'warning' : (c.status === 'paused' || c.status === 'off') ? '' : 'warning';
@@ -410,7 +415,6 @@
         if (c.kind === 'host' && c.status === 'up' && c.clients != null) f.push(['Connected clients', esc(String(c.clients))]);
         if (c.kind === 'lora' && radioMhz(i)) f.push(['Frequency', radioMhz(i)]);
         if (c.kind === 'lora' && radioVia(i)) f.push(['Connected by', radioVia(i)]);
-        if (c.batt) f.push(['Battery', '<span data-batt-fact="' + esc(c.id) + '">' + esc(battWords(c.batt)) + '</span>']);
         if (c.kind === 'host' && i.listen_port) f.push(['Port', esc(i.listen_port)]);
         if (c.kind === 'host') { var nn = typeof _ifaceIfacNetworkName === 'function' ? _ifaceIfacNetworkName(i) : (i.network_name || ''); f.push(['Network name', nn ? esc(nn) : 'None']); }
         if (c.joined) f.push(['Added by', 'Join automatically']);
@@ -429,7 +433,8 @@
         if (c.kind === 'local') acts.push(btn('Options', { act: 'op', attrs: ' data-op="options" data-id="' + esc(c.id) + '"' }));
         // N9: plain Disconnect closes the row; N15: Local Network gets a plain Turn off.
         if (!c.scanning) acts.push(btn(leaveWord(c), { act: 'op', cls: 'net-push' + (c.kind === 'local' ? '' : ' ui-btn--danger'), attrs: ' data-op="leave" data-id="' + esc(c.id) + '" aria-label="' + leaveWord(c) + ' ' + esc(rowName(c)) + '"' }));
-        return '<div class="net-detail"><div class="net-dhead">' + tile(c.kind, false, true) + '<div class="net-dhead-text"><h3 class="ui-detail-title">' + esc(rowName(c)) + '</h3>' +
+        return '<div class="net-detail"><div class="net-dhead">' + tile(c.kind, false, true) + '<div class="net-dhead-text">' +
+                '<div class="net-dtitle"><h3 class="ui-detail-title">' + esc(rowName(c)) + '</h3>' + battTrail(c, true) + '</div>' +
                 '<p class="net-dsub">' + KIND[c.kind].label + (sub(c) ? ' · ' + esc(sub(c)) : '') + '</p></div></div>' +
             '<p class="ui-status net-dstatus">' + st + '</p>' +
             (c.kind === 'ble' ? '' : '<div class="net-io2"><div class="ui-well"><span>Sent</span><b>' + bytes(c.tx) + '</b></div><div class="ui-well"><span>Received</span><b>' + bytes(c.rx) + '</b></div></div>') +
@@ -715,7 +720,7 @@
     // ------------------------------------------------------------------ render and update
     var root = null, layer = null, mapObs = null, lastSig = '';
     function signature(M) {
-        return JSON.stringify([M.phone, M.conns.map(function(c) { return [c.id, c.status, c.name, c.health, c.note, c.peers, c.clients, c.batt ? [c.batt.charging, c.batt.low] : 0]; }), M.pausedAll, M.life.paused_count, M.ble.on, M.ble.starting,
+        return JSON.stringify([M.phone, M.conns.map(function(c) { return [c.id, c.status, c.name, c.health, c.note, c.peers, c.clients, c.batt ? [c.batt.glyph, c.batt.tone] : 0]; }), M.pausedAll, M.life.paused_count, M.ble.on, M.ble.starting,
             M.ble.duration, Math.ceil((M.ble.expiresAt * 1000 - Date.now()) / MIN), M.disc.on, M.disc.busy, M.disc.entries.length, M.disc.settings.autojoin, NV.sel, NV.view, NV.dfilter, NV.older,
             NV.moreOpen, NV.joinOpen, NV.mapCollapsed, NV.announcing, NV.setupFor, NV.internetOpen, NV.waysCollapsed.join(), NV.connectedOnce, live(M).length > 0, M.disc.entries.map(function(e) { return [e.id, e.joined, e.added, e.status]; })]);
     }
@@ -751,19 +756,17 @@
         set('[data-live="announce"]', M.lastAnnounce ? ago(Date.now() - M.lastAnnounce) : '—');
         var s = root.querySelector('[data-spark="ribbon"]');
         if (s) s.innerHTML = spark(NV.hist, 600, 34);
-        // Battery percent and words change in place; the glyph and low colour are in the signature.
+        // Battery percent and words change in place; the glyph and colour are in the signature.
         M.conns.forEach(function(c) {
             if (!c.batt) return;
-            root.querySelectorAll('[data-batt],[data-batt-fact]').forEach(function(el) {
-                if (el.getAttribute('data-batt') === c.id) {
-                    var n = el.querySelector('.n'), t = c.batt.pct + '%', title = 'Battery ' + battWords(c.batt);
-                    if (n && n.textContent !== t) n.textContent = t;
-                    if (el.getAttribute('title') !== title) el.setAttribute('title', title);
-                    var row = el.closest('.ui-row');
-                    if (row && row.getAttribute('aria-label') !== rowLabel(c)) row.setAttribute('aria-label', rowLabel(c));
-                } else if (el.getAttribute('data-batt-fact') === c.id && el.textContent !== battWords(c.batt)) {
-                    el.textContent = battWords(c.batt);
-                }
+            root.querySelectorAll('[data-batt]').forEach(function(el) {
+                if (el.getAttribute('data-batt') !== c.id) return;
+                var n = el.querySelector('.n'), t = c.batt.pct + '%', title = 'Battery ' + battWords(c.batt);
+                if (n && n.textContent !== t) n.textContent = t;
+                if (el.getAttribute('title') !== title) el.setAttribute('title', title);
+                if (el.getAttribute('role') === 'img' && el.getAttribute('aria-label') !== title) el.setAttribute('aria-label', title);
+                var row = el.closest('.ui-row');
+                if (row && row.getAttribute('aria-label') !== rowLabel(c)) row.setAttribute('aria-label', rowLabel(c));
             });
         });
     }

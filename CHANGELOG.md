@@ -10,7 +10,7 @@ changes that materially affect how an artifact is reproduced.
 - **Message titles**: turn on Message titles in Settings › General to add a bold Title line above your message. A message that arrives with a title shows it in bold above the text.
 - **Shut down**: at the bottom of Settings (not on iPhone or iPad), it stops all network and Ratspeak services and closes the app, Android's background service included.
 - **Tray icon** (Linux): Settings › General › Window turns the tray icon on or off at once. With it off, closing the window quits.
-- **Radio battery**: a connected radio that reports its battery shows the percent on its row in Network › Radio, with a bolt while charging, and Battery in its details. It turns red at 20% or less.
+- **Radio battery**: a connected radio that reports its battery shows its percent and a battery on its row in Network › Radio and beside its name in its details. The battery fills with one bar above 20% and two from 70%, shows a bolt while charging, and is red at 20% or less, orange to 49%, and green above.
 - **Mute a conversation**: hold a conversation (or right-click it on a computer) for Mute and Delete…. A muted conversation's messages still arrive, without notifications, and it leaves the unread count on the Messages tab and the app icon. Swiping a conversation no longer deletes it.
 
 ### Fixed and improved

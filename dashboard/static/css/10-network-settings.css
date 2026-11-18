@@ -347,6 +347,10 @@
 .net-dhead { display: flex; align-items: center; gap: 12px; margin: 4px 0 16px; }
 .net-dhead-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .net-dhead-text .ui-detail-title { overflow-wrap: anywhere; }
+.net-dtitle { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.net-dtitle .ui-detail-title { min-width: 0; }
+.net-dtitle .ui-row-trail { margin-left: 0; padding-left: 0; font-size: var(--text-sm); }
+.net-dtitle .ui-row-trail.batt .ui-ico { width: 20px; height: 20px; }
 .net-dsub { margin: 0; font-size: var(--text-sm); color: var(--text-secondary); line-height: 1.4; }
 .net-io2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
 .net-io2 .ui-well { display: flex; flex-direction: column; gap: 2px; padding: 12px 16px; }

@@ -101,6 +101,8 @@ function identityAvatar(hashValue, size) {
         check: '<polyline points="20 6 9 17 4 12"/>',
         more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
         battery: '<rect x="1" y="6" width="18" height="12" rx="2"/><line x1="23" y1="13" x2="23" y2="11"/>',
+        'battery-half': '<rect x="1" y="6" width="18" height="12" rx="2"/><line x1="23" y1="13" x2="23" y2="11"/><rect class="bar" x="4" y="9" width="5.25" height="6" rx="1"/>',
+        'battery-full': '<rect x="1" y="6" width="18" height="12" rx="2"/><line x1="23" y1="13" x2="23" y2="11"/><rect class="bar" x="4" y="9" width="5.25" height="6" rx="1"/><rect class="bar" x="10.75" y="9" width="5.25" height="6" rx="1"/>',
         'battery-charging': '<path d="M5 18H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h3.19M15 6h2a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-3.19"/><line x1="23" y1="13" x2="23" y2="11"/><polyline points="11 6 7 12 13 12 9 18"/>',
         'chevron-down': '<polyline points="6 9 12 15 18 9"/>',
         'chevron-right': '<polyline points="9 18 15 12 9 6"/>',

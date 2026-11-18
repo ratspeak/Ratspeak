@@ -726,10 +726,27 @@
     --danger-ink: color-mix(in srgb, var(--status-error) 50%, var(--text-primary));
 }
 
+/* Battery levels: red at 20% or less, orange to 49%, green above. Orange is fixed: palette
+   yellows vanish on light surfaces and mix to brown. */
+:root {
+    --batt-low: var(--status-error-fg);
+    --batt-mid: #C85D00;
+    --batt-high: var(--status-online-fg);
+}
+
+[data-theme="dark"] {
+    --batt-low: var(--status-error);
+    --batt-mid: #FAA453;
+    --batt-high: var(--status-online);
+}
+
 /* Mirrors [data-theme="dark"] above for the pre-JS paint. */
 @media (prefers-color-scheme: dark) {
     :root:not([data-theme]) {
         --accent-ink: color-mix(in srgb, var(--accent) 50%, var(--text-primary));
         --danger-ink: color-mix(in srgb, var(--status-error) 50%, var(--text-primary));
+        --batt-low: var(--status-error);
+        --batt-mid: #FAA453;
+        --batt-high: var(--status-online);
     }
 }

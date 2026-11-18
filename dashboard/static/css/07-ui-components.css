@@ -545,7 +545,13 @@ button.ui-prop, a.ui-prop { cursor: pointer; text-decoration: none; }
 .ui-row-trail .ui-ico { width: 16px; height: 16px; flex: none; }
 /* On the status line it matches the status text. */
 .ui-row-sub > .ui-row-trail { font-size: inherit; }
-.ui-row .ui-row-trail.ui-row-trail--danger { color: var(--danger-ink); }
+/* A battery: the glyph's bars and colour show the level; the percent stays muted unless low. */
+.ui-row-trail.batt .ui-ico { width: 18px; height: 18px; }
+.batt .bar { fill: currentColor; stroke: none; }
+.ui-row-trail.batt.batt--low { color: var(--batt-low); font-weight: 600; }
+.ui-row-trail.batt.batt--mid { color: var(--batt-mid); }
+.ui-row-trail.batt:is(.batt--high, .batt--charging) { color: var(--batt-high); }
+.batt:is(.batt--mid, .batt--high, .batt--charging) .n { color: var(--text-muted); }
 /* An unnamed row: the short address is the title. */
 .ui-row.is-unnamed .ui-row-title { font-family: var(--font-mono); font-size: var(--text-sm); font-weight: 400; color: var(--text-secondary); }
 
