@@ -192,10 +192,14 @@
                         <h1 class="solo-title" id="setup-start-title" tabindex="-1">Starting Ratspeak</h1>
                         <p class="solo-lead" id="setup-start-lead">Getting everything ready. This takes a moment.</p>
                         <ol class="progress-steps is-running" id="setup-start-steps">
-                            <li class="progress-step" id="setup-start-identity"><span class="progress-step-dot" aria-hidden="true"></span><span class="progress-step-label">Importing identity</span><span class="progress-step-meta"></span></li>
+                            <li class="progress-step" id="setup-start-identity"><span class="progress-step-dot" aria-hidden="true"></span><span class="progress-step-label">Loading your identity</span><span class="progress-step-meta"></span></li>
                             <li class="progress-step" id="setup-start-network"><span class="progress-step-dot" aria-hidden="true"></span><span class="progress-step-label">Starting the network</span><span class="progress-step-meta"></span></li>
-                            <li class="progress-step" id="setup-start-nest"><span class="progress-step-dot" aria-hidden="true"></span><span class="progress-step-label">Cleaning up the rat’s nest</span><span class="progress-step-meta"></span></li>
+                            <li class="progress-step" id="setup-start-stamp"><span class="progress-step-dot" aria-hidden="true"></span><span class="progress-step-label">Making your announce stamp</span><span class="progress-step-meta"></span></li>
                         </ol>
+                        <div class="solo-actions" id="setup-start-wait" hidden>
+                            <button type="button" class="ui-btn ui-btn--primary ui-btn--lg ui-btn--block" id="setup-stamp-continue">Continue</button>
+                        </div>
+                        <p class="solo-foot" id="setup-start-wait-note" hidden>You can continue. The stamp finishes in the background, and your first announce goes out when it’s done.</p>
                         <div class="solo-actions" id="setup-start-actions" hidden>
                             <button type="button" class="ui-btn ui-btn--primary ui-btn--lg ui-btn--block" id="setup-retry-btn">Try again</button>
                             <button type="button" class="ui-link" id="setup-copy-details-btn">Copy details</button>

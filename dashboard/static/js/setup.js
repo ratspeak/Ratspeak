@@ -7,6 +7,9 @@ var setupRecoveryMnemonic = '';
 var SETUP_PROGRESS_HOLD_MS = 900;
 var SETUP_START_POLL_MS = 150;
 var SETUP_START_GIVE_UP_MS = 60000;
+// The announce stamp shows its seconds from this long, and Continue from this long, after its row starts.
+var SETUP_STAMP_SECONDS_MS = 2000;
+var SETUP_STAMP_SLOW_MS = 3000;
 
 // The app asks for notification permission once per install by itself:
 // during first run, or on the first launch of an install that predates the
@@ -221,9 +224,11 @@ function renderSetupAddress(hash) {
 
 // Startup timing rule. The steps run in the runtime's order and each ticks only
 // when it really completes: the identity is loaded once the stage reaches "rns",
-// and the network is up at "ready". The playful step then holds until
-// SETUP_PROGRESS_HOLD_MS after the screen appeared, and adds nothing when the
-// work took longer.
+// the network is up at "ready", and the announce stamp once the runtime says it
+// is made. The stamp row holds until SETUP_PROGRESS_HOLD_MS after the screen
+// appeared, and adds nothing when the work took longer. A stamp still being made
+// SETUP_STAMP_SLOW_MS after its row started offers Continue; it then finishes in
+// the background.
 var SETUP_START_STAGE_RANK = { lxmf: 1, rns: 2, ready: 3 };
 
 function createSetupStartTimeline(shownAt) {
@@ -231,20 +236,24 @@ function createSetupStartTimeline(shownAt) {
         shownAt: shownAt,
         identity: 'active',
         network: 'pending',
-        nest: 'pending',
+        stamp: 'pending',
+        stampAt: null,
+        stampMade: false,
         leaveAt: null,
+        slow: false,
         finished: false,
         failed: null
     };
 }
 
-function advanceSetupStartTimeline(t, stage, now) {
+// stampState is the runtime's: "working" while the stamp is still being made.
+function advanceSetupStartTimeline(t, stage, now, stampState) {
     if (t.finished || t.failed) return t;
     if (stage === 'error') {
         // The step that was running stops; the steps after it stay pending.
         t.failed = t.network === 'active' ? 'network' : 'identity';
         t[t.failed] = 'failed';
-        t.nest = 'pending';
+        t.stamp = 'pending';
         return t;
     }
     var rank = SETUP_START_STAGE_RANK[stage] || 0;
@@ -254,20 +263,32 @@ function advanceSetupStartTimeline(t, stage, now) {
     }
     if (rank >= 3) {
         t.network = 'done';
-        if (t.nest === 'pending') {
-            t.nest = 'active';
+        if (t.stamp === 'pending') {
+            t.stamp = 'active';
+            t.stampAt = now;
             t.leaveAt = Math.max(now, t.shownAt + SETUP_PROGRESS_HOLD_MS);
         }
+        t.stampMade = stampState !== 'working';
     }
     return tickSetupStartTimeline(t, now);
 }
 
 function tickSetupStartTimeline(t, now) {
-    if (t.nest === 'active' && t.leaveAt !== null && now >= t.leaveAt) {
-        t.nest = 'done';
+    if (t.stamp !== 'active') return t;
+    if (t.stampMade && now >= t.leaveAt) {
+        t.stamp = 'done';
+        t.slow = false;
         t.finished = true;
+    } else if (!t.stampMade && now - t.stampAt >= SETUP_STAMP_SLOW_MS) {
+        t.slow = true;
     }
     return t;
+}
+
+// Whole seconds waited on the stamp, once there are enough to be worth saying.
+function setupStampSeconds(t, now) {
+    if (t.stamp !== 'active' || t.stampMade || now - t.stampAt < SETUP_STAMP_SECONDS_MS) return '';
+    return Math.floor((now - t.stampAt) / 1000) + ' s';
 }
 
 function setupStartFailureLead(step, detail) {
@@ -286,24 +307,42 @@ function setupStartFailureLead(step, detail) {
 var _setupStartRun = null;
 var _setupStartDetail = '';
 var _setupStartVisibleAt = 0;
+var _setupStartIdentityLabel = 'Loading your identity';
 
-function renderSetupStart(t) {
+var SETUP_START_LEAD = 'Getting everything ready. This takes a moment.';
+var SETUP_STAMP_SLOW_LEAD = 'Almost ready. Your stamp is taking a little longer on this device.';
+var SETUP_STAMP_SLOW_NOTE = 'You can continue. The stamp finishes in the background, and your first announce goes out when it’s done.';
+
+function renderSetupStart(t, now) {
     setSetupProgressStep('setup-start-identity', t.identity);
     setSetupProgressStep('setup-start-network', t.network);
-    setSetupProgressStep('setup-start-nest', t.nest);
+    setSetupProgressStep('setup-start-stamp', t.stamp);
+    var seconds = setupStampSeconds(t, now || Date.now());
+    var stampMeta = document.querySelector('#setup-start-stamp .progress-step-meta');
+    if (stampMeta && seconds) stampMeta.textContent = seconds;
     var steps = document.getElementById('setup-start-steps');
     if (steps) steps.classList.toggle('is-running', !t.failed);
+    var slow = !!t.slow && !t.failed;
+    var lead = document.getElementById('setup-start-lead');
+    if (lead && !t.failed) lead.textContent = slow ? SETUP_STAMP_SLOW_LEAD : SETUP_START_LEAD;
+    var wait = document.getElementById('setup-start-wait');
+    if (wait) wait.hidden = !slow;
+    var note = document.getElementById('setup-start-wait-note');
+    if (note) note.hidden = !slow;
     var done = [];
-    if (t.identity === 'done') done.push('Importing identity: done.');
+    if (t.identity === 'done') done.push(_setupStartIdentityLabel + ': done.');
     if (t.network === 'done') done.push('Starting the network: done.');
-    announceSetupProgress('setup-start-live', done.join(' '));
+    if (t.stamp === 'done') done.push('Making your announce stamp: done.');
+    announceSetupProgress('setup-start-live', slow ? SETUP_STAMP_SLOW_LEAD + ' You can continue.' : done.join(' '));
 }
 
 function resetSetupStartScreen() {
     var title = document.getElementById('setup-start-title');
     if (title) title.textContent = 'Starting Ratspeak';
     var lead = document.getElementById('setup-start-lead');
-    if (lead) lead.textContent = 'Getting everything ready. This takes a moment.';
+    if (lead) lead.textContent = SETUP_START_LEAD;
+    var label = document.querySelector('#setup-start-identity .progress-step-label');
+    if (label) label.textContent = _setupStartIdentityLabel;
     var actions = document.getElementById('setup-start-actions');
     if (actions) actions.hidden = true;
     announceSetupProgress('setup-start-alert', '');
@@ -311,8 +350,10 @@ function resetSetupStartScreen() {
     renderSetupStart(createSetupStartTimeline(Date.now()));
 }
 
-function showSetupConnectingStep() {
+// creating: a new identity; otherwise one restored, or already on this device.
+function showSetupConnectingStep(creating) {
     needsSetup = false;
+    _setupStartIdentityLabel = creating ? 'Creating your identity' : 'Loading your identity';
     resetSetupStartScreen();
     var step = document.getElementById('setup-step-connecting');
     var from = visibleSetupStep();
@@ -339,7 +380,7 @@ function failSetupStart(t) {
     RS.invoke('api_network_ownership').catch(function() { return null; }).then(function(status) {
         var networkError = status && status.error ? String(status.error) : '';
         _setupStartDetail = 'Ratspeak couldn’t start.\nStep: ' +
-            (t.failed === 'identity' ? 'Importing identity' : 'Starting the network') +
+            (t.failed === 'identity' ? _setupStartIdentityLabel : 'Starting the network') +
             '\nStartup stage: error' + (networkError ? '\nNetwork: ' + networkError : '');
         var title = document.getElementById('setup-start-title');
         if (title) title.textContent = 'Ratspeak couldn’t start';
@@ -371,10 +412,10 @@ function runConnectingProgress() {
         if (_setupStartRun !== run) return;
         var now = Date.now();
         tickSetupStartTimeline(t, now);
-        renderSetupStart(t);
+        renderSetupStart(t, now);
         if (t.finished) { finishSetupStart(); return; }
-        if (t.nest === 'active') { schedule(settle, Math.max(0, t.leaveAt - now)); return; }
-        // A start that never reports opens the app, as before.
+        if (t.stamp === 'active' && t.stampMade) { schedule(settle, Math.max(0, t.leaveAt - now)); return; }
+        // A start that never reports opens the app, as before; a stamp still being made finishes in the background.
         if (now - t.shownAt >= SETUP_START_GIVE_UP_MS) { finishSetupStart(); return; }
         schedule(poll, SETUP_START_POLL_MS);
     }
@@ -390,7 +431,7 @@ function runConnectingProgress() {
                 if (typeof showHwUnlock === 'function') showHwUnlock(data.hw_locked, data.hw_locked_kind);
                 return;
             }
-            advanceSetupStartTimeline(t, data && data.stage, Date.now());
+            advanceSetupStartTimeline(t, data && data.stage, Date.now(), data && data.stamp && data.stamp.state);
             if (t.failed) { renderSetupStart(t); failSetupStart(t); return; }
             settle();
         }).catch(function() {
@@ -634,7 +675,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
             RS.invoke('api_setup_complete', { args: { display_name: displayName || '' } })
             .then(function() {
-                showSetupConnectingStep();
+                showSetupConnectingStep(true);
                 restartSetupCore();
             })
             .catch(function() {
@@ -666,6 +707,9 @@ document.addEventListener('DOMContentLoaded', function() {
             RS.invoke('api_setup_restart').catch(function() {}).then(runConnectingProgress);
         });
     }
+
+    var stampContinue = document.getElementById('setup-stamp-continue');
+    if (stampContinue) stampContinue.addEventListener('click', finishSetupStart);
 
     var copyDetailsBtn = document.getElementById('setup-copy-details-btn');
     if (copyDetailsBtn) {
