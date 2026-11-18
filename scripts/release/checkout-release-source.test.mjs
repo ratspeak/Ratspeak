@@ -26,14 +26,15 @@ function commit(directory, message) {
   return git(directory, "rev-parse", "HEAD");
 }
 
+// The fixture release is later than any real predecessor it borrows from the dependency set.
 function fixture(directory) {
   const set = structuredClone(loadDependencySet());
-  set.product.displayVersion = "1.0.99";
-  set.product.marketingVersion = "1.0.99";
+  set.product.displayVersion = "99.0.0";
+  set.product.marketingVersion = "99.0.0";
   const localSources = join(directory, "mirrors");
   mkdirSync(localSources);
   for (const component of set.components) {
-    component.integrationTag = "ratspeak-v1.0.99";
+    component.integrationTag = "ratspeak-v99.0.0";
     const source = join(localSources, component.name);
     initialize(source);
     writeFileSync(join(source, "Cargo.toml"), `[${component.id === "lrgp" ? "package" : "workspace.package"}]\nversion = "${component.version}"\n`);
@@ -53,13 +54,13 @@ function fixture(directory) {
   mkdirSync(join(productCheckout, "release"));
   mkdirSync(join(productCheckout, "src-tauri"));
   writeFileSync(join(productCheckout, "release/dependency-set.json"), JSON.stringify(set));
-  writeFileSync(join(productCheckout, "VERSION"), "1.0.99\n");
+  writeFileSync(join(productCheckout, "VERSION"), "99.0.0\n");
   writeFileSync(join(productCheckout, "Cargo.lock"), "# fixture workspace lock\n");
   writeFileSync(join(productCheckout, "src-tauri/Cargo.lock"), "# fixture application lock\n");
   commit(productCheckout, "product release");
-  git(productCheckout, "tag", "-a", "v1.0.99", "-m", "product");
+  git(productCheckout, "tag", "-a", "v99.0.0", "-m", "product");
   const destination = join(directory, "source");
-  return { set, productCheckout, options: { tag: "v1.0.99", destination, localSources } };
+  return { set, productCheckout, options: { tag: "v99.0.0", destination, localSources } };
 }
 
 test("reconstructs the exact graph despite stale standalone tags, and reuses pristine checkouts", () => {
@@ -103,10 +104,10 @@ test("exact product checkout can infer its release, but a later branch tip is re
   withTemporaryDirectory((directory) => {
     const { productCheckout, options } = fixture(directory);
     const result = checkoutReleaseSource({ ...options, tag: undefined, productCheckout, plan: true });
-    assert.equal(result.releaseTag, "v1.0.99");
+    assert.equal(result.releaseTag, "v99.0.0");
     writeFileSync(join(productCheckout, "later.txt"), "unreleased work\n");
     commit(productCheckout, "later work");
-    assert.throws(() => checkoutReleaseSource({ ...options, productCheckout }), /must be exactly at v1.0.99/);
+    assert.throws(() => checkoutReleaseSource({ ...options, productCheckout }), /must be exactly at v99.0.0/);
     assert.equal(existsSync(options.destination), false);
   });
 });
