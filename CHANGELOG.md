@@ -7,42 +7,30 @@ changes that materially affect how an artifact is reproduced.
 
 ### Added
 
-- **Message titles**: turn on Message titles in Settings › General to add a bold Title line above your message. A message that arrives with a title shows it in bold above the text.
-- **Shut down**: at the bottom of Settings (not on iPhone or iPad), it stops all network and Ratspeak services and closes the app, Android's background service included.
-- **Tray icon** (Linux): Settings › General › Window turns the tray icon on or off at once. With it off, closing the window quits.
-- **Radio battery**: a connected radio that reports its battery shows its percent and a battery on its row in Network › Radio and beside its name in its details. The battery fills with one bar above 20% and two from 70%, shows a bolt while charging, and is red at 20% or less, orange to 49%, and green above.
-- **Mute a conversation**: hold a conversation (or right-click it on a computer) for Mute and Delete…. A muted conversation's messages still arrive, without notifications, and it leaves the unread count on the Messages tab and the app icon. Swiping a conversation no longer deletes it.
+- **Message titles**: turn on Message titles in Settings › General to give a message a bold title line. A message that arrives with a title shows it above the text.
+- **Mute a conversation**: hold a conversation, or right-click it on a computer, for Mute and Delete…. A muted conversation's messages still arrive, without notifications, and leave the unread count. Swiping a conversation no longer deletes it.
+- **Shut down**: at the bottom of Settings, Shut down stops all network and Ratspeak services and closes the app, Android's background service included. Not on iPhone or iPad.
+- **Radio battery**: a radio that reports its battery shows its level in Network › Radio and beside its name in its details. It's red at 20% or less, orange to 49%, and green above, with a bolt while charging.
+- **Tray icon** (Linux): turn the tray icon off in Settings › General › Window. With it off, closing the window quits.
 
 ### Fixed and improved
 
-- The message box says "Message…" in every conversation.
-- On iPhone, holding Send shows every way to send above the keyboard, instead of hiding Offline Inbox and Paper under it. The Attach menu sits above the keyboard too.
-- Names and statuses now reach you even when busy servers hold back announces, and a first message from someone new soon shows their name.
-- A peer's status or name no longer disappears or goes back to an old one when an older announce of theirs arrives late.
-- Peers reached through a named internet connection show Internet again.
-- With Relay for other devices on, phones connected over Bluetooth can reach people this device hasn't heard yet.
+- Names and statuses reach you even when busy servers hold back announces, a first message from someone new soon shows their name, and an older announce heard late no longer undoes a newer name or status.
 - A message to someone with no known route asks the network three times, spaced so servers can answer, instead of every few seconds.
-- Game moves no longer stay on Sending move, a delivered move is no longer marked not delivered, and moves show in Activity.
-- Ratspeak announces about once an hour by default, at a slightly varied time, and waits a full interval after any announce. Starting the app no longer announces when Auto-announce is off.
-- Local Network no longer lists confusing "wlan0 peer" rows, and turning one off no longer turns Local Network off. A server you host no longer lists each client as a connection of its own.
-- Joining a server no longer spins forever: after 30 seconds the row says why it couldn't connect and offers Retry.
-- Joining Diamond first shows its stricter limits, so you can join or cancel.
-- A quick second tap after sending a message no longer starts a voice recording.
-- A message whose time sits on the line below its text no longer leaves empty space beside the text.
-- After scrolling to the end of Messages or Contacts, the first flick back up scrolls, instead of starting a hidden refresh.
-- On a phone, Games shows each game as a card with its board beside it, so all three fit on the first screen. Chess previews show the whole board, in the same colours as the other games.
-- Folded sections on the Network screen point right while shut and down while open.
-- Discover servers is switched on and off only in Network. Settings › Network › Discovery shows whether it's on and keeps the rest of its options.
-- A message's Activity detail shows which kind of connection it was delivered or received over.
-- Network's cards say just Off or On, with what they're connected to: "On · 1 server", "On · 3 peers", "On · 1 radio". Turning a card on opens it, and a radio that can't turn on, such as a USB radio that isn't plugged in, says why on its row.
-- On Linux, clicking the tray icon opens Ratspeak; right-clicking shows Show and Quit. Starting Ratspeak no longer prints a libayatana-appindicator deprecation warning.
-- The QR scanner reads codes live with the camera on iPhone, iPad, Mac, and Linux, instead of only from a chosen photo. The camera prompt now says it's for scanning QR codes too.
-- On iPhone, holding Send no longer opens the Send by menu under the keyboard the first time after Ratspeak starts.
-- A Bluetooth peer that drops no longer stays listed as connected on Android, a busy moment no longer drops an Android Bluetooth link, and Linux finds a Bluetooth adapter that turns on after Ratspeak starts.
-- Activity shows the newest event at the top. While you read further down or have an event open, the list holds still and its header shows how many new events have arrived; tap it to go back to the newest.
-- A menu opened over the iPhone keyboard no longer leaves a blank band below its last item.
-- Adding a contact or starting a message with someone's identity hash, rather than their LXMF address, now uses their LXMF address when Ratspeak has heard them, and says so. Errors about an address now say "LXMF address".
-- The Android app is about 5 MB smaller.
+- Game moves no longer stay on Sending move or show as not delivered once they're delivered, and moves show in Activity.
+- Ratspeak announces about once an hour by default, at a slightly varied time, and starting the app no longer announces when Auto-announce is off.
+- Network's cards say Off, or On with what they're connected to, and turning one on opens it. A radio that can't start, such as a USB radio that isn't plugged in, says why on its row.
+- Local Network no longer lists confusing "wlan0 peer" rows, and turning one off no longer turns Local Network off. Discover servers is switched on and off only in Network.
+- Joining a server no longer spins forever: after 30 seconds the row says why it couldn't connect and offers Retry. Joining Diamond first shows its stricter limits.
+- Bluetooth: with Relay for other devices on, phones connected over Bluetooth can reach people this device hasn't heard yet. On Android, a peer that drops no longer stays listed as connected and a busy moment no longer drops the link, and Linux finds a Bluetooth adapter that turns on after Ratspeak starts.
+- Activity shows the newest event at the top and holds still while you read, and a message's details say which kind of connection it used. Peers reached through a named internet connection show Internet again.
+- On iPhone, holding Send or opening Attach shows every option above the keyboard.
+- The QR scanner reads codes live with the camera on iPhone, iPad, Mac, and Linux, not only from a chosen photo.
+- On Linux, clicking the tray icon opens Ratspeak, and Ratspeak no longer prints a libayatana-appindicator warning.
+- Adding a contact or starting a message with someone's identity hash, rather than their LXMF address, uses their LXMF address when Ratspeak has heard them.
+- A quick tap after sending no longer starts a voice recording.
+- On a phone, Games fits all three games on the first screen with whole-board chess previews, and the first flick up after reaching the end of Messages or Contacts scrolls.
+- The Android app is about 5 MB smaller: its start-up code is built once instead of three times.
 
 ## [1.1.0] - 2026-11-15
 
