@@ -56,6 +56,9 @@ class RatspeakBlePeerClient(private val context: Context) {
         private const val TARGET_MTU = 517
         private const val MTU_FALLBACK_PAYLOAD = 20
         private const val GATT_TIMEOUT_SEC = 15L
+        // Android refuses a write while its queue is full; retry like the RNode client.
+        private const val WRITE_REJECT_RETRY_MS = 20L
+        private const val WRITE_ENQUEUE_TIMEOUT_MS = 1_200L
 
         // Service + characteristic UUIDs — must match ble_peer.rs and
         // RatspeakBleServer.kt exactly.
@@ -327,24 +330,39 @@ class RatspeakBlePeerClient(private val context: Context) {
     /**
      * Write `data` to the peer's RX characteristic. Caller is responsible for
      * fragmentation — we forward the bytes verbatim. Returns true on
-     * successful enqueue.
+     * successful enqueue. Runs on the caller's worker thread: a write Android
+     * refuses because its queue is full is retried, not treated as a dead link.
      */
     fun writeRx(data: ByteArray): Boolean {
-        if (!running.get()) return false
-        val rx = rxChar ?: return false
-        val g = gatt ?: return false
-        return try {
-            // Use no-response writes for throughput; the protocol layer above
-            // (LXMF / Reticulum) handles delivery acknowledgement.
-            writeCharacteristicCompat(
-                g,
-                rx,
-                data,
-                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-            )
-        } catch (t: Throwable) {
-            Log.w(TAG, "writeRx failed: ${t.message}")
-            false
+        val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(WRITE_ENQUEUE_TIMEOUT_MS)
+        var attempts = 0
+        while (true) {
+            if (!running.get()) return false
+            val rx = rxChar ?: return false
+            val g = gatt ?: return false
+            attempts++
+            val accepted = try {
+                // Use no-response writes for throughput; the protocol layer above
+                // (LXMF / Reticulum) handles delivery acknowledgement.
+                writeCharacteristicCompat(
+                    g,
+                    rx,
+                    data,
+                    BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                )
+            } catch (t: Throwable) {
+                Log.w(TAG, "writeRx failed: ${t.message}")
+                return false
+            }
+            if (accepted) {
+                if (attempts > 1) Log.i(TAG, "writeRx accepted after $attempts attempts len=${data.size}")
+                return true
+            }
+            if (System.nanoTime() >= deadline) {
+                Log.w(TAG, "writeRx rejected $attempts times len=${data.size}; giving up")
+                return false
+            }
+            Thread.sleep(WRITE_REJECT_RETRY_MS)
         }
     }
 

@@ -12142,4 +12142,13 @@ fn android_ble_peer_reports_a_link_it_closes_itself() {
     );
     // The callback path reports only while the link was live, so the two never both fire.
     assert!(client.contains("if (running.getAndSet(false)) {"));
+    // A write Android refuses while its queue is full is retried, not taken as a dead link.
+    let write = client
+        .split("fun writeRx(data: ByteArray): Boolean {")
+        .nth(1)
+        .and_then(|tail| tail.split("\n    }\n").next())
+        .expect("writeRx");
+    assert!(write.contains("Thread.sleep(WRITE_REJECT_RETRY_MS)"));
+    assert!(write.contains("if (System.nanoTime() >= deadline) {"));
+    assert!(client.contains("private const val WRITE_ENQUEUE_TIMEOUT_MS = 1_200L"));
 }
