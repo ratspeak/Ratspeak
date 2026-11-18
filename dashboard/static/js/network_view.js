@@ -541,23 +541,146 @@
     }
 
     // ------------------------------------------------------------------ the map
-    var D2R = Math.PI / 180, SLOT = { ble: 6, local: 64, lora: 116, host: 174 }, SLOT_PHONE = { ble: 8, local: 90, lora: 172 };
+    // Every connection has a node. Each way takes an arc of the ring sized to its labels, Internet centred at the top,
+    // the rest clockwise in Connectivity's order. When the ring is full, a way folds its least connected into "+N".
+    var D2R = Math.PI / 180, WAYS = ['tcp', 'ble', 'local', 'lora', 'host'], RANK = { up: 0, pending: 1, paused: 2, off: 3 };
     var STRIP_H = { desk: 88, phone: 80 }, MIN_GAP = 16;
-    function nodesFor(M, r1) {
-        var nodes = [], tcp = byKind(M, 'tcp'), phone = M.phone;
-        var spread = Math.min(58, 2 * Math.asin(Math.min(0.95, (phone ? 55 : 78) / r1)) / D2R);
-        if (tcp.length) tcp.forEach(function(c, i) { nodes.push({ c: c, kind: 'tcp', a: -90 + (i - (tcp.length - 1) / 2) * spread }); });
-        else nodes.push({ ghost: true, kind: 'tcp', a: -90, start: isStart(M) });
-        ['ble', 'local', 'lora', 'host'].forEach(function(k) {
-            if (k === 'host' && phone) return;
-            var lst = byKind(M, k), at = (phone ? SLOT_PHONE : SLOT)[k];
-            if (lst.length) lst.forEach(function(c, i) { nodes.push({ c: c, kind: k, a: at + i * 22 }); });
-            else nodes.push({ ghost: true, kind: k, a: at, busy: k === 'ble' && M.ble.starting });
+    function isLive(c) { return c.status === 'up' && !c.scanning; }
+    function connectedOf(lst) { return lst.filter(isLive).length + ' of ' + lst.length + ' connected'; }
+    // A phone shows Host once one is set up, as its card does.
+    function mapWays(M) { return WAYS.filter(function(k) { return k !== 'host' || !M.phone || byKind(M, 'host').length; }); }
+    function mapGroups(M) {
+        return mapWays(M).map(function(k) {
+            var all = byKind(M, k);
+            // Folding takes the off, then the paused, then the connecting, latest saved first.
+            var keep = all.map(function(c, i) { return { c: c, i: i }; })
+                .sort(function(a, b) { return (RANK[a.c.status] - RANK[b.c.status]) || (a.i - b.i); });
+            return { kind: k, all: all, keep: keep, shown: all.length };
         });
-        return nodes;
+    }
+    function mapItems(M, groups) {
+        var out = [];
+        groups.forEach(function(g) {
+            if (!g.all.length) { out.push({ ghost: true, kind: g.kind, start: g.kind === 'tcp' && isStart(M), busy: g.kind === 'ble' && M.ble.starting }); return; }
+            var shown = g.keep.slice(0, g.shown), hidden = g.keep.slice(g.shown).map(function(x) { return x.c; });
+            shown.sort(function(a, b) { return a.i - b.i; }).forEach(function(x) { out.push({ kind: g.kind, c: x.c }); });
+            if (hidden.length) out.push({ kind: g.kind, more: hidden, all: g.all });
+        });
+        return out;
+    }
+    // "+N" always stands for two or more. A way keeps one node of its own until nothing else can fold;
+    // then a whole way folds into its "+N", which takes the way's title.
+    function foldOne(groups) {
+        var pick = function(min) {
+            var best = null;
+            groups.forEach(function(g) {
+                var folded = g.shown < g.all.length;
+                if (g.shown > min && (folded || g.shown >= min + 2) && (!best || g.shown > best.shown)) best = g;
+            });
+            return best;
+        };
+        var g = pick(1) || pick(0);
+        if (!g) return false;
+        g.shown -= g.shown < g.all.length ? 1 : 2;
+        return true;
+    }
+    // Where a label goes: above or below near the top and bottom; beside the node, outward, where the card has room,
+    // narrowed if that is what fits; otherwise above or below.
+    function place(it, a, g) {
+        var ux = Math.cos(a * D2R), uy = Math.sin(a * D2R), d = 2 * g.nodeR;
+        var stacked = { at: uy < 0 ? 'at-top' : 'at-bottom', w: Math.max(d, it.lw), h: d + 8 + it.lh };
+        if (Math.abs(ux) <= 0.42) return stacked;
+        var room = g.w / 2 - Math.abs(ux) * g.r1 - g.nodeR - 14, at = 'at-' + (uy > 0.42 ? 'b' : uy < -0.42 ? 't' : 'm') + (ux > 0 ? 'r' : 'l');
+        if (it.lw <= room) return { at: at, w: d + 8 + it.lw, h: Math.max(d, it.lh) };
+        if (it.tw <= room) return { at: at, tight: true, w: d + 8 + it.tw, h: Math.max(d, it.th) };
+        return stacked;
+    }
+    // The room an item needs along the ring: its node and label's box, seen along the tangent.
+    function along(it, a, g) { var p = place(it, a, g); return Math.abs(Math.sin(a * D2R)) * p.w + Math.abs(Math.cos(a * D2R)) * p.h; }
+    // Places items on the ring, squeezed evenly when they need more than it has. Spare room goes mostly between ways.
+    function arcs(items, g) {
+        var r1 = g.r1, nodeR = g.nodeR;
+        var n = items.length, ring = 2 * Math.PI * r1, ang = items.map(function(_, i) { return -90 + i * 360 / n; }), lastTcp = 0;
+        if (n === 1) { items[0].a = -90; items[0].p = place(items[0], -90, g); return; }
+        items.forEach(function(it, i) { if (it.kind === 'tcp') lastTcp = i; });
+        for (var pass = 0; pass < 5; pass++) {
+            var need = [], wt = [], sum = 0, total = 0, th = [0], i;
+            for (i = 0; i < n; i++) {
+                var j = (i + 1) % n;
+                need[i] = Math.max(2 * nodeR + 12, (along(items[i], ang[i], g) + along(items[j], ang[j], g)) / 2 + 10);
+                wt[i] = items[i].kind === items[j].kind ? 1 : 4; sum += need[i]; total += wt[i];
+            }
+            var scale = Math.min(1, ring / sum), spare = Math.max(0, ring - sum);
+            for (i = 0; i < n; i++) th.push(th[i] + (need[i] * scale + spare * wt[i] / total) / r1);
+            var turn = -90 * D2R - (th[0] + th[lastTcp]) / 2;
+            ang = th.slice(0, n).map(function(t) { return (t + turn) / D2R; });
+        }
+        items.forEach(function(it, i) { it.a = ang[i]; it.p = place(it, ang[i], g); });
     }
     function ghostWord(n) { return n.busy ? 'Turning on…' : n.kind === 'tcp' ? 'Join a server' : 'Off'; }
     function nodeName(c) { return c.scanning ? KIND[c.kind].label : rowName(c); }
+    function nodeState(c) { return c.scanning ? 'Looking nearby…' : c.status === 'paused' ? 'Paused' : c.status === 'off' ? 'Off' : c.status === 'pending' ? 'Connecting…' : ''; }
+    function nodeLabel(n) {
+        if (n.ghost) return '<b>' + KIND[n.kind].label + '</b>' + (n.start ? '<em>Start here</em>' : '<span>' + ghostWord(n) + '</span>');
+        if (n.more) return '<b>' + (n.more.length === n.all.length ? KIND[n.kind].label : n.more.length + ' more') + '</b><span>' + connectedOf(n.all) + '</span>';
+        var st = nodeState(n.c);
+        return '<b>' + esc(nodeName(n.c)) + '</b>' + (st ? '<span>' + st + '</span>' : '');
+    }
+    function nodeAria(n) {
+        var way = KIND[n.kind].label;
+        if (n.ghost) return way + ', ' + (n.start ? 'start here' : ghostWord(n));
+        if (n.more) return way + ', ' + (n.more.length === n.all.length ? '' : n.more.length + ' more, ') + connectedOf(n.all) + '. Show in Connectivity';
+        var st = nodeState(n.c);
+        return nodeName(n.c) + ', ' + way + (st ? ', ' + st.replace('…', '').toLowerCase() : '') + '. Show in Connectivity';
+    }
+    function measureLabels(map, items) {
+        var probe = document.createElement('div');
+        probe.className = 'netmap-plane';
+        probe.style.visibility = 'hidden';
+        probe.innerHTML = items.map(function(it) {
+            var node = '<div class="netmap-node k-' + it.kind + (it.ghost ? ' is-ghost' : '') + '"><span class="netmap-label at-bottom';
+            return node + '">' + nodeLabel(it) + '</span></div>' + node + ' is-tight">' + nodeLabel(it) + '</span></div>';
+        }).join('');
+        map.appendChild(probe);
+        var els = probe.querySelectorAll('.netmap-label');
+        items.forEach(function(it, i) { it.lw = els[2 * i].offsetWidth; it.lh = els[2 * i].offsetHeight; it.tw = els[2 * i + 1].offsetWidth; it.th = els[2 * i + 1].offsetHeight; });
+        probe.remove();
+    }
+    function mapNodes(M, map, groups, g) {
+        var items = mapItems(M, groups);
+        measureLabels(map, items);
+        arcs(items, g);
+        return items;
+    }
+    // Nodes never move; a label that meets another label, a node, or the centre gives way:
+    // first its second line, then its width, then it hides. A label off the card's side moves above or below first.
+    function rectOf(el) { var r = el.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; }
+    function meets(a, b, pad) { return a.l < b.r + pad && b.l < a.r + pad && a.t < b.b + pad && b.t < a.b + pad; }
+    function rankOf(node) { return node.classList.contains('is-ghost') ? 4 : node.classList.contains('is-paused') ? 3 : node.classList.contains('is-more') ? 2 : node.classList.contains('is-pending') ? 1 : 0; }
+    function giveWay(plane, map) {
+        var edge = map.getBoundingClientRect();
+        for (var pass = 0; pass < 5; pass++) {
+            var labels = Array.prototype.slice.call(plane.querySelectorAll('.netmap-label:not(.is-quiet)')), moved = false;
+            var fixed = Array.prototype.map.call(plane.querySelectorAll('.netmap-node-btn, .netmap-you-ring, .netmap-you-name'), function(el) { return { el: el, r: rectOf(el) }; });
+            var boxes = labels.map(rectOf);
+            labels.forEach(function(l, i) {
+                var a = boxes[i], own = l.parentNode.firstChild;
+                if ((a.l < edge.left + 6 || a.r > edge.right - 6) && / at-[tmb][lr]/.test(' ' + l.className)) {
+                    l.className = l.className.replace(/at-([tmb])[lr]/, function(_, v) { return v === 't' ? 'at-top' : 'at-bottom'; });
+                    moved = true; return;
+                }
+                var lose = fixed.some(function(f) { return f.el !== own && meets(a, f.r, 2); }) || labels.some(function(o, j) {
+                    if (j === i || !meets(a, boxes[j], 3)) return false;
+                    var mine = rankOf(l.parentNode), theirs = rankOf(o.parentNode);
+                    return mine > theirs || (mine === theirs && i > j);
+                });
+                if (!lose) return;
+                moved = true;
+                l.classList.add(!l.classList.contains('is-short') ? 'is-short' : !l.classList.contains('is-tight') ? 'is-tight' : 'is-quiet');
+            });
+            if (!moved) break;
+        }
+    }
     function layoutMap(M, shrink) {
         var map = document.getElementById('netmap-map');
         if (!map) return;
@@ -566,37 +689,24 @@
         var hMin = h - (document.querySelector('.netmap-ribbon') ? 0 : STRIP_H[phone ? 'phone' : 'desk']);
         var r1 = Math.max(60, Math.min(w, hMin) * (phone ? 0.33 : 0.31) - (shrink || 0)), youR = phone ? 30 : 38, nodeR = phone ? 22 : 26;
         var ph = Math.round(2 * r1 + 200), cx = w / 2, cy = ph / 2;
-        var nodes = nodesFor(M, r1), spokes = [];
-        var svg = '<svg class="netmap-svg" width="' + w + '" height="' + ph + '" viewBox="0 0 ' + w + ' ' + ph + '" style="width:' + w + 'px;height:' + ph + 'px" aria-hidden="true"><circle class="netmap-ring" cx="' + cx + '" cy="' + cy + '" r="' + r1 + '"/>', html = '';
-        nodes.forEach(function(n) {
-            var a = n.a * D2R;
-            n.x = cx + Math.cos(a) * r1; n.y = cy + Math.sin(a) * r1;
-            var x1 = cx + Math.cos(a) * youR, y1 = cy + Math.sin(a) * youR, x2 = cx + Math.cos(a) * (r1 - nodeR), y2 = cy + Math.sin(a) * (r1 - nodeR);
-            if (n.ghost) svg += '<line class="netmap-ghost-spoke" x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '"/>';
-            else {
-                var st = n.c.status;
-                svg += '<line class="netmap-spoke k-' + n.kind + (st === 'pending' ? ' is-pending' : (st === 'paused' || st === 'off') ? ' is-paused' : '') + '" data-id="' + esc(n.c.id) + '" x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '"/>';
-                spokes.push({ id: n.c.id, kind: n.kind, up: st === 'up' && !n.c.scanning, x1: x1, y1: y1, x2: x2, y2: y2, nx: n.x, ny: n.y, nodeR: nodeR });
-            }
-            var sel = n.c && NV.sel === 'c:' + n.c.id && !phone;
-            var cls = 'netmap-node k-' + n.kind + (n.ghost ? ' is-ghost' : '') + (n.start ? ' is-start' : '') + (sel ? ' is-sel' : '') +
-                (n.c && (n.c.status === 'paused' || n.c.status === 'off') ? ' is-paused' : '') + (n.c && n.c.status === 'pending' ? ' is-pending' : '');
-            var top = Math.sin(n.a * D2R) < -0.3;
-            var label = n.ghost
-                ? '<b>' + KIND[n.kind].label + '</b>' + (n.start ? '<em>Start here</em>' : '<span>' + ghostWord(n) + '</span>')
-                : '<b>' + esc(nodeName(n.c)) + '</b>' + (n.c.status === 'up' && !n.c.scanning ? '' : '<span>' + (n.c.scanning ? 'Looking nearby…' : n.c.status === 'paused' ? 'Paused' : n.c.status === 'off' ? 'Off' : 'Connecting…') + '</span>');
-            var aria = n.ghost ? KIND[n.kind].label + ', ' + (n.start ? 'start here' : ghostWord(n)) : nodeName(n.c) + ', ' + KIND[n.kind].label;
-            html += '<div class="' + cls + '" style="left:' + n.x.toFixed(1) + 'px;top:' + n.y.toFixed(1) + 'px">' +
-                '<button type="button" class="netmap-node-btn" data-act="' + (n.ghost ? 'c-ghost' : 'c-node') + '" data-id="' + esc(n.ghost ? n.kind : n.c.id) + '" aria-label="' + esc(aria) + '"' + (sel ? ' aria-pressed="true"' : '') + '>' +
-                icon(KIND[n.kind].icon) + '</button><span class="netmap-label ' + (top ? 'at-top' : 'at-bottom') + '">' + label + '</span></div>';
-        });
-        svg += '</svg>';
-        var you = '<div class="netmap-you" data-on="' + (live(M).length > 0) + '" style="left:' + cx + 'px;top:' + (cy + (phone ? 0 : 14)) + 'px">' +
-            '<span class="netmap-you-ring" style="margin-top:' + (phone ? 0 : -28) + 'px">' + K().avatar(M.me.hash, phone ? 32 : 40) + '</span>' +
-            (phone ? '' : '<span class="netmap-you-name">' + esc(M.me.name) + '</span>') + '</div>';
-        map.innerHTML = '<div class="netmap-plane" style="width:' + w + 'px;height:' + ph + 'px">' + svg + you + html + '</div>';
-        var plane = map.firstChild, pr = plane.getBoundingClientRect(), mr = map.getBoundingClientRect(), lo = Infinity, hi = -Infinity;
-        plane.querySelectorAll('.netmap-node-btn, .netmap-label, .netmap-you').forEach(function(el) { var r = el.getBoundingClientRect(); lo = Math.min(lo, r.top - pr.top); hi = Math.max(hi, r.bottom - pr.top); });
+        // The ring is full when a label has to hide or two nodes touch: fold one more, keeping whichever layout does least of that.
+        var g = { w: w, ph: ph, cx: cx, cy: cy, r1: r1, youR: youR, nodeR: nodeR }, groups = mapGroups(M), plane, spokes, best = null;
+        var paint = function() {
+            spokes = paintMap(M, map, mapNodes(M, map, groups, g), g);
+            plane = map.firstChild;
+            giveWay(plane, map);
+            var btns = Array.prototype.map.call(plane.querySelectorAll('.netmap-node-btn'), rectOf), touching = 0;
+            btns.forEach(function(a, i) { for (var j = i + 1; j < btns.length; j++) if (meets(a, btns[j], 4)) touching++; });
+            return plane.querySelectorAll('.netmap-label.is-quiet').length + touching;
+        };
+        for (var tries = 0; tries < 24; tries++) {
+            var quiet = paint();
+            if (!best || quiet < best.quiet) best = { quiet: quiet, shown: groups.map(function(x) { return x.shown; }) };
+            if (!quiet || !foldOne(groups)) break;
+        }
+        if (best.shown.some(function(n, i) { return n !== groups[i].shown; })) { groups.forEach(function(x, i) { x.shown = best.shown[i]; }); paint(); }
+        var pr = plane.getBoundingClientRect(), mr = map.getBoundingClientRect(), lo = Infinity, hi = -Infinity;
+        plane.querySelectorAll('.netmap-node-btn, .netmap-label:not(.is-quiet), .netmap-you').forEach(function(el) { var r = el.getBoundingClientRect(); lo = Math.min(lo, r.top - pr.top); hi = Math.max(hi, r.bottom - pr.top); });
         var subEl = document.querySelector('#view-network .netmap-hero-sub'), upper = subEl ? Math.max(0, subEl.getBoundingClientRect().bottom - mr.top) : 0;
         var free = (h - upper - (hi - lo)) / 2;
         if (free < MIN_GAP && (shrink || 0) < 200 && r1 > 60) { layoutMap(M, (shrink || 0) + (MIN_GAP - free) + 1); return; }
@@ -609,6 +719,39 @@
         plane.style.transform = 'translateY(' + ty + 'px)';
         map.setAttribute('data-w', w); map.setAttribute('data-h', h);
         anim.attach(plane, spokes, w, ph);
+    }
+    function paintMap(M, map, nodes, g) {
+        var phone = M.phone, w = g.w, ph = g.ph, cx = g.cx, cy = g.cy, r1 = g.r1, youR = g.youR, nodeR = g.nodeR, spokes = [];
+        var svg = '<svg class="netmap-svg" width="' + w + '" height="' + ph + '" viewBox="0 0 ' + w + ' ' + ph + '" style="width:' + w + 'px;height:' + ph + 'px" aria-hidden="true"><circle class="netmap-ring" cx="' + cx + '" cy="' + cy + '" r="' + r1 + '"/>', html = '';
+        nodes.forEach(function(n) {
+            var a = n.a * D2R;
+            n.x = cx + Math.cos(a) * r1; n.y = cy + Math.sin(a) * r1;
+            var x1 = cx + Math.cos(a) * youR, y1 = cy + Math.sin(a) * youR, x2 = cx + Math.cos(a) * (r1 - nodeR), y2 = cy + Math.sin(a) * (r1 - nodeR);
+            // "+N" draws as its best: up if any it holds is up.
+            var lst = n.more || (n.c ? [n.c] : []), st = lst.some(isLive) ? 'up' : lst.some(function(c) { return c.status === 'pending'; }) ? 'pending' : lst.some(function(c) { return c.status === 'paused'; }) ? 'paused' : 'off';
+            if (n.c && n.c.scanning) st = 'up';
+            var id = n.c ? n.c.id : 'more:' + n.kind;
+            if (n.ghost) svg += '<line class="netmap-ghost-spoke" x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '"/>';
+            else {
+                svg += '<line class="netmap-spoke k-' + n.kind + (st === 'pending' ? ' is-pending' : (st === 'paused' || st === 'off') ? ' is-paused' : '') + '" data-id="' + esc(id) + '" x1="' + x1 + '" y1="' + y1 + '" x2="' + x2 + '" y2="' + y2 + '"/>';
+                spokes.push({ id: id, kind: n.kind, up: lst.some(isLive), x1: x1, y1: y1, x2: x2, y2: y2, nx: n.x, ny: n.y, nodeR: nodeR });
+            }
+            var sel = !phone && !n.ghost && lst.some(function(c) { return NV.sel === 'c:' + c.id; });
+            var cls = 'netmap-node k-' + n.kind + (n.ghost ? ' is-ghost' : '') + (n.start ? ' is-start' : '') + (n.more ? ' is-more' : '') + (sel ? ' is-sel' : '') +
+                (!n.ghost && (st === 'paused' || st === 'off') ? ' is-paused' : '') + (!n.ghost && st === 'pending' ? ' is-pending' : '');
+            // Any node of a way leads to its card; a ghost also turns it on.
+            html += '<div class="' + cls + '" style="left:' + n.x.toFixed(1) + 'px;top:' + n.y.toFixed(1) + 'px">' +
+                '<button type="button" class="netmap-node-btn" data-act="' + (n.ghost ? 'c-ghost' : 'c-way') + '" data-id="' + n.kind + '" aria-label="' + esc(nodeAria(n)) + '"' + (sel ? ' aria-pressed="true"' : '') + '>' +
+                (n.more ? '<span class="netmap-more-n">+' + n.more.length + '</span>' : icon(KIND[n.kind].icon)) + '</button><span class="netmap-label ' + n.p.at + (n.p.tight ? ' is-tight' : '') + '">' + nodeLabel(n) + '</span></div>';
+        });
+        svg += '</svg>';
+        // The name stays inside the ring, clear of every node; its full text is its title.
+        var nameMax = Math.round(Math.max(96, Math.min(240, 2 * (r1 - nodeR) - 56)));
+        var you = '<div class="netmap-you" data-on="' + (live(M).length > 0) + '" style="left:' + cx + 'px;top:' + (cy + (phone ? 0 : 14)) + 'px">' +
+            '<span class="netmap-you-ring" style="margin-top:' + (phone ? 0 : -28) + 'px">' + K().avatar(M.me.hash, phone ? 32 : 40) + '</span>' +
+            (phone ? '' : '<span class="netmap-you-name" style="max-width:' + nameMax + 'px" title="' + esc(M.me.name) + '">' + esc(M.me.name) + '</span>') + '</div>';
+        map.innerHTML = '<div class="netmap-plane" style="width:' + w + 'px;height:' + ph + 'px">' + svg + you + html + '</div>';
+        return spokes;
     }
 
     // One loop, one canvas. It runs only while Network shows, the page is visible, the map is open, and something moves.
@@ -1036,8 +1179,11 @@
         anim.ensure();
     }
 
-    // A map node that is off leads to its way below: a quick scroll, a brief tint, then its switch turns on.
-    function reveal(kind, keyboard) {
+    // A map node leads to its way's card: back to Connectivity if a detail shows, a quick scroll, the card open, a brief tint.
+    // A ghost's switch then turns on.
+    function showWay(kind, keyboard, ghost) {
+        if (NV.sel || NV.view) { NV.sel = null; NV.view = null; render(true); }
+        if (!ghost && NV.waysCollapsed.indexOf(kind) !== -1) unfold(kind);
         var card = root && root.querySelector('.net-way.k-' + kind);
         if (!card) return;
         NV.flash = kind;
@@ -1045,9 +1191,9 @@
         clearTimeout(NV.flashTimer);
         scrollToWay(card, function() {
             var M = model();
-            if (!(kind === 'ble' && (M.ble.on || M.ble.starting)) && !(kind === 'tcp' && NV.internetOpen)) switchWay(kind, true);
-            var now = root.querySelector('.net-way.k-' + kind);
-            if (keyboard && now) { var f = now.querySelector('input'); if (f) f.focus({ preventScroll: true }); }
+            if (ghost && !(kind === 'ble' && (M.ble.on || M.ble.starting)) && !(kind === 'tcp' && NV.internetOpen)) switchWay(kind, true);
+            var now = root.querySelector('.net-way.k-' + kind), f = keyboard && now && now.querySelector(ghost ? 'input' : '.net-crow .ui-row');
+            if (f) f.focus({ preventScroll: true });
             NV.flashTimer = setTimeout(function() {
                 NV.flash = null;
                 var el = root.querySelector('.net-way.k-' + kind);
@@ -1112,7 +1258,8 @@
             case 'own': if (typeof openConnectModal === 'function') openConnectModal(); return;
             case 'ble-dur': setBleDuration(parseInt(el.getAttribute('data-v'), 10) || 0, el.textContent); return;
             case 'c-node': openConn(id); return;
-            case 'c-ghost': reveal(id, e.detail === 0); return;
+            case 'c-ghost': showWay(id, e.detail === 0, true); return;
+            case 'c-way': showWay(id, e.detail === 0); return;
             case 'c-menu': {
                 var M = model(), c = byId(M, id);
                 if (c && RS.kit) RS.kit.menu(el, { title: rowName(c), items: menuItems(c).map(function(x) {

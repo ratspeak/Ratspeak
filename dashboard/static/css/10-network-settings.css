@@ -295,7 +295,7 @@
 .netmap-you { position: absolute; z-index: 2; display: flex; flex-direction: column; align-items: center; gap: 8px; transform: translate(-50%, -50%); pointer-events: none; }
 .netmap-you-ring { display: grid; place-items: center; width: 76px; height: 76px; border-radius: 50%; background: var(--surface-panel); box-shadow: 0 0 0 1px var(--border-surface-strong), 0 0 0 8px rgba(var(--accent-rgb), .08), var(--shadow-md); }
 .netmap-you[data-on="true"] .netmap-you-ring { box-shadow: 0 0 0 2px var(--accent-border), 0 0 0 10px rgba(var(--accent-rgb), .10), var(--shadow-md); }
-.netmap-you-name { font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); }
+.netmap-you-name { overflow: hidden; font-size: var(--text-sm); font-weight: 600; color: var(--text-primary); text-overflow: ellipsis; white-space: nowrap; }
 .netmap-node { position: absolute; z-index: 3; width: 0; height: 0; }
 .netmap-node-btn { position: absolute; left: -26px; top: -26px; display: grid; place-items: center; width: 52px; height: 52px; padding: 0; box-sizing: border-box; border: 2px solid var(--kfg, var(--border-surface-strong)); border-radius: 50%; background: var(--surface-panel); color: var(--kfg, var(--text-secondary)); box-shadow: var(--shadow-sm); cursor: pointer; transition: transform .15s ease, background-color .15s ease; }
 .netmap-node-btn .ui-ico { width: 22px; height: 22px; stroke-width: 1.7; }
@@ -317,6 +317,21 @@
 .netmap-label span { font-size: var(--text-2xs); color: var(--text-muted); }
 .netmap-label em { font-size: var(--text-2xs); font-style: normal; font-weight: 600; color: var(--accent-ink); }
 .netmap-node.is-ghost .netmap-label b { font-weight: 500; color: var(--text-secondary); }
+/* Beside the node away from the top and bottom, outward, so labels never reach into the ring. */
+.netmap-label.at-mr, .netmap-label.at-ml { top: 0; transform: translateY(-50%); }
+.netmap-label.at-mr { left: 34px; align-items: flex-start; text-align: left; }
+.netmap-label.at-ml { left: auto; right: 34px; align-items: flex-end; text-align: right; }
+.netmap-label.at-tr, .netmap-label.at-br, .netmap-label.at-tl, .netmap-label.at-bl { transform: none; }
+.netmap-label.at-tr, .netmap-label.at-br { left: 20px; align-items: flex-start; text-align: left; }
+.netmap-label.at-tl, .netmap-label.at-bl { left: auto; right: 20px; align-items: flex-end; text-align: right; }
+.netmap-label.at-tr, .netmap-label.at-tl { bottom: 26px; } .netmap-label.at-br, .netmap-label.at-bl { top: 26px; }
+/* A crowded label drops its second line, then narrows, then hides; its node and button label keep the words. */
+.netmap-label b { max-width: 168px; overflow: hidden; text-overflow: ellipsis; }
+.netmap-label.is-short span, .netmap-label.is-tight span { display: none; }
+.netmap-label.is-tight b { max-width: 96px; }
+.netmap-label.is-quiet { visibility: hidden; }
+.netmap-node.is-more .netmap-node-btn { border-style: dashed; }
+.netmap-more-n { font-size: var(--text-sm); font-weight: 600; font-variant-numeric: tabular-nums; }
 .netmap-ribbon { position: relative; z-index: 2; display: flex; align-items: center; gap: 32px; height: 88px; padding: 0 24px; box-sizing: border-box; flex: 0 0 auto; border-top: 1px solid var(--border-row); background: var(--surface-panel); }
 /* No live traffic: no strip. When it first appears it fades in, and the map plane glides to its new centre. */
 .netmap-ribbon.is-entering > * { animation: netmap-fade .3s ease both; }
@@ -394,6 +409,11 @@
     .netmap-label b { font-size: var(--text-xs); }
     .netmap-node.is-ghost .netmap-label span { display: none; }
     .netmap-label.at-top { bottom: 28px; } .netmap-label.at-bottom { top: 28px; }
+    .netmap-label.at-mr { left: 28px; } .netmap-label.at-ml { right: 28px; }
+    .netmap-label.at-tr, .netmap-label.at-br { left: 16px; } .netmap-label.at-tl, .netmap-label.at-bl { right: 16px; }
+    .netmap-label.at-tr, .netmap-label.at-tl { bottom: 22px; } .netmap-label.at-br, .netmap-label.at-bl { top: 22px; }
+    .netmap-label b { max-width: 120px; }
+    .netmap-label.is-tight b { max-width: 72px; }
     .netmap-ribbon { gap: 16px; height: 80px; padding: 0 16px; }
     .netmap-stat b { font-size: var(--text-base); }
     .netmap-insp { margin-top: 16px; overflow: visible; }
