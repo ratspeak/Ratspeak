@@ -1512,12 +1512,13 @@ test('a waiting message, its new attempt, and the 24-hour stop read as three pla
     var rows = ctx.document.getElementById('activity-feed').innerHTML
         .split(/(?=<li><button type="button" class="ui-row activity-event)/).slice(1);
     assert.strictEqual(rows.length, 3);
-    assert(rows[0].includes('<span>Messages</span> · <span data-reason>No network connection</span>'),
+    // Newest first.
+    assert(rows[2].includes('<span>Messages</span> · <span data-reason>No network connection</span>'),
         'the reason follows the area; waiting has no outcome');
     assert(rows[1].includes('<span>Messages</span> · <span data-reason>Network connected</span>'),
         'what set off the attempt follows the area');
-    assert(rows[2].includes('data-outcome="failed">Failed</span> · <span data-reason>Not delivered after 24 hours</span>'));
-    assert(!rows[0].includes('is-problem') && !rows[1].includes('is-problem') && rows[2].includes('is-problem'));
+    assert(rows[0].includes('data-outcome="failed">Failed</span> · <span data-reason>Not delivered after 24 hours</span>'));
+    assert(rows[0].includes('is-problem') && !rows[1].includes('is-problem') && !rows[2].includes('is-problem'));
     ctx.activityProblemsOnly = true;
     assert.deepStrictEqual(ctx.activityEvents.filter(ctx.activityEventMatches).map(function(e) { return e.sequence; }), ['3']);
 });

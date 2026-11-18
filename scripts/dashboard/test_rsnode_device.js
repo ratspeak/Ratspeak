@@ -139,7 +139,7 @@ assert(handle.indexOf('RS.rsnode.interceptFile(file, lxmfActiveContact)') < hand
 assert(lxmf.includes("handleFileSelected({ files: [files[0]], value: '' });"), 'desktop drop');
 assert(lxmf.includes("fileInput.addEventListener('change', function() { handleFileSelected(this); });"), 'picker');
 assert(lxmf.includes('if (RS.rsnode) RS.rsnode.render();'));
-assert(lxmf.includes("if (_messageIsPaper(msg) || _messageIsNote(msg)) return;"), 'notes never alert');
+assert(lxmf.includes("if (_messageIsPaper(msg) || _messageIsNote(msg) || _conversationIsMuted(msg.source)) return;"), 'notes never alert');
 assert(lxmf.includes("is_rsnode: c.kind === 'device' && caps.indexOf('rsnode') !== -1"));
 assert(lxmf.includes("can_update: c.kind === 'device' && (caps.indexOf('rsnode.update') !== -1 || caps.indexOf('rsnode') !== -1)"));
 assert(index.indexOf('rsnode_device.js') > index.indexOf('lxmf.js'), 'loads after lxmf.js');

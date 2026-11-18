@@ -23,8 +23,6 @@ assert.equal(display({title: 'Memo title', content: 'Voice message'}, true), 'Me
 assert.equal(display({content: 'Voice message'}, true), '');
 assert.equal(context._conversationPreviewForMessage({title: 'Title', content: ''}), 'Title');
 assert.equal(context._conversationPreviewForMessage({audio: {mode: 0xfe}}), 'Unsupported audio');
-assert(source.includes("var text = _messageDisplayContent(msg, hasRenderedAudio);\n    return { html: text ? linkifyMessageText(text) : '', markdown: false };"),
-    'plain messages and titles keep the existing escaped renderer');
 
 // FIELD_RENDERER = Markdown messages preview without syntax; others stay verbatim.
 vm.runInContext(fs.readFileSync(path.join(__dirname, '../../dashboard/static/js/markdown.js'), 'utf8'), context);
@@ -48,6 +46,16 @@ assert.equal(html.split("rs-message-link rs-paper-link").length - 1, 1);
 assert(html.startsWith('&lt;b&gt; <a class="rs-message-link rs-paper-link" href="#" data-url="' + uri + '"'));
 assert(html.includes('<span>Paper message</span></a><br><a class="rs-message-link" href="https://example.com/a"'));
 assert.equal(JSON.stringify(linkContext._messageLinkRanges('LXM://abc').map(r => r.paper)), '[true]', 'scheme match is case-insensitive');
+// Plain messages keep the escaped renderer; a title leads in bold.
+linkContext.window = {};
+for (const name of ['_messageIsMarkdown', '_messageBodyContent', '_messageBodyHtml']) {
+    const start = source.indexOf('function ' + name + '(');
+    vm.runInContext(source.slice(start, source.indexOf('\nfunction ', start + 1)), linkContext);
+}
+assert.deepEqual(JSON.parse(JSON.stringify(linkContext._messageBodyHtml({title: ' <T> ', content: 'a <b>'}, false))),
+    {html: '<strong class="msg-subject">&lt;T&gt;</strong>a &lt;b&gt;', markdown: false});
+assert.equal(linkContext._messageBodyHtml({content: 'a <b>'}, false).html, 'a &lt;b&gt;');
+assert.equal(linkContext._messageBodyHtml({title: 'Only', content: ' '}, false).html, '<strong class="msg-subject">Only</strong>');
 assert(source.includes("if (/^lxm:\\/\\//i.test(String(url || ''))) {\n        if (typeof openPaperDecoder === 'function') openPaperDecoder({ uri: url, autoReview: true });\n        return;"),
     'paper links open the decoder instead of the leaving-app warning');
 console.log('message title/body presentation: PASS');

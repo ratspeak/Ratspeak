@@ -47,6 +47,7 @@ function createHarness(opts) {
     var context = {
         console: console,
         Promise: Promise,
+        setTimeout: function() { return 0; },
         window: {},
         getInterfaceLiveStatus: function(name) { return live[name] || null; },
         refreshConfigInterfaces: function() {},

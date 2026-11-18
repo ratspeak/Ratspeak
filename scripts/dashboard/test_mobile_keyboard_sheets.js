@@ -128,8 +128,8 @@ context.reveal(field);
 assert.strictEqual(scrollOwner.scrollTop, 20,
     'a stale focus callback must not move a newly focused form');
 
-assert(responsiveCss.includes('html[data-keyboard-platform="ios"].keyboard-open .ui-modal:focus-within {\n        bottom: var(--keyboard-inset, 0px);'),
-    'Add contact and the other kit sheets must rise above the iOS keyboard');
+assert(responsiveCss.includes('html[data-keyboard-platform="ios"].keyboard-open .ui-modal:focus-within,\n    html[data-keyboard-platform="ios"].keyboard-open .ui-modal.ui-modal--keeps-keyboard {\n        bottom: var(--keyboard-inset, 0px);'),
+    'Add contact, the other kit sheets, and menus that keep the composer focused must rise above the iOS keyboard');
 assert(navSource.includes("style.setProperty('--visual-viewport-height'"));
 assert(navSource.includes("style.setProperty('--visual-viewport-top'"));
 assert(navSource.includes("style.setProperty('--keyboard-inset'"));
@@ -143,8 +143,8 @@ assert(navSource.includes("el.scrollIntoView({ block: 'nearest', behavior: 'smoo
     'Android must retain the last known-good native-resize reveal behavior');
 assert(!navSource.includes('_scheduleFocusedFieldReveal(el, 180)'),
     'form fields must not wait for a post-keyboard timeout');
-assert(navSource.includes("el.id === 'lxmf-input' || el.id === 'channel-message-input'"),
-    'Direct Message and Channel composers must share the viewport owner');
+assert(navSource.includes("el.id === 'lxmf-input' || el.id === 'lxmf-title' || el.id === 'channel-message-input'"),
+    'Direct Message (its title too) and Channel composers must share the viewport owner');
 assert(!navSource.includes('scheduleViewportSettle'),
     'composer focus must not wait for delayed viewport resampling');
 assert(navSource.includes("active.closest('.bottom-sheet.open')"),

@@ -386,6 +386,7 @@ var list = {
     lxmfActiveContact: null,
     _ghostConversationHash: null,
     _conversationsFirstLoadDone: true,
+    _convRowMenu: null,
     _mergeOptimisticConversation: function(rows) { return rows; },
     _canonicalConversationHash: function(hash) { return hash; },
     _conversationNameInfo: function(hash, name) { return { name: name, isHash: false }; },

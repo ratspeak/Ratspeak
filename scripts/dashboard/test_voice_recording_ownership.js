@@ -102,7 +102,8 @@ var context = {
     String: String,
     Number: Number,
     Math: Math,
-    Date: Date,
+    // Each read is a second later, so no tap here lands inside Record's settle window.
+    Date: (function() { var now = 0; return { now: function() { return (now += 1000); } }; })(),
     Error: Error,
     Uint8Array: Uint8Array,
     Blob: Blob,

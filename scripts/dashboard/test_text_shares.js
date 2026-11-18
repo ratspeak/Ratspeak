@@ -352,6 +352,7 @@ function fixture(android = true, image = false) {
             _markOptimisticMessageFailed: () => {},
             document: { getElementById: () => ({ value: '00123' }) },
             _conversationOwnerSnapshot: () => ({ hash: B }), _consumeLxmfSendFocusState: () => false,
+            _lxmfTitleValue: () => '',
             _prepareComposedMessage: x => ({ content: x, renderer: null, preview: x }),
             _deliveryPrefOrAuto: () => 'auto', _utf8ByteLength: x => x.length, generateMsgId: () => 'client-id',
             _handleLxmfSendAccepted: () => {}, _appendConversationMessage: () => false,

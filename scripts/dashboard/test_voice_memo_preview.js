@@ -53,6 +53,7 @@ function harness(platform, mode) {
         window: null, navigator: {}, Promise: Promise, Object: Object, Array: Array,
         String: String, Number: Number, Math: Math, Error: Error, Uint8Array: Uint8Array,
         Blob: Blob, URL: URL, atob: atob, isFinite: isFinite,
+        Date: { now: function() { return clock; } },
         setTimeout: function(fn, delay) {
             var timer = { fn: fn, at: clock + (delay || 0), active: true };
             timers.push(timer); return timer;
@@ -115,9 +116,13 @@ function harness(platform, mode) {
         toasts: toasts, previewButton: node('voice-memo-play-btn'),
         state: function() { return node('voice-memo-play-btn').dataset.playbackState; },
         timer: function() { return node('voice-memo-timer').textContent; },
-        click: async function(id) { node('voice-memo-' + id + '-btn').fire('click'); await flush(); },
+        click: async function(id) {
+            // Record ignores taps for half a second after it appears.
+            if (id === 'record') { await flush(); await this.advance(500); }
+            node('voice-memo-' + id + '-btn').fire('click'); await flush();
+        },
         record: async function() {
-            await flush(); node('voice-memo-record-btn').fire('click'); await flush();
+            await this.click('record');
             node('voice-memo-stop-btn').fire('click'); await flush();
             assert.equal(node('lxmf-voice-recorder').dataset.state, 'review');
             assert.equal(node('voice-memo-timer').textContent, '0:04');
@@ -165,6 +170,17 @@ var cases = [
         var standard = harness(platform, 16);
         await standard.click('record');
         assert.equal(standard.timer(), '0:00 / 5:00');
+    }],
+    ['a tap meant for Send does not start a recording when Record takes its place', async function(platform) {
+        var h = harness(platform); await h.record(); await h.click('send');
+        var record = h.context.document.getElementById('voice-memo-record-btn');
+        assert.equal(record.hidden, false, 'Record is back once the memo goes');
+        var before = h.recordings.length;
+        record.fire('pointerdown', {}); record.fire('click'); await h.advance(0);
+        assert.equal(h.recordings.length, before, 'a press inside the settle window is ignored, click included');
+        await h.advance(500);
+        record.fire('click'); await h.advance(0);
+        assert.equal(h.recordings.length, before + 1, 'a later tap records');
     }],
     ['controller reports the original recorded duration before any playback', async function(platform) {
         var h = harness(platform); await h.record();
