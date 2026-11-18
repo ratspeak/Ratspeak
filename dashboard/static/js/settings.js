@@ -2199,8 +2199,10 @@ function handleManualAnnounceResult(data) {
         _lastAnnounceTime = Date.now();
         window.dispatchEvent(new CustomEvent('ratspeak-manual-announce-result', { detail: data }));
         var alreadyQueued = data.disposition === 'already_queued' || data.disposition === 'deferred';
-        if (typeof haptic === 'function') haptic(alreadyQueued ? 'light' : 'success');
-        if (announceStampWorking()) {
+        // A stamp still being made holds the announce: no success until it leaves.
+        var held = announceStampWorking();
+        if (typeof haptic === 'function') haptic(alreadyQueued || held ? 'light' : 'success');
+        if (held) {
             showToast(ANNOUNCE_STAMP_TOAST, 'toast-info', 5000);
         } else {
             showToast(
@@ -2211,10 +2213,10 @@ function handleManualAnnounceResult(data) {
         }
         // The request is admitted by the presence coordinator. Component
         // queueing and interface-specific transmission continue asynchronously.
-        if (!alreadyQueued && origin && typeof showAnnounceAnimation === 'function') {
+        if (!alreadyQueued && !held && origin && typeof showAnnounceAnimation === 'function') {
             showAnnounceAnimation(origin.el, origin.cx, origin.cy);
         }
-        if (networkBtn) {
+        if (networkBtn && !held) {
             setAnnounceLabel(networkBtn, alreadyQueued ? 'Already queued' : 'Queued');
             networkBtn.classList.add('is-success');
             setTimeout(function() {

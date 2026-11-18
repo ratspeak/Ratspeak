@@ -1225,6 +1225,16 @@
         });
     }
 
+    function showAnnounced(at) {
+        NV.announcing = true; NV.lastAnnounce = at; render(true); anim.announce();
+        setTimeout(function() { NV.announcing = false; render(true); }, 2500);
+    }
+    NV.onAnnounceSent = function(at) {
+        if (!NV.awaitingAnnounce) return;
+        NV.awaitingAnnounce = false;
+        showAnnounced(at);
+    };
+
     function onClick(e) {
         if (e.target.closest && e.target.closest('.net-hostdisc [data-netid]') && RS.hostDiscovery.handleInline(e)) return;
         // A way that folds folds from anywhere on its head but the switch.
@@ -1241,8 +1251,9 @@
             case 'nav-activity': if (typeof switchView === 'function') switchView('activity'); return;
             case 'announce':
                 if (el.disabled || NV.announcing || typeof tryTriggerAnnounce !== 'function' || !tryTriggerAnnounce()) return;
-                NV.announcing = true; NV.lastAnnounce = Date.now(); render(true); anim.announce();
-                setTimeout(function() { NV.announcing = false; render(true); }, 2500);
+                // A stamp still being made holds the announce; it shows as sent when it leaves.
+                if (typeof announceStampWorking === 'function' && announceStampWorking()) { NV.awaitingAnnounce = true; return; }
+                showAnnounced(Date.now());
                 return;
             case 'map-toggle': setMapCollapsed(!NV.mapCollapsed); return;
             case 'way-fold': foldWay(id); return;

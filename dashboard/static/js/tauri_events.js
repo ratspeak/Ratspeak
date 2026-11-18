@@ -786,6 +786,11 @@ RS.listen('announce_stamp', function(data) {
 RS.invoke('api_startup_progress').then(function(data) {
     if (data && data.stamp && !window._announceStamp) window._announceStamp = data.stamp;
 }).catch(function() {});
+// The delivery announce left the device: an Announce held for its stamp shows as sent now.
+RS.listen('announce_sent', function(data) {
+    var at = data && data.at ? data.at * 1000 : Date.now();
+    if (RS.networkView && typeof RS.networkView.onAnnounceSent === 'function') RS.networkView.onAnnounceSent(at);
+});
 
 // AutoInterface JoinFailed; surface the runtime failure on the matching row.
 RS.listen('auto_unavailable', function(data) {
