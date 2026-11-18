@@ -2,9 +2,11 @@ var needsSetup = false;
 var SETUP_RECOVERY_PHRASE_WORDS = 12;
 var setupRecoveryMnemonic = '';
 
-// The last row of a progress list holds until this long after its screen
-// appeared, so a fast start never just flashes. A minimum, never an addition.
-var SETUP_PROGRESS_HOLD_MS = 900;
+// Each row of a progress list shows as running at least this long before it
+// turns Done, and the list holds this long after its last Done, so work that
+// finished early still ticks row by row and never just flashes. A minimum,
+// never an addition to real work.
+var SETUP_STEP_MIN_MS = 600;
 var SETUP_START_POLL_MS = 150;
 var SETUP_START_GIVE_UP_MS = 60000;
 // The announce stamp shows its seconds from this long, and Continue from this long, after its row starts.
@@ -135,17 +137,17 @@ function runGenerateProgress(backendPromise) {
     setSetupProgressStep('setup-gen-keys', 'active');
     setSetupProgressStep('setup-gen-address', 'pending');
     announceSetupProgress('setup-generate-live', '');
+    var wait = function(ms) { return new Promise(function(resolve) { setTimeout(resolve, Math.max(0, ms)); }); };
     return backendPromise.then(function(result) {
-        setSetupProgressStep('setup-gen-keys', 'done');
-        setSetupProgressStep('setup-gen-address', 'active');
-        announceSetupProgress('setup-generate-live', 'Generating your keys: done.');
-        var wait = Math.max(0, shownAt + SETUP_PROGRESS_HOLD_MS - Date.now());
-        return new Promise(function(resolve) {
-            setTimeout(function() {
-                setSetupProgressStep('setup-gen-address', 'done');
-                resolve(result);
-            }, wait);
-        });
+        return wait(shownAt + SETUP_STEP_MIN_MS - Date.now()).then(function() {
+            setSetupProgressStep('setup-gen-keys', 'done');
+            setSetupProgressStep('setup-gen-address', 'active');
+            announceSetupProgress('setup-generate-live', 'Generating your keys: done.');
+            return wait(SETUP_STEP_MIN_MS);
+        }).then(function() {
+            setSetupProgressStep('setup-gen-address', 'done');
+            return wait(SETUP_STEP_MIN_MS);
+        }).then(function() { return result; });
     });
 }
 
@@ -222,24 +224,24 @@ function renderSetupAddress(hash) {
 
 // ---- Starting Ratspeak ----
 
-// Startup timing rule. The steps run in the runtime's order and each ticks only
-// when it really completes: the identity is loaded once the stage reaches "rns",
-// the network is up at "ready", and the announce stamp once the runtime says it
-// is made. The stamp row holds until SETUP_PROGRESS_HOLD_MS after the screen
-// appeared, and adds nothing when the work took longer. A stamp still being made
-// SETUP_STAMP_SLOW_MS after its row started offers Continue; it then finishes in
-// the background.
+// Startup timing rule. The rows run in the runtime's order: the identity is
+// loaded once the stage reaches "rns", the network is up at "ready", and the
+// announce stamp once the runtime says it is made, which may have been during
+// setup. Rows turn Done one after another, each running SETUP_STEP_MIN_MS at
+// least, and the screen holds as long after the last; real work that takes
+// longer is never padded. A stamp still being made SETUP_STAMP_SLOW_MS after the
+// network row turned Done offers Continue; it then finishes in the background.
 var SETUP_START_STAGE_RANK = { lxmf: 1, rns: 2, ready: 3 };
+var SETUP_START_ROWS = ['identity', 'network', 'stamp'];
 
 function createSetupStartTimeline(shownAt) {
     return {
-        shownAt: shownAt,
         identity: 'active',
         network: 'pending',
         stamp: 'pending',
-        stampAt: null,
-        stampMade: false,
-        leaveAt: null,
+        activeAt: { identity: shownAt, network: null, stamp: null },
+        work: { identity: false, network: false, stamp: false },
+        doneAt: null,
         slow: false,
         finished: false,
         failed: null
@@ -250,45 +252,53 @@ function createSetupStartTimeline(shownAt) {
 function advanceSetupStartTimeline(t, stage, now, stampState) {
     if (t.finished || t.failed) return t;
     if (stage === 'error') {
-        // The step that was running stops; the steps after it stay pending.
-        t.failed = t.network === 'active' ? 'network' : 'identity';
+        // The step whose work stopped fails; the rows after it stay pending.
+        t.failed = t.work.identity ? 'network' : 'identity';
+        if (t.failed === 'network') t.identity = 'done';
+        else t.network = 'pending';
         t[t.failed] = 'failed';
         t.stamp = 'pending';
+        t.slow = false;
         return t;
     }
     var rank = SETUP_START_STAGE_RANK[stage] || 0;
-    if (rank >= 2) {
-        t.identity = 'done';
-        if (t.network === 'pending') t.network = 'active';
-    }
+    if (rank >= 2) t.work.identity = true;
     if (rank >= 3) {
-        t.network = 'done';
-        if (t.stamp === 'pending') {
-            t.stamp = 'active';
-            t.stampAt = now;
-            t.leaveAt = Math.max(now, t.shownAt + SETUP_PROGRESS_HOLD_MS);
-        }
-        t.stampMade = stampState !== 'working';
+        t.work.network = true;
+        t.work.stamp = stampState !== 'working';
     }
     return tickSetupStartTimeline(t, now);
 }
 
 function tickSetupStartTimeline(t, now) {
-    if (t.stamp !== 'active') return t;
-    if (t.stampMade && now >= t.leaveAt) {
-        t.stamp = 'done';
-        t.slow = false;
-        t.finished = true;
-    } else if (!t.stampMade && now - t.stampAt >= SETUP_STAMP_SLOW_MS) {
-        t.slow = true;
+    if (t.finished || t.failed) return t;
+    for (var i = 0; i < SETUP_START_ROWS.length; i++) {
+        var row = SETUP_START_ROWS[i];
+        if (t[row] === 'done') continue;
+        if (t[row] === 'pending') {
+            t[row] = 'active';
+            t.activeAt[row] = now;
+        }
+        if (!t.work[row] || now - t.activeAt[row] < SETUP_STEP_MIN_MS) break;
+        t[row] = 'done';
+        if (row === 'stamp') t.doneAt = now;
     }
+    t.slow = t.stamp === 'active' && !t.work.stamp && now - t.activeAt.stamp >= SETUP_STAMP_SLOW_MS;
+    if (t.stamp === 'done' && now - t.doneAt >= SETUP_STEP_MIN_MS) t.finished = true;
     return t;
+}
+
+// How long until a row can change with no new work, once all of it is in.
+function setupStartNextTick(t, now) {
+    var at = t.stamp === 'done' ? t.doneAt : null;
+    SETUP_START_ROWS.forEach(function(row) { if (t[row] === 'active') at = t.activeAt[row]; });
+    return at === null ? 0 : Math.max(0, at + SETUP_STEP_MIN_MS - now);
 }
 
 // Whole seconds waited on the stamp, once there are enough to be worth saying.
 function setupStampSeconds(t, now) {
-    if (t.stamp !== 'active' || t.stampMade || now - t.stampAt < SETUP_STAMP_SECONDS_MS) return '';
-    return Math.floor((now - t.stampAt) / 1000) + ' s';
+    if (t.stamp !== 'active' || t.work.stamp || now - t.activeAt.stamp < SETUP_STAMP_SECONDS_MS) return '';
+    return Math.floor((now - t.activeAt.stamp) / 1000) + ' s';
 }
 
 function setupStartFailureLead(step, detail) {
@@ -414,7 +424,8 @@ function runConnectingProgress() {
         tickSetupStartTimeline(t, now);
         renderSetupStart(t, now);
         if (t.finished) { finishSetupStart(); return; }
-        if (t.stamp === 'active' && t.stampMade) { schedule(settle, Math.max(0, t.leaveAt - now)); return; }
+        // With all the work in, only the rows' minimum times are left.
+        if (t.work.stamp) { schedule(settle, setupStartNextTick(t, now)); return; }
         // A start that never reports opens the app, as before; a stamp still being made finishes in the background.
         if (now - t.shownAt >= SETUP_START_GIVE_UP_MS) { finishSetupStart(); return; }
         schedule(poll, SETUP_START_POLL_MS);
