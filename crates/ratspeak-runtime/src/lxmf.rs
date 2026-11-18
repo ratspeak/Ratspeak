@@ -33,7 +33,7 @@ use lxmf_core::router::{
     DirectReusableLinkState, LinkDeliveryPlan, LxmRouter, MediumSnapshot, OutboundAction,
     OutboundInputs, RouteInfo, RouterConfig, RouterStateSnapshot, attempt_limit,
 };
-use rns_identity::destination::{AnnounceTime, DestType, Destination, Direction};
+use rns_identity::destination::{AnnounceTime, DestType, Destination, DestinationError, Direction};
 use rns_identity::identity::Identity;
 use rns_identity::persistence::{
     DurableFileReceipt, durable_create_dir_all, durable_reconcile, durable_remove,
@@ -121,6 +121,9 @@ pub enum AnnounceBuildError {
     Coalesced,
     /// The destination stamp is still being generated; build again later.
     StampPending,
+    /// Reticulum refuses it: with a relay's transport id it would pass the
+    /// MTU. Carries that size.
+    TooLarge(usize),
     Failed(String),
 }
 
@@ -129,10 +132,37 @@ impl std::fmt::Display for AnnounceBuildError {
         match self {
             Self::Coalesced => f.write_str(&DeliveryRatchetError::Coalesced.to_string()),
             Self::StampPending => f.write_str("destination stamp is still being generated"),
+            Self::TooLarge(size) => DestinationError::AnnounceTooLarge(*size).fmt(f),
             Self::Failed(message) => f.write_str(message),
         }
     }
 }
+
+/// The transport id a relay inserts into a HEADER_1 announce.
+const TRANSPORT_ID_BYTES: usize = rns_wire::constants::TRUNCATED_HASHLENGTH / 8;
+
+/// App data a delivery announce can carry: the MTU less the transport id, the
+/// HEADER_1 header, and an announce with a ratchet and a stamp (Python
+/// 1.6.1 `Packet.pack`).
+pub const DELIVERY_ANNOUNCE_APP_DATA_MAX_BYTES: usize = rns_wire::constants::MTU
+    - TRANSPORT_ID_BYTES
+    - rns_wire::constants::HEADER_MINSIZE
+    // Public key, name hash, random hash, ratchet, signature.
+    - (64 + 10 + 10 + 32 + 64)
+    - rns_identity::announce::ANNOUNCE_EXT_LENGTH;
+
+// The largest name and status fit (`get_ratspeak_announce_app_data`).
+const _: () = assert!(
+    RATSPEAK_ANNOUNCE_APP_DATA_OVERHEAD_BYTES
+        + crate::helpers::ANNOUNCED_DISPLAY_NAME_MAX_BYTES
+        + crate::helpers::ANNOUNCED_STATUS_MAX_BYTES
+        <= DELIVERY_ANNOUNCE_APP_DATA_MAX_BYTES
+);
+
+/// `get_ratspeak_announce_app_data` beside the name's and status's bytes, at
+/// most: array, name header, stamp cost (below 100), features, then the
+/// extension's array, version, capabilities, map, key, and status header.
+const RATSPEAK_ANNOUNCE_APP_DATA_OVERHEAD_BYTES: usize = 1 + 2 + 1 + 2 + (1 + 1 + 9 + 1 + 2 + 2);
 
 impl From<StampWait> for AnnounceBuildError {
     fn from(wait: StampWait) -> Self {
@@ -4660,14 +4690,13 @@ impl LxmfManager {
             )
             .map_err(|error| match error {
                 DeliveryRatchetError::Coalesced => AnnounceBuildError::Coalesced,
+                DeliveryRatchetError::Destination(DestinationError::AnnounceTooLarge(size)) => {
+                    AnnounceBuildError::TooLarge(size)
+                }
                 error => AnnounceBuildError::Failed(error.to_string()),
             })?;
-        if raw.len() > rns_wire::constants::MTU {
-            return Err(AnnounceBuildError::Failed(format!(
-                "Announce packet exceeds Reticulum MTU ({} > {})",
-                raw.len(),
-                rns_wire::constants::MTU
-            )));
+        if raw.len() + TRANSPORT_ID_BYTES > rns_wire::constants::MTU {
+            return Err(AnnounceBuildError::TooLarge(raw.len() + TRANSPORT_ID_BYTES));
         }
         Ok(raw)
     }
@@ -4696,8 +4725,9 @@ impl LxmfManager {
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs_f64();
-        let failed = |e: rns_identity::destination::DestinationError| {
-            AnnounceBuildError::Failed(format!("Failed to create propagation announce: {e}"))
+        let failed = |e: DestinationError| match e {
+            DestinationError::AnnounceTooLarge(size) => AnnounceBuildError::TooLarge(size),
+            e => AnnounceBuildError::Failed(format!("Failed to create propagation announce: {e}")),
         };
         let raw = self
             .propagation_destination
@@ -4711,12 +4741,8 @@ impl LxmfManager {
                 stamp_ext.as_ref(),
             )
             .map_err(failed)?;
-        if raw.len() > rns_wire::constants::MTU {
-            return Err(AnnounceBuildError::Failed(format!(
-                "Propagation announce packet exceeds Reticulum MTU ({} > {})",
-                raw.len(),
-                rns_wire::constants::MTU
-            )));
+        if raw.len() + TRANSPORT_ID_BYTES > rns_wire::constants::MTU {
+            return Err(AnnounceBuildError::TooLarge(raw.len() + TRANSPORT_ID_BYTES));
         }
         Ok(raw)
     }
@@ -8232,14 +8258,80 @@ mod tests {
 
     #[test]
     fn delivery_announce_packet_stays_under_reticulum_mtu_with_max_display_name() {
+        let _stamps = crate::announce_stamps::test_policy::blocking_unstamped();
+        // Stamped, with a stamp already made, as after the first announce.
+        rns_runtime::destination_stamper::configure(Default::default(), None);
         let mut mgr = test_manager();
-        mgr.display_name = "a".repeat(crate::helpers::ANNOUNCED_DISPLAY_NAME_MAX_BYTES);
-        mgr.status = "b".repeat(crate::helpers::ANNOUNCED_STATUS_MAX_BYTES);
+        mgr.display_name = "😀".repeat(crate::helpers::ANNOUNCED_DISPLAY_NAME_MAX_BYTES / 4);
+        mgr.status = format!(
+            "{}ab",
+            "€".repeat(crate::helpers::ANNOUNCED_STATUS_MAX_BYTES / 3)
+        );
+        assert_eq!(
+            (mgr.display_name.len(), mgr.status.len()),
+            (
+                crate::helpers::ANNOUNCED_DISPLAY_NAME_MAX_BYTES,
+                crate::helpers::ANNOUNCED_STATUS_MAX_BYTES
+            )
+        );
         mgr.announce_ratspeak_usage = true;
+        mgr.router.config.stamp_cost = Some(lxmf_core::stamper::STAMP_COST_CAP - 1.0);
+        mgr.delivery_ratchets
+            .destination_mut()
+            .set_destination_stamp([7; rns_identity::stamps::NETWORK_STAMP_SIZE], 25.0);
 
-        let raw = mgr.create_announce_packet().expect("announce packet");
+        let app_data = get_ratspeak_announce_app_data(
+            Some(mgr.display_name.as_str()),
+            mgr.router.config.stamp_cost,
+            Some(mgr.status.as_str()),
+            true,
+        );
+        let raw = mgr.create_announce_packet();
+        crate::announce_stamps::test_policy::unstamp();
+        let raw = raw.expect("announce packet");
 
-        assert!(raw.len() <= rns_wire::constants::MTU);
+        let (header, offset) = rns_wire::header::PacketHeader::unpack(&raw).unwrap();
+        assert!(header.flags.context_flag, "carries a ratchet");
+        let announce = rns_identity::announce::AnnounceData::unpack(&raw[offset..], true).unwrap();
+        assert!(announce.check_stamp(&header.destination_hash, 0.0).stamped);
+        assert_eq!(app_data.len(), 192);
+        assert!(app_data.len() <= DELIVERY_ANNOUNCE_APP_DATA_MAX_BYTES);
+        assert!(raw.len() + TRANSPORT_ID_BYTES <= rns_wire::constants::MTU);
+    }
+
+    #[test]
+    fn delivery_app_data_limit_is_where_reticulum_refuses_a_stamped_ratcheted_announce() {
+        use rns_identity::announce::AnnounceStampExt;
+        assert_eq!(DELIVERY_ANNOUNCE_APP_DATA_MAX_BYTES, 267);
+        let identity = Identity::new();
+        let mut destination = Destination::new(
+            Some(&identity),
+            Direction::In,
+            DestType::Single,
+            "lxmf.delivery",
+        )
+        .unwrap();
+        let ext = AnnounceStampExt {
+            stamp: [7; rns_identity::stamps::NETWORK_STAMP_SIZE],
+            lr_cost: 12.5,
+        };
+        let pack = |destination: &mut Destination, len: usize| {
+            destination.announce_packet_with_ext_at(
+                &identity,
+                Some(&vec![0x5A; len]),
+                Some(&[0x33; 32]),
+                false,
+                None,
+                AnnounceTime::new(100, 1.0).unwrap(),
+                Some(&ext),
+            )
+        };
+        let raw = pack(&mut destination, DELIVERY_ANNOUNCE_APP_DATA_MAX_BYTES).unwrap();
+        assert_eq!(raw.len() + TRANSPORT_ID_BYTES, rns_wire::constants::MTU);
+        assert!(matches!(
+            pack(&mut destination, DELIVERY_ANNOUNCE_APP_DATA_MAX_BYTES + 1),
+            Err(DestinationError::AnnounceTooLarge(501))
+        ));
     }
 
     #[test]

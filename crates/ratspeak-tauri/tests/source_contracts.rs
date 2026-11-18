@@ -12161,3 +12161,37 @@ fn android_ble_peer_reports_a_link_it_closes_itself() {
     assert!(write.contains("if (System.nanoTime() >= deadline) {"));
     assert!(client.contains("private const val WRITE_ENQUEUE_TIMEOUT_MS = 1_200L"));
 }
+
+/// Reticulum 1.6.1 refuses a HEADER_1 announce with no room for a relay's
+/// transport id. The name and status caps keep Ratspeak's inside it, and a
+/// refusal is shown, not dropped.
+#[test]
+fn an_announce_too_large_to_relay_is_refused_aloud() {
+    let root = repo_root();
+    let read = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+    let lxmf = read("crates/ratspeak-runtime/src/lxmf.rs");
+    assert!(lxmf.contains(
+        "DeliveryRatchetError::Destination(DestinationError::AnnounceTooLarge(size)) => {"
+    ));
+    assert_eq!(
+        lxmf.matches("if raw.len() + TRANSPORT_ID_BYTES > rns_wire::constants::MTU {")
+            .count(),
+        2
+    );
+    assert!(!lxmf.contains("announce packet exceeds Reticulum MTU"));
+    assert!(lxmf.contains("<= DELIVERY_ANNOUNCE_APP_DATA_MAX_BYTES\n);"));
+    let helpers = read("crates/ratspeak-runtime/src/helpers.rs");
+    assert!(helpers.contains("pub const ANNOUNCED_DISPLAY_NAME_MAX_BYTES: usize = 128;"));
+    assert!(helpers.contains("pub const ANNOUNCED_STATUS_MAX_BYTES: usize = 50;"));
+    let runtime = read("crates/ratspeak-runtime/src/lib.rs");
+    assert_eq!(
+        runtime.matches("state.warn_announce_too_large();").count(),
+        2
+    );
+    let state = read("crates/ratspeak-runtime/src/state.rs");
+    let warn = rust_function_block(&state, "warn_announce_too_large");
+    assert!(warn.contains("\"identity_error\""));
+    assert!(warn.contains("ANNOUNCE_TOO_LARGE_MESSAGE"));
+    let events = read("dashboard/static/js/tauri_events.js");
+    assert!(events.contains("RS.listen('identity_error', function(data) {"));
+}

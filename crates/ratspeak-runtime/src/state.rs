@@ -601,6 +601,10 @@ impl LxmfPanicRecovery {
     }
 }
 
+/// Shown when Reticulum refuses this device's announce as too large.
+pub const ANNOUNCE_TOO_LARGE_MESSAGE: &str =
+    "Couldn’t announce: your name and status are too long. Shorten them in Identity.";
+
 /// SQLite key for the discovery settings, JSON.
 pub const NETWORK_SETTINGS_KEY: &str = "network_settings.v1";
 
@@ -807,6 +811,8 @@ pub struct AppState {
     /// Process-monotonic semantic revisions sampled by announce intents.
     announce_content_revision: AtomicU64,
     announce_interface_revision: AtomicU64,
+    /// One more than the content revision last refused as too large.
+    announce_too_large_warned: AtomicU64,
     /// If true, delivery announces include Ratspeak capability metadata.
     pub announce_ratspeak_usage: AtomicBool,
     /// Android-only recovery policy for saved BLE RNodes. When disabled,
@@ -1194,6 +1200,7 @@ impl AppState {
             announce_coordinator: Mutex::new(AnnounceCoordinator::default()),
             announce_content_revision: AtomicU64::new(0),
             announce_interface_revision: AtomicU64::new(0),
+            announce_too_large_warned: AtomicU64::new(0),
             announce_ratspeak_usage: AtomicBool::new(initial_announce_ratspeak_usage),
             android_ble_rnode_auto_resume: AtomicBool::new(initial_android_ble_rnode_auto_resume),
             poll_now: Arc::new(tokio::sync::Notify::new()),
@@ -1665,6 +1672,22 @@ impl AppState {
             identity: self.current_identity_session_generation(),
             content: self.announce_content_revision.load(Ordering::SeqCst),
             interface: self.announce_interface_revision.load(Ordering::SeqCst),
+        }
+    }
+
+    /// Reticulum refused this device's announce as too large: says so once
+    /// for each name and status.
+    pub fn warn_announce_too_large(&self) {
+        let warned = self.announce_content_revision.load(Ordering::SeqCst) + 1;
+        if self
+            .announce_too_large_warned
+            .swap(warned, Ordering::SeqCst)
+            != warned
+        {
+            self.emit_to_all(
+                "identity_error",
+                serde_json::json!({ "error": ANNOUNCE_TOO_LARGE_MESSAGE }),
+            );
         }
     }
 

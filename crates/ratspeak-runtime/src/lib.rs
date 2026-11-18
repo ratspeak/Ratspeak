@@ -4508,6 +4508,11 @@ fn try_build_presence_announce_packets(
                 Err(lxmf::AnnounceBuildError::StampPending) => {
                     return PresencePacketBuildAttempt::StampPending;
                 }
+                Err(lxmf::AnnounceBuildError::TooLarge(size)) => {
+                    delivery_failed = true;
+                    tracing::warn!(correlation_id, size, "LXMF delivery announce too large");
+                    state.warn_announce_too_large();
+                }
                 Err(lxmf::AnnounceBuildError::Failed(error)) => {
                     delivery_failed = true;
                     tracing::warn!(
@@ -5145,6 +5150,10 @@ fn build_lxmf_path_response_message(
         .map_err(|error| match error {
             AnnounceBuildError::Coalesced => BuildError::Coalesced,
             AnnounceBuildError::StampPending => BuildError::Busy,
+            AnnounceBuildError::TooLarge(_) => {
+                state.warn_announce_too_large();
+                BuildError::Failed
+            }
             AnnounceBuildError::Failed(_) => BuildError::Failed,
         })?;
     let request = rns_transport::messages::OutboundRequest {
