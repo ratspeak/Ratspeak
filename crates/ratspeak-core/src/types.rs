@@ -45,9 +45,6 @@ pub struct NetworkSettings {
     /// Auto-join servers from any announced software (`autoconnect_unverified_implementations`).
     #[serde(default)]
     pub autoconnect_unknown_implementations: bool,
-    /// Stamp this device's announces and path requests (`[stamps]` `stamp_destinations`, `stamp_prs`).
-    #[serde(default)]
-    pub stamp_outgoing: bool,
     /// Drop announces, path requests, and link requests without valid stamps (`[stamps]` `enforce_stamps`).
     #[serde(default)]
     pub require_stamps: bool,
@@ -175,7 +172,7 @@ mod tests {
         let settings: NetworkSettings = serde_json::from_str(stored).unwrap();
         assert!(settings.discover && settings.autojoin == 5 && !settings.trusted_only);
         assert!(!settings.autoconnect_unknown_implementations && !settings.link_mtu_discovery_off);
-        assert!(!settings.stamp_outgoing && !settings.require_stamps);
+        assert!(!settings.require_stamps);
         let saved = serde_json::to_value(&settings).unwrap();
         assert_eq!(saved["block_list_sources"], serde_json::json!(["cc"]));
         assert_eq!(saved["answer_probes"], serde_json::json!(true));

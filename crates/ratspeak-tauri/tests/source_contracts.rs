@@ -11198,7 +11198,6 @@ fn discovery_settings_use_the_network_settings_commands() {
             "ns-unknown-impl-toggle",
             "s.autoconnect_unknown_implementations",
         ),
-        ("ns-stamp-toggle", "s.stamp_outgoing"),
         ("ns-require-stamps-toggle", "s.require_stamps"),
         ("ns-mtu-toggle", "!s.link_mtu_discovery_off"),
     ] {
@@ -11252,12 +11251,15 @@ fn discovery_settings_use_the_network_settings_commands() {
         "interface_discovery_sources",
         "link_mtu_discovery",
         "stamps",
-        "stamp_destinations",
-        "stamp_prs",
         "enforce_stamps",
     ] {
         assert!(keys.contains(&format!("\"{key}\"")), "{key}");
     }
+    // Announces and path requests are always stamped: no switch, no key, no stored field.
+    for key in ["stamp_destinations", "stamp_prs"] {
+        assert!(!keys.contains(&format!("\"{key}\"")), "{key}");
+    }
+    assert!(!ns.contains("stamp_outgoing") && !index.contains("ns-stamp-toggle"));
     assert!(keys.contains("yes(autojoin && s.autoconnect_unknown_implementations)"));
     // Link requests are stamped whenever a destination announces a cost; always is for testing.
     assert!(!keys.contains("always_stamp_lrs"));
@@ -11270,8 +11272,9 @@ fn discovery_settings_use_the_network_settings_commands() {
     // Upstream defaults: a fresh install has discovery and joining off.
     let state = read("crates/ratspeak-runtime/src/state.rs");
     assert!(state.contains(
-        "crate::db::get_setting(&db, NETWORK_SETTINGS_KEY)\n            .and_then(|v| serde_json::from_str(&v).ok())\n            .unwrap_or_default();"
+        "crate::db::get_setting(&db, NETWORK_SETTINGS_KEY)\n                .and_then(|v| serde_json::from_str(&v).ok())\n                .unwrap_or_default();"
     ));
+    assert!(state.contains("const RETIRED_NETWORK_SETTINGS: [&str; 1] = [\"stamp_outgoing\"];"));
     let types = read("crates/ratspeak-core/src/types.rs");
     assert!(types.contains(
         "#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]\npub struct NetworkSettings {"

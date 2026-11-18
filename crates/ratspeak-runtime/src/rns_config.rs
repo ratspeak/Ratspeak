@@ -2699,8 +2699,6 @@ fn network_settings_from_content(content: &str) -> Option<ratspeak_core::types::
             trusted_publishers.push(source);
         }
     }
-    let stamp_destinations = flag(stamps, "stamp_destinations")?;
-    let stamp_prs = flag(stamps, "stamp_prs")?;
     Some(ratspeak_core::types::NetworkSettings {
         discover: flag(reticulum, "discover_interfaces")? == Some(true),
         autojoin,
@@ -2708,9 +2706,6 @@ fn network_settings_from_content(content: &str) -> Option<ratspeak_core::types::
             reticulum,
             "autoconnect_unverified_implementations",
         )? == Some(true),
-        // One switch stamps both: either line turns it on, so a hand-written
-        // one is kept, and its pair added, instead of both being removed.
-        stamp_outgoing: stamp_destinations == Some(true) || stamp_prs == Some(true),
         require_stamps: flag(stamps, "enforce_stamps")? == Some(true),
         link_mtu_discovery_off: flag(reticulum, "link_mtu_discovery")? == Some(false),
         trusted_only: !sources.is_empty(),
@@ -2762,14 +2757,9 @@ fn network_settings_keys(
                 ),
             ],
         ),
-        (
-            "stamps",
-            vec![
-                ("stamp_destinations", yes(s.stamp_outgoing)),
-                ("stamp_prs", yes(s.stamp_outgoing)),
-                ("enforce_stamps", yes(s.require_stamps)),
-            ],
-        ),
+        // Announces and path requests are always stamped; their keys can only
+        // turn that on, so they are not Ratspeak's to write.
+        ("stamps", vec![("enforce_stamps", yes(s.require_stamps))]),
     ]
 }
 
@@ -3119,42 +3109,29 @@ mod tests {
     }
 
     #[test]
-    fn network_stamps_get_a_section_only_while_on() {
+    fn require_stamps_gets_a_section_only_while_on() {
         use ratspeak_core::types::NetworkSettings;
         let dir = temp_config_dir();
         let base = "# Ratspeak\n\n[reticulum]\nshare_instance = No\n\n[logging]\nloglevel = 4\n\n[interfaces]\n  [[Home]]\n    type = TCPClientInterface\n";
         std::fs::write(dir.join("config"), base).unwrap();
-        let stamping = NetworkSettings {
-            stamp_outgoing: true,
-            ..NetworkSettings::default()
-        };
-        assert!(apply_network_settings(&dir, &stamping).unwrap());
-        assert_eq!(
-            read_config(&dir).unwrap().as_str(),
-            "# Ratspeak\n\n[reticulum]\nshare_instance = No\n\n[stamps]\nstamp_destinations = yes\nstamp_prs = yes\n\n[logging]\nloglevel = 4\n\n[interfaces]\n  [[Home]]\n    type = TCPClientInterface\n"
-        );
+        // Announces and path requests are stamped with no key written.
+        assert!(!apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
         let stamps = runtime_config(&dir).stamps;
         assert!(stamps.stamp_destinations && stamps.stamp_prs);
         assert!(!stamps.stamps_enforced && !stamps.lr_stamps_enforced);
 
-        let both = NetworkSettings {
-            require_stamps: true,
-            ..stamping.clone()
-        };
-        assert!(apply_network_settings(&dir, &both).unwrap());
-        assert!(read_config(&dir).unwrap().contains(
-            "[stamps]\nstamp_destinations = yes\nstamp_prs = yes\nenforce_stamps = yes\n\n[logging]"
-        ));
-        let stamps = runtime_config(&dir).stamps;
-        assert!(stamps.stamp_destinations && stamps.stamps_enforced && stamps.lr_stamps_enforced);
-
         let requiring = NetworkSettings {
-            stamp_outgoing: false,
-            ..both.clone()
+            require_stamps: true,
+            ..NetworkSettings::default()
         };
         assert!(apply_network_settings(&dir, &requiring).unwrap());
+        assert_eq!(
+            read_config(&dir).unwrap().as_str(),
+            "# Ratspeak\n\n[reticulum]\nshare_instance = No\n\n[stamps]\nenforce_stamps = yes\n\n[logging]\nloglevel = 4\n\n[interfaces]\n  [[Home]]\n    type = TCPClientInterface\n"
+        );
         let stamps = runtime_config(&dir).stamps;
-        assert!(!stamps.stamp_destinations && !stamps.stamp_prs && stamps.stamps_enforced);
+        assert!(stamps.stamp_destinations && stamps.stamp_prs);
+        assert!(stamps.stamps_enforced && stamps.lr_stamps_enforced);
 
         // Back to the defaults, the section it added goes and the file is as it was.
         assert!(apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
@@ -3167,32 +3144,49 @@ mod tests {
     }
 
     #[test]
-    fn network_stamps_keep_the_users_stamps_section() {
+    fn require_stamps_keeps_the_users_stamps_section() {
         use ratspeak_core::types::NetworkSettings;
         let dir = temp_config_dir();
         let base = "[reticulum]\nshare_instance = No\n\n[stamps]\n  # Tuned for this hub.\n  destination_cost = 24.8\n  stamp_prs = yes\n\n[interfaces]\n";
         std::fs::write(dir.join("config"), base).unwrap();
-        let both = NetworkSettings {
-            stamp_outgoing: true,
+        let requiring = NetworkSettings {
             require_stamps: true,
             ..NetworkSettings::default()
         };
-        assert!(apply_network_settings(&dir, &both).unwrap());
+        assert!(apply_network_settings(&dir, &requiring).unwrap());
         assert_eq!(
             read_config(&dir).unwrap().as_str(),
-            "[reticulum]\nshare_instance = No\n\n[stamps]\n  # Tuned for this hub.\n  destination_cost = 24.8\n  stamp_prs = yes\nstamp_destinations = yes\nenforce_stamps = yes\n\n[interfaces]\n"
+            "[reticulum]\nshare_instance = No\n\n[stamps]\n  # Tuned for this hub.\n  destination_cost = 24.8\n  stamp_prs = yes\nenforce_stamps = yes\n\n[interfaces]\n"
         );
         assert_eq!(runtime_config(&dir).stamps.destination_cost, 24.8);
 
-        // Off, its keys go, the user's own stamp_prs line with them; the rest of the section stays.
+        // Off, its key goes; the user's own lines stay.
         assert!(apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
-        assert_eq!(
-            read_config(&dir).unwrap().as_str(),
-            "[reticulum]\nshare_instance = No\n\n[stamps]\n  # Tuned for this hub.\n  destination_cost = 24.8\n\n[interfaces]\n"
-        );
+        assert_eq!(read_config(&dir).unwrap().as_str(), base);
         let stamps = runtime_config(&dir).stamps;
-        assert!(!stamps.stamp_prs && !stamps.stamps_enforced);
+        assert!(stamps.stamp_prs && !stamps.stamps_enforced);
         assert_eq!(stamps.destination_cost, 24.8);
+    }
+
+    #[test]
+    fn stamp_lines_from_an_older_install_are_left_and_cannot_turn_stamping_off() {
+        use ratspeak_core::types::NetworkSettings;
+        let dir = temp_config_dir();
+        for written in [
+            "stamp_destinations = yes\nstamp_prs = yes\n",
+            "stamp_prs = yes\n",
+            "stamp_destinations = no\nstamp_prs = no\n",
+        ] {
+            let config =
+                format!("[reticulum]\nshare_instance = No\n\n[stamps]\n{written}\n[interfaces]\n");
+            std::fs::write(dir.join("config"), &config).unwrap();
+            let seeded = network_settings_from_config(&dir).unwrap();
+            assert_eq!(seeded, NetworkSettings::default(), "{written}");
+            assert!(!apply_network_settings(&dir, &seeded).unwrap(), "{written}");
+            assert_eq!(read_config(&dir).unwrap().as_str(), config);
+            let stamps = runtime_config(&dir).stamps;
+            assert!(stamps.stamp_destinations && stamps.stamp_prs, "{written}");
+        }
     }
 
     #[test]
@@ -3228,7 +3222,6 @@ mod tests {
             discover: true,
             autojoin: 3,
             autoconnect_unknown_implementations: true,
-            stamp_outgoing: true,
             require_stamps: true,
             link_mtu_discovery_off: true,
             trusted_only: true,
@@ -3267,42 +3260,13 @@ mod tests {
     }
 
     #[test]
-    fn a_half_set_stamp_switch_keeps_the_hand_written_line() {
-        let dir = temp_config_dir();
-        for (written, wanted) in [
-            (
-                "stamp_destinations = yes\n",
-                "stamp_destinations = yes\nstamp_prs = yes\n",
-            ),
-            (
-                "stamp_prs = yes\n",
-                "stamp_prs = yes\nstamp_destinations = yes\n",
-            ),
-        ] {
-            std::fs::write(
-                dir.join("config"),
-                format!("[reticulum]\nshare_instance = No\n\n[stamps]\n{written}\n[interfaces]\n"),
-            )
-            .unwrap();
-            let seeded = network_settings_from_config(&dir).unwrap();
-            assert!(seeded.stamp_outgoing && !seeded.require_stamps);
-            assert!(apply_network_settings(&dir, &seeded).unwrap());
-            assert_eq!(
-                read_config(&dir).unwrap().as_str(),
-                format!("[reticulum]\nshare_instance = No\n\n[stamps]\n{wanted}\n[interfaces]\n")
-            );
-            assert!(!apply_network_settings(&dir, &seeded).unwrap());
-        }
-    }
-
-    #[test]
     fn a_network_key_reticulum_refuses_seeds_nothing() {
         let dir = temp_config_dir();
         for refused in [
             "[reticulum]\ndiscover_interfaces = maybe\n",
             "[reticulum]\nautoconnect_discovered_interfaces = -1\n",
             "[reticulum]\ninterface_discovery_sources = not-a-hash\n",
-            "[stamps]\nstamp_prs = sometimes\n",
+            "[stamps]\nenforce_stamps = sometimes\n",
         ] {
             std::fs::write(dir.join("config"), refused).unwrap();
             assert_eq!(network_settings_from_config(&dir), None, "{refused}");
@@ -3317,13 +3281,13 @@ mod tests {
         assert!(!apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
         let off = NetworkSettings {
             link_mtu_discovery_off: true,
-            stamp_outgoing: true,
+            require_stamps: true,
             ..NetworkSettings::default()
         };
         assert!(apply_network_settings(&dir, &off).unwrap());
         assert_eq!(
             read_config(&dir).unwrap().as_str(),
-            "[reticulum]\nlink_mtu_discovery = no\n\n[stamps]\nstamp_destinations = yes\nstamp_prs = yes\n\n[interfaces]\n"
+            "[reticulum]\nlink_mtu_discovery = no\n\n[stamps]\nenforce_stamps = yes\n\n[interfaces]\n"
         );
         assert!(apply_network_settings(&dir, &NetworkSettings::default()).unwrap());
         assert_eq!(read_config(&dir).unwrap().as_str(), "[interfaces]\n");

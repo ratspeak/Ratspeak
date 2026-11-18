@@ -10,7 +10,6 @@
         autoconnect_unknown_implementations: false,
         trusted_only: false,
         trusted_publishers: [],
-        stamp_outgoing: false,
         require_stamps: false,
         link_mtu_discovery_off: false,
     };
@@ -135,7 +134,6 @@
         setBadge('ns-accept-select', s.trusted_only ? 'Trusted publishers' : 'Anyone');
         var trusted = s.trusted_publishers.length;
         setBadge('ns-trusted-value', trusted ? String(trusted) : 'None');
-        setToggle('ns-stamp-toggle', s.stamp_outgoing);
         setToggle('ns-require-stamps-toggle', s.require_stamps);
         setToggle('ns-mtu-toggle', !s.link_mtu_discovery_off);
         renderDiscovered();
@@ -206,7 +204,6 @@
         bindToggle('ns-unknown-impl-toggle', 'ns-unknown-impl-row', function(on) {
             return { autoconnect_unknown_implementations: on };
         });
-        bindToggle('ns-stamp-toggle', 'ns-stamp-row', function(on) { return { stamp_outgoing: on }; });
         bindToggle('ns-require-stamps-toggle', 'ns-require-stamps-row', function(on) { return { require_stamps: on }; });
         bindToggle('ns-mtu-toggle', 'ns-mtu-row', function(on) { return { link_mtu_discovery_off: !on }; });
         bindBadge('ns-autojoin-select', function() {

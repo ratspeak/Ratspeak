@@ -604,6 +604,9 @@ impl LxmfPanicRecovery {
 /// SQLite key for the discovery settings, JSON.
 pub const NETWORK_SETTINGS_KEY: &str = "network_settings.v1";
 
+/// Stored by older builds, read by nothing: stamping is always on.
+const RETIRED_NETWORK_SETTINGS: [&str; 1] = ["stamp_outgoing"];
+
 /// Uses `std::sync::{Mutex, RwLock}`, not tokio variants. Critical sections
 /// must finish before `.await` or run in `spawn_blocking`
 /// (`clippy::await_holding_lock` enforces this).
@@ -1054,9 +1057,13 @@ impl AppState {
             crate::db::get_setting(&db, "android_ble_rnode_auto_resume")
                 .is_none_or(|value| value != "false");
 
-        let initial_network_settings = crate::db::get_setting(&db, NETWORK_SETTINGS_KEY)
-            .and_then(|v| serde_json::from_str(&v).ok())
-            .unwrap_or_default();
+        let mut initial_network_settings: ratspeak_core::types::NetworkSettings =
+            crate::db::get_setting(&db, NETWORK_SETTINGS_KEY)
+                .and_then(|v| serde_json::from_str(&v).ok())
+                .unwrap_or_default();
+        for key in RETIRED_NETWORK_SETTINGS {
+            initial_network_settings.other.remove(key);
+        }
         let initial_enforce_stamps = crate::db::get_setting(&db, "enforce_stamps")
             .and_then(|v| v.parse::<u8>().ok())
             .map(|v| v != 0)
@@ -4268,7 +4275,6 @@ mod tests {
             discover: true,
             autojoin: 2,
             autoconnect_unknown_implementations: true,
-            stamp_outgoing: true,
             require_stamps: true,
             link_mtu_discovery_off: true,
             trusted_only: true,
@@ -4355,6 +4361,47 @@ mod tests {
             refused
         );
         assert_eq!(crate::db::get_setting(&pool, NETWORK_SETTINGS_KEY), None);
+    }
+
+    #[test]
+    fn a_stored_stamp_switch_from_an_older_install_is_dropped() {
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(SqliteConnectionManager::memory())
+            .unwrap();
+        crate::db::init_schema(&pool).unwrap();
+        crate::db::try_set_setting(
+            &pool,
+            NETWORK_SETTINGS_KEY,
+            r#"{"discover":true,"stamp_outgoing":false,"require_stamps":true,"answer_probes":true}"#,
+        )
+        .unwrap();
+        let state = AppState::new(
+            DashboardConfig::from_env_and_defaults(std::env::temp_dir()),
+            pool,
+            Arc::new(ratspeak_core::NoopEmitter),
+            Arc::new(ratspeak_core::NoopNotifier),
+        );
+        let settings = state.network_settings();
+        assert!(settings.discover && settings.require_stamps);
+        assert!(!settings.other.contains_key("stamp_outgoing"));
+        assert_eq!(settings.other["answer_probes"], serde_json::json!(true));
+
+        let config = tempfile::tempdir().unwrap();
+        std::fs::write(
+            config.path().join("config"),
+            "[reticulum]\nshare_instance = No\n\n[interfaces]\n",
+        )
+        .unwrap();
+        assert!(start_network(&state, config.path()));
+        let written = crate::rns_config::read_config(config.path()).unwrap();
+        assert!(!written.contains("stamp_destinations") && !written.contains("stamp_prs"));
+        let policy = rns_runtime::reticulum::ReticulumConfig::try_from_config(
+            &rns_runtime::config::Config::parse(&written).unwrap(),
+        )
+        .unwrap()
+        .stamps;
+        assert!(policy.stamp_destinations && policy.stamp_prs && policy.stamps_enforced);
     }
 
     #[test]
