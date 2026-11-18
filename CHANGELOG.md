@@ -29,7 +29,8 @@ changes that materially affect how an artifact is reproduced.
 - On Linux, clicking the tray icon opens Ratspeak, and Ratspeak no longer prints a libayatana-appindicator warning.
 - Adding a contact or starting a message with someone's identity hash, rather than their LXMF address, uses their LXMF address when Ratspeak has heard them.
 - A quick tap after sending no longer starts a voice recording.
-- On a phone, Games fits all three games on the first screen with whole-board chess previews, and the first flick up after reaching the end of Messages or Contacts scrolls.
+- On a phone, the first flick back up after scrolling to the end of Messages or Contacts scrolls, instead of needing a second try.
+- On a phone, Games fits all three games on the first screen with whole-board chess previews.
 - The Android app is about 5 MB smaller: its start-up code is built once instead of three times.
 
 ## [1.1.0] - 2026-11-15
