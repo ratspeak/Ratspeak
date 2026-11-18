@@ -378,14 +378,16 @@
           "sourceKind": "registry"
         },
         {
-          "name": "libloading",
+          "name": "tray-icon",
           "rename": null,
           "kind": null,
           "target": "cfg(target_os = \"linux\")",
-          "requirement": "^0.8",
+          "requirement": "^0.25",
           "optional": false,
-          "defaultFeatures": true,
-          "features": [],
+          "defaultFeatures": false,
+          "features": [
+            "ksni"
+          ],
           "sourceKind": "registry"
         },
         {
