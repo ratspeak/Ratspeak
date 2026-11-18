@@ -2297,6 +2297,26 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                     mgr.router
                         .set_transport(rns_mgr.handle.transport_tx.clone());
                     mgr.load_stored_destination_stamps();
+                    let round = announce_stamps::begin(&state);
+                    announce_stamps::prepare(
+                        &state,
+                        round,
+                        mgr.delivery_destination(),
+                        &mgr.identity,
+                        true,
+                    );
+                    if state
+                        .propagation_node_hosting_enabled
+                        .load(Ordering::Relaxed)
+                    {
+                        announce_stamps::prepare(
+                            &state,
+                            round,
+                            mgr.propagation_destination(),
+                            &mgr.identity,
+                            true,
+                        );
+                    }
                     Some(mgr.lxmf_dest_hash)
                 } else {
                     None

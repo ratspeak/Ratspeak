@@ -92,6 +92,7 @@ pub async fn api_startup_progress(state: State<'_, Arc<AppState>>) -> AppResult<
         "stage": stage,
         "hw_locked": locked,
         "hw_locked_kind": kind,
+        "stamp": state.announce_stamp_status(),
         "storage_warning": storage_warning(&state.config.data_dir),
         "profile_lock_warning": profile_lock_warning(&state.config.data_root),
     }))

@@ -4714,6 +4714,30 @@ impl LxmfManager {
         );
     }
 
+    pub fn delivery_destination(&self) -> &Destination {
+        self.delivery_ratchets.destination()
+    }
+
+    pub fn propagation_destination(&self) -> &Destination {
+        &self.propagation_destination
+    }
+
+    /// A stamp made ahead of the first announce, onto the destination it belongs to.
+    pub fn install_destination_stamp(
+        &mut self,
+        hash: &[u8; 16],
+        (stamp, value): rns_runtime::destination_stamper::DestinationStamp,
+    ) {
+        if *hash == self.lxmf_dest_hash {
+            self.delivery_ratchets
+                .destination_mut()
+                .set_destination_stamp(stamp, value);
+        } else if *hash == self.propagation_dest_hash {
+            self.propagation_destination
+                .set_destination_stamp(stamp, value);
+        }
+    }
+
     pub fn create_propagation_announce_packet(&mut self) -> Result<Vec<u8>, AnnounceBuildError> {
         let stamp_ext = self.propagation_stamps.gate(
             &mut self.propagation_destination,

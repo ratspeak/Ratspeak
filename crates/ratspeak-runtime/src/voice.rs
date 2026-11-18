@@ -197,6 +197,10 @@ async fn start_voice_service_with_presence_update(
         TelephonyServiceChannelConfig::default(),
     )
     .map_err(|e| format!("Failed to register LXST telephony destination: {e}"))?;
+    if let Ok(destination) = lxst_telephony::telephony_inbound_destination(&identity) {
+        let round = crate::announce_stamps::current_round(state);
+        crate::announce_stamps::prepare(state, round, &destination, &identity, false);
+    }
     let control_tx = parts.control_tx;
     let event_rx = parts.event_rx;
     let service = parts.service;

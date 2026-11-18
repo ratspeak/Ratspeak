@@ -1,10 +1,123 @@
 //! Destination stamps for the announces Ratspeak builds itself. Generation runs
 //! on the shared Reticulum stamper; callers poll instead of waiting on it.
+//! Each destination's stamp is also made as soon as it exists, so its first
+//! announce need not wait, and the window can say when one is still being made.
+
+use std::sync::Arc;
+use std::time::Instant;
 
 use rns_identity::announce::AnnounceStampExt;
 use rns_identity::destination::Destination;
 use rns_identity::identity::Identity;
 use rns_runtime::destination_stamper::{Admission, DestinationStamps};
+use serde_json::{Value, json};
+
+use crate::state::AppState;
+
+pub(crate) const STAMP_EVENT: &str = "announce_stamp";
+
+/// The stamps being made for this session's presence announces.
+#[derive(Default)]
+pub(crate) struct Preparation {
+    round: u64,
+    started: bool,
+    working: usize,
+    since: Option<Instant>,
+    jobs: Vec<tokio::task::JoinHandle<()>>,
+}
+
+impl Preparation {
+    fn status(&self) -> Value {
+        let state = if self.working > 0 {
+            "working"
+        } else if self.started {
+            "ready"
+        } else {
+            "idle"
+        };
+        let elapsed_ms = self
+            .since
+            .map_or(0, |since| since.elapsed().as_millis() as u64);
+        json!({ "state": state, "elapsed_ms": elapsed_ms })
+    }
+}
+
+impl AppState {
+    /// `idle` before an identity's network starts, then `working` while a
+    /// presence announce's stamp is still being made, else `ready`.
+    pub fn announce_stamp_status(&self) -> Value {
+        self.announce_stamp
+            .lock()
+            .map(|prep| prep.status())
+            .unwrap_or_else(|_| json!({ "state": "ready", "elapsed_ms": 0 }))
+    }
+}
+
+/// A new identity session: the previous one's stamp jobs are cancelled.
+pub(crate) fn begin(state: &AppState) -> u64 {
+    let Ok(mut prep) = state.announce_stamp.lock() else {
+        return 0;
+    };
+    for job in prep.jobs.drain(..) {
+        job.abort();
+    }
+    prep.round += 1;
+    prep.started = true;
+    prep.working = 0;
+    prep.since = None;
+    state.emitter.emit(STAMP_EVENT, prep.status());
+    prep.round
+}
+
+pub(crate) fn current_round(state: &AppState) -> u64 {
+    state.announce_stamp.lock().map_or(0, |prep| prep.round)
+}
+
+/// Make `destination`'s stamp now. `presence` stamps hold the user's
+/// delivery announce, so the window reports them; the stamp goes into the LXMF
+/// manager's matching destination once made.
+pub(crate) fn prepare(
+    state: &Arc<AppState>,
+    round: u64,
+    destination: &Destination,
+    identity: &Identity,
+    presence: bool,
+) {
+    let Some(prepared) = rns_runtime::destination_stamper::prepare(destination, identity) else {
+        return;
+    };
+    let Ok(mut prep) = state.announce_stamp.lock() else {
+        return;
+    };
+    if prep.round != round {
+        return;
+    }
+    if presence {
+        prep.working += 1;
+        prep.since.get_or_insert_with(Instant::now);
+        state.emitter.emit(STAMP_EVENT, prep.status());
+    }
+    let hash = destination.hash;
+    let task_state = Arc::clone(state);
+    prep.jobs.push(tokio::spawn(async move {
+        let stamp = prepared.ready().await;
+        if let (Some(stamp), Ok(mut lxmf)) = (stamp, task_state.lxmf.lock())
+            && let Some(mgr) = lxmf.as_mut()
+        {
+            mgr.install_destination_stamp(&hash, stamp);
+        }
+        let Ok(mut prep) = task_state.announce_stamp.lock() else {
+            return;
+        };
+        if prep.round == round && presence {
+            prep.working = prep.working.saturating_sub(1);
+            if prep.working == 0 {
+                prep.since = None;
+            }
+            task_state.emitter.emit(STAMP_EVENT, prep.status());
+        }
+    }));
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StampWait {
@@ -91,5 +204,24 @@ pub(crate) mod test_policy {
         let guard = LOCK.lock().await;
         unstamp();
         guard
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[test]
+    fn status_is_idle_until_a_session_starts_then_working_or_ready() {
+        let mut prep = Preparation::default();
+        assert_eq!(prep.status()["state"], "idle");
+        prep.started = true;
+        assert_eq!(prep.status(), json!({ "state": "ready", "elapsed_ms": 0 }));
+        prep.working = 1;
+        prep.since = Instant::now().checked_sub(Duration::from_millis(1500));
+        let status = prep.status();
+        assert_eq!(status["state"], "working");
+        assert!(status["elapsed_ms"].as_u64().unwrap() >= 1500);
     }
 }

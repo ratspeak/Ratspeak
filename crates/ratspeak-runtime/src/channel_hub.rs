@@ -6341,6 +6341,18 @@ impl ChannelHubHandle {
         )
         .await
         .map_err(|error| ChannelHubError::Registration(error.to_string()))?;
+        if let (Some(app), Ok(destination)) = (
+            state.upgrade(),
+            Destination::new(
+                Some(&hub_identity),
+                rns_identity::destination::Direction::In,
+                rns_identity::destination::DestType::Single,
+                rrc::RRC_HUB_ASPECT,
+            ),
+        ) {
+            let round = crate::announce_stamps::current_round(&app);
+            crate::announce_stamps::prepare(&app, round, &destination, &hub_identity, false);
+        }
 
         let (command_tx, command_rx) = mpsc::channel(COMMAND_BUFFER);
         let snapshot = Arc::new(RwLock::new(ChannelHubSnapshot::stopped()));

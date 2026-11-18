@@ -849,6 +849,8 @@ pub struct AppState {
     pub last_lxmf_delivery_announce_at_ms: AtomicU64,
     /// Session-local global throttle for announce-before-send nudges.
     pub last_opportunistic_announce_at: Mutex<Option<Instant>>,
+    /// Destination stamps being made ahead of this session's first announces.
+    pub(crate) announce_stamp: Mutex<crate::announce_stamps::Preparation>,
     /// Peers currently covered by an in-flight opportunistic announce attempt.
     pub opportunistic_announce_inflight: Mutex<HashSet<String>>,
     /// One-shot interface-up re-announce suppression keyed by interface name.
@@ -1221,6 +1223,7 @@ impl AppState {
             interface_lifecycle: initial_interface_lifecycle,
             last_lxmf_delivery_announce_at_ms: AtomicU64::new(0),
             last_opportunistic_announce_at: Mutex::new(None),
+            announce_stamp: Mutex::new(Default::default()),
             opportunistic_announce_inflight: Mutex::new(HashSet::new()),
             interface_reannounce_suppression: Mutex::new(HashMap::new()),
             ble_rnode_activity_operation: Mutex::new(None),

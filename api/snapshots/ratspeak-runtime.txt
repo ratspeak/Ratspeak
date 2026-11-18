@@ -1702,6 +1702,7 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::create_path_response_announce_packet
 pub fn ratspeak_runtime::lxmf::LxmfManager::create_propagation_announce_packet(&mut self) -> core::result::Result<alloc::vec::Vec<u8>, ratspeak_runtime::lxmf::AnnounceBuildError>
 pub fn ratspeak_runtime::lxmf::LxmfManager::decrypt_inbound(&self, &[u8]) -> core::option::Option<alloc::vec::Vec<u8>>
 pub fn ratspeak_runtime::lxmf::LxmfManager::delete_conversation(&mut self, &str, &ratspeak_db::db::DbPool, &str) -> core::result::Result<(), ratspeak_db::admission::AdmissionDbError>
+pub fn ratspeak_runtime::lxmf::LxmfManager::delivery_destination(&self) -> &rns_identity::destination::Destination
 pub fn ratspeak_runtime::lxmf::LxmfManager::download_key_epoch(&self) -> [u8; 32]
 pub fn ratspeak_runtime::lxmf::LxmfManager::download_state_installed(&self) -> bool
 pub fn ratspeak_runtime::lxmf::LxmfManager::download_state_revision(&self) -> u64
@@ -1720,6 +1721,7 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::import_identity(&self, &[u8], &str, 
 pub fn ratspeak_runtime::lxmf::LxmfManager::import_identity_to_data_dir(&std::path::Path, &[u8], &str, &ratspeak_db::db::DbPool) -> core::result::Result<(alloc::string::String, alloc::string::String), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub fn ratspeak_runtime::lxmf::LxmfManager::import_identity_with_phrase(&std::path::Path, &[u8], core::option::Option<(&str, &ratspeak_runtime::vault::VaultJob)>, &str, &ratspeak_db::db::DbPool) -> core::result::Result<(alloc::string::String, alloc::string::String), ratspeak_runtime::lxmf::IdentityImportError>
 pub fn ratspeak_runtime::lxmf::LxmfManager::inbound_source_public_key(&self, &[u8; 16]) -> core::option::Option<[u8; 64]>
+pub fn ratspeak_runtime::lxmf::LxmfManager::install_destination_stamp(&mut self, &[u8; 16], rns_runtime::destination_stamper::DestinationStamp)
 pub fn ratspeak_runtime::lxmf::LxmfManager::install_download_haves(&mut self, [u8; 16], [u8; 16], alloc::vec::Vec<lxmf_core::admission::DurableHave>) -> bool
 pub fn ratspeak_runtime::lxmf::LxmfManager::install_download_state(&mut self, lxmf_core::admission::SuppressionLedger, lxmf_core::admission::AdmissionEpochs, alloc::vec::Vec<lxmf_core::admission::DurableHave>)
 pub fn ratspeak_runtime::lxmf::LxmfManager::invalidate_download_state(&mut self)
@@ -1740,6 +1742,7 @@ pub fn ratspeak_runtime::lxmf::LxmfManager::poll_delivery_ready(&mut self, &mut 
 pub fn ratspeak_runtime::lxmf::LxmfManager::process_delivery_events(&mut self) -> alloc::vec::Vec<(alloc::string::String, &'static str)>
 pub fn ratspeak_runtime::lxmf::LxmfManager::propagated_deposit_pending(&self) -> bool
 pub fn ratspeak_runtime::lxmf::LxmfManager::propagation_decrypt_context(&self) -> ratspeak_runtime::lxmf::PropagationDecryptContext
+pub fn ratspeak_runtime::lxmf::LxmfManager::propagation_destination(&self) -> &rns_identity::destination::Destination
 pub fn ratspeak_runtime::lxmf::LxmfManager::propagation_node_ready_for_send(&self, &[u8; 16]) -> bool
 pub fn ratspeak_runtime::lxmf::LxmfManager::propagation_transfer_status(&self) -> core::option::Option<lxmf_core::propagation_client::PropagationTransferStatus>
 pub fn ratspeak_runtime::lxmf::LxmfManager::purge_identity_profile(&std::path::Path, &str, bool) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
@@ -2661,6 +2664,8 @@ pub async fn ratspeak_runtime::state::AppState::wait_for_mobile_platform_bridge(
 pub fn ratspeak_runtime::state::AppState::wake_waiting(&self, ratspeak_runtime::lxmf::WakeEvent)
 pub fn ratspeak_runtime::state::AppState::warn_announce_too_large(&self)
 pub fn ratspeak_runtime::state::AppState::withdraw_native_notifications(&self)
+impl ratspeak_runtime::state::AppState
+pub fn ratspeak_runtime::state::AppState::announce_stamp_status(&self) -> serde_json::value::Value
 pub struct ratspeak_runtime::state::AttachmentTransferLease
 impl core::ops::drop::Drop for ratspeak_runtime::state::AttachmentTransferLease
 pub fn ratspeak_runtime::state::AttachmentTransferLease::drop(&mut self)
