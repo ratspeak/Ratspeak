@@ -786,6 +786,7 @@ mod tests {
         let state = Arc::new(state);
         state.set_lxmf(mgr);
         crate::init_rns_lxmf(state.clone(), dir.path().into()).await;
+        crate::announce_stamps::test_policy::unstamp();
         ready(&state).await.unwrap();
         (dir, state, store)
     }
@@ -822,6 +823,7 @@ mod tests {
         )
         .await
         .unwrap();
+        crate::announce_stamps::test_policy::unstamp();
         (dir, handle, endpoint)
     }
     fn existing(endpoint: LocalEndpoint) -> NetworkRequest {
@@ -835,6 +837,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_warnings_follow_current_interface_configuration() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path().join("rns");
         // Genuine startup failures without radio hardware: both configured
@@ -860,6 +863,7 @@ mod tests {
         )
         .await
         .unwrap();
+        crate::announce_stamps::test_policy::unstamp();
         let handle = runtime.handle.clone();
         assert_eq!(handle.startup_interface_failures().len(), 2);
         let pool = db::init_pool(dir.path()).unwrap();
@@ -952,6 +956,7 @@ mod tests {
 
     #[tokio::test]
     async fn ownership_switch_roundtrip_keeps_identity_config_and_protects_secret() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         let (_dir, state, store) = fixture().await;
         let (_owner_dir, owner, endpoint) = owner().await;
         let identity = helpers::active_identity_id(&state);
@@ -985,6 +990,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejected_key_or_secret_storage_failure_leaves_current_runtime_untouched() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         let (_dir, state, store) = fixture().await;
         let (_owner_dir, owner, endpoint) = owner().await;
         let before = state
@@ -1035,6 +1041,7 @@ mod tests {
 
     #[tokio::test]
     async fn commit_failure_restores_previous_runtime_and_removes_staged_key() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         let (_dir, state, store) = fixture().await;
         let (_owner_dir, owner, endpoint) = owner().await;
         state.db.get().unwrap().execute_batch("CREATE TRIGGER reject_network_selection BEFORE INSERT ON settings WHEN NEW.key LIKE 'network_ownership.%' BEGIN SELECT RAISE(FAIL, 'test commit failure'); END;").unwrap();
@@ -1069,6 +1076,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_switch_cannot_apply_to_a_new_identity_generation() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         let (_dir, state, _) = fixture().await;
         let guard = state.identity_switch_lock.lock().await;
         let requested = state.clone();
@@ -1092,6 +1100,7 @@ mod tests {
 
     #[tokio::test]
     async fn interrupted_transition_clears_transient_authority_and_stops_traffic() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         let (_dir, state, _) = fixture().await;
         let identity = state
             .lxmf
@@ -1147,6 +1156,7 @@ mod tests {
 
     #[tokio::test]
     async fn deleted_profile_cleanup_cannot_delete_active_credentials() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         let (_dir, state, store) = fixture().await;
         let active = helpers::active_identity_id(&state);
         assert!(forget_deleted_profile(&state, &active).await.is_err());

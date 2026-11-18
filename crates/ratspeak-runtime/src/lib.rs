@@ -9359,6 +9359,7 @@ mod inbound_pipeline_tests {
 
     #[tokio::test]
     async fn propagation_path_responses_preserve_current_signed_node_metadata() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         use rns_transport::link_messages::{AnnounceRequest, DestinationEvent};
         use rns_transport::messages::TransportMessage;
 
@@ -9556,7 +9557,7 @@ mod inbound_pipeline_tests {
         let mut blob = destination.to_vec();
         blob.extend(recipient.encrypt(&plaintext, None).unwrap());
         let transient_id = rns_crypto::sha::full_hash(&blob);
-        let (stamp, _) = lxmf_core::stamper::generate_stamp(
+        let (stamp, expanded_value) = lxmf_core::stamper::generate_stamp(
             &transient_id,
             1.0,
             lxmf_core::constants::STAMP_WORKBLOCK_EXPAND_ROUNDS_PN,
@@ -9635,9 +9636,11 @@ mod inbound_pipeline_tests {
             );
         }
 
+        // Either workblock form passes (LXMF 1.3.1): refuse above both values.
         let stamp_value = lxmf_core::stamper::validate_pn_stamp(&entry, 0.0)
             .unwrap()
-            .2;
+            .2
+            .max(expanded_value);
         assert!(stamp_value < lxmf_core::stamper::STAMP_COST_CAP);
         node.set_min_stamp_cost(stamp_value + 1.0 / 256.0);
         assert_eq!(accept_hosted_propagation_deposit(&mut node, &entry), None);
@@ -9803,6 +9806,7 @@ mod inbound_pipeline_tests {
     // never announced could not reach us on first contact.
     #[test]
     fn path_response_message_targets_arrival_interface() {
+        let _stamps = crate::announce_stamps::test_policy::blocking_unstamped();
         let (state, _emitter) = pipeline_state();
         let dest = local_dest(&state);
 
@@ -9848,6 +9852,7 @@ mod inbound_pipeline_tests {
     // (still a PathResponse announce). Guards the Some/None routing branch.
     #[test]
     fn path_response_message_without_interface_broadcasts() {
+        let _stamps = crate::announce_stamps::test_policy::blocking_unstamped();
         let (state, _emitter) = pipeline_state();
         let dest = local_dest(&state);
 
@@ -9870,6 +9875,7 @@ mod inbound_pipeline_tests {
 
     #[test]
     fn path_response_message_preserves_tag_for_exact_replay() {
+        let _stamps = crate::announce_stamps::test_policy::blocking_unstamped();
         let (state, _emitter) = pipeline_state();
         let tag = [0x5A; 16];
 
@@ -11958,6 +11964,7 @@ mod notification_tests {
     // records its result; a stale one is suppressed without a record.
     #[tokio::test]
     async fn only_a_transition_suppresses_an_announce_and_sending_suppresses_none() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         let state = announce_state();
         let origin = state.activity_request_fence();
         drop(crate::propagation_recovery::begin_download_deletion(Arc::clone(&state)).await);
@@ -11986,6 +11993,7 @@ mod notification_tests {
     // lock, so routine work goes on meanwhile, and it invalidates no request.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_sending_burst_waits_for_dispatch_outside_the_lock_and_invalidates_nothing() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         use rns_transport::messages::{OutboundDispatchResult, TransportMessage};
         let state = announce_state();
         let root = tempfile::tempdir().unwrap();
@@ -12001,6 +12009,7 @@ mod notification_tests {
         )
         .await
         .unwrap();
+        crate::announce_stamps::test_policy::unstamp();
         let (tx, mut packets) = tokio::sync::mpsc::channel(4);
         network.handle.transport_tx = tx;
         let network_shutdown = network.handle.shutdown.clone();
@@ -12048,6 +12057,7 @@ mod notification_tests {
     // Python's router retains every delivered or propagated recipient.
     #[tokio::test]
     async fn delivered_and_propagated_recipients_are_retained_in_reticulum() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         use lxmf_core::message::LxMessageDraft;
         use lxmf_core::message_api::DeliveryMethod;
         use rns_transport::messages::{TransportMessage, TransportQuery, TransportQueryResponse};
@@ -12089,6 +12099,7 @@ mod notification_tests {
         )
         .await
         .unwrap();
+        crate::announce_stamps::test_policy::unstamp();
         let (tx, mut queries) = tokio::sync::mpsc::channel(4);
         network.handle.transport_tx = tx;
         let network_shutdown = network.handle.shutdown.clone();

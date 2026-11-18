@@ -8244,6 +8244,7 @@ mod tests {
 
     #[test]
     fn coordinated_delivery_announce_preserves_typed_coalescing() {
+        let _stamps = crate::announce_stamps::test_policy::blocking_unstamped();
         let mut mgr = test_manager();
         mgr.build_delivery_announce_packet_at_typed(DeliveryAnnounceKind::Broadcast, 100, 1.0)
             .expect("first announce");
@@ -8255,6 +8256,7 @@ mod tests {
 
     #[test]
     fn propagation_announce_never_carries_the_delivery_ratchet() {
+        let _stamps = crate::announce_stamps::test_policy::blocking_unstamped();
         let mut mgr = test_manager();
         let raw = mgr
             .create_propagation_announce_packet()
@@ -8274,6 +8276,7 @@ mod tests {
 
     #[test]
     fn unstamped_policy_keeps_announce_app_data_unchanged() {
+        let _stamps = crate::announce_stamps::test_policy::blocking_unstamped();
         let mut mgr = test_manager();
         mgr.display_name = "Alice".to_string();
         let expected_delivery = get_ratspeak_announce_app_data(
@@ -8308,6 +8311,7 @@ mod tests {
 
     #[test]
     fn path_response_announce_uses_path_response_context() {
+        let _stamps = crate::announce_stamps::test_policy::blocking_unstamped();
         let mut mgr = test_manager();
 
         let normal = mgr
@@ -8347,6 +8351,7 @@ mod tests {
 
     #[test]
     fn repeated_path_request_tag_reuses_exact_signed_announce() {
+        let _stamps = crate::announce_stamps::test_policy::blocking_unstamped();
         let mut mgr = test_manager();
         let tag = b"same-path-request";
         let first = mgr
@@ -8380,6 +8385,7 @@ mod tests {
 
     #[test]
     fn retained_delivery_key_decrypts_messages_after_rotation() {
+        let _stamps = crate::announce_stamps::test_policy::blocking_unstamped();
         let mut mgr = test_manager();
         let initial_public = mgr
             .delivery_ratchets
@@ -9654,6 +9660,7 @@ mod tests {
 
     #[test]
     fn corrupt_own_ring_is_preserved_and_only_unratcheted_announces_escape() {
+        let _stamps = crate::announce_stamps::test_policy::blocking_unstamped();
         let unique = TEMP_LXMF_COUNTER.fetch_add(1, Ordering::Relaxed);
         let tmp = std::env::temp_dir().join(format!(
             "ratspeak-ratchet-corrupt-ring-{}-{}-{unique}",

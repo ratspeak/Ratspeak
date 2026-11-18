@@ -223,10 +223,12 @@ mod tests {
         shutdown: ShutdownSignal,
         network: rns_runtime::reticulum::ReticulumHandle,
         _root: tempfile::TempDir,
+        _stamps: crate::announce_stamps::test_policy::Guard,
     }
 
     impl Fixture {
         async fn new(capacity: usize) -> Self {
+            let stamps = crate::announce_stamps::test_policy::unstamped().await;
             let (state, emitter) = pipeline_state();
             let root = tempfile::tempdir().unwrap();
             std::fs::write(
@@ -241,6 +243,7 @@ mod tests {
             )
             .await
             .unwrap();
+            crate::announce_stamps::test_policy::unstamp();
             let network = manager.handle.clone();
             let (tx, outbound) = tokio::sync::mpsc::channel(capacity);
             manager.handle.transport_tx = tx;
@@ -252,6 +255,7 @@ mod tests {
                 shutdown: ShutdownSignal::new(),
                 network,
                 _root: root,
+                _stamps: stamps,
             }
         }
 

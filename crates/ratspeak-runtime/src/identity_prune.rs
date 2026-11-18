@@ -1253,6 +1253,7 @@ mod tests {
         )
         .await
         .unwrap();
+        crate::announce_stamps::test_policy::unstamp();
         let (tx, mut queries) = tokio::sync::mpsc::channel(8);
         network.handle.transport_tx = tx;
         *state.rns.write().unwrap() = Some(network);
@@ -1301,6 +1302,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_sweep_drops_only_keys_that_nothing_and_no_reticulum_entry_keeps() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         let (_temp, state) = make_state();
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -1335,6 +1337,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_sweep_without_a_full_reticulum_listing_removes_no_key() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         let (_temp, state) = make_state();
         let orphan = hash(2_200_001);
         insert_keys(&state, [&orphan]);
@@ -1379,6 +1382,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_sweep_retains_known_contacts_and_selected_inbox_nodes_in_reticulum() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         let (_temp, state) = make_state();
         let [contact, pinned, unheard, node, stranger] =
             [1, 2, 3, 4, 5].map(|n| hash(2_400_000 + n));

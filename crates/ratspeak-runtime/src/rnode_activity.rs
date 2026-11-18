@@ -827,6 +827,7 @@ mod tests {
 
     #[tokio::test]
     async fn soft_rns_restart_rejects_an_old_origin_even_when_identity_is_unchanged() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         async fn manager(root: &std::path::Path) -> crate::rns::RnsManager {
             std::fs::create_dir_all(root).unwrap();
             std::fs::write(
@@ -834,13 +835,15 @@ mod tests {
                 "[reticulum]\nshare_instance = No\nenable_transport = No\n\n[interfaces]\n",
             )
             .unwrap();
-            crate::rns::RnsManager::init(
+            let manager = crate::rns::RnsManager::init(
                 root.to_str().unwrap(),
                 Some(root.join("cache")),
                 Arc::new(std::sync::atomic::AtomicBool::new(true)),
             )
             .await
-            .unwrap()
+            .unwrap();
+            crate::announce_stamps::test_policy::unstamp();
+            manager
         }
 
         let nonce = std::time::SystemTime::now()
@@ -906,6 +909,7 @@ mod tests {
     #[cfg(feature = "rnode-tcp")]
     #[tokio::test]
     async fn android_ble_ready_publication_requires_the_active_registry_generation() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         async fn manager(root: &std::path::Path) -> crate::rns::RnsManager {
             std::fs::create_dir_all(root).unwrap();
             std::fs::write(
@@ -913,13 +917,15 @@ mod tests {
                 "[reticulum]\nshare_instance = No\nenable_transport = No\n\n[interfaces]\n",
             )
             .unwrap();
-            crate::rns::RnsManager::init(
+            let manager = crate::rns::RnsManager::init(
                 root.to_str().unwrap(),
                 Some(root.join("cache")),
                 Arc::new(std::sync::atomic::AtomicBool::new(true)),
             )
             .await
-            .unwrap()
+            .unwrap();
+            crate::announce_stamps::test_policy::unstamp();
+            manager
         }
 
         async fn spawn_connecting_rnode(

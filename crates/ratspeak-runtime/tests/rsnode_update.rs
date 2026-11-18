@@ -44,6 +44,20 @@ const BOARD: BoardTarget = BoardTarget {
 };
 const WAIT: Duration = Duration::from_secs(120);
 
+/// The process destination-stamp policy is shared: one network pair at a time,
+/// announces unstamped (a value-25 stamp is too slow for a debug build).
+static NETWORKS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn unstamp() {
+    rns_runtime::destination_stamper::configure(
+        rns_transport::stamps::StampPolicy {
+            stamp_destinations: false,
+            ..Default::default()
+        },
+        None,
+    );
+}
+
 fn image(len: usize) -> Vec<u8> {
     (0..len).map(|i| (i * 31 % 251) as u8).collect()
 }
@@ -382,6 +396,7 @@ struct Net {
     contact: String,
     _node_rns: ReticulumHandle,
     _dirs: (tempfile::TempDir, tempfile::TempDir),
+    _alone: tokio::sync::MutexGuard<'static, ()>,
 }
 
 fn reticulum_config(interface: &str) -> String {
@@ -393,6 +408,7 @@ fn reticulum_config(interface: &str) -> String {
 impl Net {
     /// The app and a node on loopback TCP, with the node as a device contact holding `caps`.
     async fn new(node: Node, caps: &[&str]) -> Self {
+        let alone = NETWORKS.lock().await;
         let port = {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
             listener.local_addr().unwrap().port()
@@ -467,6 +483,7 @@ impl Net {
         )
         .await
         .unwrap();
+        unstamp();
         let transport = rns.handle.transport_tx.clone();
         state.set_rns(rns);
 
@@ -507,6 +524,7 @@ impl Net {
             contact,
             _node_rns: node_rns,
             _dirs: (node_dir, app_dir),
+            _alone: alone,
         }
     }
 

@@ -374,13 +374,15 @@ mod tests {
             "[reticulum]\nshare_instance = No\nenable_transport = No\n\n[interfaces]\n",
         )
         .unwrap();
-        crate::rns::RnsManager::init(
+        let manager = crate::rns::RnsManager::init(
             dir.to_str().unwrap(),
             Some(dir.join("cache")),
             Arc::new(AtomicBool::new(true)),
         )
         .await
-        .unwrap()
+        .unwrap();
+        crate::announce_stamps::test_policy::unstamp();
+        manager
     }
 
     /// Reticulum hears the recipient's announce and stops. After a restart in
@@ -388,6 +390,7 @@ mod tests {
     /// `ratchet`.
     #[tokio::test]
     async fn a_ratchet_learned_before_a_restart_encrypts_the_next_message() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         use rns_identity::destination::{DestType, Destination, Direction};
         use rns_transport::messages::{TransportQuery, TransportQueryResponse};
 
@@ -471,6 +474,7 @@ mod tests {
     /// the next announce's ratchet encrypts the message after it.
     #[tokio::test]
     async fn an_earlier_release_ratchet_file_goes_and_the_next_announce_brings_the_ratchet() {
+        let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         use rns_identity::destination::{DestType, Destination, Direction};
         use rns_transport::messages::{TransportQuery, TransportQueryResponse};
 

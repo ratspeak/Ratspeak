@@ -57,3 +57,39 @@ impl AnnounceStamps {
         }
     }
 }
+
+/// Tests share the process stamp policy, and a value-25 destination stamp is
+/// too slow to wait for in a debug build. A test that builds announces or
+/// starts a network holds this guard for its run: one at a time, destination
+/// stamping off. A start turns stamping back on; `unstamp` after it.
+#[cfg(test)]
+pub(crate) mod test_policy {
+    use rns_transport::stamps::StampPolicy;
+    use tokio::sync::{Mutex, MutexGuard};
+
+    static LOCK: Mutex<()> = Mutex::const_new(());
+
+    pub(crate) type Guard = MutexGuard<'static, ()>;
+
+    pub(crate) fn unstamp() {
+        rns_runtime::destination_stamper::configure(
+            StampPolicy {
+                stamp_destinations: false,
+                ..StampPolicy::default()
+            },
+            None,
+        );
+    }
+
+    pub(crate) fn blocking_unstamped() -> Guard {
+        let guard = LOCK.blocking_lock();
+        unstamp();
+        guard
+    }
+
+    pub(crate) async fn unstamped() -> Guard {
+        let guard = LOCK.lock().await;
+        unstamp();
+        guard
+    }
+}
