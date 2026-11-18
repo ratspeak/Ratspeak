@@ -513,6 +513,7 @@ pub async fn ratspeak_tauri::commands::interfaces::set_text_scale(tauri::state::
 pub async fn ratspeak_tauri::commands::interfaces::set_transport_mode(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, ratspeak_tauri::commands::interfaces::TransportModeArgs) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::set_ui_state(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String, serde_json::value::Value) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub fn ratspeak_tauri::commands::interfaces::spawn_auto_event_broadcaster(&alloc::sync::Arc<ratspeak_runtime::state::AppState>)
+pub fn ratspeak_tauri::commands::interfaces::spawn_interface_reattacher(&alloc::sync::Arc<ratspeak_runtime::state::AppState>)
 pub fn ratspeak_tauri::commands::interfaces::stored_close_button_action(&ratspeak_runtime::state::AppState) -> ratspeak_tauri::window_prefs::CloseButtonAction
 pub async fn ratspeak_tauri::commands::interfaces::trust_link_host(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::interfaces::untrust_link_host(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, alloc::string::String) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>

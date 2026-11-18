@@ -259,7 +259,6 @@ pub ratspeak_core::types::NetworkSettings::discover: bool
 pub ratspeak_core::types::NetworkSettings::link_mtu_discovery_off: bool
 pub ratspeak_core::types::NetworkSettings::other: serde_json::map::Map<alloc::string::String, serde_json::value::Value>
 pub ratspeak_core::types::NetworkSettings::require_stamps: bool
-pub ratspeak_core::types::NetworkSettings::stamp_outgoing: bool
 pub ratspeak_core::types::NetworkSettings::trusted_only: bool
 pub ratspeak_core::types::NetworkSettings::trusted_publishers: alloc::vec::Vec<alloc::string::String>
 pub struct ratspeak_core::types::PeerRow
