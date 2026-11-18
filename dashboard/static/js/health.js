@@ -116,8 +116,9 @@ function renderDashboardPeersList() {
 function renderHomeStatus(data) {
     var card = document.getElementById('home-status');
     if (!card) return;
+    // A device Local Network found or a client a server accepted is part of that connection, as on Network.
     var ifaces = data && data.interface_stats
-        ? interfaceStatsWithoutAutoPeerDoubleCount(data.interface_stats.interfaces) : null;
+        ? interfaceStatsWithoutAutoPeerDoubleCount(data.interface_stats.interfaces).filter(function(iface) { return !isSpawnedInterface(iface); }) : null;
     var html;
     if (!data) {
         html = '<div class="home-status"><span class="ui-tile ui-tile--neutral"><span class="ui-spin"></span></span>' +
