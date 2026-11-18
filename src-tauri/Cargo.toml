@@ -62,7 +62,7 @@ tray-icon = { version = "0.25", default-features = false, features = ["ksni"] }
 jni = "0.19"
 btleplug = "=0.13.4"
 jni-btleplug = { package = "jni", version = "0.22" }
-rns-interface = { path = "../../rsReticulum/crates/rns-interface", version = "~1.5.0", features = ["ble", "mobile-throttle"] }
+rns-interface = { path = "../../rsReticulum/crates/rns-interface", version = "~1.5.1", features = ["ble", "mobile-throttle"] }
 tracing-android = "0.2"
 
 [target.'cfg(target_os = "ios")'.dependencies]
