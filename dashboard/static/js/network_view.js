@@ -102,6 +102,9 @@
             var live = typeof getInterfaceLiveStatus === 'function' ? getInterfaceLiveStatus(name) : null;
             var online = live ? live.online !== false : false;
             var status = a.paused ? (off.indexOf(name) !== -1 ? 'off' : 'paused') : (online ? 'up' : 'pending');
+            // A server Reticulum blocked stays off until Resume.
+            var blocked = status === 'pending' && !!live && live.detached === 'blocked';
+            if (blocked) status = 'off';
             var display = typeof friendlyInterfaceName === 'function' ? friendlyInterfaceName(name, iface.type || '', iface.role || 'normal') : name;
             // A refused multicast join (iOS without the entitlement) means Local Network can't hear anyone, unless it already does.
             var au = a.section === 'local' && !a.paused && !(online && live.peers > 0) ? window._autoUnavailable : null;
@@ -114,7 +117,7 @@
                 tx: live ? live.txb || 0 : 0, rx: live ? live.rxb || 0 : 0,
                 peers: live && live.peers != null ? live.peers : null, clients: live && live.clients != null ? live.clients : null,
                 pub: a.section === 'tcp' ? publicServerFor(iface) : null, joined: a.ifaceType === 'joined',
-                note: status === 'off' || status === 'paused' ? NV.notes[name] || '' : '',
+                note: status === 'off' || status === 'paused' ? NV.notes[name] || (blocked && typeof connectTroubleText === 'function' ? connectTroubleText(live) : '') : '',
                 health: au && au.interface === name ? 'Multicast unavailable' : a.mobileHealth ? a.mobileHealth.label : (a.waitingForDevice ? 'Waiting for USB' : trouble)
             };
         }).filter(function(c) { return c.kind !== 'ble'; });

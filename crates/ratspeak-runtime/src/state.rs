@@ -813,6 +813,11 @@ pub struct AppState {
     announce_interface_revision: AtomicU64,
     /// One more than the content revision last refused as too large.
     announce_too_large_warned: AtomicU64,
+    /// Interfaces Reticulum detached, and their re-attaches.
+    pub interface_detaches: Mutex<crate::interface_detach::InterfaceDetaches>,
+    /// Re-attaches now due, for the shell that spawns interfaces.
+    pub interface_reattach_tx:
+        tokio::sync::broadcast::Sender<crate::interface_detach::ReattachRequest>,
     /// If true, delivery announces include Ratspeak capability metadata.
     pub announce_ratspeak_usage: AtomicBool,
     /// Android-only recovery policy for saved BLE RNodes. When disabled,
@@ -1201,6 +1206,8 @@ impl AppState {
             announce_content_revision: AtomicU64::new(0),
             announce_interface_revision: AtomicU64::new(0),
             announce_too_large_warned: AtomicU64::new(0),
+            interface_detaches: Mutex::new(Default::default()),
+            interface_reattach_tx: tokio::sync::broadcast::channel(16).0,
             announce_ratspeak_usage: AtomicBool::new(initial_announce_ratspeak_usage),
             android_ble_rnode_auto_resume: AtomicBool::new(initial_android_ble_rnode_auto_resume),
             poll_now: Arc::new(tokio::sync::Notify::new()),
@@ -3376,7 +3383,10 @@ impl AppState {
             .and_then(|rns| rns.as_ref())
             .map(|rns| &rns.handle);
         let readiness = self.rnode_product_readiness.read().ok();
-        Self::interface_stats_payload_with_readiness(stats, readiness.as_deref(), handle)
+        let mut payload =
+            Self::interface_stats_payload_with_readiness(stats, readiness.as_deref(), handle);
+        payload["detached"] = crate::interface_detach::payload(self);
+        payload
     }
 
     fn interface_stats_payload_with_readiness(
@@ -3483,11 +3493,12 @@ impl AppState {
             return false;
         }
 
-        let interface_stats = Self::interface_stats_payload_with_readiness(
+        let mut interface_stats = Self::interface_stats_payload_with_readiness(
             stats,
             Some(&readiness),
             rns.as_ref().map(|rns| &rns.handle),
         );
+        interface_stats["detached"] = crate::interface_detach::payload(self);
 
         let any_online = interface_stats["interfaces"]
             .as_array()

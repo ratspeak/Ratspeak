@@ -5567,6 +5567,7 @@ pub async fn pause_interface(
     if name.is_empty() {
         return Err(AppError::bad_request("Interface name required"));
     }
+    ratspeak_runtime::interface_detach::forget(&state_arc, &name);
 
     let config_dir = active_rns_config_dir(&state_arc);
     let pause = with_rns_config_lock(&state_arc, || {
@@ -5892,6 +5893,8 @@ pub async fn resume_interface(
     if name.is_empty() {
         return Err(AppError::bad_request("Interface name required"));
     }
+    // The user's Resume replaces any re-attach Reticulum's detach scheduled.
+    ratspeak_runtime::interface_detach::forget(&state_arc, &name);
 
     let config_dir = active_rns_config_dir(&state_arc);
     #[cfg(target_os = "android")]
@@ -6081,6 +6084,113 @@ pub async fn resume_interface(
     });
 
     Ok(json!({ "queued": true }))
+}
+
+/// Attaches again, from its config as Resume does, a saved connection
+/// Reticulum detached because its server's reply failed verification.
+pub fn spawn_interface_reattacher(state: &Arc<AppState>) {
+    let state = Arc::clone(state);
+    let mut requests = state.interface_reattach_tx.subscribe();
+    tokio::spawn(async move {
+        loop {
+            match requests.recv().await {
+                Ok(request) => {
+                    let state = Arc::clone(&state);
+                    tokio::spawn(async move { reattach_interface(&state, request).await });
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    });
+}
+
+async fn reattach_interface(
+    state: &Arc<AppState>,
+    request: ratspeak_runtime::interface_detach::ReattachRequest,
+) {
+    use ratspeak_runtime::interface_detach;
+    let _auto_guard = state.auto_interface_lock.clone().lock_owned().await;
+    if !interface_detach::due(state, &request) {
+        return;
+    }
+    let config_dir = active_rns_config_dir(state);
+    let prepared = ratspeak_runtime::network_ownership::local_interfaces_allowed(state)
+        .then(|| {
+            with_rns_config_lock(state, || {
+                let (group, entry) =
+                    find_config_interface_with_group(&config_dir, None, &request.name)?;
+                // Paused, Off, or not a client: nothing to attach.
+                if !matches!(group.as_str(), "tcp_client" | "backbone_client")
+                    || !crate::rns_config::interface_entry_enabled(&entry)
+                {
+                    return None;
+                }
+                let runtime = resumable_config_from_entry(&group, &entry)?;
+                let lease = state.begin_interface_lifecycle_operation([&request.name])?;
+                Some((runtime, lease))
+            })
+        })
+        .flatten();
+    let Some((runtime, lease)) = prepared else {
+        interface_detach::forget(state, &request.name);
+        return;
+    };
+    let Some(handle) = runtime_handle(state) else {
+        let _ = state.finish_interface_lifecycle_operation(&lease);
+        return;
+    };
+    // Attached meanwhile, as by an edit: that one stands.
+    let running = match handle
+        .query_transport(rns_transport::messages::TransportQuery::GetInterfaceStats)
+        .await
+    {
+        Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(stats)) => {
+            stats.iter().any(|stat| stat.name == request.name)
+        }
+        _ => true,
+    };
+    if running {
+        interface_detach::forget(state, &request.name);
+        let _ = state.finish_interface_lifecycle_operation(&lease);
+        return;
+    }
+    let activity_fence = state.activity_request_fence();
+    let class = resumable_interface_class(&runtime);
+    let spawned = spawn_resumable_interface(state, activity_fence, &runtime, Some(&lease)).await;
+    if !state.is_current_interface_lifecycle_operation(&lease) {
+        // A pause or edit began meanwhile and owns the interface now.
+        if let Ok(InterfaceSpawnOutcome {
+            interface_id: Some(id),
+            ..
+        }) = spawned
+        {
+            rns_runtime::reticulum::teardown_interface(&handle, id).await;
+        }
+        interface_detach::forget(state, &request.name);
+        return;
+    }
+    match spawned {
+        Ok(outcome) => {
+            interface_detach::reattached(state, &request);
+            record_interface_activity(
+                state,
+                activity_fence,
+                class,
+                resumable_spawn_transition(class, outcome.runtime_started),
+                resumable_interface_tcp_endpoint(&runtime),
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                reason = "spawn_failed",
+                detail_len = error.len(),
+                "re-attach failed"
+            );
+            interface_detach::reattach_failed(state, &request);
+        }
+    }
+    let _ = state.finish_interface_lifecycle_operation(&lease);
 }
 
 /// Begin Android's visible USB permission flow using the persisted stable

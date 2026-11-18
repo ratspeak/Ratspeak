@@ -210,7 +210,10 @@ function getInterfaceLiveStatus(ifaceName) {
             return ifaces[i];
         }
     }
-    return null;
+    // Reticulum detached it: no row, just why.
+    var detached = lastStats.interface_stats.detached || {};
+    var d = Object.prototype.hasOwnProperty.call(detached, ifaceName) ? detached[ifaceName] : null;
+    return d ? { name: ifaceName, online: false, connect_failures: 1, last_connect_error: d.cause, detached: d.cause } : null;
 }
 
 function _configuredInterfacePaused(ifaceName) {
@@ -2141,7 +2144,9 @@ function connectTroubleText(live) {
     return {
         closed_by_peer: 'Server closed the connection',
         refused: 'Server refused the connection',
-        dns: 'Server name not found'
+        dns: 'Server name not found',
+        unverified: 'The server\u2019s reply failed verification',
+        blocked: 'The server is blocked'
     }[live.last_connect_error] || 'Can\u2019t reach the server';
 }
 

@@ -12162,6 +12162,78 @@ fn android_ble_peer_reports_a_link_it_closes_itself() {
     assert!(client.contains("private const val WRITE_ENQUEUE_TIMEOUT_MS = 1_200L"));
 }
 
+/// Reticulum 1.6.1 detaches a hub whose reply fails verification, or one that
+/// is blackholed. Ratspeak takes the request, says why on the connection's
+/// row, and attaches a saved client again after 30 s, 2 min, then 10 min.
+#[test]
+fn transport_detaches_reach_the_connection_row_and_come_back() {
+    let root = repo_root();
+    let read = |path: &str| read_source(root.join(path)).unwrap_or_else(|_| panic!("{path}"));
+    let detach = read("crates/ratspeak-runtime/src/interface_detach.rs");
+    assert!(detach.contains("TransportMessage::SetInterfaceControl { tx }"));
+    assert!(detach.contains(
+        "Duration::from_secs(30),\n    Duration::from_secs(120),\n    Duration::from_secs(600),"
+    ));
+    assert!(detach.contains("DetachReason::InvalidSynthesis => Some(Self::Unverified)"));
+    assert!(detach.contains("DetachReason::BlackholedTransport => Some(Self::Blocked)"));
+    // Carried out as rns-runtime does: by name, else the interface and what it spawned.
+    assert!(detach.contains("handle.detach_interface(&name)"));
+    assert!(detach.contains("rns_runtime::reticulum::teardown_interface(handle, interface_id)"));
+    assert!(detach.contains("let wait = (cause == DetachCause::Unverified).then("));
+
+    // Each network start takes the requests over once its runtime is installed.
+    let runtime = read("crates/ratspeak-runtime/src/lib.rs");
+    let start = rust_function_block(&runtime, "init_rns_lxmf_inner");
+    let installed = start.find("state.set_rns(rns_mgr)").expect("set_rns");
+    let taken = start
+        .find("interface_detach::install(&state, &detach_handle, detach_shutdown).await")
+        .expect("install");
+    assert!(installed < taken);
+    let state = read("crates/ratspeak-runtime/src/state.rs");
+    assert_eq!(
+        state
+            .matches("[\"detached\"] = crate::interface_detach::payload(self);")
+            .count(),
+        2
+    );
+
+    // The shell re-attaches from the saved config, as Resume, and only a client still enabled.
+    let interfaces = read("crates/ratspeak-tauri/src/commands/interfaces.rs");
+    let reattach = rust_function_block(&interfaces, "reattach_interface");
+    for needle in [
+        "interface_detach::due(state, &request)",
+        "\"tcp_client\" | \"backbone_client\"",
+        "crate::rns_config::interface_entry_enabled(&entry)",
+        "state.begin_interface_lifecycle_operation([&request.name])",
+        "spawn_resumable_interface(state, activity_fence, &runtime, Some(&lease))",
+        "interface_detach::reattached(state, &request)",
+        "interface_detach::reattach_failed(state, &request)",
+    ] {
+        assert!(reattach.contains(needle), "{needle}");
+    }
+    for command in ["resume_interface", "pause_interface"] {
+        assert!(
+            rust_function_block(&interfaces, command)
+                .contains("ratspeak_runtime::interface_detach::forget(&state_arc, &name);"),
+            "{command}"
+        );
+    }
+    let shell = read("crates/ratspeak-tauri/src/lib.rs");
+    assert!(shell.contains("commands::interfaces::spawn_interface_reattacher(&app_state);"));
+
+    // The row's status line says why; a blocked server is off until Resume.
+    let modals = read("dashboard/static/js/modals.js");
+    assert!(modals.contains("var detached = lastStats.interface_stats.detached || {};"));
+    assert!(modals.contains("unverified: 'The server\\u2019s reply failed verification',"));
+    assert!(modals.contains("blocked: 'The server is blocked'"));
+    let view = read("dashboard/static/js/network_view.js");
+    assert!(
+        view.contains(
+            "var blocked = status === 'pending' && !!live && live.detached === 'blocked';"
+        )
+    );
+}
+
 /// Reticulum 1.6.1 refuses a HEADER_1 announce with no room for a relay's
 /// transport id. The name and status caps keep Ratspeak's inside it, and a
 /// refusal is shown, not dropped.

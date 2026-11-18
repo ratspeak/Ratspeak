@@ -148,6 +148,9 @@ pub async fn init_core(
     // Relay AutoInterface events → `auto_unavailable` / `auto_carrier_state`.
     commands::interfaces::spawn_auto_event_broadcaster(&app_state);
 
+    // Saved connections Reticulum detached after a failed verification come back.
+    commands::interfaces::spawn_interface_reattacher(&app_state);
+
     let init_state = app_state.clone();
     let init_data_dir = data_dir.clone();
     tokio::spawn(async move {

@@ -20,6 +20,7 @@ mod hosted_propagation;
 pub mod identity_prune;
 pub mod image_attachment;
 mod inbound_admission;
+pub mod interface_detach;
 pub mod interface_lifecycle;
 mod link_accounting;
 pub mod lxmf;
@@ -2941,10 +2942,14 @@ async fn init_rns_lxmf_inner(state: Arc<AppState>, data_dir: std::path::PathBuf)
                 .unwrap_or_else(|error| error.into_inner())
                 .clone();
             let channels_transport = rns_mgr.handle.transport_tx.clone();
+            let detach_handle = rns_mgr.handle.clone();
+            let detach_shutdown = rns_mgr.shutdown.clone();
             let startup_rnode_activity = rns_mgr.startup_rnode_runtimes().to_vec();
             #[cfg(all(feature = "ble", target_os = "android"))]
             let deferred_android_ble_rnodes = rns_mgr.deferred_android_ble_rnodes();
             let rnode_activity_origin = state.set_rns(rns_mgr);
+            // Reticulum 1.6.1 detaches a hub that fails verification or is blackholed.
+            interface_detach::install(&state, &detach_handle, detach_shutdown).await;
             if let Some(origin) = rnode_activity_origin {
                 for runtime in startup_rnode_activity {
                     if !state.cover_rnode_activity_interface(runtime.interface_id, origin) {
