@@ -29,7 +29,7 @@ rns-runtime = { path = "../rsReticulum/crates/rns-runtime", version = "~1.5.1" }
 rns-ratkey = { path = "../rsReticulum/crates/rns-ratkey", version = "~1.5.1" }
 
 # --- From rsLXMF (sibling directory) ---
-lxmf-core = { path = "../rsLXMF/crates/lxmf-core", version = "~1.5.0" }
+lxmf-core = { path = "../rsLXMF/crates/lxmf-core", version = "~1.5.1" }
 
 # --- From rsLXST (sibling directory) ---
 lxst-core = { path = "../rsLXST/crates/lxst-core", version = "0.4.0" }
