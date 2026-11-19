@@ -7,9 +7,12 @@
 - **Shut down**: at the bottom of Settings, Shut down stops all network and Ratspeak services and closes the app, Android's background service included. Not on iPhone or iPad.
 - **Radio battery**: a radio that reports its battery shows its level in Network › Radio and beside its name in its details. It's red at 20% or less, orange to 49%, and green above, with a bolt while charging.
 - **Tray icon** (Linux): turn the tray icon off in Settings › General › Window. With it off, closing the window quits.
+- **A clearer network map**: with many connections, the map names each one and folds the rest into +N, and tapping any bubble opens that kind's card. Host shows on phones once you set one up.
 
 ### Fixed and improved
 
+- Ratspeak works with Reticulum 1.6.1 and LXMF 1.3.1. Your announces and path requests are always stamped, so nodes that require stamps pass them on.
+- Your announce stamp is made while you set up, or as the app opens after updating, and the start screen shows it as its own step. An announce sent before it's ready goes out when it is.
 - Names and statuses reach you even when busy servers hold back announces, a first message from someone new soon shows their name, and an older announce heard late no longer undoes a newer name or status.
 - A message to someone with no known route asks the network three times, spaced so servers can answer, instead of every few seconds.
 - A server that knows the way to someone but can't read the details no longer sets off a network-wide search, and bursts of requests no longer crowd out real ones.
@@ -29,3 +32,9 @@
 - On a phone, Games fits all three games on the first screen with whole-board chess previews.
 - On a computer, switching windows no longer saves network state or delays message timeouts, and Ratspeak does less work when minimized or in the tray.
 - The Android app is about 5 MB smaller: its start-up code is built once instead of three times.
+- Busy servers no longer show as problems in Activity: it notes when Ratspeak paces new announces from a server, and when that ends.
+- A server whose reply fails verification is reconnected after 30 seconds, 2 minutes, then every 10 minutes, and its row says why. A server you blocked stays off.
+- Apps that use Ratspeak as their shared instance stay reachable: the paths to their addresses no longer drop out.
+- Chess boards have a dark square at a1, as a real board does.
+- On a phone, the strip behind the status bar matches the screen below it.
+- Home no longer lists Local Network's devices as separate connections, and Local Network no longer shows Connecting… while it hears peers.
