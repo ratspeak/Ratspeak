@@ -22,9 +22,9 @@ concurrency:
 env:
   # Keep these ordinary CI/manual-build pins aligned with the reviewed
   # dependency set. Release workflows load the same commits directly.
-  RATSPEAK_RSRETICULUM_REF: 3d53958892c42b4ea4bf6cbc13524e2fd8988b93
-  RATSPEAK_RSLXMF_REF: b92923e2ecf882e519abeef60a3aed033ed57369
-  RATSPEAK_RSLXST_REF: f323457be5500279dbd6d3e4767e3e7398e5a9c1
+  RATSPEAK_RSRETICULUM_REF: 0ce5a12a65089a064f5e639b1317fc10f8a39459
+  RATSPEAK_RSLXMF_REF: 2d04201bff5765502b3d5f0ff910b65a56efd49b
+  RATSPEAK_RSLXST_REF: e9e053a0386abee8a88d56a8b0f46ba076c91a22
   RATSPEAK_LRGP_REF: f44147a851588948b6faba2640c3baae258ab079
 
 jobs:
