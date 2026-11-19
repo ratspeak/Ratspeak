@@ -12017,8 +12017,8 @@ mod notification_tests {
     async fn a_new_identitys_stamp_is_made_at_creation_and_loaded_by_its_start() {
         let _stamps = crate::announce_stamps::test_policy::unstamped().await;
         let state = Arc::new(make_state(Arc::new(RecordingNotifier::default())));
-        let (_, key) = generate_recoverable_key().unwrap();
-        let identity = rns_identity::identity::Identity::from_private_key(&key[..]).unwrap();
+        let identity = rns_identity::identity::Identity::new();
+        let key = identity.get_private_key().unwrap();
         let hash = hex::encode(identity.hash);
         // A low value keeps the search short in a debug build.
         let dir = rns_config_dir_for_start(&state, Some(&hash));
