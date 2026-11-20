@@ -7284,6 +7284,7 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
         let workflow = read_source(root.join(workflow_path)).expect("release workflow");
         assert!(workflow.contains(r#""$(basename "$artifact")""#));
     }
+    // Qualification requires CI green on the exact commit, so release builds do not rerun its tests.
     for workflow_path in [
         ".github/workflows/release-desktop.yml",
         ".github/workflows/release-windows.yml",
@@ -7291,8 +7292,25 @@ fn release_workflows_build_once_and_publish_only_after_complete_aggregation() {
     ] {
         let workflow = read_source(root.join(workflow_path)).expect("desktop release workflow");
         assert!(
-            workflow.contains("- name: Run tests\n        timeout-minutes: 45"),
-            "{workflow_path} must fail a hung test step before the platform build budget expires"
+            !workflow.contains("cargo test"),
+            "{workflow_path} reruns tests CI already passed on the release commit"
+        );
+    }
+    let ci = read_source(root.join(".github/workflows/ci.yml")).expect("CI workflow");
+    let platform_test = ci
+        .split("\n  platform-test:\n")
+        .nth(1)
+        .and_then(|job| job.split("\n\n  ").next())
+        .expect("CI tests every desktop OS");
+    for required in [
+        "timeout-minutes: 90",
+        "os: [ubuntu-24.04-arm, macos-latest, windows-latest]",
+        "cargo test --workspace --features ratspeak-tauri/hardware --locked",
+        "cargo test --manifest-path src-tauri/Cargo.toml --locked",
+    ] {
+        assert!(
+            platform_test.contains(required),
+            "CI platform-test is missing {required}"
         );
     }
     let windows =
