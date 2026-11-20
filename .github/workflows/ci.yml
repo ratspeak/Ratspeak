@@ -171,8 +171,8 @@ jobs:
             node "$test"
           done
         working-directory: Ratspeak
-      - name: Check Tauri desktop shell
-        run: cargo check --manifest-path src-tauri/Cargo.toml --locked
+      - name: Test Tauri desktop shell
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
         working-directory: Ratspeak
 
   lint:
@@ -315,14 +315,15 @@ jobs:
           cargo +1.85.0 check -p rsnode-update --target thumbv7em-none-eabihf --locked
         working-directory: Ratspeak
 
-  platform-check:
-    name: Platform check (${{ matrix.os }})
+  # Release qualification builds only; it requires this run green on the exact commit.
+  platform-test:
+    name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest]
+        os: [ubuntu-24.04-arm, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -362,14 +363,33 @@ jobs:
             Ratspeak
             Ratspeak/src-tauri
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Check desktop shell
-        run: cargo check --manifest-path Ratspeak/src-tauri/Cargo.toml --locked
+      - name: Install system deps
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libssl-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libudev-dev \
+            libpcsclite-dev \
+            libasound2-dev \
+            libdbus-1-dev \
+            pkg-config
+      - name: Build dashboard CSS
+        shell: bash
+        run: bash dashboard/build-css.sh
+        working-directory: Ratspeak
+      - name: Test Rust workspace
+        run: cargo test --workspace --features ratspeak-tauri/hardware --locked
+        working-directory: Ratspeak
+      - name: Test Tauri desktop shell
+        run: cargo test --manifest-path src-tauri/Cargo.toml --locked
+        working-directory: Ratspeak
       - name: Test native storage namespace lifecycle
         run: cargo test -p ratspeak-runtime --lib --all-features --locked storage_namespace_
-        working-directory: Ratspeak
-      - name: Test serialized attachment commands on Windows
-        if: runner.os == 'Windows'
-        run: cargo test -p ratspeak-tauri --test attachment_staging --locked
         working-directory: Ratspeak
 
   mobile-rust-lint:

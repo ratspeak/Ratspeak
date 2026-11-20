@@ -169,11 +169,6 @@ jobs:
         working-directory: Ratspeak
         run: bash scripts/release/assert-apple-toolchain.sh
 
-      - name: Run tests
-        timeout-minutes: 45
-        working-directory: Ratspeak
-        run: cargo test --workspace --features ratspeak-tauri/hardware --locked
-
       - name: Build CSS
         shell: bash
         working-directory: Ratspeak
