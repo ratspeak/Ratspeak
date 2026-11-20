@@ -557,6 +557,7 @@ pub fn ratspeak_db::db::try_set_setting(&ratspeak_db::DbPool, &str, &str) -> cor
 pub fn ratspeak_db::db::try_set_settings(&ratspeak_db::DbPool, &[(alloc::string::String, alloc::string::String)]) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::unblock_contact(&ratspeak_db::DbPool, &str, &str)
 pub fn ratspeak_db::db::unhide_conversation(&ratspeak_db::DbPool, &str, &str)
+pub fn ratspeak_db::db::unnamed_contact_hashes(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::db::update_identity(&ratspeak_db::DbPool, &str, core::option::Option<&str>, core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::update_identity_status(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::db::update_message_delivery_method(&ratspeak_db::DbPool, &str, &str, &str)
@@ -1054,6 +1055,7 @@ pub fn ratspeak_db::try_set_setting(&ratspeak_db::DbPool, &str, &str) -> core::r
 pub fn ratspeak_db::try_set_settings(&ratspeak_db::DbPool, &[(alloc::string::String, alloc::string::String)]) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::unblock_contact(&ratspeak_db::DbPool, &str, &str)
 pub fn ratspeak_db::unhide_conversation(&ratspeak_db::DbPool, &str, &str)
+pub fn ratspeak_db::unnamed_contact_hashes(&ratspeak_db::DbPool, &str) -> alloc::vec::Vec<alloc::string::String>
 pub fn ratspeak_db::update_identity(&ratspeak_db::DbPool, &str, core::option::Option<&str>, core::option::Option<&str>) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::update_identity_status(&ratspeak_db::DbPool, &str, &str) -> core::result::Result<(), alloc::string::String>
 pub fn ratspeak_db::update_message_delivery_method(&ratspeak_db::DbPool, &str, &str, &str)

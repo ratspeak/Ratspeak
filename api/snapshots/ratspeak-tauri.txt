@@ -742,6 +742,7 @@ pub async fn ratspeak_tauri::commands::system::apply_foreground_state(alloc::syn
 pub async fn ratspeak_tauri::commands::system::apply_foreground_transition(alloc::sync::Arc<ratspeak_runtime::state::AppState>, bool, bool, u64) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::system::dismiss_alert(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>, i64) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::system::get_network_migration_status(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
+pub async fn ratspeak_tauri::commands::system::get_path_index(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub async fn ratspeak_tauri::commands::system::retry_network_migration(tauri::state::State<'_, alloc::sync::Arc<ratspeak_runtime::state::AppState>>) -> ratspeak_tauri::error::AppResult<serde_json::value::Value>
 pub fn ratspeak_tauri::commands::system::set_foreground_state(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, bool)
 pub fn ratspeak_tauri::commands::system::set_foreground_state_if_current(&alloc::sync::Arc<ratspeak_runtime::state::AppState>, bool, bool, u64) -> bool
