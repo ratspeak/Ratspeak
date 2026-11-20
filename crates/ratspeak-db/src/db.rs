@@ -154,7 +154,9 @@ const IDENTITY_SELECT_COLUMNS: &str = "hash,
 
 const POOL_MAX_SIZE: u32 = 32;
 /// Connections kept open; the rest open on demand and close when idle.
-const POOL_MIN_IDLE: u32 = 4;
+const POOL_MIN_IDLE: u32 = 2;
+/// A burst's extra connections, each with its page cache, close this soon.
+const POOL_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Run sync `db::*` work on the blocking pool. Wrap multi-statement critical
 /// sections in a single call so they share one `Connection`.
@@ -213,6 +215,7 @@ pub fn init_pool(data_dir: &Path) -> Result<DbPool, Box<dyn std::error::Error + 
     let pool = Pool::builder()
         .max_size(POOL_MAX_SIZE)
         .min_idle(Some(POOL_MIN_IDLE))
+        .idle_timeout(Some(POOL_IDLE_TIMEOUT))
         .build(manager)?;
 
     tracing::info!("Database pool initialized");
