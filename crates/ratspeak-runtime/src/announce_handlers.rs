@@ -503,10 +503,12 @@ async fn record_direct_signal(
 }
 
 fn refresh_lxmf_route_cache_from_path_table(state: &Arc<AppState>, entries: &[PathTableRpcEntry]) {
-    if let Ok(mut lxmf) = state.lxmf.lock()
-        && let Some(mgr) = lxmf.as_mut()
-    {
-        mgr.replace_route_hops_from_path_table(entries);
+    let fold = state.lxmf.lock().ok().and_then(|mut lxmf| {
+        lxmf.as_mut()
+            .and_then(|mgr| mgr.replace_routes_observed_at(entries, std::time::Instant::now()))
+    });
+    if let Some(fold) = fold {
+        crate::publish_route_fold(state, fold, !entries.is_empty());
     }
 }
 

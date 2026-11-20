@@ -9796,6 +9796,10 @@ fn peer_reachability_uses_uncapped_path_index() {
     assert!(runtime.contains("state.emit_to_all(\"path_index_delta\", delta);"));
     assert!(runtime.contains("crate::rns::path_table_ui_snapshot(entries)"));
 
+    // A fold outside the poll, as on an announce, publishes its own delta.
+    let announces = read_source(root.join("crates/ratspeak-runtime/src/announce_handlers.rs"))
+        .expect("announce handlers");
+    assert!(announces.contains("crate::publish_route_fold(state, fold, !entries.is_empty());"));
     let lxmf = read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("lxmf");
     assert!(lxmf.contains("pub fn path_index_snapshot(&self)"));
     assert!(lxmf.contains("Some(known) if known == entry => continue,"));
@@ -9870,7 +9874,9 @@ fn path_resolution_diagnostics_are_not_duplicate_or_stale() {
     let handlers = read_source(root.join("crates/ratspeak-runtime/src/announce_handlers.rs"))
         .expect("announce handlers");
     assert!(handlers.contains("refresh_lxmf_route_cache_and_lookup_iface(state"));
-    assert!(handlers.contains("mgr.replace_route_hops_from_path_table(entries);"));
+    assert!(
+        handlers.contains("mgr.replace_routes_observed_at(entries, std::time::Instant::now())")
+    );
     assert!(
         handlers.find("refresh_lxmf_route_cache_and_lookup_iface(state")
             < handlers.find("trigger_outbound_for_delivery_announce"),
@@ -11540,7 +11546,7 @@ fn waiting_messages_are_woken_by_one_engine_under_the_manager_lock() {
             .starts_with("if online {\n                                state.wake_waiting(lxmf::WakeEvent::InterfaceOnline);")
     );
     assert!(runtime.contains(
-        "for (destination, hops) in fold.added {\n                                state.wake_waiting(lxmf::WakeEvent::Heard(destination));"
+        "state.wake_waiting(lxmf::WakeEvent::Heard(destination));\n            PollActivityObservation::PathObserved { destination, hops }"
     ));
     assert!(runtime.contains("state.wake_waiting(lxmf::WakeEvent::Heard(*recipient));"));
     assert_eq!(

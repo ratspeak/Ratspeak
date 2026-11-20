@@ -6530,6 +6530,48 @@ fn fold_routes_from_path_table(
     (None, 0)
 }
 
+/// Routes new to LXMF wake what waits for them and become Activity, once a
+/// first non-empty table has set the baseline (restored paths are not news).
+fn new_route_observations(
+    state: &AppState,
+    added: Vec<([u8; 16], u8)>,
+    nonempty: bool,
+) -> Vec<PollActivityObservation> {
+    if !state
+        .path_activity_baselined
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        if nonempty {
+            state
+                .path_activity_baselined
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        return Vec::new();
+    }
+    added
+        .into_iter()
+        .map(|(destination, hops)| {
+            state.wake_waiting(lxmf::WakeEvent::Heard(destination));
+            PollActivityObservation::PathObserved { destination, hops }
+        })
+        .collect()
+}
+
+/// A fold made outside the stats poll, as when an announce refreshes the
+/// routes: its news and its delta go out now, or the poll would find nothing
+/// left to tell.
+pub(crate) fn publish_route_fold(state: &AppState, fold: lxmf::RouteFold, nonempty: bool) {
+    let origin = state.activity_request_fence();
+    for observation in new_route_observations(state, fold.added, nonempty) {
+        record_poll_activity(state, origin, observation);
+    }
+    if let Some(delta) = fold.delta
+        && state.is_foreground()
+    {
+        state.emit_to_all("path_index_delta", delta);
+    }
+}
+
 pub fn path_index_revision(state: &AppState) -> u64 {
     state
         .lxmf
@@ -6863,22 +6905,11 @@ async fn poll_stats_loop(
                         fold_routes_from_path_table(&state, &entries, path_observation_started);
                     let mut delta = None;
                     if let Some(fold) = fold {
-                        let path_activity_ready = state
-                            .path_activity_baselined
-                            .load(std::sync::atomic::Ordering::Relaxed);
-                        if path_activity_ready {
-                            for (destination, hops) in fold.added {
-                                state.wake_waiting(lxmf::WakeEvent::Heard(destination));
-                                activity_observations.push(PollActivityObservation::PathObserved {
-                                    destination,
-                                    hops,
-                                });
-                            }
-                        } else if !entries.is_empty() {
-                            state
-                                .path_activity_baselined
-                                .store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
+                        activity_observations.extend(new_route_observations(
+                            &state,
+                            fold.added,
+                            !entries.is_empty(),
+                        ));
                         delta = fold.delta;
                     }
                     let (rows, total, truncated) = crate::rns::path_table_ui_snapshot(entries);
