@@ -65,6 +65,10 @@ pub trait MobilePlatformBridge: Send + Sync {
 
     fn replay_platform_state(&self) {}
 
+    /// Whether Local Network (an AutoInterface) runs. Android holds its Wi-Fi
+    /// multicast lock only then.
+    fn set_android_local_network_active(&self, _active: bool) {}
+
     /// Remove native pending shared text for one deleted identity, or all text
     /// on factory reset. Called on a blocking worker while the caller retains
     /// the identity lifecycle lock. Android must install its storage adapter;

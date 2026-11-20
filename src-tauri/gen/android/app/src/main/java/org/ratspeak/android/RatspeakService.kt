@@ -22,8 +22,6 @@ class RatspeakService : Service() {
         const val CALL_CHANNEL_ID = "ratspeak_calls"
         const val NOTIFICATION_ID = 1
         const val ACTION_STOP = "STOP"
-        const val ACTION_ENABLE_MULTICAST = "ENABLE_MULTICAST"
-        const val ACTION_DISABLE_MULTICAST = "DISABLE_MULTICAST"
         private const val SERVICE_READY_TIMEOUT_MS = 1_500L
         internal const val MICROPHONE_FAILURE_NONE = ""
         internal const val MICROPHONE_FAILURE_OWNER_BUSY = "owner_busy"
@@ -181,8 +179,6 @@ class RatspeakService : Service() {
                 stopSelf()
                 return START_NOT_STICKY
             }
-            ACTION_ENABLE_MULTICAST -> acquireMulticastLock()
-            ACTION_DISABLE_MULTICAST -> releaseMulticastLock()
         }
         return START_NOT_STICKY
     }

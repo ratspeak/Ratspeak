@@ -194,6 +194,19 @@ impl MobilePlatformBridge for AndroidPlatformBridge {
         });
     }
 
+    fn set_android_local_network_active(&self, active: bool) {
+        let _ = with_android_bridge(|env, class| {
+            use jni::objects::JValue;
+            env.call_static_method(
+                class,
+                "setLocalNetworkActive",
+                "(Z)V",
+                &[JValue::Bool(u8::from(active))],
+            )
+            .map(|_| true)
+        });
+    }
+
     fn request_android_usb_permission(
         &self,
         vendor_id: u16,

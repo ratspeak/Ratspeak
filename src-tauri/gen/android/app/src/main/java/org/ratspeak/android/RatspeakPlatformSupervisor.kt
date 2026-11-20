@@ -28,6 +28,8 @@ object RatspeakPlatformSupervisor {
     private var usbSystemReceiver: BroadcastReceiver? = null
     private var usbPermissionReceiver: BroadcastReceiver? = null
     private var lastNetworkType: String? = null
+    // Mirrors Rust's runtime, so it outlives a service restart.
+    private var localNetworkActive = false
     private var pendingUsbSelector: PendingUsbSelector? = null
     private var pendingLegacyUsbRecovery: String? = null
     private var nextUsbSelectorSequence = 0L
@@ -64,6 +66,19 @@ object RatspeakPlatformSupervisor {
             seedUsbLocked()
         }
     }
+
+    /** Rust reports whether Local Network (an AutoInterface) runs. */
+    fun setLocalNetworkActive(active: Boolean) {
+        synchronized(lock) {
+            if (localNetworkActive == active) return
+            localNetworkActive = active
+            service?.setMulticastNeeded(multicastNeededLocked())
+        }
+    }
+
+    // Only Local Network joins multicast; otherwise the lock just keeps the
+    // Wi-Fi chip waking the phone for LAN chatter.
+    private fun multicastNeededLocked() = lastNetworkType == "wifi" && localNetworkActive
 
     @JvmStatic
     fun requestUsbPermission(deviceName: String) {
@@ -237,7 +252,7 @@ object RatspeakPlatformSupervisor {
         synchronized(lock) {
             if (lastNetworkType == type) return
             lastNetworkType = type
-            service?.setMulticastNeeded(type == "wifi")
+            service?.setMulticastNeeded(multicastNeededLocked())
         }
         RatspeakNativeBridge.publishNetworkType(type)
     }

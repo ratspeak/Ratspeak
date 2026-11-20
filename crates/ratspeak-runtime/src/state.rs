@@ -657,6 +657,8 @@ pub struct AppState {
     /// runtime initialization and the shell installing its native bridge.
     mobile_platform_installed: AtomicBool,
     mobile_platform_installed_notify: tokio::sync::Notify,
+    /// Local Network as last told to the platform: 0 not yet, 1 off, 2 on.
+    local_network_published: std::sync::atomic::AtomicU8,
     /// Keyed by dest_hash hex; IndexMap insertion-order drives FIFO eviction.
     pub announce_history: RwLock<IndexMap<String, serde_json::Value>>,
     pub alerts: Mutex<Vec<serde_json::Value>>,
@@ -1127,6 +1129,7 @@ impl AppState {
             mobile_platform: RwLock::new(Arc::new(NoopMobilePlatformBridge)),
             mobile_platform_installed: AtomicBool::new(false),
             mobile_platform_installed_notify: tokio::sync::Notify::new(),
+            local_network_published: std::sync::atomic::AtomicU8::new(0),
             announce_history: RwLock::new(IndexMap::new()),
             alerts: Mutex::new(Vec::new()),
             rns: RwLock::new(None),
@@ -1389,6 +1392,8 @@ impl AppState {
     pub fn install_mobile_platform_bridge(&self, bridge: Arc<dyn MobilePlatformBridge>) {
         if let Ok(mut installed) = self.mobile_platform.write() {
             *installed = bridge;
+            // A new bridge has not heard Local Network's state.
+            self.local_network_published.store(0, Ordering::Release);
             self.mobile_platform_installed
                 .store(true, Ordering::Release);
             self.mobile_platform_installed_notify.notify_waiters();
@@ -1402,6 +1407,15 @@ impl AppState {
                 break;
             }
             notified.await;
+        }
+    }
+
+    /// Tell the platform whether Local Network runs, only when that changes.
+    pub fn publish_local_network_active(&self, active: bool) {
+        let next = if active { 2 } else { 1 };
+        if self.local_network_published.swap(next, Ordering::AcqRel) != next {
+            self.mobile_platform_bridge()
+                .set_android_local_network_active(active);
         }
     }
 
@@ -4219,6 +4233,28 @@ mod tests {
                 .expect("bridge install should wake startup")
                 .is_some()
         );
+    }
+
+    /// The platform hears Local Network's state once per change, and again
+    /// after a new bridge is installed.
+    #[test]
+    fn local_network_state_reaches_the_platform_once_per_change() {
+        struct Recorder(std::sync::Mutex<Vec<bool>>);
+        impl MobilePlatformBridge for Recorder {
+            fn set_android_local_network_active(&self, active: bool) {
+                self.0.lock().unwrap().push(active);
+            }
+        }
+        let state = make_state();
+        let recorder = Arc::new(Recorder(std::sync::Mutex::new(Vec::new())));
+        state.install_mobile_platform_bridge(recorder.clone());
+        for active in [false, false, true, true, false] {
+            state.publish_local_network_active(active);
+        }
+        assert_eq!(*recorder.0.lock().unwrap(), [false, true, false]);
+        state.install_mobile_platform_bridge(recorder.clone());
+        state.publish_local_network_active(false);
+        assert_eq!(*recorder.0.lock().unwrap(), [false, true, false, false]);
     }
 
     #[test]

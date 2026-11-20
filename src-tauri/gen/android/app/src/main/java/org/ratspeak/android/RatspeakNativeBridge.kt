@@ -179,6 +179,11 @@ object RatspeakNativeBridge {
     }
 
     @JvmStatic
+    fun setLocalNetworkActive(active: Boolean) {
+        RatspeakPlatformSupervisor.setLocalNetworkActive(active)
+    }
+
+    @JvmStatic
     fun setBleRnodeAutoResume(enabled: Boolean): Boolean {
         RatspeakBleRnodeSupervisor.setAutoResume(enabled)
         return true

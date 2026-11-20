@@ -6410,6 +6410,7 @@ async fn push_stats_once(state: &AppState) {
 
     let iface_stats = match iface_result {
         Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(s)) => {
+            state.publish_local_network_active(local_network_running(&s));
             state.interface_stats_payload(&s)
         }
         _ => json!({ "interfaces": [] }),
@@ -6499,6 +6500,18 @@ fn is_current_network_runtime(
                 .same_channel(&handle.transport_tx)
         })
     }) && !handle.shutdown.is_triggered()
+}
+
+/// Whether Local Network runs: an AutoInterface, or a peer one spawned.
+fn local_network_running(stats: &[rns_transport::messages::InterfaceStatRpcEntry]) -> bool {
+    stats.iter().any(|entry| {
+        entry.identity.as_ref().is_some_and(|identity| {
+            matches!(
+                identity.class_name.as_str(),
+                "AutoInterface" | "AutoInterfacePeer"
+            )
+        })
+    })
 }
 
 /// Fold the path table into LXMF's routes, and return the fold, if the
@@ -6767,6 +6780,7 @@ async fn poll_stats_loop(
 
             let iface_stats = match iface_result {
                 Some(rns_transport::messages::TransportQueryResponse::InterfaceStats(s)) => {
+                    state.publish_local_network_active(local_network_running(&s));
                     for iface in &s {
                         let name = iface.name.as_str();
                         let online = state.effective_interface_online(iface.id, iface.online);
@@ -7277,6 +7291,9 @@ async fn poll_stats_loop(
 
         last_poll_at = std::time::Instant::now();
     }
+
+    // No runtime, no Local Network.
+    state.publish_local_network_active(false);
 
     // Spells still open end with polling, so each has its end row.
     for change in pacing.close_all(rns_link::clock::ContinuousInstant::now()) {
