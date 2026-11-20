@@ -290,6 +290,7 @@ RS.listen('stats_update', function(data) {
         }
     }
     if (typeof channelsNetworkChanged === 'function') channelsNetworkChanged();
+    if (typeof PeersCache !== 'undefined' && PeersCache) PeersCache.syncPathIndex(data.path_index_revision);
     renderStats(data);
 
     // path_age/hops/via change with path_table; renderer dirty-keys dedupe.
@@ -330,10 +331,15 @@ RS.listen('peers_removed', function(payload) {
     if (payload && Array.isArray(payload.hashes)) PeersCache.applyRemovedBatch(payload.hashes);
 });
 
+// Route changes between polls; the stats that follow carry the revision.
+RS.listen('path_index_delta', function(delta) {
+    if (typeof PeersCache !== 'undefined' && PeersCache) PeersCache.applyPathIndexDelta(delta);
+});
+
 function _renderPathCacheCleared() {
+    if (typeof PeersCache !== 'undefined' && PeersCache) PeersCache.clearPathIndex();
     if (typeof lastStats !== 'undefined' && lastStats && typeof lastStats === 'object') {
         lastStats.path_table = [];
-        lastStats.path_index = {};
         lastStats.path_table_total = 0;
         lastStats.path_table_truncated = false;
         if (typeof renderStats === 'function') renderStats(lastStats);

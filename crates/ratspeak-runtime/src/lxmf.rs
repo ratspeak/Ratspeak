@@ -50,6 +50,20 @@ use crate::state::DbPool;
 use ratspeak_core::delivery::OutboundState;
 use ratspeak_core::{LXMF_DELIVERY_APP_NAME as LXMF_APP_NAME, LXMF_PROPAGATION_APP_NAME};
 
+/// One path-table snapshot folded into the routes: the dashboard path
+/// index's change, if any, and the routes new since the last snapshot.
+pub(crate) struct RouteFold {
+    pub delta: Option<serde_json::Value>,
+    pub added: Vec<([u8; 16], u8)>,
+}
+
+/// Path index revisions never repeat, so a delta from another manager
+/// cannot apply to an index built from this one.
+fn next_route_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
 const MAX_LXMF_RESOURCE_BYTES: usize = rns_protocol::resource::MAX_RESOURCE_SIZE;
 pub const MAX_AUDIO_FIELD_BYTES: usize = 1_000_000;
 pub const AUDIO_MESSAGE_FILE_NAME: &str = "Voice message.opus";
@@ -1408,6 +1422,8 @@ pub struct LxmfManager {
     peer_lxmf_compression_support: HashMap<[u8; 16], CompressionSupport>,
     route_hops: HashMap<[u8; 16], u8>,
     route_entries: HashMap<[u8; 16], PathTableRpcEntry>,
+    /// The dashboard path index's revision: unique across managers.
+    route_revision: u64,
     path_recovery: Option<rns_transport::path_recovery::PathRecoveryHandle>,
     shared_recovery_owner: Option<rns_runtime::reticulum::ReticulumHandle>,
     shared_recovery_slots: std::sync::Arc<tokio::sync::Semaphore>,
@@ -2491,6 +2507,7 @@ impl LxmfManager {
             peer_lxmf_compression_support: HashMap::new(),
             route_hops: HashMap::new(),
             route_entries: HashMap::new(),
+            route_revision: next_route_revision(),
             path_recovery: None,
             shared_recovery_owner: None,
             shared_recovery_slots: std::sync::Arc::new(tokio::sync::Semaphore::new(8)),
@@ -4811,22 +4828,32 @@ impl LxmfManager {
         count
     }
 
-    /// `known_path_hashes` from poll loop's path-table snapshot.
-    pub fn check_contacts_identity_status(
-        &self,
-        db_pool: &DbPool,
-        identity_id: &str,
-        known_path_hashes: &std::collections::HashSet<String>,
-    ) -> Value {
+    /// Keep the compression cache to destinations still announced; the
+    /// database keeps each fact for the rest.
+    pub(crate) fn prune_compression_support(
+        &mut self,
+        announces: &[rns_transport::messages::AnnounceRpcEntry],
+    ) {
+        if self.peer_lxmf_compression_support.len() <= announces.len().saturating_mul(2).max(256) {
+            return;
+        }
+        let current: std::collections::HashSet<[u8; 16]> =
+            announces.iter().map(|a| a.dest_hash).collect();
+        self.peer_lxmf_compression_support
+            .retain(|dest, _| current.contains(dest));
+    }
+
+    /// Whether each contact had a path at the last poll.
+    pub fn check_contacts_identity_status(&self, db_pool: &DbPool, identity_id: &str) -> Value {
         let contacts = db::get_all_contacts(db_pool, identity_id);
         let mut status = serde_json::Map::new();
         for contact in &contacts {
             if let Some(hash) = contact.get("dest_hash").and_then(|v| v.as_str()) {
-                let s = if known_path_hashes.contains(hash) {
-                    "known"
-                } else {
-                    "unknown"
-                };
+                let known = hex::decode(hash)
+                    .ok()
+                    .and_then(|bytes| <[u8; 16]>::try_from(bytes).ok())
+                    .is_some_and(|dest| self.route_entries.contains_key(&dest));
+                let s = if known { "known" } else { "unknown" };
                 status.insert(hash.to_string(), json!(s));
             }
         }
@@ -5035,24 +5062,90 @@ impl LxmfManager {
         &mut self,
         entries: &[rns_transport::messages::PathTableRpcEntry],
     ) {
-        self.replace_routes_observed_at(entries, Instant::now());
+        let _ = self.replace_routes_observed_at(entries, Instant::now());
     }
 
+    /// Fold a path-table snapshot into the routes in place; `None` when stale.
     pub(crate) fn replace_routes_observed_at(
         &mut self,
         entries: &[PathTableRpcEntry],
         started: Instant,
-    ) {
+    ) -> Option<RouteFold> {
         if started < self.route_snapshot_started {
-            return;
+            return None;
         }
         self.route_snapshot_started = started;
         self.route_hops.clear();
-        self.route_entries.clear();
+        let mut added = Vec::new();
+        let mut upsert = serde_json::Map::new();
         for entry in entries {
             self.route_hops.insert(entry.hash, entry.hops.max(1));
-            self.route_entries.insert(entry.hash, entry.clone());
+            let shown_before = match self.route_entries.get_mut(&entry.hash) {
+                Some(known) if known == entry => continue,
+                Some(known) => {
+                    let shown = crate::rns::path_index_row(known);
+                    known.clone_from(entry);
+                    Some(shown)
+                }
+                None => {
+                    self.route_entries.insert(entry.hash, entry.clone());
+                    added.push((entry.hash, entry.hops));
+                    None
+                }
+            };
+            let shown = crate::rns::path_index_row(entry);
+            if shown_before.as_ref() != Some(&shown) {
+                upsert.insert(hex::encode(entry.hash), shown);
+            }
         }
+        let mut remove = Vec::new();
+        // Path-table keys are unique, so a larger map holds a removed route.
+        if self.route_entries.len() > entries.len() {
+            let current: std::collections::HashSet<[u8; 16]> =
+                entries.iter().map(|entry| entry.hash).collect();
+            self.route_entries.retain(|hash, _| {
+                let keep = current.contains(hash);
+                if !keep {
+                    remove.push(hex::encode(hash));
+                }
+                keep
+            });
+        }
+        let delta = (!upsert.is_empty() || !remove.is_empty()).then(|| {
+            let base = std::mem::replace(&mut self.route_revision, next_route_revision());
+            serde_json::json!({
+                "base": base,
+                "revision": self.route_revision,
+                "upsert": upsert,
+                "remove": remove,
+            })
+        });
+        Some(RouteFold { delta, added })
+    }
+
+    /// The dashboard path index: every route, by destination.
+    pub fn path_index_snapshot(&self) -> serde_json::Value {
+        let entries: serde_json::Map<String, serde_json::Value> = self
+            .route_entries
+            .values()
+            .map(|entry| (hex::encode(entry.hash), crate::rns::path_index_row(entry)))
+            .collect();
+        serde_json::json!({ "revision": self.route_revision, "entries": entries })
+    }
+
+    pub fn path_index_revision(&self) -> u64 {
+        self.route_revision
+    }
+
+    /// Forget every route, as after Clear routes.
+    pub fn clear_routes(&mut self) {
+        self.route_hops.clear();
+        self.route_entries.clear();
+        self.route_revision = next_route_revision();
+    }
+
+    pub(crate) fn route_entry(&self, dest_hash: &[u8; 16]) -> Option<&PathTableRpcEntry> {
+        self.route_entries.get(dest_hash)
     }
 
     pub fn update_route_hop(&mut self, dest_hash: [u8; 16], hops: u8) {
@@ -9964,6 +10057,54 @@ mod tests {
             !tmp.exists(),
             "invalid identity input must be rejected before filesystem setup"
         );
+    }
+
+    /// The poll folds each path table into the routes in place, and the
+    /// dashboard hears only what it shows that changed.
+    #[test]
+    fn route_fold_reports_shown_changes_only() {
+        let route = |byte: u8, hops: u8, used: f64| {
+            let mut entry = PathTableRpcEntry::default();
+            entry.hash = [byte; 16];
+            entry.hops = hops;
+            entry.expires = 1_000.0;
+            entry.used = used;
+            entry.interface = "test".into();
+            entry
+        };
+        let mut mgr = test_manager();
+        let start = mgr.path_index_revision();
+        let fold = mgr
+            .replace_routes_observed_at(&[route(1, 1, 0.0), route(2, 2, 0.0)], Instant::now())
+            .unwrap();
+        assert_eq!(fold.added.len(), 2);
+        let delta = fold.delta.unwrap();
+        assert_eq!(delta["base"], start);
+        assert_eq!(delta["upsert"].as_object().unwrap().len(), 2);
+        let first = mgr.path_index_revision();
+        assert_eq!(delta["revision"], first);
+
+        let again = mgr
+            .replace_routes_observed_at(&[route(1, 1, 0.0), route(2, 2, 0.0)], Instant::now())
+            .unwrap();
+        assert!(again.added.is_empty() && again.delta.is_none());
+
+        // Use is not shown, so it updates the route without a delta entry.
+        let fold = mgr
+            .replace_routes_observed_at(&[route(1, 3, 5.0), route(3, 1, 0.0)], Instant::now())
+            .unwrap();
+        assert_eq!(fold.added, [([3; 16], 1)]);
+        let delta = fold.delta.unwrap();
+        assert_eq!(delta["base"], first);
+        let upsert = delta["upsert"].as_object().unwrap();
+        assert_eq!(upsert.len(), 2);
+        assert_eq!(upsert[&hex::encode([1u8; 16])]["hops"], 3);
+        assert_eq!(delta["remove"], json!([hex::encode([2u8; 16])]));
+        assert!(mgr.route_entry(&[2; 16]).is_none());
+        assert_eq!(mgr.route_entry(&[1; 16]).unwrap().used, 5.0);
+        let snapshot = mgr.path_index_snapshot();
+        assert_eq!(snapshot["revision"], mgr.path_index_revision());
+        assert_eq!(snapshot["entries"].as_object().unwrap().len(), 2);
     }
 
     #[test]

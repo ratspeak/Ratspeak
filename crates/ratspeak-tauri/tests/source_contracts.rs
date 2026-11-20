@@ -9789,17 +9789,30 @@ fn peer_reachability_uses_uncapped_path_index() {
         "the old path table is gone"
     );
 
+    // Stats carry the index's revision; the routes travel as deltas or a snapshot.
     let runtime = read_source(root.join("crates/ratspeak-runtime/src/lib.rs")).expect("runtime");
-    assert!(runtime.contains("\"path_index\": path_index"));
-    assert!(runtime.contains("path_table_stats_snapshot(entries)"));
+    assert!(!runtime.contains("\"path_index\": path_index"));
+    assert!(runtime.contains("\"path_index_revision\": path_index_revision"));
+    assert!(runtime.contains("state.emit_to_all(\"path_index_delta\", delta);"));
+    assert!(runtime.contains("crate::rns::path_table_ui_snapshot(entries)"));
 
-    let rns = read_source(root.join("crates/ratspeak-runtime/src/rns.rs")).expect("rns");
-    assert!(rns.contains("pub fn path_table_stats_snapshot"));
-    assert!(rns.contains("let mut path_index = Map::with_capacity(entries.len())"));
-    assert!(rns.contains("path_table_ui_snapshot(entries)"));
+    let lxmf = read_source(root.join("crates/ratspeak-runtime/src/lxmf.rs")).expect("lxmf");
+    assert!(lxmf.contains("pub fn path_index_snapshot(&self)"));
+    assert!(lxmf.contains("Some(known) if known == entry => continue,"));
+    let system =
+        read_source(root.join("crates/ratspeak-tauri/src/commands/system.rs")).expect("system");
+    assert!(system.contains("pub async fn get_path_index("));
+    let app = read_source(root.join("src-tauri/src/lib.rs")).expect("app");
+    assert!(app.contains("ratspeak_tauri::commands::system::get_path_index,"));
+
+    let events = read_source(root.join("dashboard/static/js/tauri_events.js")).expect("events");
+    assert!(events.contains("PeersCache.syncPathIndex(data.path_index_revision)"));
+    assert!(events.contains("RS.listen('path_index_delta'"));
 
     let peers = read_source(root.join("dashboard/static/js/peers_cache.js")).expect("peers cache");
-    assert!(peers.contains("lastStats.path_index"));
+    assert!(!peers.contains("lastStats.path_index"));
+    assert!(peers.contains("RS.invoke('get_path_index')"));
+    assert!(peers.contains("delta.base !== _pathIndexRevision"));
     assert!(peers.contains("pathLookup[h] = pathIndex[h]"));
     assert!(peers.contains("else if (pathTable)"));
     assert!(peers.contains("function pathInfo(hash, service, pathLookup, nowSecs)"));
@@ -11527,7 +11540,7 @@ fn waiting_messages_are_woken_by_one_engine_under_the_manager_lock() {
             .starts_with("if online {\n                                state.wake_waiting(lxmf::WakeEvent::InterfaceOnline);")
     );
     assert!(runtime.contains(
-        "for (destination, hops) in newly_reachable {\n                        state.wake_waiting(lxmf::WakeEvent::Heard(destination));"
+        "for (destination, hops) in fold.added {\n                                state.wake_waiting(lxmf::WakeEvent::Heard(destination));"
     ));
     assert!(runtime.contains("state.wake_waiting(lxmf::WakeEvent::Heard(*recipient));"));
     assert_eq!(

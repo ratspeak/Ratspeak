@@ -612,17 +612,12 @@ pub async fn clear_system_blackholes(state: State<'_, Arc<AppState>>) -> AppResu
 #[tauri::command]
 pub async fn check_contact_status(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
     let identity_id = active_identity_id(&state);
-    let known_hashes = state
-        .known_path_hashes
-        .lock()
-        .map(|h| h.clone())
-        .unwrap_or_default();
     let st: Arc<AppState> = Arc::clone(&state);
     let id_c = identity_id.clone();
     let status = tokio::task::spawn_blocking(move || {
         if let Ok(lxmf) = st.lxmf.lock() {
             lxmf.as_ref()
-                .map(|mgr| mgr.check_contacts_identity_status(&st.db, &id_c, &known_hashes))
+                .map(|mgr| mgr.check_contacts_identity_status(&st.db, &id_c))
         } else {
             None
         }

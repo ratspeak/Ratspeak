@@ -1387,6 +1387,7 @@ pub fn run() {
                 ratspeak_tauri::commands::system::api_system_shutdown,
                 ratspeak_tauri::commands::system::api_database_stats,
                 ratspeak_tauri::commands::system::api_clear_paths,
+                ratspeak_tauri::commands::system::get_path_index,
                 ratspeak_tauri::commands::system::api_clear_announces,
                 ratspeak_tauri::commands::system::api_clear_messages,
                 ratspeak_tauri::commands::system::api_clear_contacts,

@@ -385,15 +385,24 @@ where
         .record_event_fenced(|| state.is_current_activity_origin_fence(origin), make);
 }
 
-/// The kind of connection the path to `destination` used at the last stats poll.
+/// The kind of connection the path to `destination` used at the last stats
+/// poll. Takes the LXMF lock, so never call it with that lock held.
 fn path_interface_class(state: &AppState, destination: &str) -> Option<producer::InterfaceClass> {
+    let destination: [u8; 16] = hex::decode(destination).ok()?.try_into().ok()?;
+    let name = state
+        .lxmf
+        .lock()
+        .ok()?
+        .as_ref()?
+        .route_entry(&destination)?
+        .interface
+        .clone();
     let stats = state.last_stats.read().ok()?;
-    interface_class_on_path(stats.as_ref()?, destination)
+    interface_class_on_path(stats.as_ref()?, &name)
 }
 
-fn interface_class_on_path(stats: &Value, destination: &str) -> Option<producer::InterfaceClass> {
+fn interface_class_on_path(stats: &Value, name: &str) -> Option<producer::InterfaceClass> {
     use producer::InterfaceClass::*;
-    let name = stats["path_index"][destination]["interface"].as_str()?;
     let rows = stats["interface_stats"]["interfaces"].as_array()?;
     let row = |name: &str| rows.iter().find(|row| row["name"].as_str() == Some(name));
     let mut row = row(name)?;
@@ -552,9 +561,8 @@ mod activity_delivery_adapter_tests {
 mod path_interface_tests {
     use super::*;
 
-    fn stats(path_iface: &str) -> Value {
+    fn stats() -> Value {
         json!({
-            "path_index": { "aa": { "interface": path_iface } },
             "interface_stats": { "interfaces": [
                 { "name": "Ruby", "type": "TCPClientInterface", "parent": null },
                 { "name": "Hub", "type": "TCPServerInterface", "parent": null },
@@ -568,7 +576,7 @@ mod path_interface_tests {
     #[test]
     fn a_path_names_its_kind_of_connection() {
         use producer::InterfaceClass::*;
-        let class = |iface| interface_class_on_path(&stats(iface), "aa");
+        let class = |iface| interface_class_on_path(&stats(), iface);
         assert!(matches!(class("Ruby"), Some(TcpClient)));
         assert!(
             matches!(class("Client on Hub"), Some(TcpServer)),
@@ -577,10 +585,6 @@ mod path_interface_tests {
         assert!(matches!(class("Bluetooth Peer"), Some(BluetoothPeer)));
         assert!(class("Pipe").is_none(), "no kind to name");
         assert!(class("Gone").is_none(), "an interface no longer running");
-        assert!(
-            interface_class_on_path(&stats("Ruby"), "bb").is_none(),
-            "no path"
-        );
     }
 }
 
@@ -6412,18 +6416,22 @@ async fn push_stats_once(state: &AppState) {
         _ => json!({ "interfaces": [] }),
     };
 
-    let (path_table, path_index, path_table_total, path_table_truncated) = match path_result {
-        Some(entries) => {
-            cache_lxmf_route_hops_from_path_table(state, &entries, path_observation_started);
-            crate::rns::path_table_stats_snapshot(entries)
-        }
-        _ => (
-            vec![],
-            serde_json::Value::Object(serde_json::Map::new()),
-            0,
-            false,
-        ),
-    };
+    let (path_table, path_index_delta, path_index_revision, path_table_total, path_table_truncated) =
+        match path_result {
+            Some(entries) => {
+                let (fold, revision) =
+                    fold_routes_from_path_table(state, &entries, path_observation_started);
+                let (rows, total, truncated) = crate::rns::path_table_ui_snapshot(entries);
+                (
+                    rows,
+                    fold.and_then(|fold| fold.delta),
+                    revision,
+                    total,
+                    truncated,
+                )
+            }
+            _ => (vec![], None, path_index_revision(state), 0, false),
+        };
 
     let link_count = match link_result {
         Some(rns_transport::messages::TransportQueryResponse::IntResult(n)) => n,
@@ -6453,7 +6461,7 @@ async fn push_stats_once(state: &AppState) {
         "network_ownership": network_ownership::snapshot(state),
         "interface_stats": iface_stats,
         "path_table": path_table,
-        "path_index": path_index,
+        "path_index_revision": path_index_revision,
         "path_table_total": path_table_total,
         "path_table_truncated": path_table_truncated,
         "rate_table": [],
@@ -6461,6 +6469,9 @@ async fn push_stats_once(state: &AppState) {
     });
 
     state.set_last_stats(stats.clone());
+    if let Some(delta) = path_index_delta {
+        state.emit_to_all("path_index_delta", delta);
+    }
     state.emit_to_all("stats_update", stats);
 }
 
@@ -6491,16 +6502,29 @@ fn is_current_network_runtime(
     }) && !handle.shutdown.is_triggered()
 }
 
-fn cache_lxmf_route_hops_from_path_table(
+/// Fold the path table into LXMF's routes, and return the fold, if the
+/// manager took it, with the path index's revision.
+fn fold_routes_from_path_table(
     state: &AppState,
     entries: &[rns_transport::messages::PathTableRpcEntry],
     started: Instant,
-) {
+) -> (Option<lxmf::RouteFold>, u64) {
     if let Ok(mut lxmf) = state.lxmf.lock()
         && let Some(mgr) = lxmf.as_mut()
     {
-        mgr.replace_routes_observed_at(entries, started);
+        let fold = mgr.replace_routes_observed_at(entries, started);
+        return (fold, mgr.path_index_revision());
     }
+    (None, 0)
+}
+
+pub fn path_index_revision(state: &AppState) -> u64 {
+    state
+        .lxmf
+        .lock()
+        .ok()
+        .and_then(|lxmf| lxmf.as_ref().map(lxmf::LxmfManager::path_index_revision))
+        .unwrap_or(0)
 }
 
 // Debounce for eager `poll_now` wakes.
@@ -6729,7 +6753,7 @@ async fn poll_stats_loop(
 
         // Python-parity control surfaces proxy to the shared instance in
         // client mode; recent announces stay local dashboard state.
-        let stats = {
+        let (stats, path_index_delta) = {
             let path_observation_started = Instant::now();
             let (iface_result, path_result, link_result, announce_result) = tokio::join!(
                 handle.query_control(rns_transport::messages::TransportQuery::GetInterfaceStats),
@@ -6814,57 +6838,40 @@ async fn poll_stats_loop(
                 _ => json!({ "interfaces": [] }),
             };
 
-            let (path_table, path_index, path_table_total, path_table_truncated) = match path_result
-            {
+            let (
+                path_table,
+                path_index_delta,
+                path_index_revision,
+                path_table_total,
+                path_table_truncated,
+            ) = match path_result {
                 Some(entries) => {
-                    cache_lxmf_route_hops_from_path_table(
-                        &state,
-                        &entries,
-                        path_observation_started,
-                    );
-                    let path_activity_ready = state
-                        .path_activity_baselined
-                        .load(std::sync::atomic::Ordering::Relaxed);
-                    let hashes: std::collections::HashSet<String> =
-                        entries.iter().map(|e| hex::encode(e.hash)).collect();
-
-                    let newly_reachable: Vec<([u8; 16], u8)> = if path_activity_ready {
-                        if let Ok(cached) = state.known_path_hashes.lock() {
-                            entries
-                                .iter()
-                                .filter(|entry| !cached.contains(&hex::encode(entry.hash)))
-                                .map(|entry| (entry.hash, entry.hops))
-                                .collect()
-                        } else {
-                            Vec::new()
-                        }
-                    } else {
-                        Vec::new()
-                    };
-
-                    if let Ok(mut cached) = state.known_path_hashes.lock() {
-                        *cached = hashes;
-                    }
-                    if !path_activity_ready && !entries.is_empty() {
-                        state
+                    let (fold, revision) =
+                        fold_routes_from_path_table(&state, &entries, path_observation_started);
+                    let mut delta = None;
+                    if let Some(fold) = fold {
+                        let path_activity_ready = state
                             .path_activity_baselined
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                            .load(std::sync::atomic::Ordering::Relaxed);
+                        if path_activity_ready {
+                            for (destination, hops) in fold.added {
+                                state.wake_waiting(lxmf::WakeEvent::Heard(destination));
+                                activity_observations.push(PollActivityObservation::PathObserved {
+                                    destination,
+                                    hops,
+                                });
+                            }
+                        } else if !entries.is_empty() {
+                            state
+                                .path_activity_baselined
+                                .store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        delta = fold.delta;
                     }
-
-                    for (destination, hops) in newly_reachable {
-                        state.wake_waiting(lxmf::WakeEvent::Heard(destination));
-                        activity_observations
-                            .push(PollActivityObservation::PathObserved { destination, hops });
-                    }
-
-                    crate::rns::path_table_stats_snapshot(entries)
+                    let (rows, total, truncated) = crate::rns::path_table_ui_snapshot(entries);
+                    (rows, delta, revision, total, truncated)
                 }
-                _ => (
-                    vec![],
-                    serde_json::Value::Object(serde_json::Map::new()),
-                    0,
-                    false,
-                ),
+                _ => (vec![], None, path_index_revision(&state), 0, false),
             };
 
             let link_count = match link_result {
@@ -6959,27 +6966,28 @@ async fn poll_stats_loop(
                         .iter()
                         .map(|a| (a.dest_hash, a.timestamp))
                         .collect();
+                    mgr.prune_compression_support(&announces);
                 }
                 if identities_changed || router_changed {
                     crate::lxmf_persistence::schedule_announce_persistence(&state, router_changed);
                 }
 
-                if let Ok(mut history) = state.announce_history.write() {
-                    let current_announce_hashes: std::collections::HashSet<String> =
-                        announces.iter().map(|a| hex::encode(a.dest_hash)).collect();
-                    if let Some(mut seen) = state
-                        .seen_announce_hashes
-                        .lock()
-                        .ok()
-                        .filter(|seen| seen.len() > 50_000)
-                    {
-                        if current_announce_hashes.is_empty() {
-                            seen.clear();
-                        } else {
-                            seen.retain(|hash| current_announce_hashes.contains(hash));
-                        }
+                if let Ok(mut history) = state.announce_history.write()
+                    && let Ok(mut seen) = state.seen_announce_hashes.lock()
+                {
+                    // Forget destinations the announce cache dropped, amortized.
+                    if seen.len() > announces.len().saturating_mul(2).max(1024) {
+                        let current: std::collections::HashSet<[u8; 16]> =
+                            announces.iter().map(|a| a.dest_hash).collect();
+                        seen.retain(|hash| current.contains(hash));
                     }
                     for a in &announces {
+                        let announce_timestamp_changed =
+                            announce_is_newer(&applied_announces, &a.dest_hash, a.timestamp);
+                        // Nothing to show or record for an announce already applied.
+                        if !announce_timestamp_changed && seen.contains(&a.dest_hash) {
+                            continue;
+                        }
                         let hash_hex = hex::encode(a.dest_hash);
                         let display_name = a
                             .app_data
@@ -6990,15 +6998,9 @@ async fn poll_stats_loop(
                             .app_data
                             .as_deref()
                             .and_then(crate::lxmf::ratspeak_status_from_app_data);
-                        let announce_timestamp_changed =
-                            announce_is_newer(&applied_announces, &a.dest_hash, a.timestamp);
                         // Null, not zero, for a destination restored without them.
                         let announce_hops = crate::transport_observation::announce_hops(a);
-                        let is_new = if let Ok(mut seen) = state.seen_announce_hashes.lock() {
-                            seen.insert(hash_hex.clone())
-                        } else {
-                            false
-                        };
+                        let is_new = seen.insert(a.dest_hash);
                         // A restored row is not an announce heard now: peers stay
                         // as the database has them.
                         if restored_announces.touches_peer(&applied_announces, a) {
@@ -7163,16 +7165,35 @@ async fn poll_stats_loop(
                 }
 
                 // Peers who messaged us before they announced have no real
-                // name in contacts yet; refresh names when announces arrive.
+                // name in contacts yet; name them from their announces.
                 let announce_identity_id = crate::helpers::active_identity_id(&state);
-                let announced_names: Vec<(String, String)> = announces
-                    .iter()
-                    .filter_map(|a| {
-                        let name = extract_display_name(a.app_data.as_ref()?);
-                        (!name.is_empty()).then(|| (hex::encode(a.dest_hash), name))
+                let unnamed = if announce_identity_id.is_empty() {
+                    Vec::new()
+                } else {
+                    let identity_id = announce_identity_id.clone();
+                    db::spawn_db(state.db.clone(), move |p| {
+                        db::unnamed_contact_hashes(&p, &identity_id)
                     })
-                    .collect();
-                if !announce_identity_id.is_empty() && !announced_names.is_empty() {
+                    .await
+                    .unwrap_or_default()
+                };
+                let announced_names: Vec<(String, String)> = if unnamed.is_empty() {
+                    Vec::new()
+                } else {
+                    let unnamed: std::collections::HashSet<String> = unnamed.into_iter().collect();
+                    announces
+                        .iter()
+                        .filter_map(|a| {
+                            let hash = hex::encode(a.dest_hash);
+                            if !unnamed.contains(&hash) {
+                                return None;
+                            }
+                            let name = extract_display_name(a.app_data.as_ref()?);
+                            (!name.is_empty()).then_some((hash, name))
+                        })
+                        .collect()
+                };
+                if !announced_names.is_empty() {
                     let announce_id_for_db = announce_identity_id.clone();
                     let contacts_changed = db::spawn_db(state.db.clone(), move |p| {
                         db::fill_unnamed_contact_names(&p, &announce_id_for_db, &announced_names)
@@ -7211,19 +7232,20 @@ async fn poll_stats_loop(
 
             let connected = any_online && network_ownership::shared_connection_ready(&handle);
 
-            json!({
+            let stats = json!({
                 "timestamp": now,
                 "connected": connected,
                 "last_announce_at": last_announce_at_secs(&state),
                 "network_ownership": network_ownership::snapshot(&state),
                 "interface_stats": iface_stats,
                 "path_table": path_table,
-                "path_index": path_index,
+                "path_index_revision": path_index_revision,
                 "path_table_total": path_table_total,
                 "path_table_truncated": path_table_truncated,
                 "rate_table": [],
                 "link_count": link_count,
-            })
+            });
+            (stats, path_index_delta)
         };
 
         if state
@@ -7244,8 +7266,12 @@ async fn poll_stats_loop(
 
         state.set_last_stats(stats.clone());
         // A backgrounded WebView has no reader; resume polls and emits at once.
+        // A delta it misses is caught by the revision in the next stats.
         let emit = state.is_foreground();
         if emit {
+            if let Some(delta) = path_index_delta {
+                state.emit_to_all("path_index_delta", delta);
+            }
             state.emit_to_all("stats_update", stats);
         }
         stats_emit_skipped = !emit;

@@ -84,6 +84,12 @@ var PeersCache = (function() {
     var _enrichedPathIndex = null;
     var _visibilityContextCache = null;
 
+    // Every route, kept from `path_index_delta` events and the
+    // `get_path_index` snapshot; `stats_update` carries only its revision.
+    var _pathIndex = Object.create(null);
+    var _pathIndexRevision = null;
+    var _pathIndexSync = null;
+
     function _peerNoiseNameKind(displayName) {
         if (typeof displayName !== 'string') return false;
         var name = displayName.trim();
@@ -170,6 +176,51 @@ var PeersCache = (function() {
 
     function hideKnownSpamPeersEnabled() {
         return _hideKnownSpamPeers;
+    }
+
+    function _resyncPathIndex() {
+        if (_pathIndexSync) return _pathIndexSync;
+        _pathIndexSync = RS.invoke('get_path_index').then(function(snapshot) {
+            _pathIndexSync = null;
+            if (!snapshot || typeof snapshot !== 'object') return;
+            var entries = (snapshot.entries && typeof snapshot.entries === 'object') ? snapshot.entries : {};
+            var index = Object.create(null);
+            for (var h in entries) {
+                if (Object.prototype.hasOwnProperty.call(entries, h)) index[h] = entries[h];
+            }
+            _pathIndex = index;
+            _pathIndexRevision = snapshot.revision;
+            _notify();
+        }, function() { _pathIndexSync = null; });
+        return _pathIndexSync;
+    }
+
+    // A delta applies only on top of the revision it was made from.
+    function applyPathIndexDelta(delta) {
+        if (!delta || typeof delta !== 'object') return;
+        if (_pathIndexSync || delta.base !== _pathIndexRevision) {
+            _resyncPathIndex();
+            return;
+        }
+        var upsert = (delta.upsert && typeof delta.upsert === 'object') ? delta.upsert : {};
+        for (var h in upsert) {
+            if (Object.prototype.hasOwnProperty.call(upsert, h)) _pathIndex[h] = upsert[h];
+        }
+        var remove = Array.isArray(delta.remove) ? delta.remove : [];
+        for (var i = 0; i < remove.length; i++) delete _pathIndex[remove[i]];
+        _pathIndexRevision = delta.revision;
+        _notify();
+    }
+
+    function syncPathIndex(revision) {
+        if (typeof revision !== 'number' || revision === _pathIndexRevision) return;
+        _resyncPathIndex();
+    }
+
+    function clearPathIndex() {
+        _pathIndex = Object.create(null);
+        _pathIndexRevision = null;
+        _notify();
     }
 
     function _notify() {
@@ -442,12 +493,10 @@ var PeersCache = (function() {
     }
 
     // Cache rows overlaid with the live path index. `path_table` is capped for
-    // render cost; `path_index` stays compact but covers the full route set.
+    // render cost; the path index covers the full route set once synced.
     // Same row shape as connections.js/lxmf.js/health.js expect.
     function enriched() {
-        var pathIndex = (typeof lastStats !== 'undefined' && lastStats && lastStats.path_index && typeof lastStats.path_index === 'object')
-            ? lastStats.path_index
-            : null;
+        var pathIndex = _pathIndexRevision !== null ? _pathIndex : null;
         var pathTable = (typeof lastStats !== 'undefined' && lastStats && Array.isArray(lastStats.path_table))
             ? lastStats.path_table
             : null;
@@ -556,6 +605,9 @@ var PeersCache = (function() {
         hideKnownSpamPeersEnabled: hideKnownSpamPeersEnabled,
         visibilityContextChanged: visibilityContextChanged,
         enriched: enriched,
+        applyPathIndexDelta: applyPathIndexDelta,
+        syncPathIndex: syncPathIndex,
+        clearPathIndex: clearPathIndex,
         compareByLastSeen: compareByLastSeen,
         isInitialized: isInitialized,
         loadFailed: loadFailed,

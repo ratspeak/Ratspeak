@@ -2826,6 +2826,26 @@ pub fn get_all_contacts_conn(conn: &Connection, identity_id: &str) -> Vec<serde_
 /// Updates display_name only when empty; preserves user-chosen names.
 /// Names still-unnamed contacts from announced `(dest_hash, display_name)`
 /// pairs in one transaction; returns whether any contact changed.
+/// Contacts with no display name yet, by destination hash.
+pub fn unnamed_contact_hashes(pool: &DbPool, identity_id: &str) -> Vec<String> {
+    let Some(conn) = pool.get().or_report("unnamed_contact_hashes") else {
+        return Vec::new();
+    };
+    let Some(mut stmt) = conn
+        .prepare_cached(
+            "SELECT dest_hash FROM contacts WHERE identity_id = ?1
+             AND (display_name IS NULL OR display_name = '')",
+        )
+        .or_report("unnamed_contact_hashes")
+    else {
+        return Vec::new();
+    };
+    stmt.query_map(params![identity_id], |row| row.get::<_, String>(0))
+        .or_report("unnamed_contact_hashes")
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
 pub fn fill_unnamed_contact_names(
     pool: &DbPool,
     identity_id: &str,

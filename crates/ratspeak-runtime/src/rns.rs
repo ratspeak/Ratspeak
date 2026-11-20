@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use rns_interface::rnode::RNodeStartupOptions;
 #[cfg(all(feature = "ble", target_os = "android"))]
@@ -243,25 +243,15 @@ pub fn path_table_ui_snapshot(
     (rows, total, truncated)
 }
 
-pub fn path_table_stats_snapshot(
-    entries: Vec<rns_transport::messages::PathTableRpcEntry>,
-) -> (Vec<Value>, Value, usize, bool) {
-    let mut path_index = Map::with_capacity(entries.len());
-    for entry in &entries {
-        path_index.insert(
-            hex::encode(entry.hash),
-            json!({
-                "via": entry.via.filter(|via| *via != entry.hash).map(hex::encode),
-                "hops": entry.hops,
-                "expires": entry.expires,
-                "timestamp": entry.timestamp,
-                "interface": entry.interface,
-            }),
-        );
-    }
-
-    let (rows, total, truncated) = path_table_ui_snapshot(entries);
-    (rows, Value::Object(path_index), total, truncated)
+/// One route as the dashboard's path index shows it.
+pub fn path_index_row(entry: &rns_transport::messages::PathTableRpcEntry) -> Value {
+    json!({
+        "via": entry.via.filter(|via| *via != entry.hash).map(hex::encode),
+        "hops": entry.hops,
+        "expires": entry.expires,
+        "timestamp": entry.timestamp,
+        "interface": entry.interface,
+    })
 }
 
 #[cfg(test)]
@@ -305,21 +295,5 @@ mod tests {
             rows[0].get("timestamp").and_then(|v| v.as_f64()),
             Some((UI_PATH_TABLE_LIMIT + 2) as f64)
         );
-    }
-
-    #[test]
-    fn path_table_stats_snapshot_keeps_uncapped_peer_lookup() {
-        let entries: Vec<_> = (0..(UI_PATH_TABLE_LIMIT + 3))
-            .map(|i| path_entry(i, i as f64))
-            .collect();
-
-        let (rows, path_index, total, truncated) = path_table_stats_snapshot(entries);
-        let index = path_index.as_object().expect("path index object");
-
-        assert_eq!(total, UI_PATH_TABLE_LIMIT + 3);
-        assert!(truncated);
-        assert_eq!(rows.len(), UI_PATH_TABLE_LIMIT);
-        assert_eq!(index.len(), UI_PATH_TABLE_LIMIT + 3);
-        assert!(index.contains_key(&hex::encode([0_u8; 16])));
     }
 }

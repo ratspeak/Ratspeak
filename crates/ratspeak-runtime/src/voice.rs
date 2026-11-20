@@ -727,43 +727,23 @@ fn announce_info_for(
 }
 
 fn cached_zero_hop_path(state: &AppState, remote_identity: [u8; 16]) -> bool {
-    let lxmf_destination = lxmf_destination_for_identity(remote_identity);
-    let telephony_destination = hex::encode(Destination::hash_from_name_and_identity(
+    let lxmf_destination = Destination::hash_from_name_and_identity(
+        LXMF_DELIVERY_DESTINATION_NAME,
+        Some(&remote_identity),
+    );
+    let telephony_destination = Destination::hash_from_name_and_identity(
         TELEPHONY_DESTINATION_NAME,
         Some(&remote_identity),
-    ));
-    let Ok(stats_guard) = state.last_stats.read() else {
+    );
+    let Ok(lxmf) = state.lxmf.lock() else {
         return false;
     };
-    let Some(stats) = stats_guard.as_ref() else {
+    let Some(mgr) = lxmf.as_ref() else {
         return false;
     };
-    [lxmf_destination.as_str(), telephony_destination.as_str()]
+    [lxmf_destination, telephony_destination]
         .iter()
-        .any(|dest| cached_path_hops(stats, dest).is_some_and(|hops| hops == 0))
-}
-
-fn cached_path_hops(stats: &Value, dest: &str) -> Option<u64> {
-    if let Some(hops) = stats
-        .get("path_index")
-        .and_then(|index| index.get(dest))
-        .and_then(|entry| entry.get("hops"))
-        .and_then(|hops| hops.as_u64())
-    {
-        return Some(hops);
-    }
-    stats
-        .get("path_table")
-        .and_then(|table| table.as_array())
-        .and_then(|table| {
-            table.iter().find_map(|entry| {
-                if entry.get("hash").and_then(|hash| hash.as_str()) == Some(dest) {
-                    entry.get("hops").and_then(|hops| hops.as_u64())
-                } else {
-                    None
-                }
-            })
-        })
+        .any(|dest| mgr.route_entry(dest).is_some_and(|entry| entry.hops == 0))
 }
 
 fn record_rejected_call_attempt(state: &AppState, remote_identity: [u8; 16]) -> u32 {

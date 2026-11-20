@@ -722,9 +722,8 @@ pub struct AppState {
     pub(crate) voice_call_audio_reserved: AtomicBool,
     #[cfg(feature = "lxst-voice")]
     pub lxst_rejected_call_attempts: Mutex<HashMap<String, (u32, Instant)>>,
-    pub known_path_hashes: Mutex<std::collections::HashSet<String>>,
-    /// False until the first non-empty path-table snapshot has seeded
-    /// `known_path_hashes`; prevents restored paths from flooding Activity.
+    /// False until LXMF first folds a non-empty path table into its routes;
+    /// prevents restored paths from flooding Activity.
     pub path_activity_baselined: AtomicBool,
     pub lrgp_router: lrgp::router::LrgpRouter,
     /// Serializes game plans, database commits and publication to the live router.
@@ -732,7 +731,7 @@ pub struct AppState {
     pub message_send_times: Mutex<HashMap<String, f64>>,
     /// When each sender with no stored announce was last asked for.
     pub sender_path_requests: Mutex<HashMap<[u8; 16], std::time::Instant>>,
-    pub seen_announce_hashes: Mutex<std::collections::HashSet<String>>,
+    pub seen_announce_hashes: Mutex<std::collections::HashSet<[u8; 16]>>,
     /// False until the first non-empty announce snapshot has seeded
     /// `seen_announce_hashes`; prevents cached announces from replaying as live.
     pub announce_activity_baselined: AtomicBool,
@@ -1162,7 +1161,6 @@ impl AppState {
             voice_call_audio_reserved: AtomicBool::new(false),
             #[cfg(feature = "lxst-voice")]
             lxst_rejected_call_attempts: Mutex::new(HashMap::new()),
-            known_path_hashes: Mutex::new(std::collections::HashSet::new()),
             path_activity_baselined: AtomicBool::new(false),
             lrgp_router,
             lrgp_transaction: Arc::new(tokio::sync::Mutex::new(())),
@@ -3091,9 +3089,6 @@ impl AppState {
         if let Ok(mut channel_hub) = self.channel_hub.write() {
             *channel_hub = None;
         }
-        if let Ok(mut known) = self.known_path_hashes.lock() {
-            known.clear();
-        }
         self.path_activity_baselined.store(false, Ordering::Relaxed);
         if let Ok(mut history) = self.announce_history.write() {
             history.clear();
@@ -3532,7 +3527,6 @@ impl AppState {
         let snapshot = cached.get_or_insert_with(|| {
             serde_json::json!({
                 "path_table": [],
-                "path_index": {},
                 "path_table_total": 0,
                 "path_table_truncated": false,
                 "rate_table": [],
@@ -3542,7 +3536,6 @@ impl AppState {
         if !snapshot.is_object() {
             *snapshot = serde_json::json!({
                 "path_table": [],
-                "path_index": {},
                 "path_table_total": 0,
                 "path_table_truncated": false,
                 "rate_table": [],

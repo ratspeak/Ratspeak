@@ -494,6 +494,7 @@ pub async fn api_database_stats(state: State<'_, Arc<AppState>>) -> AppResult<Va
 }
 
 fn clear_cached_path_stats(state: &AppState) {
+    let revision = ratspeak_runtime::path_index_revision(state);
     let stats = {
         let mut guard = match state.last_stats.write() {
             Ok(guard) => guard,
@@ -504,13 +505,30 @@ fn clear_cached_path_stats(state: &AppState) {
         };
         if let Some(obj) = stats.as_object_mut() {
             obj.insert("path_table".to_string(), json!([]));
-            obj.insert("path_index".to_string(), json!({}));
+            obj.insert("path_index_revision".to_string(), json!(revision));
             obj.insert("path_table_total".to_string(), json!(0));
             obj.insert("path_table_truncated".to_string(), json!(false));
         }
         stats.clone()
     };
     state.emit_to_all("stats_update", stats);
+}
+
+/// Every route by destination, with the revision `path_index_delta` builds on.
+#[tauri::command]
+pub async fn get_path_index(state: State<'_, Arc<AppState>>) -> AppResult<Value> {
+    let state = Arc::clone(&state);
+    let snapshot = tokio::task::spawn_blocking(move || {
+        state
+            .lxmf
+            .lock()
+            .ok()
+            .and_then(|lxmf| lxmf.as_ref().map(|mgr| mgr.path_index_snapshot()))
+    })
+    .await
+    .ok()
+    .flatten();
+    Ok(snapshot.unwrap_or_else(|| json!({ "revision": 0, "entries": {} })))
 }
 
 #[tauri::command]
@@ -552,16 +570,13 @@ pub async fn api_clear_paths(state: State<'_, Arc<AppState>>) -> AppResult<Value
         }
     }
 
-    if let Ok(mut paths) = state.known_path_hashes.lock() {
-        paths.clear();
-    }
     state
         .path_activity_baselined
         .store(false, std::sync::atomic::Ordering::Relaxed);
     if let Ok(mut lxmf) = state.lxmf.lock()
         && let Some(mgr) = lxmf.as_mut()
     {
-        mgr.replace_route_hops_from_path_table(&[]);
+        mgr.clear_routes();
     }
     clear_cached_path_stats(&state);
     state.emit_to_all("paths_cleared", json!({ "cleared": cleared }));
@@ -923,9 +938,6 @@ pub async fn api_factory_reset(state: State<'_, Arc<AppState>>) -> AppResult<Val
     }
     if let Ok(mut alerts) = state.alerts.lock() {
         alerts.clear();
-    }
-    if let Ok(mut paths) = state.known_path_hashes.lock() {
-        paths.clear();
     }
     state
         .path_activity_baselined
