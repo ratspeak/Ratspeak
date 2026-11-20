@@ -9780,8 +9780,18 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
              VALUES (?1, ?2, ?3, ?3, 1, COALESCE(?4, ''), COALESCE(?5, ''), COALESCE(?6, ''), ?7, COALESCE(?8, ''), COALESCE(?9, 0))
              ON CONFLICT(dest_hash) DO UPDATE SET
                  announce_emitted = MAX(announce_emitted, COALESCE(?9, 0)),
-                 last_seen = MAX(excluded.last_seen, last_seen),
-                 announce_count = announce_count + 1,
+                 -- A copy of an announce already heard, or an older one accepted once the
+                 -- path lapsed, says nothing about the peer now: only a newer one is a hearing.
+                 last_seen = CASE
+                     WHEN ?9 IS NULL OR announce_emitted = 0 OR ?9 > announce_emitted
+                         THEN MAX(excluded.last_seen, last_seen)
+                     ELSE last_seen
+                 END,
+                 announce_count = CASE
+                     WHEN ?9 IS NULL OR announce_emitted = 0 OR ?9 > announce_emitted
+                         THEN announce_count + 1
+                     ELSE announce_count
+                 END,
                  identity_hash = CASE
                      WHEN excluded.identity_hash != '' THEN excluded.identity_hash
                      ELSE identity_hash
@@ -9805,9 +9815,13 @@ pub fn touch_identity_activity_updates(pool: &DbPool, updates: &[IdentityActivit
                      WHEN excluded.last_interface != '' THEN excluded.last_interface
                      ELSE last_interface
                  END,
-                 services = excluded.services,
+                 services = CASE
+                     WHEN ?9 IS NULL OR ?9 >= announce_emitted THEN excluded.services
+                     ELSE services
+                 END,
                  lxmf_compression_support = CASE
-                     WHEN ?8 IS NOT NULL AND ?8 != '' THEN excluded.lxmf_compression_support
+                     WHEN ?8 IS NOT NULL AND ?8 != '' AND (?9 IS NULL OR ?9 >= announce_emitted)
+                         THEN excluded.lxmf_compression_support
                      ELSE lxmf_compression_support
                  END",
         ).or_report("touch_identity_activity_updates") else {
@@ -16859,6 +16873,52 @@ mod peers_snapshot_tests {
         // Her own newer announce still clears it.
         touch_identity_activity_updates(&pool, &[heard("Ada L", "", Some(3000))]);
         assert_eq!(profile(&pool), ("Ada L".into(), "".into(), 3000));
+    }
+
+    /// A powered-off peer's old announce, relayed late from a far transport node,
+    /// must not show it as just heard or change what it offers.
+    #[test]
+    fn an_older_or_repeated_announce_heard_late_is_not_a_hearing() {
+        let pool = test_pool();
+        let hash = "dddddddddddddddddddddddddddddddd";
+        let heard = |at: f64, emitted: Option<u64>, services: &[&str]| IdentityActivityUpdate {
+            dest_hash: hash.into(),
+            timestamp: at,
+            display_name: None,
+            status: None,
+            last_interface: None,
+            identity_hash: None,
+            services: services.iter().map(|s| s.to_string()).collect(),
+            clear_ratspeak_services: true,
+            lxmf_compression_support: None,
+            announce_emitted: emitted,
+        };
+        let row = |pool: &DbPool| -> (f64, i64, String) {
+            pool.get()
+                .unwrap()
+                .query_row(
+                    "SELECT last_seen, announce_count, services FROM identity_activity WHERE dest_hash = ?1",
+                    params![hash],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap()
+        };
+        let lxmf = PEER_SERVICE_LXMF_DELIVERY;
+        let with_games = [lxmf, PEER_SERVICE_RATSPEAK_GAMES];
+
+        touch_identity_activity_updates(&pool, &[heard(100.0, Some(2000), &[lxmf])]);
+        assert_eq!(row(&pool), (100.0, 1, lxmf.into()));
+        // Its older announce (games still on), then a copy of the one already heard.
+        touch_identity_activity_updates(&pool, &[heard(500.0, Some(1000), &with_games)]);
+        touch_identity_activity_updates(&pool, &[heard(600.0, Some(2000), &[lxmf])]);
+        assert_eq!(row(&pool), (100.0, 1, lxmf.into()));
+
+        touch_identity_activity_updates(&pool, &[heard(700.0, Some(3000), &with_games)]);
+        assert_eq!(row(&pool), (700.0, 2, with_games.join(",")));
+        // Callers with no emission time keep counting.
+        touch_identity_activity_updates(&pool, &[heard(800.0, None, &[lxmf])]);
+        assert_eq!(row(&pool).0, 800.0);
+        assert_eq!(row(&pool).1, 3);
     }
 
     #[test]

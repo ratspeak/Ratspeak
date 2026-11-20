@@ -7083,7 +7083,7 @@ async fn poll_stats_loop(
                                     services,
                                     clear_ratspeak_services: true,
                                     lxmf_compression_support,
-                                    announce_emitted: None,
+                                    announce_emitted: a.emitted,
                                 });
                                 peer_activity_hashes.push(hash_hex.clone());
                                 delivery_trigger_hashes.push(a.dest_hash);
