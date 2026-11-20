@@ -557,7 +557,7 @@ mod tests {
                     content: "",
                     title: "",
                     file_name: name,
-                    file_bytes: name.as_bytes(),
+                    file_bytes: name.as_bytes().to_vec(),
                     staged_path: None,
                     is_image: false,
                     image_mime: "",

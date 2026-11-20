@@ -1347,7 +1347,7 @@ async fn queue_prepared_attachment(
                         content: &msg_content,
                         title: &tt,
                         file_name: &fn_c,
-                        file_bytes: &file_bytes,
+                        file_bytes,
                         staged_path: staged_path.as_deref(),
                         is_image,
                         image_mime: &im,

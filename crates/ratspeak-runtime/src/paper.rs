@@ -490,11 +490,11 @@ pub async fn add_paper_message(state: &Arc<AppState>, uri: &str) -> Result<Paper
     }
 
     let sent_at = message.timestamp();
-    let wire = message.wire_bytes().to_vec();
+    let encoded_bytes = message.wire_bytes().len();
     let outcome = crate::process_inbound_lxmf(
         state,
         message,
-        &wire,
+        encoded_bytes,
         InboundLxmfSource::Paper,
         activity_origin,
         session,

@@ -5520,7 +5520,7 @@ async fn handle_inbound_lxmf(
         process_inbound_lxmf(
             &state,
             msg,
-            &lxmf_data,
+            lxmf_data.len(),
             InboundLxmfSource::Opportunistic { raw },
             activity_origin,
             shutdown.clone(),
@@ -5762,11 +5762,13 @@ async fn handle_decrypted_lxmf_from_origin(
             return;
         }
     }
-    let msg = match lxmf_core::message_api::LxMessage::unpack(&data) {
+    let encoded_bytes = data.len();
+    let limits = lxmf_core::message_api::MessageDecodeLimits::default();
+    let msg = match lxmf_core::message_api::LxMessage::unpack_owned(data.into(), limits) {
         Ok(m) => m,
         Err(_) => {
             tracing::warn!(
-                data_len = data.len(),
+                data_len = encoded_bytes,
                 source = source.label(),
                 reason = "unpack_failed",
                 "inbound LXMF unpack failed"
@@ -5774,7 +5776,7 @@ async fn handle_decrypted_lxmf_from_origin(
             return;
         }
     };
-    process_inbound_lxmf(state, msg, &data, source, activity_origin, session).await;
+    process_inbound_lxmf(state, msg, encoded_bytes, source, activity_origin, session).await;
 }
 
 #[cfg(test)]
@@ -5975,15 +5977,12 @@ async fn inbound_message_stored(state: &AppState, msg_id: &str, identity_id: &st
     .unwrap_or(false)
 }
 
-/// The one inbound LXMF pipeline. `fallback_id_material` is the unpacked
-/// wire material; its hash is the msg-id fallback when the message carries
-/// no hash — deterministic across sender retries so dedupe still works
-/// (the old paths used the ciphertext hash / a fresh uuid4, both of which
-/// made every retry look new).
+/// The one inbound LXMF pipeline. `encoded_bytes` is the unpacked wire's
+/// length, for Activity.
 async fn process_inbound_lxmf(
     state: &Arc<AppState>,
     msg: lxmf_core::message_api::LxMessage,
-    fallback_id_material: &[u8],
+    encoded_bytes: usize,
     source: InboundLxmfSource,
     activity_origin: ActivityRequestFence,
     session: rns_runtime::lifecycle::ShutdownSignal,
@@ -6283,7 +6282,7 @@ async fn process_inbound_lxmf(
             producer::LxmfInboundAccepted {
                 source: producer::DestinationHash::new(msg.source_hash()),
                 method: inbound_method,
-                encoded_bytes: fallback_id_material.len().min(u32::MAX as usize) as u32,
+                encoded_bytes: encoded_bytes.min(u32::MAX as usize) as u32,
                 // A message from the Offline Inbox or on paper didn't come over the sender's path.
                 interface: matches!(
                     inbound_method,
@@ -10359,7 +10358,7 @@ mod inbound_pipeline_tests {
         process_inbound_lxmf(
             &state,
             msg,
-            &opp_data,
+            opp_data.len(),
             InboundLxmfSource::Opportunistic { raw: Bytes::new() },
             state.activity_request_fence(),
             session,
@@ -11296,7 +11295,7 @@ mod outbox_budget_tests {
             content: "",
             title: "",
             file_name: "video.mp4",
-            file_bytes: &bytes,
+            file_bytes: bytes,
             staged_path: None,
             is_image: false,
             image_mime: "",

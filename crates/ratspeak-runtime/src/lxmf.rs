@@ -1044,7 +1044,8 @@ pub struct AttachmentMessageRequest<'a> {
     pub content: &'a str,
     pub title: &'a str,
     pub file_name: &'a str,
-    pub file_bytes: &'a [u8],
+    /// Dropped once encoded into the message, which then holds the only copy.
+    pub file_bytes: Vec<u8>,
     /// Private app-owned staging file to atomically adopt into message
     /// storage, avoiding a second full-size filesystem copy.
     pub staged_path: Option<&'a Path>,
@@ -3546,12 +3547,13 @@ impl LxmfManager {
                 .next()
                 .filter(|s| !s.is_empty())
                 .unwrap_or("png");
-            msg.set_image_field(image_format, file_bytes)
+            msg.set_image_field(image_format, &file_bytes)
                 .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
         } else {
-            msg.set_file_attachment_field(file_name, file_bytes)
+            msg.set_file_attachment_field(file_name, &file_bytes)
                 .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
         }
+        drop(file_bytes);
         if let Some((field_id, bytes)) = renderer.map(renderer_custom_field) {
             msg.set_msgpack_field(field_id, bytes)
                 .map_err(|_| LxmfSubmissionFailure::PreparationFailed)?;
@@ -3603,6 +3605,15 @@ impl LxmfManager {
         let auto_fallback =
             Self::auto_live_fallback_hash(&msg, preference).filter(|_| held.is_none());
         let method = msg.method;
+        let file_bytes = if is_image {
+            msg.image_attachment()
+        } else {
+            msg.first_file_attachment()
+        }
+        .ok()
+        .flatten()
+        .map(|(_, bytes)| bytes)
+        .ok_or(LxmfSubmissionFailure::PreparationFailed)?;
         // The file is durable before the message is queued, so its row can
         // never reference a missing file; every failure below removes it.
         let stored_name = match staged_path {
@@ -12870,7 +12881,7 @@ mod tests {
                 content: "attachment",
                 title: "",
                 file_name: "proof.txt",
-                file_bytes: b"attachment bytes",
+                file_bytes: b"attachment bytes".to_vec(),
                 staged_path: None,
                 is_image: false,
                 image_mime: "application/octet-stream",
@@ -14139,7 +14150,7 @@ mod tests {
                 content: "`file`\n[File: note.txt]",
                 title: "",
                 file_name: "note.txt",
-                file_bytes: b"hello",
+                file_bytes: b"hello".to_vec(),
                 staged_path: None,
                 is_image: false,
                 image_mime: "",
@@ -14222,7 +14233,7 @@ mod tests {
                 content: "file attached",
                 title: "",
                 file_name: "note.txt",
-                file_bytes: b"hello",
+                file_bytes: b"hello".to_vec(),
                 staged_path: None,
                 is_image: false,
                 image_mime: "",
@@ -14475,7 +14486,7 @@ mod tests {
                 content: "staged file",
                 title: "",
                 file_name: "staged.txt",
-                file_bytes: b"staged bytes",
+                file_bytes: b"staged bytes".to_vec(),
                 staged_path: Some(&staging),
                 is_image: false,
                 image_mime: "",
@@ -14516,7 +14527,7 @@ mod tests {
                 content: "must roll back",
                 title: "",
                 file_name: "rollback.bin",
-                file_bytes: b"attachment bytes",
+                file_bytes: b"attachment bytes".to_vec(),
                 staged_path: None,
                 is_image: false,
                 image_mime: "application/octet-stream",
@@ -14805,7 +14816,7 @@ mod tests {
                 content: "",
                 title: "",
                 file_name: "notes.txt",
-                file_bytes: b"notes",
+                file_bytes: b"notes".to_vec(),
                 staged_path: None,
                 is_image: false,
                 image_mime: "",
@@ -14993,7 +15004,7 @@ mod tests {
                 content: "see attached",
                 title: "",
                 file_name: if is_image { "photo.webp" } else { "notes.pdf" },
-                file_bytes: bytes,
+                file_bytes: bytes.to_vec(),
                 staged_path,
                 is_image,
                 image_mime: if is_image { "image/webp" } else { "" },
