@@ -23,7 +23,7 @@ env:
   # Keep these ordinary CI/manual-build pins aligned with the reviewed
   # dependency set. Release workflows load the same commits directly.
   RATSPEAK_RSRETICULUM_REF: 54c85253e3e3a206e122e932a1f2a76fca1828a5
-  RATSPEAK_RSLXMF_REF: 094c49bd83e3d92d7e1eda88b9da947ea9d9038d
+  RATSPEAK_RSLXMF_REF: 483bf7f970d6341844a7f6b8bf2d7e7f254fa1a7
   RATSPEAK_RSLXST_REF: 92baad3898decae643c84bd2460204d49c37a943
   RATSPEAK_LRGP_REF: f44147a851588948b6faba2640c3baae258ab079
 

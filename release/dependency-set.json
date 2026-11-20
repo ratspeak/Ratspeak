@@ -45,7 +45,7 @@
       "name": "rsLXMF",
       "repository": "https://github.com/ratspeak/rsLXMF.git",
       "path": "../rsLXMF",
-      "commit": "094c49bd83e3d92d7e1eda88b9da947ea9d9038d",
+      "commit": "483bf7f970d6341844a7f6b8bf2d7e7f254fa1a7",
       "version": "1.5.1",
       "integrationTag": "ratspeak-v1.1.1"
     },
